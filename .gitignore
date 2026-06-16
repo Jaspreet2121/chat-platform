@@ -1,0 +1,34 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Node / Nx
+node_modules/
+dist/
+build/
+.next/
+.expo/
+.nx/
+coverage/
+
+# Elixir / Phoenix
+_build/
+deps/
+*.ez
+erl_crash.dump
+
+# Logs
+*.log
+
+# Docker volumes
+docker-data/
+tmp/
+
+# IDE
+.vscode/
+.idea/
