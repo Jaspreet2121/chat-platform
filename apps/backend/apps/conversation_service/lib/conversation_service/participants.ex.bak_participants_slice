@@ -1,0 +1,40 @@
+defmodule ConversationService.Participants do
+  @moduledoc """
+  Conversation participant boundary.
+  """
+
+  @type participant_attrs :: map()
+  @type result :: {:ok, map()} | {:error, atom()}
+
+  @callback add_participant(participant_attrs()) :: result()
+  @callback remove_participant(participant_attrs()) :: result()
+
+  def add_participant(attrs) do
+    {:ok,
+     %{
+       conversation_id: Map.get(attrs, "conversation_id", "conv_placeholder"),
+       user_id: Map.get(attrs, "user_id", "user_placeholder"),
+       role: Map.get(attrs, "role", "member"),
+       joined_at: "2026-06-17T10:00:00Z"
+     }}
+  end
+
+  def remove_participant(attrs) do
+    {:ok,
+     %{
+       conversation_id: Map.get(attrs, "conversation_id", "conv_placeholder"),
+       user_id: Map.get(attrs, "user_id", "user_placeholder"),
+       removed: true
+     }}
+  end
+
+  def placeholder_participants do
+    [
+      %{
+        user_id: "user_123",
+        role: "member",
+        joined_at: "2026-06-17T10:00:00Z"
+      }
+    ]
+  end
+end

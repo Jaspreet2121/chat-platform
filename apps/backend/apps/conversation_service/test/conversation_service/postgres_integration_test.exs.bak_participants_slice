@@ -1,0 +1,205 @@
+defmodule ConversationService.PostgresIntegrationTest do
+  use ExUnit.Case, async: false
+
+  alias ConversationService.Conversations
+  alias ConversationService.Repo
+  alias ConversationService.Schemas.Conversation
+  alias ConversationService.Schemas.ConversationParticipant
+
+  @tag :postgres_integration
+  test "create_conversation creates DB-backed conversation with owner and members" do
+    creator_id = Ecto.UUID.generate()
+    participant_id = Ecto.UUID.generate()
+
+    insert_user_auth_parent!(creator_id)
+    insert_user_auth_parent!(participant_id)
+
+    assert {:ok, response} =
+             Conversations.create_conversation(%{
+               "type" => "group",
+               "title" => "Launch Team",
+               "created_by" => creator_id,
+               "participant_user_ids" => [participant_id]
+             })
+
+    assert response.conversation_id
+    assert response.type == "group"
+    assert response.title == "Launch Team"
+    assert response.created_by == creator_id
+    assert Enum.sort(response.participant_user_ids) == Enum.sort([creator_id, participant_id])
+    assert is_binary(response.created_at)
+
+    assert %Conversation{} = Repo.get(Conversation, response.conversation_id)
+
+    assert %ConversationParticipant{role: "owner"} =
+             Repo.get_by(ConversationParticipant,
+               conversation_id: response.conversation_id,
+               user_id: creator_id
+             )
+
+    assert %ConversationParticipant{role: "member"} =
+             Repo.get_by(ConversationParticipant,
+               conversation_id: response.conversation_id,
+               user_id: participant_id
+             )
+  end
+
+  @tag :postgres_integration
+  test "create_conversation rejects missing participants" do
+    creator_id = Ecto.UUID.generate()
+    insert_user_auth_parent!(creator_id)
+
+    assert {:error, :conversation_invalid} =
+             Conversations.create_conversation(%{
+               "type" => "group",
+               "title" => "Launch Team",
+               "created_by" => creator_id,
+               "participant_user_ids" => []
+             })
+  end
+
+  @tag :postgres_integration
+  test "list_conversations returns DB-backed conversations for a participant" do
+    creator_id = Ecto.UUID.generate()
+    participant_id = Ecto.UUID.generate()
+    outsider_id = Ecto.UUID.generate()
+
+    insert_user_auth_parent!(creator_id)
+    insert_user_auth_parent!(participant_id)
+    insert_user_auth_parent!(outsider_id)
+
+    assert {:ok, matching_response} =
+             Conversations.create_conversation(%{
+               "type" => "group",
+               "title" => "Launch Team",
+               "created_by" => creator_id,
+               "participant_user_ids" => [participant_id]
+             })
+
+    assert {:ok, outsider_response} =
+             Conversations.create_conversation(%{
+               "type" => "group",
+               "title" => "Private Outsider Team",
+               "created_by" => outsider_id,
+               "participant_user_ids" => [outsider_id]
+             })
+
+    assert {:ok, list_response} =
+             Conversations.list_conversations(%{
+               "user_id" => participant_id
+             })
+
+    conversation_ids = Enum.map(list_response.conversations, & &1.conversation_id)
+
+    assert matching_response.conversation_id in conversation_ids
+    refute outsider_response.conversation_id in conversation_ids
+
+    listed_conversation =
+      Enum.find(
+        list_response.conversations,
+        &(&1.conversation_id == matching_response.conversation_id)
+      )
+
+    assert listed_conversation.type == "group"
+    assert listed_conversation.title == "Launch Team"
+    assert listed_conversation.last_message_preview == nil
+    assert listed_conversation.unread_count == 0
+    assert is_binary(listed_conversation.updated_at)
+  end
+
+  @tag :postgres_integration
+  test "get_conversation returns DB-backed conversation details for a participant" do
+    creator_id = Ecto.UUID.generate()
+    participant_id = Ecto.UUID.generate()
+    outsider_id = Ecto.UUID.generate()
+
+    insert_user_auth_parent!(creator_id)
+    insert_user_auth_parent!(participant_id)
+    insert_user_auth_parent!(outsider_id)
+
+    assert {:ok, created_response} =
+             Conversations.create_conversation(%{
+               "type" => "group",
+               "title" => "Launch Team",
+               "created_by" => creator_id,
+               "participant_user_ids" => [participant_id]
+             })
+
+    assert {:ok, show_response} =
+             Conversations.get_conversation(%{
+               "conversation_id" => created_response.conversation_id,
+               "user_id" => participant_id
+             })
+
+    assert show_response.conversation_id == created_response.conversation_id
+    assert show_response.type == "group"
+    assert show_response.title == "Launch Team"
+    assert show_response.created_by == creator_id
+
+    participant_user_ids = Enum.map(show_response.participants, & &1.user_id)
+
+    assert creator_id in participant_user_ids
+    assert participant_id in participant_user_ids
+    refute outsider_id in participant_user_ids
+
+    owner = Enum.find(show_response.participants, &(&1.user_id == creator_id))
+    member = Enum.find(show_response.participants, &(&1.user_id == participant_id))
+
+    assert owner.role == "owner"
+    assert member.role == "member"
+    assert is_binary(owner.joined_at)
+    assert is_binary(member.joined_at)
+
+    assert {:error, :conversation_forbidden} =
+             Conversations.get_conversation(%{
+               "conversation_id" => created_response.conversation_id,
+               "user_id" => outsider_id
+             })
+
+    assert {:error, :conversation_not_found} =
+             Conversations.get_conversation(%{
+               "conversation_id" => Ecto.UUID.generate(),
+               "user_id" => creator_id
+             })
+  end
+
+  setup do
+    previous_persistence =
+      Application.get_env(:conversation_service, :conversation_persistence, false)
+
+    Application.put_env(:conversation_service, :conversation_persistence, true)
+
+    start_repo!(Repo)
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+
+    on_exit(fn ->
+      Application.put_env(:conversation_service, :conversation_persistence, previous_persistence)
+    end)
+
+    :ok
+  end
+
+  defp insert_user_auth_parent!(user_id) do
+    Repo.query!(
+      """
+      INSERT INTO users_auth (id, email, status)
+      VALUES ($1, $2, 'active')
+      """,
+      [
+        Ecto.UUID.dump!(user_id),
+        "conversation-#{System.unique_integer([:positive])}@example.test"
+      ]
+    )
+  end
+
+  defp start_repo!(repo) do
+    case repo.start_link() do
+      {:ok, pid} ->
+        Process.unlink(pid)
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
+    end
+  end
+end

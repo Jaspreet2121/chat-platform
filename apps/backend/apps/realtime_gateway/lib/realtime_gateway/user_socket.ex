@@ -1,0 +1,73 @@
+defmodule RealtimeGateway.UserSocket do
+  use Phoenix.Socket
+
+  channel "conversation:*", RealtimeGateway.ConversationChannel
+  channel "user:*", RealtimeGateway.UserChannel
+  channel "call:*", RealtimeGateway.CallChannel
+
+  @impl true
+  def connect(params, socket, _connect_info) do
+    if socket_auth_persistence_enabled?() do
+      authenticated_connect(params, socket)
+    else
+      placeholder_connect(params, socket)
+    end
+  end
+
+  @impl true
+  def id(socket), do: "user_socket:#{socket.assigns.current_user_id}"
+
+  defp authenticated_connect(params, socket) do
+    with :ok <- require_db_backed_sessions(),
+         {:ok, authorization} <- authorization_param(params),
+         {:ok, session} <-
+           AuthService.Sessions.current_session(%{"authorization" => authorization}) do
+      {:ok, assign_session(socket, session.user_id, session.device_id)}
+    else
+      _ -> :error
+    end
+  end
+
+  # Fail closed: when socket auth is enabled but the Auth session layer is NOT
+  # genuinely DB-backed, `AuthService.Sessions.current_session/1` returns an
+  # unverified placeholder identity. Reject rather than accept it, so enabling
+  # REALTIME_AUTH_DB_BACKED without AUTH_SESSION_DB_BACKED cannot silently grant
+  # a shared placeholder identity to every socket.
+  defp require_db_backed_sessions do
+    if AuthService.Sessions.persistence_enabled?() do
+      :ok
+    else
+      {:error, :session_layer_not_db_backed}
+    end
+  end
+
+  defp placeholder_connect(params, socket) do
+    {:ok,
+     assign_session(
+       socket,
+       Map.get(params, "user_id", "user_placeholder"),
+       Map.get(params, "device_id", "device_placeholder")
+     )}
+  end
+
+  defp assign_session(socket, user_id, device_id) do
+    socket
+    |> assign(:current_user_id, user_id)
+    |> assign(:user_id, user_id)
+    |> assign(:device_id, device_id || "device_placeholder")
+  end
+
+  defp authorization_param(params) do
+    case Map.get(params, "authorization") || Map.get(params, "Authorization") ||
+           Map.get(params, "access_token") || Map.get(params, "token") do
+      "Bearer " <> token when token != "" -> {:ok, "Bearer " <> token}
+      token when is_binary(token) and token != "" -> {:ok, "Bearer " <> token}
+      _ -> {:error, :session_invalid}
+    end
+  end
+
+  defp socket_auth_persistence_enabled? do
+    Application.get_env(:realtime_gateway, :socket_auth_persistence, false) ||
+      System.get_env("REALTIME_AUTH_DB_BACKED") in ["true", "1", "yes"]
+  end
+end

@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bc)",
+      "Bash(echo \"compile_exit=$?\")",
+      "Bash(echo \"f=$?\")",
+      "Bash(echo \"full=$\\(mix test 2>&1)",
+      "Bash(npm run *)",
+      "Bash(echo \"passed_sum=$\\(mix test 2>&1)",
+      "Bash(echo \"pg_passed_sum=$\\(mix test --include postgres_integration 2>&1)"
+    ]
+  }
+}

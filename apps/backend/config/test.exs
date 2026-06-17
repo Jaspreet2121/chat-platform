@@ -1,0 +1,48 @@
+import Config
+
+get_env =
+  fn keys, default ->
+    Enum.find_value(keys, &System.get_env/1) || default
+  end
+
+postgres_connection_config =
+  case System.get_env("TEST_DATABASE_URL") do
+    nil ->
+      [
+        username: get_env.(["POSTGRES_TEST_USER", "POSTGRES_USER"], "chat_user"),
+        password: get_env.(["POSTGRES_TEST_PASSWORD", "POSTGRES_PASSWORD"], "chat_password"),
+        hostname: get_env.(["POSTGRES_TEST_HOST", "POSTGRES_HOST"], "localhost"),
+        port: String.to_integer(get_env.(["POSTGRES_TEST_PORT", "POSTGRES_PORT"], "5432")),
+        database: get_env.(["POSTGRES_TEST_DATABASE", "POSTGRES_TEST_DB"], "chat_platform_test")
+      ]
+
+    database_url ->
+      [url: database_url]
+  end
+
+postgres_config =
+  postgres_connection_config ++
+    [
+      pool: Ecto.Adapters.SQL.Sandbox,
+      pool_size: 5,
+      show_sensitive_data_on_connection_error: false
+    ]
+
+config :auth_service, AuthService.Repo, postgres_config
+config :user_service, UserService.Repo, postgres_config
+config :conversation_service, ConversationService.Repo, postgres_config
+config :message_service, MessageService.Repo, postgres_config
+
+config :api_gateway, ApiGatewayWeb.Endpoint,
+  http: [ip: {127, 0, 0, 1}, port: 4002],
+  secret_key_base:
+    System.get_env("SECRET_KEY_BASE") ||
+      "test-placeholder-change-before-production-test-placeholder-value",
+  server: false
+
+config :shared_infra,
+  rate_limiter_adapter: SharedInfra.RateLimiter.InMemoryAdapter,
+  rate_limiter_fail_open: true
+
+config :media_service,
+  media_storage_adapter: MediaService.Storage.QueryPlanAdapter
