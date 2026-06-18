@@ -2,6 +2,26 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Deploy sub-slice 2: containerize (multi-stage Dockerfile for the umbrella release)
+
+- **Context:** sub-slice 1 produced a buildable `mix release chat_platform`; this packages it into a
+  deployable image without baking secrets and keeping the image small.
+- **Decision — multi-stage build:** build stage `elixir:1.18.4-otp-27` (matches CI's Elixir/OTP) with
+  `build-essential` + **`cmake`** (brod's `crc32cer` NIF — the same dep CI needed), `MIX_ENV=prod`,
+  `mix release chat_platform`. Runtime stage `debian:bookworm-slim` with ONLY runtime libs
+  (`libstdc++6`/`openssl`/`libncurses6`/`ca-certificates`); ERTS is bundled by `mix release` so the
+  runtime needs no Erlang/Elixir/mix. Non-root user, `CMD ["bin/chat_platform","start"]`. Final image ≈262 MB.
+- **Decision — build context = `apps/backend`:** the umbrella root; `apps/web` is outside it (deploys
+  separately, sub-slice 5). `.dockerignore` excludes `_build`/`deps`/per-app `test/` so host-built
+  (macOS-arch) artifacts never leak into the linux build.
+- **Decision — NO secrets in the image:** only source + config are COPYed; real secrets come from
+  `-e`/secret store at runtime and `config/runtime.exs` enforces the fail-fast guard. Proven: a container
+  run with NO secrets fails fast (`FATAL: DATABASE_URL is not set`).
+- **Status:** Verified locally — `docker build` succeeds (262 MB); in-container the guard fires with no
+  secrets, passes with valid dummy secrets (`runtime.exs` evaluates), and rejects a placeholder
+  `SECRET_KEY_BASE`. `mix test` unchanged (200/73; 268 pg) — only Dockerfile/.dockerignore added, no app
+  code. A full serving boot against managed Postgres is sub-slice 3 (deploy).
+
 ## [2026-06-18] Deploy sub-slice 1: prod fail-fast secret guard + runtime/release config + Repo supervision
 
 - **Context:** The project had NEVER run as a booted server (only flag-gated/in-memory locally), and a

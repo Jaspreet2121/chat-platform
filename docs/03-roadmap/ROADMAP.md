@@ -169,7 +169,7 @@
 ## Phase 9: Deployment & Observability (STARTED 2026-06-18)
 
 - [x] **Sub-slice 1 — prod config + boot foundation:** Repos supervised at boot (gated `start_repo: false` in `:test` → plain `mix test` stays Docker-free); prod fail-fast secret guard (`SharedInfra.ProdConfig` in `config/runtime.exs` — refuses to boot on missing/placeholder `SECRET_KEY_BASE`/`TOKEN_SECRET`/`OTP_SECRET`); `config/prod.exs` + `config/runtime.exs` + `mix release` (`chat_platform`, all 8 apps). Fixes the "never run as a server" gap + audit #4. See [DEPLOYMENT.md](../09-devops/DEPLOYMENT.md) + DECISION_LOG 2026-06-18.
-- [ ] Sub-slice 2 — containerize (Dockerfile for the release; include cmake/build-essential for brod's `crc32cer` NIF).
+- [x] **Sub-slice 2 — containerize:** multi-stage `apps/backend/Dockerfile` (build `elixir:1.18.4-otp-27` + cmake/build-essential for brod's `crc32cer` NIF; runtime `debian:bookworm-slim`, ERTS bundled, non-root) + `.dockerignore`. Image builds (≈262 MB); the prod fail-fast guard fires in-container. No secrets baked in. See DEPLOYMENT.md + DECISION_LOG 2026-06-18.
 - [ ] Sub-slice 3 — deploy backend to Fly + managed Postgres (core chat flags ON, Kafka OFF); apply `infra/docker/postgres/init/*.sql` to managed PG; smoke-test.
 - [ ] Sub-slice 4 — baseline observability: structured (JSON) logs, request/correlation-id threading (replace `corr_placeholder`, tie request_id → event-envelope `correlation_id`), readiness `/health` (Repo check).
 - [ ] Sub-slice 5 — deploy web (Vercel) pointed at the backend (`NEXT_PUBLIC_API_BASE_URL`/`NEXT_PUBLIC_REALTIME_URL`).

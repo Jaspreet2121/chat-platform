@@ -1,5 +1,14 @@
 # Session Log
 
+## [2026-06-18] Slice: DEPLOY sub-slice 2 — containerize (multi-stage Dockerfile, built + guard verified in-container)
+- Status: ✅ green (image builds; guard fires in-container; counts unchanged)
+- Files changed: new `apps/backend/Dockerfile` (multi-stage) + `apps/backend/.dockerignore`. No app code.
+- Dockerfile: build stage `elixir:1.18.4-otp-27` (matches CI) + `build-essential`/`cmake` (brod `crc32cer` NIF), `MIX_ENV=prod`, `mix deps.get --only prod`/`deps.compile`/`compile`/`mix release chat_platform`; runtime stage `debian:bookworm-slim` with only runtime libs (libstdc++6/openssl/libncurses6/ca-certificates), ERTS bundled (no mix/erlang), non-root `app` user, `EXPOSE 4000`, `CMD ["bin/chat_platform","start"]`. Build context = `apps/backend` (apps/web is outside it). `.dockerignore` excludes `_build`/`deps`/`apps/*/test`/`.git` so host macOS-arch artifacts don't leak.
+- Secrets: NONE baked in — only source+config COPYed; real secrets via `-e`/secret store at runtime, enforced by `config/runtime.exs` guard.
+- Verification (docker available locally, daemon up): `docker build -t chat-platform-backend:slice2 .` → **success, image ≈262 MB**. Container runs: (1) NO secrets → `FATAL: DATABASE_URL is not set` (guard fail-fast, release terminates during boot at runtime.exs:9); (2) valid dummy secrets (`DATABASE_URL`/`SECRET_KEY_BASE`/`TOKEN_SECRET`/`OTP_SECRET`/`PHX_HOST`) + `bin/chat_platform eval` → prints `guard_passed_runtime_ok` (guard passes, runtime.exs evaluates, no secret was baked since (1) failed); (3) placeholder `SECRET_KEY_BASE` → `FATAL: ... known insecure placeholder` (rejected). `mix test` → **200/73, 0 failures** (unchanged; this slice adds no app code). web untouched.
+- Code/build-verified vs deploy-only: VERIFIED = image builds, guard fires/passes/rejects in-container, runtime.exs evaluates in the release. NOT verified (sub-slice 3) = full serving boot against real managed Postgres + TLS, public WSS.
+- Next: sub-slice 3 — deploy to Fly + managed Postgres (core chat flags ON, Kafka OFF), apply `infra/docker/postgres/init/*.sql` to managed PG, smoke-test `/health` + login + message round-trip.
+
 ## [2026-06-18] Slice: DEPLOY sub-slice 1 — prod config guard + runtime/release + Repo supervision
 - Status: ✅ green (code-verified; actual deploy is sub-slices 2-3)
 - Context: the project had never run as a real server. Two foundational gaps: (1) NO app supervised its Repo at boot (`children=[]`) → a booted server crashes on the first DB request; (2) secrets silently fell back to insecure placeholders (audit #4). No prod.exs/runtime.exs/release existed (so MIX_ENV=prod couldn't boot).

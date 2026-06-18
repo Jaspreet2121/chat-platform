@@ -1,0 +1,11 @@
+# Keep the build context lean. Build context is apps/backend; apps/web (repo root) is already
+# outside it. Host-built artifacts (macOS-arch) must NOT leak into the linux image build.
+_build
+deps
+*.tar
+.elixir_ls
+.git
+.gitignore
+# Test support/fixtures are not needed for a MIX_ENV=prod release (elixirc_paths(:prod) = ["lib"]).
+apps/*/test
+README.md
