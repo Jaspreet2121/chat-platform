@@ -253,6 +253,13 @@ Important files:
 - `apps/backend/apps/message_service/lib/message_service/persistence/message_receipts.ex`
 - `apps/backend/apps/message_service/lib/message_service/persistence/message_reactions.ex`
 - `apps/backend/apps/message_service/lib/message_service/persistence/user_inbox_projection.ex`
+- `apps/backend/apps/message_service/lib/message_service/projections/conversation_summary.ex`
+- `apps/backend/apps/message_service/lib/message_service/events/message_created_log_consumer.ex`
+- `apps/backend/apps/message_service/lib/message_service/events/conversation_summary_consumer.ex`
+- `apps/backend/apps/message_service/lib/message_service/schemas/processed_event.ex`
+- `apps/backend/apps/message_service/lib/message_service/schemas/conversation_message_summary.ex`
+- `apps/backend/apps/message_service/test/message_service/conversation_summary_projection_test.exs`
+- `apps/backend/apps/message_service/test/message_service/conversation_summary_consumer_integration_test.exs`
 - `apps/backend/apps/message_service/test/message_service/boundaries_test.exs`
 - `apps/backend/apps/message_service/test/message_service/persistence_query_plans_test.exs`
 
@@ -268,6 +275,7 @@ Current behavior:
 - `MessageStore.PostgresAdapter` (+ `MessageService.Repo`, `Schemas.Message`/`Schemas.MessageReceipt`, tables in `infra/docker/postgres/init/020_message_store.sql`) provides real durability behind `MESSAGE_STORE_ADAPTER=postgres`. Default adapter remains `QueryPlanAdapter` (Docker-free). Live ScyllaDB execution is deferred (Phase 8; ecto/decimal conflict).
 - After a successful create, `Messages.publish_message_created/1` emits `message.created.v1` fire-and-forget (flag `KAFKA_PUBLISH_ENABLED`, default off, wrapped in `Task.start`) to `message.events.v1` via `SharedInfra.Kafka.Producer` (default `NoopProducer`); publish failure never fails the create.
 - `MessageService.Events.MessageCreatedLogConsumer` (`brod_group_subscriber_v2`) is the minimal consumer — flag-gated by `KAFKA_CONSUMER_ENABLED`, supervised in `MessageService.Application`, log/ack only (no projection/fanout). at-least-once → a future stateful consumer must dedupe on envelope `event_id`.
+- `MessageService.Events.ConversationSummaryConsumer` (`brod_group_subscriber_v2`, flag `KAFKA_PROJECTION_CONSUMER_ENABLED`, distinct group `message-service-conversation-summary`, default off) is the **first stateful, idempotent consumer**. It calls `MessageService.Projections.ConversationSummary.apply_message_created/1`, which in ONE `Repo.transaction` inserts into the `processed_events` ledger (keyed `(consumer, event_id)`, `ON CONFLICT DO NOTHING`) and, only when new, upserts `conversation_message_summaries` (atomic `message_count` increment). Commit only after the DB tx; transient error → redeliver; malformed/poison event → skip+commit (UUID-validated via `fetch_uuid/2`). Schemas: `Schemas.ProcessedEvent`, `Schemas.ConversationMessageSummary`; tables in `infra/docker/postgres/init/030_message_projections.sql`. This is the dedupe blueprint for notification-service. Tests: `conversation_summary_projection_test.exs` (exactly-once, postgres_integration), `conversation_summary_consumer_integration_test.exs` (live round-trip, kafka_integration).
 - Beyond author-only edit/delete + create/list membership (enforced in the gateway), no broader authorization checks (tenant/block — `Permissions.authorize/1` is still a placeholder), Redis integration, or Kafka publishing exists yet.
 
 ### media_service

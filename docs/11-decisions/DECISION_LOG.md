@@ -2,6 +2,41 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] First stateful, idempotent consumer = the dedupe blueprint for notification-service
+
+- **Context:** The log/ack consumer proved the pipe but does nothing. The next consumer must
+  actually maintain state from `message.created.v1`, and must be exactly-once under brod's
+  at-least-once redelivery. Whatever pattern it establishes will be copied verbatim by the
+  future notification-service, so it has to be the canonical one.
+- **Decision:** Build `MessageService.Projections.ConversationSummary` — a per-conversation
+  message-summary projection — with idempotency enforced by a generic `processed_events` ledger
+  keyed `(consumer, event_id)`. In ONE `Repo.transaction`: `INSERT ... ON CONFLICT DO NOTHING`
+  into the ledger (affected count `1` = NEW, `0` = DUPLICATE), and only when NEW apply the
+  `conversation_message_summaries` upsert (atomic `message_count` increment + last-message set).
+  Both commit or both roll back together.
+- **Decision — commit ordering (at-least-once):** the consumer
+  (`MessageService.Events.ConversationSummaryConsumer`) commits the offset ONLY after the DB
+  transaction succeeds. Transient DB error → no commit → redeliver. **Structurally-invalid /
+  poison event (malformed `event_id`/`conversation_id`) → log + commit (skip).** This last point
+  was hardened after a live run: historical topic events with non-UUID ids raised
+  `Ecto.ChangeError` and, treated as transient, wedged the partition in an infinite retry.
+  `fetch_uuid/2` now validates UUIDs up front so malformed ids surface as `{:error, :invalid_event}`
+  (poison → skip), never retry.
+- **Decision — separate consumer group + flag:** distinct group `message-service-conversation-summary`
+  and its own flag `KAFKA_PROJECTION_CONSUMER_ENABLED` (default off), independent of the log
+  consumer. The brod client gate (`MessageService.Application`) now also starts when this flag is on.
+  Default off ⇒ nothing connects at boot, plain `mix test` stays Docker-free.
+- **Decision — tables are NOT Ecto migrations:** the two tables live in
+  `infra/docker/postgres/init/030_message_projections.sql`, applied manually to `chat_platform_test`,
+  consistent with the existing init-SQL convention (no Ecto migrations in this repo).
+- **Rationale:** The ledger-in-the-same-transaction pattern is the simplest construction that is
+  provably exactly-once without distributed coordination; keying by `(consumer, event_id)` lets
+  many consumers share one ledger table while each applies an event once. Poison-skip prevents a
+  single bad event from halting all downstream projections.
+- **Status:** Implemented + verified. Exactly-once proof (`conversation_summary_projection_test.exs`,
+  postgres_integration) and live broker round-trip (`conversation_summary_consumer_integration_test.exs`,
+  kafka_integration) both pass; plain `mix test` unchanged at 186.
+
 ## [2026-06-18] Minimal log/ack Kafka consumer (completes the pipe, no behavior coupling)
 
 - **Context:** `message.created.v1` reaches the broker but nothing consumes it. The milestone

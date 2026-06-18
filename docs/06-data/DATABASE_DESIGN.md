@@ -184,6 +184,52 @@ Purpose:
 
 ---
 
+# Implemented: Message-Service Projection Tables (code-verified)
+
+> The tables below are the ones ACTUALLY created and applied to the local/test
+> Postgres (`chat_platform_test`); the ScyllaDB tables earlier in this document remain
+> aspirational. Source of truth: [030_message_projections.sql](../../infra/docker/postgres/init/030_message_projections.sql),
+> with Ecto schemas
+> [processed_event.ex](../../apps/backend/apps/message_service/lib/message_service/schemas/processed_event.ex)
+> and
+> [conversation_message_summary.ex](../../apps/backend/apps/message_service/lib/message_service/schemas/conversation_message_summary.ex).
+
+## processed_events (idempotency ledger)
+
+Generic dedupe ledger shared by ALL stateful Kafka consumers in message-service. A row
+records that a given consumer has already applied a given event. Keyed by
+`(consumer, event_id)` so the same physical event can be processed independently by
+different consumers, but exactly once per consumer.
+
+| Column | Type | Notes |
+|---|---|---|
+| consumer | text | Primary key (part 1) — logical consumer name, e.g. `conversation-summary` |
+| event_id | uuid | Primary key (part 2) — the envelope `event_id` |
+| inserted_at | timestamptz | When this consumer first applied the event |
+
+Insert uses `ON CONFLICT DO NOTHING`; an affected-row count of `1` means NEW (apply the
+projection), `0` means DUPLICATE (skip). See
+[conversation_summary.ex](../../apps/backend/apps/message_service/lib/message_service/projections/conversation_summary.ex).
+
+## conversation_message_summaries (first projection)
+
+Per-conversation rollup maintained by the `conversation-summary` consumer from
+`message.created.v1`.
+
+| Column | Type | Notes |
+|---|---|---|
+| conversation_id | uuid | Primary key |
+| message_count | bigint | Default 0; atomically incremented per applied event |
+| last_message_id | uuid | Nullable — most recent message id |
+| last_message_at | timestamptz | Nullable — most recent message timestamp |
+| updated_at | timestamptz | Default `now()` |
+
+The ledger insert and this upsert (`ON CONFLICT (conversation_id) DO UPDATE` with an
+atomic `message_count` increment) run in ONE `Repo.transaction`, so an at-least-once
+redelivery re-runs atomically and applies the projection exactly once.
+
+---
+
 # PostgreSQL Initial Tables
 
 ## users_auth

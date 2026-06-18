@@ -72,6 +72,8 @@ config :message_service,
   message_persistence: System.get_env("MESSAGE_DB_BACKED") in ["true", "1", "yes"],
   kafka_publish_enabled: System.get_env("KAFKA_PUBLISH_ENABLED") in ["true", "1", "yes"],
   kafka_consumer_enabled: System.get_env("KAFKA_CONSUMER_ENABLED") in ["true", "1", "yes"],
+  kafka_projection_consumer_enabled:
+    System.get_env("KAFKA_PROJECTION_CONSUMER_ENABLED") in ["true", "1", "yes"],
   message_store_adapter:
     (case System.get_env("MESSAGE_STORE_ADAPTER") do
        "scylla" -> MessageService.MessageStore.ScyllaAdapter

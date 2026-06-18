@@ -15,11 +15,17 @@ defmodule MessageService.Application do
   # and plain `mix test` stays Docker-free.
   defp children do
     client = if kafka_client_needed?(), do: [brod_client_child_spec()], else: []
-    consumer = if kafka_consumer_enabled?(), do: [kafka_consumer_child_spec()], else: []
-    client ++ consumer
+    log_consumer = if kafka_consumer_enabled?(), do: [kafka_consumer_child_spec()], else: []
+
+    projection_consumer =
+      if kafka_projection_consumer_enabled?(), do: [conversation_summary_child_spec()], else: []
+
+    client ++ log_consumer ++ projection_consumer
   end
 
-  defp kafka_client_needed?, do: brod_producer_selected?() or kafka_consumer_enabled?()
+  defp kafka_client_needed? do
+    brod_producer_selected?() or kafka_consumer_enabled?() or kafka_projection_consumer_enabled?()
+  end
 
   defp brod_producer_selected? do
     Application.get_env(:shared_infra, :kafka_producer_adapter) ==
@@ -29,6 +35,29 @@ defmodule MessageService.Application do
   defp kafka_consumer_enabled? do
     Application.get_env(:message_service, :kafka_consumer_enabled, false) ||
       System.get_env("KAFKA_CONSUMER_ENABLED") in ["true", "1", "yes"]
+  end
+
+  defp kafka_projection_consumer_enabled? do
+    Application.get_env(:message_service, :kafka_projection_consumer_enabled, false) ||
+      System.get_env("KAFKA_PROJECTION_CONSUMER_ENABLED") in ["true", "1", "yes"]
+  end
+
+  defp conversation_summary_child_spec do
+    %{
+      id: MessageService.Events.ConversationSummaryConsumer,
+      start:
+        {:brod, :start_link_group_subscriber_v2,
+         [
+           %{
+             client: SharedInfra.Kafka.BrodProducer.client_name(),
+             group_id: "message-service-conversation-summary",
+             topics: ["message.events.v1"],
+             cb_module: MessageService.Events.ConversationSummaryConsumer,
+             consumer_config: [begin_offset: :latest],
+             message_type: :message
+           }
+         ]}
+    }
   end
 
   defp kafka_consumer_child_spec do

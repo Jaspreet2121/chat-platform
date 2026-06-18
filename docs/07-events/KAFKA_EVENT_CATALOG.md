@@ -5,16 +5,23 @@
 > What exists today:
 > - `SharedInfra.Events.Envelope` build/validate contract for the standard envelope below.
 > - `SharedInfra.Kafka.Producer` dispatcher + non-connecting `NoopProducer` default
->   (`:shared_infra, :kafka_producer_adapter`). brod is installed and compiles (cmake) but
->   no brod-backed live adapter is wired yet — the default produces nothing/connects nothing.
+>   (`:shared_infra, :kafka_producer_adapter`). A brod-backed live adapter
+>   (`SharedInfra.Kafka.BrodProducer`) is now wired and selected with
+>   `KAFKA_PRODUCER_ADAPTER=brod`; the default remains `NoopProducer` (connects/produces nothing).
 > - **✅ `message.created.v1` is the FIRST wired producer:** emitted **fire-and-forget** after a
 >   successful message persist (`MessageService.Messages.publish_message_created/1`), to topic
 >   `message.events.v1`, key = `conversation_id`. **Flag-gated** (`KAFKA_PUBLISH_ENABLED`, default
 >   off) and best-effort — a publish failure NEVER fails message creation (durability is not
->   coupled to the broker). With the default `NoopProducer` it is a no-op; a real broker-backed
->   adapter + the consumer side are still pending.
+>   coupled to the broker).
+> - **✅ `message.created.v1` now has CONSUMERS:** a minimal log/ack consumer
+>   (`MessageService.Events.MessageCreatedLogConsumer`, `KAFKA_CONSUMER_ENABLED`) and the FIRST
+>   **stateful, idempotent** consumer — `MessageService.Events.ConversationSummaryConsumer`
+>   (`KAFKA_PROJECTION_CONSUMER_ENABLED`, distinct group `message-service-conversation-summary`,
+>   default off). It maintains the `conversation_message_summaries` projection, deduped via the
+>   `processed_events` ledger, exactly-once on redelivery. See **Idempotency** below.
 >
-> Everything else below remains 🔴 documented-only (no producer/consumer in code).
+> All consumers/producers are flag-gated and default off, so plain `mix test` stays Docker-free
+> and nothing connects at boot. Everything else below remains 🔴 documented-only.
 >
 > **Topic partitions (resolved 2026-06-18):** a one-shot `kafka-init` service in
 > docker-compose now runs `create-topics.sh`, creating `message.events.v1` with its declared
@@ -1242,6 +1249,20 @@ Recommended approach:
 - Use unique constraints where possible.
 - Kafka consumers should retry safely.
 - Dead-letter topic should be added later.
+
+**Implemented reference (code-verified):** `MessageService.Projections.ConversationSummary.apply_message_created/1`
+is the concrete blueprint every future stateful consumer (e.g. notification-service) should copy.
+In ONE `Repo.transaction`:
+
+1. `INSERT ... ON CONFLICT DO NOTHING` into `processed_events` keyed `(consumer, event_id)`;
+   affected count `1` ⇒ NEW, `0` ⇒ DUPLICATE.
+2. Only when NEW, apply the projection upsert (atomic increment). Both commit or both roll back.
+
+Commit ordering in `MessageService.Events.ConversationSummaryConsumer` (at-least-once):
+DB transaction succeeds → `{:ok, :commit}`; transient DB error → no commit (redeliver);
+structurally-invalid/poison event (e.g. malformed `event_id`) → log + commit (skip, never wedge
+the partition). Verified by `conversation_summary_projection_test.exs` (exactly-once, postgres_integration)
+and `conversation_summary_consumer_integration_test.exs` (live round-trip, kafka_integration).
 
 ---
 
