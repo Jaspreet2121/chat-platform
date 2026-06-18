@@ -1,5 +1,16 @@
 # Session Log
 
+## [2026-06-18] Slice: DEPLOY sub-slice 3a — Fly.io config + deploy runbook (no actual deploy from here)
+- Status: ✅ config + docs delivered (actual `fly deploy` is the user's step; flyctl not installed here)
+- Files changed: new `apps/backend/fly.toml`; `docs/09-devops/DEPLOYMENT.md` (full Fly runbook + debug-loop table + schema-apply method). No app code (runtime.exs already wires every Fly boot value — verified, not changed).
+- fly.toml: deploy from `apps/backend` (matches Docker build context), `[build] dockerfile = "Dockerfile"`, `[http_service]` internal_port 4000 + force_https + `min_machines_running = 1` (WS sessions survive; Fly proxies HTTP→WS over the same port automatically — `wss://`, no extra config), `[[vm]]` shared-cpu-1x/512MB. `[env]` = core-chat-ON / Kafka-OFF flag set + `PHX_HOST` placeholder; **no secrets in the file**.
+- Schema apply: NO Ecto migrations + init SQL (`infra/docker/postgres/init/*.sql`) is OUTSIDE the release image (build context is apps/backend), so chose a MANUAL ordered psql step (`001→042`) once via `fly proxy`, documented in the runbook (release_command can't see the files / slim runtime has no psql). Bundled migrations = future work.
+- check_origin: `runtime.exs` already reads `WEB_ORIGIN` (comma list) → `check_origin`, default `false` (allow-all) until the web URL is known; documented to lock down post-web-deploy. No code change.
+- Runbook (in DEPLOYMENT.md): install/auth flyctl → `fly apps create` → `fly postgres create`+`attach` (sets DATABASE_URL) → apply schema (ordered psql over `fly proxy`) → `fly secrets set SECRET_KEY_BASE/TOKEN_SECRET/OTP_SECRET` (openssl rand / mix phx.gen.secret) → `fly deploy` → smoke-test `/health` + OTP login + message → `fly logs`/rollback. Plus a debug-loop table (PG TLS/sslmode, missing-secret guard, schema-not-applied, check_origin/WSS, flag-off placeholder behavior, REALTIME+SESSION pairing, machine auto-stop).
+- Verification: flyctl NOT installed locally (`fly`/`flyctl` not found) → fly.toml validated by INSPECTION only; `fly launch`/`fly deploy` validate on the user's machine. `mix test` → **200/73, 0 failures** (unchanged — config+docs only). web untouched.
+- Verified vs deploy-only: VERIFIED here = fly.toml well-formed (inspection), runtime.exs reads every Fly boot value, counts intact. NOT verifiable here (user's sub-slice 3b, the real proof) = actual `fly deploy`, managed-PG TLS/sslmode, schema applied, public WSS handshake/check_origin, end-to-end smoke test.
+- Next: user runs the runbook (3b). Then sub-slice 4 (baseline observability: JSON logs + correlation-id threading replacing `corr_placeholder` + readiness `/health`).
+
 ## [2026-06-18] Slice: DEPLOY sub-slice 2 — containerize (multi-stage Dockerfile, built + guard verified in-container)
 - Status: ✅ green (image builds; guard fires in-container; counts unchanged)
 - Files changed: new `apps/backend/Dockerfile` (multi-stage) + `apps/backend/.dockerignore`. No app code.

@@ -1,0 +1,51 @@
+# Fly.io config for the chat-platform backend (umbrella release).
+#
+# Deploy from THIS directory (apps/backend) — the build context + Dockerfile live here.
+# Set `app` and `primary_region` before launching. SECRETS ARE NOT IN THIS FILE:
+# SECRET_KEY_BASE / TOKEN_SECRET / OTP_SECRET via `fly secrets set`, DATABASE_URL via
+# `fly postgres attach`. See docs/09-devops/DEPLOYMENT.md for the full runbook.
+
+app = "REPLACE_ME-chat-platform"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret runtime env. The first deploy turns core chat ON and leaves Kafka OFF (no KAFKA_*
+# set ⇒ NoopProducer, no consumers, no broker needed). runtime.exs reads these at boot.
+[env]
+  PHX_HOST = "REPLACE_ME-chat-platform.fly.dev"   # set to your app's public hostname
+  PORT = "4000"
+  POOL_SIZE = "10"
+  DATABASE_SSL = "true"
+
+  # Core chat (DB-backed) ON:
+  AUTH_SESSION_DB_BACKED = "true"
+  AUTH_REFRESH_TOKEN_DB_BACKED = "true"
+  AUTH_LOGOUT_DB_BACKED = "true"
+  AUTH_OTP_REQUEST_DB_BACKED = "true"
+  AUTH_OTP_VERIFY_DB_BACKED = "true"
+  USER_PROFILE_DB_BACKED = "true"
+  CONVERSATION_DB_BACKED = "true"
+  MESSAGE_DB_BACKED = "true"
+  MESSAGE_STORE_ADAPTER = "postgres"
+  # Trustworthy realtime identity requires this WITH AUTH_SESSION_DB_BACKED (both on):
+  REALTIME_AUTH_DB_BACKED = "true"
+
+  # WEB_ORIGIN intentionally unset until the web app's URL is known. Once it is, set it (e.g.
+  # `fly secrets set WEB_ORIGIN=https://app.example.com`) to lock the websocket origin check down.
+  # Kafka flags (KAFKA_PRODUCER_ADAPTER / *_PUBLISH_ENABLED / *_CONSUMER_ENABLED / KAFKA_BROKERS)
+  # are deliberately ABSENT → Kafka stays off for the first deploy (staged rollout).
+
+[http_service]
+  internal_port = 4000          # matches Dockerfile EXPOSE + Endpoint PORT
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1      # keep ≥1 up so Phoenix channel (websocket) sessions stay alive
+  # Phoenix channels: Fly's http_service proxies the HTTP→WS upgrade over the same port
+  # automatically; clients connect with wss:// and Fly terminates TLS → no extra WS config needed.
+
+[[vm]]
+  size = "shared-cpu-1x"        # adequate for a first deploy of the BEAM umbrella
+  memory = "512mb"              # 512MB headroom (256MB is tight for 9 OTP apps + pools)

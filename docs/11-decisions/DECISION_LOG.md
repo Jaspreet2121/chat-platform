@@ -2,6 +2,31 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Deploy sub-slice 3a: Fly.io config + deploy runbook (config only; deploy is the user's step)
+
+- **Context:** the image builds and boots with a guard (sub-slices 1-2); now produce the Fly config +
+  an exact runbook so the user can deploy. `flyctl` is not installed here, so this slice is config +
+  docs only — no actual deploy.
+- **Decision — `apps/backend/fly.toml`:** deploy from `apps/backend` (matches the Docker build context);
+  `[build] dockerfile`, `[http_service] internal_port = 4000` + `force_https` + `min_machines_running = 1`
+  (Fly proxies HTTP→WS upgrades over the same port, so Phoenix channels work with `wss://` and no special
+  config; keeping ≥1 machine avoids dropping WS sessions on idle auto-stop). `[[vm]]` shared-cpu-1x/512MB.
+  Core-chat-ON / Kafka-OFF flags in `[env]`; secrets NOT in the file.
+- **Decision — schema apply = manual ordered psql (once), not a release_command:** there are no Ecto
+  migrations, and the `infra/docker/postgres/init/*.sql` files are outside the release (build context is
+  `apps/backend`; `infra/` is at repo root), so a `release_command` can't see them and the slim runtime
+  has no psql. The runbook applies `001 → 042` via `fly proxy` + `psql` once before first boot. A bundled
+  migration story is future work.
+- **Decision — `check_origin` via env (`WEB_ORIGIN`), default off:** the web URL isn't known at first
+  deploy, so `runtime.exs` reads `WEB_ORIGIN` (comma-separated) into `check_origin`, defaulting to `false`
+  (allow-all) until set — documented as a deliberate first-deploy convenience to lock down once the web
+  origin exists. (Already implemented in sub-slice 1; no code change this slice.)
+- **Decision — staged rollout confirmed:** first deploy omits ALL `KAFKA_*` env ⇒ default `NoopProducer`,
+  no consumers, no broker needed; Kafka is enabled later (sub-slice 6).
+- **Status:** Config + runbook delivered & inspection-validated; `runtime.exs` confirmed to read every Fly
+  boot value (no code change → `mix test` unchanged 200/73; 268 pg). The actual `fly deploy` + managed-PG
+  TLS + schema apply + public WSS are the USER's next step and the real (unverifiable-here) proof.
+
 ## [2026-06-18] Deploy sub-slice 2: containerize (multi-stage Dockerfile for the umbrella release)
 
 - **Context:** sub-slice 1 produced a buildable `mix release chat_platform`; this packages it into a
