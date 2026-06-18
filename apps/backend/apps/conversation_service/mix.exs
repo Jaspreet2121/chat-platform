@@ -19,14 +19,17 @@ defmodule ConversationService.MixProject do
   def application do
     [
       mod: {ConversationService.Application, []},
-      extra_applications: [:logger]
+      extra_applications: [:logger, :crypto]
     ]
   end
 
   defp deps do
     [
+      {:shared_infra, in_umbrella: true},
       {:ecto_sql, "~> 3.12"},
-      {:postgrex, ">= 0.0.0"}
+      {:postgrex, ">= 0.0.0"},
+      {:brod, "~> 4.0"},
+      {:jason, "~> 1.4"}
     ]
   end
 

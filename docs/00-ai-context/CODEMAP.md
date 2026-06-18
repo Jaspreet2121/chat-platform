@@ -205,6 +205,7 @@ Important files:
 
 - `apps/backend/apps/conversation_service/lib/conversation_service/application.ex`
 - `apps/backend/apps/conversation_service/lib/conversation_service/repo.ex`
+- `apps/backend/apps/conversation_service/lib/conversation_service/participant_events.ex`
 - `apps/backend/apps/conversation_service/lib/conversation_service/conversations.ex`
 - `apps/backend/apps/conversation_service/lib/conversation_service/participants.ex`
 - `apps/backend/apps/conversation_service/lib/conversation_service/groups.ex`
@@ -232,7 +233,8 @@ Current behavior:
 - Conversation boundary functions return contract-aligned placeholder responses for API Gateway skeleton endpoints.
 - Conversation persistence schemas and data-access boundaries exist for `conversations`, `conversation_participants`, `conversation_settings`, and `group_profiles`.
 - Conversation has opt-in PostgreSQL Sandbox integration test support tagged `:postgres_integration`.
-- No real authentication middleware, authorization checks, API flow persistence, database-backed conversation logic, or Kafka publishing exists yet.
+- **Kafka producer (2026-06-18):** `ConversationService.ParticipantEvents` emits `conversation.participant_added.v1` `{conversation_id, user_id, role, added_by}` and `conversation.participant_removed.v1` `{conversation_id, user_id, removed_by}` to `conversation.events.v1` (key `conversation_id`) via `SharedInfra.Kafka.Producer`, fire-and-forget (flag `CONVERSATION_PUBLISH_ENABLED`, default off, `Task.start`, try/rescue/catch — mirrors `MessageService.Messages.publish_message_created`). Emitted from ALL THREE membership points: conversation creation (one `participant_added` per initial participant, after the tx commits — `conversations.ex`), `Participants.add_participant`, `Participants.remove_participant`. `ConversationService.Application` starts its OWN brod client (`:conversation_service_kafka_client`) ONLY when the brod adapter is selected AND `CONVERSATION_PUBLISH_ENABLED` (default off ⇒ `children/0 == []` ⇒ Docker-free). `SharedInfra.Kafka.BrodProducer` now selects the client per-call via `opts[:client]` (default = message-service client, unchanged). This sets the participant-event contract that notification-service's read-model (sub-slice b) will consume. NO consumer/read-model/fan-out here yet.
+- Beyond the producer above, no real authentication middleware, broader authorization checks, or API flow persistence beyond the DB-backed conversation/participant logic exists yet.
 
 ### message_service
 

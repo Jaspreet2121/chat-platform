@@ -1,2 +1,2 @@
 ExUnit.start()
-ExUnit.configure(exclude: [postgres_integration: true])
+ExUnit.configure(exclude: [postgres_integration: true, kafka_integration: true])

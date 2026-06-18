@@ -2,6 +2,44 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Cross-service data is EVENT-DRIVEN; ConversationService participant-change producer (sub-slice a)
+
+- **Context:** notification-service must eventually fan out a notification per conversation PARTICIPANT,
+  but `message.created.v1` carries the sender, not recipients. To resolve recipients WITHOUT a runtime
+  sync call to ConversationService, notification-service will keep a LOCAL participant read-model fed by
+  ConversationService events. This entry covers sub-slice (a): ConversationService emitting the
+  participant-change events that set the contract; (b) read-model and (c) fan-out follow.
+- **Decision — cross-service data via events, not sync API calls:** ConversationService publishes
+  participant-change events; consumers build their own local read-models. Avoids runtime coupling
+  (notification-service does not call ConversationService on the hot path) and matches the event-driven
+  target. ConversationService was producer-less (deps were only ecto_sql/postgrex); added
+  `{:shared_infra, in_umbrella: true}` + `brod`/`jason` and a fire-and-forget producer mirroring
+  `MessageService.Messages.publish_message_created` exactly (flag `CONVERSATION_PUBLISH_ENABLED`,
+  default off; `Task.start`; try/rescue/catch; default `NoopProducer` ⇒ Docker-free; never couples
+  the create/add/remove result to the broker).
+- **Decision — emit from ALL THREE membership points:** conversation creation (one `participant_added`
+  per initial participant, AFTER the tx commits), explicit add (`participant_added`), and remove
+  (`participant_removed`). A read-model fed only by later add/removes would MISS every participant
+  created with the conversation. Emitting `participant_added` per initial participant (rather than a
+  separate `conversation.created` seed) keeps the contract to TWO event types and a uniform read-model
+  update path — the smaller, cleaner diff. Contract (sets sub-slice b):
+  `participant_added.v1 → {conversation_id, user_id, role, added_by}`,
+  `participant_removed.v1 → {conversation_id, user_id, removed_by}`; topic `conversation.events.v1`,
+  key `conversation_id`.
+- **Decision — BrodProducer client name made per-call configurable (minimal de-hardcoding):** the
+  adapter hardcoded `:message_service_kafka_client`. Now `produce/4` reads `opts[:client]`, defaulting
+  to `client_name/0` (the message-service client) so message-service's call site is byte-for-byte
+  unchanged; conversation-service passes `client: :conversation_service_kafka_client` and runs its OWN
+  flag-gated brod client. A shared producer base extraction remains DEFERRED — this is only the minimal
+  change needed for two producers.
+- **Decision — notification-service consumes `participant_removed` despite the catalog omission:** the
+  KAFKA_EVENT_CATALOG "Consumed by" list omits notification-service for `participant_removed`, but the
+  read-model needs removals; the doc was corrected (trust the requirement, not the doc).
+- **Status:** Implemented + verified (sub-slice a only). Plain `mix test` 186→191 (+5 plain producer
+  tests, Docker-free; `ConversationService.Supervisor` children == [] with flags off, confirmed at
+  runtime); `postgres_integration` 245→251 (+1 emit-after-persist wiring test proving all three points).
+  Sub-slices (b) notification read-model and (c) fan-out are NOT done.
+
 ## [2026-06-18] notification-service: first missing service built; per-service idempotency ledger
 
 - **Context:** Audit finding #6 — 5 documented services have no code. notification-service is the

@@ -462,6 +462,15 @@ Payload:
 
 ## conversation.participant_added.v1
 
+> ✅ **PRODUCED (2026-06-18)** by conversation-service, fire-and-forget after a successful
+> persist (`ConversationService.ParticipantEvents`), flag-gated `CONVERSATION_PUBLISH_ENABLED`
+> (default off; default `NoopProducer` ⇒ nothing connects), key = `conversation_id`. Emitted from
+> ALL three membership points: **conversation creation (one per initial participant)**, explicit
+> add, so the downstream read-model is complete. Implemented payload:
+> `{conversation_id, user_id, role, added_by}`. **WILL be consumed** by notification-service's
+> participant read-model (sub-slice b). conversation-service runs its OWN flag-gated brod client
+> (`:conversation_service_kafka_client`); the brod adapter's client is now selectable per-call.
+
 Topic:
 
 conversation.events.v1
@@ -486,6 +495,14 @@ Payload:
 | role | string | yes |
 
 ## conversation.participant_removed.v1
+
+> ✅ **PRODUCED (2026-06-18)** by conversation-service, fire-and-forget after a successful
+> persist (`ConversationService.ParticipantEvents`), flag-gated `CONVERSATION_PUBLISH_ENABLED`
+> (default off), key = `conversation_id`. Implemented payload: `{conversation_id, user_id, removed_by}`.
+> **Discrepancy fixed:** the "Consumed by" list below omits notification-service, but
+> notification-service **WILL consume this event** for its participant read-model (sub-slice b) —
+> a read-model fed only by `participant_added` would never drop departed users. Treat
+> notification-service as a consumer here.
 
 Topic:
 

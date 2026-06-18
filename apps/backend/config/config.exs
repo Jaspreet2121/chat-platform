@@ -141,5 +141,13 @@ config :user_service,
 
 import_config "#{config_env()}.exs"
 
+config :conversation_service, :kafka,
+  brokers: System.get_env("KAFKA_BROKERS") || "localhost:9094",
+  client_id: System.get_env("KAFKA_CLIENT_ID") || "conversation-service"
+
 config :conversation_service,
-  conversation_persistence: System.get_env("CONVERSATION_DB_BACKED") in ["true", "1", "yes"]
+  conversation_persistence: System.get_env("CONVERSATION_DB_BACKED") in ["true", "1", "yes"],
+  # Producer is OFF by default: with this off (or the default NoopProducer adapter),
+  # ConversationService.Application starts no brod client → plain mix test stays Docker-free.
+  conversation_publish_enabled:
+    System.get_env("CONVERSATION_PUBLISH_ENABLED") in ["true", "1", "yes"]
