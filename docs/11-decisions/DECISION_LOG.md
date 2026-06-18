@@ -2,6 +2,25 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] First Kafka event (`message.created.v1`) is fire-and-forget
+
+- **Context:** Wiring the first real producer. A message create persists to the durable store
+  (Postgres) and is the natural producer hook. Risk: coupling event publish to message creation
+  could make creates fail when the broker is down.
+- **Decision:** Publish `message.created.v1` **fire-and-forget / best-effort** after a successful
+  persist (`MessageService.Messages.publish_message_created/1`): the `{:ok, response}` is computed
+  and returned **independently**, and the publish is wrapped in `try/rescue/catch` — any envelope
+  error, producer error, exception, or exit is caught + logged, **never propagated**. Flag-gated by
+  `KAFKA_PUBLISH_ENABLED` (default off); default producer adapter stays the non-connecting
+  `NoopProducer`. Topic `message.events.v1`, key `conversation_id`, envelope via
+  `SharedInfra.Events.Envelope`.
+- **Rationale:** Durability MUST NOT depend on broker availability — losing an event is acceptable
+  (consumers reconcile / events are an optimization here), losing a message is not. Proven by a test
+  where the producer raises and the create still succeeds + persists.
+- **Status:** Implemented + tested (Docker-free, fake adapter). Live broker-backed adapter + consumer
+  side: still pending. `correlation_id`/`event_id` are generated locally for now (no request-scoped
+  trace id threaded yet — future work).
+
 ## [2026-06-18] Kafka: brod chosen (decimal-free); envelope contract before producing; brod compile deferred
 
 - **Context:** Starting the Kafka event backbone (0% wired). Driver candidates: brod, kafka_ex,

@@ -162,4 +162,4 @@
   Deferred from the durability slice: blocked today by an ecto/decimal dependency conflict
   (Xandra needs `decimal ~> 2.0`, ecto pins `~> 3.0`). Durability currently runs on Postgres
   (`PostgresAdapter`). Revisit when write-scale justifies it or Xandra supports `decimal ~> 3.0`. See DECISION_LOG 2026-06-18.
-- [ ] Kafka event production/consumption (catalog is documented but unwired)
+- [ ] Kafka event production/consumption — IN PROGRESS: `message.created.v1` is wired (fire-and-forget producer, flag-gated `KAFKA_PUBLISH_ENABLED`, via the `SharedInfra.Kafka.Producer` boundary; default `NoopProducer`). Still pending: a live brod-backed adapter, the consumer side, and the remaining ~40 catalog events

@@ -1,14 +1,20 @@
 # Kafka Event Catalog
 
-> **Implementation status (2026-06-18): this catalog is a SPECIFICATION, not a record of
-> wired code.** No event is produced or consumed yet. The `producer:` field on each event
-> below names the *intended* producer, not an existing one. What exists today: a dormant
-> `SharedInfra.Kafka.Producer` dispatcher with a non-connecting `NoopProducer` default
-> (selected by `:shared_infra, :kafka_producer_adapter`), and a `SharedInfra.Events.Envelope`
-> build/validate contract for the standard envelope below. No broker driver is installed
-> (brod was deferred — its `crc32cer` NIF needs a C toolchain/`cmake` not present here; see
-> DECISION_LOG 2026-06-18) and nothing connects during tests. The first real event flow
-> (`message.created.v1`) is a future slice.
+> **Implementation status (2026-06-18): this catalog is mostly a SPECIFICATION.** The
+> `producer:` field on each event names the *intended* producer; most are not yet wired.
+> What exists today:
+> - `SharedInfra.Events.Envelope` build/validate contract for the standard envelope below.
+> - `SharedInfra.Kafka.Producer` dispatcher + non-connecting `NoopProducer` default
+>   (`:shared_infra, :kafka_producer_adapter`). brod is installed and compiles (cmake) but
+>   no brod-backed live adapter is wired yet — the default produces nothing/connects nothing.
+> - **✅ `message.created.v1` is the FIRST wired producer:** emitted **fire-and-forget** after a
+>   successful message persist (`MessageService.Messages.publish_message_created/1`), to topic
+>   `message.events.v1`, key = `conversation_id`. **Flag-gated** (`KAFKA_PUBLISH_ENABLED`, default
+>   off) and best-effort — a publish failure NEVER fails message creation (durability is not
+>   coupled to the broker). With the default `NoopProducer` it is a no-op; a real broker-backed
+>   adapter + the consumer side are still pending.
+>
+> Everything else below remains 🔴 documented-only (no producer/consumer in code).
 >
 > **Topic discrepancy to reconcile:** `infra/docker/kafka/topics.env` declares
 > `message.events.v1` with **6 partitions**, but docker-compose sets `AUTO_CREATE_TOPICS=true`
@@ -517,6 +523,11 @@ Payload:
 # Message Events
 
 ## message.created.v1
+
+> ✅ **WIRED (2026-06-18)** — produced fire-and-forget after a successful message persist
+> (`MessageService.Messages.publish_message_created/1`), flag-gated by `KAFKA_PUBLISH_ENABLED`,
+> via the `SharedInfra.Kafka.Producer` boundary (default `NoopProducer` → no-op). Key =
+> `conversation_id`. A live broker-backed adapter + consumer are still pending.
 
 Topic:
 

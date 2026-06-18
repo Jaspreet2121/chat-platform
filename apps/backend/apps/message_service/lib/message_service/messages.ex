@@ -3,11 +3,17 @@ defmodule MessageService.Messages do
   Message creation, edit, and delete boundary.
 
   DB-backed create/list behavior is feature-gated. Live ScyllaDB writes,
-  sender ownership enforcement, rate limits, and Kafka publishing will be
-  implemented later.
+  sender ownership enforcement, and rate limits are future work. `message.created.v1`
+  is published fire-and-forget after a successful create when Kafka publishing is enabled.
   """
 
+  require Logger
+
   alias MessageService.MessageStore
+  alias SharedInfra.Events.Envelope
+  alias SharedInfra.Kafka.Producer
+
+  @message_topic "message.events.v1"
 
   @type message_attrs :: map()
   @type result :: {:ok, map()} | {:error, atom()}
@@ -112,10 +118,70 @@ defmodule MessageService.Messages do
       }
 
       case MessageStore.put_message(message_attrs) do
-        {:ok, message} -> {:ok, message_response(message)}
-        {:error, reason} -> {:error, reason}
+        {:ok, message} ->
+          response = message_response(message)
+          publish_message_created(response)
+          {:ok, response}
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
+  end
+
+  # Fire-and-forget event publish. This MUST NOT affect message creation: the
+  # {:ok, response} above is computed and returned independently, and any envelope
+  # error, producer error, exception, or exit here is caught and logged — never
+  # propagated. Disabled by default (KAFKA_PUBLISH_ENABLED); the default producer
+  # adapter is the non-connecting NoopProducer, so nothing connects.
+  defp publish_message_created(response) do
+    if kafka_publish_enabled?() do
+      try do
+        case build_message_created_envelope(response) do
+          {:ok, envelope} ->
+            Producer.produce(@message_topic, response.conversation_id, envelope)
+
+          {:error, reason} ->
+            Logger.warning(
+              "message.created envelope invalid, skipping publish: #{inspect(reason)}"
+            )
+        end
+      rescue
+        error -> Logger.warning("message.created publish raised, ignored: #{inspect(error)}")
+      catch
+        kind, value ->
+          Logger.warning("message.created publish #{kind}, ignored: #{inspect(value)}")
+      end
+    end
+
+    :ok
+  end
+
+  defp build_message_created_envelope(response) do
+    Envelope.build(%{
+      event_id: Ecto.UUID.generate(),
+      event_type: "message.created.v1",
+      event_version: 1,
+      producer: "message-service",
+      occurred_at: response.created_at,
+      correlation_id: Ecto.UUID.generate(),
+      actor_user_id: response.sender_user_id,
+      payload: %{
+        "conversation_id" => response.conversation_id,
+        "message_id" => response.message_id,
+        "sender_user_id" => response.sender_user_id,
+        "message_type" => response.message_type,
+        "status" => response.status,
+        "created_at" => response.created_at,
+        "media_id" => response.media_id,
+        "metadata" => response.metadata
+      }
+    })
+  end
+
+  defp kafka_publish_enabled? do
+    Application.get_env(:message_service, :kafka_publish_enabled, false) ||
+      System.get_env("KAFKA_PUBLISH_ENABLED") in ["true", "1", "yes"]
   end
 
   defp update_message_in_store(attrs) do

@@ -266,6 +266,7 @@ Current behavior:
 - Message persistence query-plan boundaries exist for message timeline writes/reads, receipts, reactions, and user inbox projection.
 - `MessageStore` exposes `get_message/1`; `Messages.update_message`/`delete_message` enforce author-only edit/delete at this shared boundary (HTTP `403 message.forbidden`, channel `realtime.forbidden`).
 - `MessageStore.PostgresAdapter` (+ `MessageService.Repo`, `Schemas.Message`/`Schemas.MessageReceipt`, tables in `infra/docker/postgres/init/020_message_store.sql`) provides real durability behind `MESSAGE_STORE_ADAPTER=postgres`. Default adapter remains `QueryPlanAdapter` (Docker-free). Live ScyllaDB execution is deferred (Phase 8; ecto/decimal conflict).
+- After a successful create, `Messages.publish_message_created/1` emits `message.created.v1` fire-and-forget (flag `KAFKA_PUBLISH_ENABLED`, default off) to `message.events.v1` via `SharedInfra.Kafka.Producer` (default `NoopProducer`); publish failure never fails the create.
 - Beyond author-only edit/delete + create/list membership (enforced in the gateway), no broader authorization checks (tenant/block — `Permissions.authorize/1` is still a placeholder), Redis integration, or Kafka publishing exists yet.
 
 ### media_service
