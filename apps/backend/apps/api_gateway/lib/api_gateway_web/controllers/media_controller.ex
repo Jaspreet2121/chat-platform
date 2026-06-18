@@ -27,7 +27,7 @@ defmodule ApiGatewayWeb.MediaController do
   defp create_upload_with_session(conn, params) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            params
            |> Map.put("owner_user_id", session.user_id)
@@ -64,7 +64,7 @@ defmodule ApiGatewayWeb.MediaController do
   defp complete_upload_with_session(conn, media_id, params) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            params
            |> Map.put("media_id", media_id)
@@ -100,7 +100,7 @@ defmodule ApiGatewayWeb.MediaController do
   defp download_with_session(conn, media_id, params) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            params
            |> Map.put("media_id", media_id)

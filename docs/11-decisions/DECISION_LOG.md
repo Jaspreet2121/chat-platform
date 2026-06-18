@@ -2,6 +2,32 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Microservices split BEGINS — service-client boundary pattern (sub-slice 1: Auth, in-process)
+
+- **Context:** the firm decision is to split the umbrella into separately-deployable microservice
+  containers (network comms, not in-process). Phase-1 inspection found all cross-app coupling is at the
+  two EDGE apps (api_gateway, realtime_gateway); services are already event-decoupled. The migration is
+  ~12-18 sub-slices; this is sub-slice 1 — the seam that de-risks the whole pattern, done for Auth first
+  (its `current_session` is hit by every authed request, the highest-leverage seam).
+- **Decision — service-client boundary (behaviour + swappable adapter), mirroring `Kafka.Producer`/`Scylla.Client`:**
+  `SharedInfra.AuthClient` is a behaviour + dispatcher that selects its adapter from
+  `:shared_infra, :auth_client_adapter`. Edge apps now call `SharedInfra.AuthClient.{current_session,
+  persistence_enabled?,request_otp,verify_otp,refresh,revoke}` instead of `AuthService.*` directly.
+- **Decision — ship ONLY the in-process adapter now:** `AuthService.AuthClientInProcess` (the configured
+  default) delegates straight to `AuthService.Sessions/OTP/Tokens`, returning identical shapes → zero
+  behavior change. The adapter-SELECTION mechanism is wired now; a future `AUTH_CLIENT_ADAPTER=http`
+  adapter (separate auth-service container) drops in WITHOUT touching call sites — the point of the seam.
+- **Decision — layering (where it lives):** the behaviour + dispatcher live in `shared_infra` (both edge
+  apps already depend on it); the in-process adapter lives in `auth_service` (which now deps shared_infra
+  — no cycle, shared_infra never deps a service). shared_infra resolves the adapter module from config at
+  RUNTIME, so it stays a clean, extractable base lib (the future shared dep).
+- **Decision — minimal scope:** only Auth converted; `{:auth_service, in_umbrella: true}` left in edge
+  mix.exs for now (call-sites are decoupled; dep removal follows when the HTTP adapter lands). Other
+  services (user/conversation/message/media) untouched — they repeat this exact pattern in later slices.
+- **Status:** Implemented + verified. No edge code calls `AuthService.*` directly anymore (grep-confirmed);
+  plain `mix test` 200→203 (existing 200 INTACT + 3 delegation tests; zero behavior change); pg 268→271.
+  This is sub-slice 1 of ~12-18; the pattern is now established for the remaining services.
+
 ## [2026-06-18] Deploy sub-slice 3a: Fly.io config + deploy runbook (config only; deploy is the user's step)
 
 - **Context:** the image builds and boots with a guard (sub-slices 1-2); now produce the Fly config +

@@ -30,7 +30,7 @@ defmodule ApiGatewayWeb.MessageController do
     with :ok <- validate_send_payload(params),
          {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          :ok <- authorize_membership(conversation_id, session.user_id),
          {:ok, response} <-
            params
@@ -67,7 +67,7 @@ defmodule ApiGatewayWeb.MessageController do
 
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          :ok <- authorize_membership(conversation_id, session.user_id),
          {:ok, response} <- MessageService.Messages.list_messages(params) do
       json(conn, response)
@@ -109,7 +109,7 @@ defmodule ApiGatewayWeb.MessageController do
     with :ok <- require_fields(params, ["body"]),
          {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            params
            |> Map.put("actor_user_id", session.user_id)
@@ -143,7 +143,7 @@ defmodule ApiGatewayWeb.MessageController do
   defp delete_message_from_store(conn, conversation_id, message_id) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            MessageService.Messages.delete_message(%{
              "conversation_id" => conversation_id,
@@ -179,7 +179,7 @@ defmodule ApiGatewayWeb.MessageController do
   defp mark_read_in_store(conn, conversation_id, message_id) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            MessageService.Receipts.mark_read(%{
              "conversation_id" => conversation_id,
@@ -214,7 +214,7 @@ defmodule ApiGatewayWeb.MessageController do
   defp mark_delivered_in_store(conn, conversation_id, message_id) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            MessageService.Receipts.mark_delivered(%{
              "conversation_id" => conversation_id,

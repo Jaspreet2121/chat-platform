@@ -26,7 +26,7 @@ defmodule ApiGatewayWeb.ConversationController do
     with :ok <- require_fields(params, ["type", "participant_user_ids"]),
          {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            params
            |> Map.put("created_by", session.user_id)
@@ -58,7 +58,7 @@ defmodule ApiGatewayWeb.ConversationController do
   defp list_conversations_from_db(conn, params) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            params
            |> Map.put("user_id", session.user_id)
@@ -90,7 +90,7 @@ defmodule ApiGatewayWeb.ConversationController do
   defp show_conversation_from_db(conn, conversation_id, params) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            params
            |> Map.put("conversation_id", conversation_id)
@@ -130,7 +130,7 @@ defmodule ApiGatewayWeb.ConversationController do
     with :ok <- require_fields(params, ["user_id"]),
          {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            params
            |> Map.put("conversation_id", conversation_id)
@@ -164,7 +164,7 @@ defmodule ApiGatewayWeb.ConversationController do
   defp remove_participant_from_db(conn, conversation_id, user_id) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            ConversationService.Participants.remove_participant(%{
              "conversation_id" => conversation_id,

@@ -95,6 +95,11 @@ config :notification_service,
   participants_consumer_enabled:
     System.get_env("NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED") in ["true", "1", "yes"]
 
+# Auth client boundary: edge apps call SharedInfra.AuthClient, which dispatches to this adapter.
+# Default = in-process (delegates to AuthService.*, zero behavior change). A future HTTP adapter
+# (separate auth-service container) is selected by overriding this in runtime config.
+config :shared_infra, auth_client_adapter: AuthService.AuthClientInProcess
+
 config :shared_infra,
   scylla_client_adapter: SharedInfra.Scylla.UnavailableClient,
   kafka_producer_adapter:

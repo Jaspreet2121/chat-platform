@@ -39,7 +39,7 @@ defmodule ApiGatewayWeb.UserController do
   defp current_profile_from_db(conn, _params) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            UserService.Profiles.get_current_profile(%{"user_id" => session.user_id}) do
       json(conn, response)
@@ -63,7 +63,7 @@ defmodule ApiGatewayWeb.UserController do
     with :ok <- validate_update_payload(params),
          {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            UserService.Profiles.update_current_profile(
              Map.put(params, "user_id", session.user_id)

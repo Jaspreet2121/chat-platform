@@ -373,6 +373,8 @@ Important files:
 
 - `apps/backend/apps/shared_infra/lib/shared_infra/redis/client.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/prod_config.ex` (prod fail-fast secret guard; called from `config/runtime.exs`; unit-tested in `prod_config_test.exs`)
+- `apps/backend/apps/shared_infra/lib/shared_infra/auth_client.ex` (Auth service-client boundary: behaviour + dispatcher; adapter from `:shared_infra, :auth_client_adapter`; the microservices-split seam — edge apps call this instead of `AuthService.*`)
+- `apps/backend/apps/auth_service/lib/auth_service/auth_client_in_process.ex` (default in-process adapter delegating to `AuthService.Sessions/OTP/Tokens`; HTTP adapter is a later sub-slice)
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/producer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/consumer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/scylla/client.ex`

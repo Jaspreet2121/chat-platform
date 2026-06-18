@@ -174,3 +174,15 @@
 - [ ] Sub-slice 4 — baseline observability: structured (JSON) logs, request/correlation-id threading (replace `corr_placeholder`, tie request_id → event-envelope `correlation_id`), readiness `/health` (Repo check).
 - [ ] Sub-slice 5 — deploy web (Vercel) pointed at the backend (`NEXT_PUBLIC_API_BASE_URL`/`NEXT_PUBLIC_REALTIME_URL`).
 - [ ] Sub-slice 6 — provision managed Kafka, flip the producer/consumer flags, verify produce/consume/fan-out live.
+
+## Phase 10: True microservices split (STARTED 2026-06-18, ~12-18 sub-slices)
+
+Split the umbrella into separately-deployable service containers (network comms, not in-process). All cross-app coupling is at the EDGE apps (api_gateway, realtime_gateway); services are already event-decoupled. Enabling refactors run IN-UMBRELLA + flag-gated (suite stays green); actual container split is last. See DECISION_LOG 2026-06-18 + the Phase-1 inspection.
+
+- [x] **Sub-slice 1 — service-client boundary (Auth):** `SharedInfra.AuthClient` (behaviour + dispatcher) + `AuthService.AuthClientInProcess` (default, in-process). Edge apps call `SharedInfra.AuthClient.*` (no `AuthService.*` left); a future `AUTH_CLIENT_ADAPTER=http` drops in without touching call sites. Zero behavior change (200→203 plain, 268→271 pg).
+- [ ] Sub-slices 2-5 — repeat the client-boundary for User, Conversation, Message, Media (each: behaviour + in-process adapter + convert edge call-sites, in-umbrella, verified).
+- [ ] Internal HTTP API per service (each service grows a Plug endpoint exposing its functions + error envelope) + HTTP client adapters (flip one caller→callee pair to network behind the flag, integration-test).
+- [ ] Extract `shared_infra` to a shareable (git) dependency; services pin it.
+- [ ] Per-service release + Dockerfile + runtime/config split.
+- [ ] (optional) Database-per-service — split `010` init SQL, remove cross-service FKs (e.g. conversation_participants→users_auth).
+- [ ] `docker-compose.prod.yml` wiring all containers + run as separate containers + cross-service integration tests + CI rework (per-service jobs + integration suite).

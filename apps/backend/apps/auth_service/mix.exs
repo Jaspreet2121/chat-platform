@@ -25,6 +25,9 @@ defmodule AuthService.MixProject do
 
   defp deps do
     [
+      # Implements the SharedInfra.AuthClient behaviour (AuthService.AuthClientInProcess).
+      # No cycle: shared_infra does not depend on auth_service.
+      {:shared_infra, in_umbrella: true},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, ">= 0.0.0"}
     ]
