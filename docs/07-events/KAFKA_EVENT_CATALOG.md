@@ -467,9 +467,12 @@ Payload:
 > (default off; default `NoopProducer` ⇒ nothing connects), key = `conversation_id`. Emitted from
 > ALL three membership points: **conversation creation (one per initial participant)**, explicit
 > add, so the downstream read-model is complete. Implemented payload:
-> `{conversation_id, user_id, role, added_by}`. **WILL be consumed** by notification-service's
-> participant read-model (sub-slice b). conversation-service runs its OWN flag-gated brod client
-> (`:conversation_service_kafka_client`); the brod adapter's client is now selectable per-call.
+> `{conversation_id, user_id, role, added_by}`. **✅ CONSUMED (2026-06-18)** by notification-service's
+> participant read-model (`NotificationService.Events.ConversationParticipantsConsumer`, group
+> `notification-service-conversation-participants`, flag `NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED`,
+> default off) → `conversation_participants_readmodel` (soft-state + occurred_at LWW). conversation-service
+> runs its OWN flag-gated brod client (`:conversation_service_kafka_client`); the brod adapter's client
+> is now selectable per-call.
 
 Topic:
 
@@ -499,9 +502,10 @@ Payload:
 > ✅ **PRODUCED (2026-06-18)** by conversation-service, fire-and-forget after a successful
 > persist (`ConversationService.ParticipantEvents`), flag-gated `CONVERSATION_PUBLISH_ENABLED`
 > (default off), key = `conversation_id`. Implemented payload: `{conversation_id, user_id, removed_by}`.
-> **Discrepancy fixed:** the "Consumed by" list below omits notification-service, but
-> notification-service **WILL consume this event** for its participant read-model (sub-slice b) —
-> a read-model fed only by `participant_added` would never drop departed users. Treat
+> **Discrepancy fixed + ✅ CONSUMED (2026-06-18):** the "Consumed by" list below omits
+> notification-service, but notification-service **DOES consume this event** for its participant
+> read-model (`ConversationParticipantsConsumer`) — a read-model fed only by `participant_added`
+> would never drop departed users. Remove sets `active=false` (soft, LWW-guarded). Treat
 > notification-service as a consumer here.
 
 Topic:

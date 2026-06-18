@@ -291,17 +291,23 @@ Key files:
 - `apps/backend/apps/notification_service/lib/notification_service/repo.ex`
 - `apps/backend/apps/notification_service/lib/notification_service/notifications.ex`
 - `apps/backend/apps/notification_service/lib/notification_service/events/message_created_consumer.ex`
+- `apps/backend/apps/notification_service/lib/notification_service/events/conversation_participants_consumer.ex`
+- `apps/backend/apps/notification_service/lib/notification_service/participant_read_model.ex`
 - `apps/backend/apps/notification_service/lib/notification_service/schemas/processed_event.ex` (maps `notification_processed_events`)
 - `apps/backend/apps/notification_service/lib/notification_service/schemas/notification.ex`
+- `apps/backend/apps/notification_service/lib/notification_service/schemas/conversation_participant_readmodel.ex`
 - `apps/backend/apps/notification_service/test/notification_service/notifications_test.exs` (exactly-once, postgres_integration)
+- `apps/backend/apps/notification_service/test/notification_service/participant_read_model_test.exs` (convergence/LWW, postgres_integration)
+- `apps/backend/apps/notification_service/test/notification_service/participant_read_model_invalid_test.exs` (plain invalid-event)
 - `apps/backend/apps/notification_service/test/notification_service/message_created_consumer_integration_test.exs` (live wiring, kafka_integration)
 - `apps/backend/apps/notification_service/test/support/data_case.ex`
 
 Current behavior:
 
 - `NotificationService.Events.MessageCreatedConsumer` (`brod_group_subscriber_v2`, flag `NOTIFICATION_CONSUMER_ENABLED`, distinct group `notification-service-message-created`, default off) calls `NotificationService.Notifications.apply_message_created/1`, which in ONE `Repo.transaction` inserts into notification-service's OWN ledger `notification_processed_events` (keyed `(consumer="notification", event_id)`, `ON CONFLICT DO NOTHING`) and, only when new, inserts ONE `notifications` row (`type: "message_created"`, source event ref + sender/conversation/message ids, `read: false`). Commit-after-write; transient error → redeliver; poison → skip+commit (`fetch_uuid/2`). Tables in `infra/docker/postgres/init/040_notifications.sql`. Dedupe core COPIED from `ConversationSummary` (NOT extracted to a shared base — deferred refactor).
-- `NotificationService.Application.children/0` is `[]` when the flag is off (Docker-free, nothing connects); when on it starts `[Repo, brod client, consumer]` together. The Repo-only test starts its Repo via `NotificationService.DataCase`, decoupled from the flag.
-- NO recipient fan-out yet (one record per event, not per participant — needs ConversationService participant data). No push/email/SMS delivery, no `notification_preferences`/`push_tokens`, no `notification.sent.v1` publishing.
+- `NotificationService.Events.ConversationParticipantsConsumer` (`brod_group_subscriber_v2`, flag `NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED`, distinct group `notification-service-conversation-participants`, topic `conversation.events.v1`, default off) maintains the LOCAL participant read-model via `NotificationService.ParticipantReadModel`. `apply_participant_added/1`/`apply_participant_removed/1`: ONE `Repo.transaction` doing dedupe insert into `notification_processed_events` (DISTINCT consumer `notification-participants`) then, when new, an upsert into `conversation_participants_readmodel`. Soft state (`active` boolean, never hard-deleted) + occurred_at **last-writer-wins** (`ON CONFLICT ... WHERE EXCLUDED.last_event_at >= table.last_event_at`) → idempotent on redelivery AND convergent under out-of-order delivery. Table in `infra/docker/postgres/init/041_notification_participants_readmodel.sql`. Consumer dispatches on `event_type` (added/removed → apply; other → skip+commit). This read-model is what (c) fan-out will read to resolve recipients.
+- `NotificationService.Application.children/0` is `[]` when BOTH consumer flags are off (Docker-free, nothing connects); when EITHER is on it starts `[Repo, brod client]` + each enabled consumer (the brod client is shared across both group subscribers). The Repo-only tests start their Repo via `NotificationService.DataCase`, decoupled from the flags.
+- (c) recipient fan-out NOT built yet (one notification per event, not per participant). No push/email/SMS delivery, no `notification_preferences`/`push_tokens`, no `notification.sent.v1` publishing.
 
 ### media_service
 

@@ -87,10 +87,13 @@ config :notification_service, :kafka,
   brokers: System.get_env("KAFKA_BROKERS") || "localhost:9094",
   client_id: System.get_env("KAFKA_CLIENT_ID") || "notification-service"
 
-# notification-service consumer is OFF by default: with this off, NotificationService.Application
-# starts no children (no Repo, no Kafka client, no consumer) → plain mix test stays Docker-free.
+# notification-service consumers are OFF by default: with both flags off,
+# NotificationService.Application starts no children (no Repo, no Kafka client, no consumer) →
+# plain mix test stays Docker-free. The two consumers toggle independently.
 config :notification_service,
-  consumer_enabled: System.get_env("NOTIFICATION_CONSUMER_ENABLED") in ["true", "1", "yes"]
+  consumer_enabled: System.get_env("NOTIFICATION_CONSUMER_ENABLED") in ["true", "1", "yes"],
+  participants_consumer_enabled:
+    System.get_env("NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED") in ["true", "1", "yes"]
 
 config :shared_infra,
   scylla_client_adapter: SharedInfra.Scylla.UnavailableClient,

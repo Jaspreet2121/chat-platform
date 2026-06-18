@@ -264,7 +264,33 @@ Same shape/role as `processed_events` above, but owned by notification-service. 
 The ledger insert and this notification insert run in ONE `Repo.transaction`, so an
 at-least-once redelivery creates the notification exactly once. Recipient fan-out (one row
 per conversation participant) is deferred — `message.created.v1` carries the sender, not
-recipients, so fan-out needs ConversationService participant data.
+recipients, so fan-out needs ConversationService participant data (now supplied by the local
+read-model below).
+
+## conversation_participants_readmodel (local participant read-model — soft-state + LWW)
+
+A LOCAL projection of conversation membership, built by `NotificationService.ParticipantReadModel`
+from `conversation.events.v1` (`participant_added`/`participant_removed`). Lets (c) fan-out resolve
+a conversation's recipients WITHOUT a sync call to ConversationService. Source:
+[041_notification_participants_readmodel.sql](../../infra/docker/postgres/init/041_notification_participants_readmodel.sql).
+
+| Column | Type | Notes |
+|---|---|---|
+| conversation_id | uuid | Primary key (part 1) |
+| user_id | uuid | Primary key (part 2) |
+| active | boolean | true = currently a participant; toggled, NEVER hard-deleted |
+| role | text | Nullable — from `participant_added`; untouched on remove |
+| last_event_at | timestamptz | `occurred_at` of the last applied event — the LWW guard |
+| updated_at | timestamptz | Default `now()` |
+
+Two INDEPENDENT correctness mechanisms (see DECISION_LOG 2026-06-18):
+- **Dedupe (same-event redelivery):** `notification_processed_events` with a DISTINCT consumer name
+  `notification-participants` (the `(consumer, event_id)` PK lets it share the ledger table with the
+  message→notification consumer).
+- **Last-writer-wins (different events, out-of-order):** the upsert applies a state change ONLY when
+  the incoming `occurred_at >= last_event_at` (`ON CONFLICT ... DO UPDATE ... WHERE EXCLUDED.last_event_at
+  >= table.last_event_at`). Soft state means a late add after a remove is not lost and a
+  remove-before-add just creates an inactive row. (c) reads `WHERE conversation_id = ? AND active`.
 
 ---
 

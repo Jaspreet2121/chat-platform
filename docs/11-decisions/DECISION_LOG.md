@@ -2,6 +2,43 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Out-of-order-tolerant read-model: soft-state + occurred_at LWW (reusable template) — sub-slice b
+
+- **Context:** notification-service builds a LOCAL participant read-model from
+  `conversation.participant_added/removed.v1` so (c) fan-out resolves recipients without a sync call.
+  Unlike prior insert-only consumers, this read-model GROWS and SHRINKS and must be correct under
+  redelivery AND out-of-order delivery. conversation-service emits each event in its own `Task`, so
+  produce order ≠ logical order — the read-model CANNOT lean on Kafka per-partition ordering.
+- **Decision — TWO independent correctness mechanisms (dedupe ≠ convergence; both required):**
+  1. **Dedupe** same-event redelivery via the existing `notification_processed_events` ledger with a
+     DISTINCT consumer name `notification-participants` (the `(consumer, event_id)` PK lets it share the
+     table with the message→notification consumer, deduping independently). Atomic with the read-model
+     write in ONE `Repo.transaction`.
+  2. **Last-writer-wins** convergence for DIFFERENT events: store `last_event_at` and apply a state
+     change ONLY when the incoming `occurred_at >= last_event_at`
+     (`ON CONFLICT (conversation_id,user_id) DO UPDATE ... WHERE EXCLUDED.last_event_at >= table.last_event_at`).
+- **Decision — soft state, NEVER hard-delete:** `active` boolean flips; rows are not deleted. A late
+  `add` after a `remove` is not lost (LWW ignores it if older), and a `remove` arriving before its `add`
+  just creates an inactive row. Hard insert/delete was rejected: it corrupts under reordering
+  (remove-before-add deletes nothing, then add wrongly leaves the user active).
+- **Rationale / reusable template:** this is the canonical pattern for ANY add/remove-fed read-model —
+  dedupe ledger for redelivery + occurred_at LWW for convergence + soft state. Neither mechanism alone
+  is sufficient: the ledger stops re-applying the SAME event; LWW makes DIFFERENT events converge to the
+  latest-by-occurred_at state regardless of arrival order.
+- **Caveat (honest) + future refinement:** `occurred_at` is stamped at EMIT time in conversation-service's
+  `Task` (≈ persist time), not from the DB `joined_at`/`left_at`. It is a sound ordering proxy because each
+  event is stamped right after its own persist, so two distinct API calls preserve real order even if Kafka
+  delivery is reordered. If (a) ever batched/delayed emission this could drift; a stricter future refinement
+  is to stamp `occurred_at` from the persisted `joined_at`/`left_at`. Not a blocker now.
+- **Flag/topology:** a SECOND consumer (`ConversationParticipantsConsumer`) of `conversation.events.v1` in a
+  DISTINCT group `notification-service-conversation-participants`, reusing the existing brod client (one
+  client hosts multiple subscribers), behind its OWN flag `NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED`
+  (default off) so it toggles independently of the message→notification consumer.
+- **Status:** Implemented + verified. Plain `mix test` 191→192 (+1 plain invalid-event test, Docker-free;
+  `NotificationService.Supervisor` children == [] with both flags off, confirmed at runtime);
+  `postgres_integration` 251→257 (+5 convergence proofs — including the KEY out-of-order test: deliver the
+  newer remove before the older add → final `active=false`). (c) fan-out is the NEXT slice.
+
 ## [2026-06-18] Cross-service data is EVENT-DRIVEN; ConversationService participant-change producer (sub-slice a)
 
 - **Context:** notification-service must eventually fan out a notification per conversation PARTICIPANT,
