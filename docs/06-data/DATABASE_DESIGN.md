@@ -228,6 +228,44 @@ The ledger insert and this upsert (`ON CONFLICT (conversation_id) DO UPDATE` wit
 atomic `message_count` increment) run in ONE `Repo.transaction`, so an at-least-once
 redelivery re-runs atomically and applies the projection exactly once.
 
+# Implemented: notification-service Tables (code-verified)
+
+> Source of truth: [040_notifications.sql](../../infra/docker/postgres/init/040_notifications.sql),
+> applied to `chat_platform_test`. Owned by `NotificationService.Repo`. notification-service
+> keeps its OWN idempotency ledger (`notification_processed_events`) rather than sharing
+> message-service's `processed_events` — per-service ownership avoids coupling services through
+> one table (see DECISION_LOG, 2026-06-18). NO cross-service FKs.
+
+## notification_processed_events (notification-service's own idempotency ledger)
+
+Same shape/role as `processed_events` above, but owned by notification-service. Keyed
+`(consumer, event_id)`; `INSERT ... ON CONFLICT DO NOTHING` is the dedupe gate.
+
+| Column | Type | Notes |
+|---|---|---|
+| consumer | text | Primary key (part 1) — `notification` |
+| event_id | uuid | Primary key (part 2) — the envelope `event_id` |
+| inserted_at | timestamptz | When this consumer first applied the event |
+
+## notifications (first slice: one record per message.created.v1)
+
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid | Primary key |
+| type | text | `message_created` (first slice) |
+| source_event_id | uuid | The `message.created.v1` envelope `event_id` |
+| conversation_id | uuid | Nullable |
+| message_id | uuid | Nullable |
+| sender_user_id | uuid | Nullable — the message author (NOT the recipient; fan-out deferred) |
+| read | boolean | Default false |
+| created_at | timestamptz | The source message's `created_at` |
+| inserted_at | timestamptz | Default `now()` |
+
+The ledger insert and this notification insert run in ONE `Repo.transaction`, so an
+at-least-once redelivery creates the notification exactly once. Recipient fan-out (one row
+per conversation participant) is deferred — `message.created.v1` carries the sender, not
+recipients, so fan-out needs ConversationService participant data.
+
 ---
 
 # PostgreSQL Initial Tables

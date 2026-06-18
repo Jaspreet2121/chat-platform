@@ -278,6 +278,29 @@ Current behavior:
 - `MessageService.Events.ConversationSummaryConsumer` (`brod_group_subscriber_v2`, flag `KAFKA_PROJECTION_CONSUMER_ENABLED`, distinct group `message-service-conversation-summary`, default off) is the **first stateful, idempotent consumer**. It calls `MessageService.Projections.ConversationSummary.apply_message_created/1`, which in ONE `Repo.transaction` inserts into the `processed_events` ledger (keyed `(consumer, event_id)`, `ON CONFLICT DO NOTHING`) and, only when new, upserts `conversation_message_summaries` (atomic `message_count` increment). Commit only after the DB tx; transient error → redeliver; malformed/poison event → skip+commit (UUID-validated via `fetch_uuid/2`). Schemas: `Schemas.ProcessedEvent`, `Schemas.ConversationMessageSummary`; tables in `infra/docker/postgres/init/030_message_projections.sql`. This is the dedupe blueprint for notification-service. Tests: `conversation_summary_projection_test.exs` (exactly-once, postgres_integration), `conversation_summary_consumer_integration_test.exs` (live round-trip, kafka_integration).
 - Beyond author-only edit/delete + create/list membership (enforced in the gateway), no broader authorization checks (tenant/block — `Permissions.authorize/1` is still a placeholder), Redis integration, or Kafka publishing exists yet.
 
+### notification_service
+
+The FIRST of the 5 documented-only services to be built (`apps/backend/apps/notification_service`). Consumes `message.created.v1` → one notification record.
+
+Key files:
+
+- `apps/backend/apps/notification_service/mix.exs` (app `:notification_service`; deps shared_infra/ecto_sql/postgrex/brod/jason; mirrors message_service)
+- `apps/backend/apps/notification_service/lib/notification_service/application.ex`
+- `apps/backend/apps/notification_service/lib/notification_service/repo.ex`
+- `apps/backend/apps/notification_service/lib/notification_service/notifications.ex`
+- `apps/backend/apps/notification_service/lib/notification_service/events/message_created_consumer.ex`
+- `apps/backend/apps/notification_service/lib/notification_service/schemas/processed_event.ex` (maps `notification_processed_events`)
+- `apps/backend/apps/notification_service/lib/notification_service/schemas/notification.ex`
+- `apps/backend/apps/notification_service/test/notification_service/notifications_test.exs` (exactly-once, postgres_integration)
+- `apps/backend/apps/notification_service/test/notification_service/message_created_consumer_integration_test.exs` (live wiring, kafka_integration)
+- `apps/backend/apps/notification_service/test/support/data_case.ex`
+
+Current behavior:
+
+- `NotificationService.Events.MessageCreatedConsumer` (`brod_group_subscriber_v2`, flag `NOTIFICATION_CONSUMER_ENABLED`, distinct group `notification-service-message-created`, default off) calls `NotificationService.Notifications.apply_message_created/1`, which in ONE `Repo.transaction` inserts into notification-service's OWN ledger `notification_processed_events` (keyed `(consumer="notification", event_id)`, `ON CONFLICT DO NOTHING`) and, only when new, inserts ONE `notifications` row (`type: "message_created"`, source event ref + sender/conversation/message ids, `read: false`). Commit-after-write; transient error → redeliver; poison → skip+commit (`fetch_uuid/2`). Tables in `infra/docker/postgres/init/040_notifications.sql`. Dedupe core COPIED from `ConversationSummary` (NOT extracted to a shared base — deferred refactor).
+- `NotificationService.Application.children/0` is `[]` when the flag is off (Docker-free, nothing connects); when on it starts `[Repo, brod client, consumer]` together. The Repo-only test starts its Repo via `NotificationService.DataCase`, decoupled from the flag.
+- NO recipient fan-out yet (one record per event, not per participant — needs ConversationService participant data). No push/email/SMS delivery, no `notification_preferences`/`push_tokens`, no `notification.sent.v1` publishing.
+
 ### media_service
 
 Media upload and access service shell.

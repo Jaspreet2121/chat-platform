@@ -29,7 +29,8 @@ Roadmap position: Phases 0/1/3 done, **Phase 4 (Chat MVP) ~85%**, Phase 5 (Media
 | **media_service** | upload/download URLs | 🟡 flag-gated (`MEDIA_DB_BACKED`) | media_test (9) | real MinIO SigV4 signer; default adapter unavailable; no upload verification; no DB metadata table schema |
 | **realtime_gateway** | WS channels + presence | 🟡 flag-gated (`REALTIME_AUTH_DB_BACKED`) | channels_test (22) + 2 pg socket-auth | presence local-only (no Redis); socket auth fails-closed but OFF by default |
 | **shared_infra** | kafka/redis/scylla boundaries + rate limiter | 🟡 | config + rate_limiter (20/1) | Kafka/Scylla are behaviours only; real Redis rate-limiter adapter exists |
-| *tenant / notification / call-signaling / moderation / audit* | documented services | 🔴 **no code** | — | no `apps/backend/apps/<name>` dir exists |
+| **notification_service** | consumes `message.created.v1` → notification record | 🟡 flag-gated (`NOTIFICATION_CONSUMER_ENABLED`) | notifications idempotency (2 pg) + 1 kafka wiring | FIRST of the 5 missing services now built; minimal consumer, no recipient fan-out yet |
+| *tenant / call-signaling / moderation / audit* | documented services | 🔴 **no code** | — | no `apps/backend/apps/<name>` dir exists (notification-service now built; 4 of 5 remain) |
 
 ---
 
@@ -127,7 +128,7 @@ Real blockers to shipping: insecure default secrets + flags default-off (unenfor
 3. ~~**No live message persistence (HIGH).**~~ **RESOLVED 2026-06-18** — durability implemented on Postgres (`PostgresAdapter`, `MESSAGE_STORE_ADAPTER=postgres`), pg-integration tested. ScyllaDB (high-write backend) deferred to Phase 8 (ecto/decimal conflict). Remaining: messages still need the Repo started + flag set in prod (not auto-started, same as other services).
 4. **Kafka 0% wired (HIGH for the stated architecture).** Notifications, audit, search, presence fanout, analytics all depend on it.
 5. **No automated web tests (MEDIUM).** The entire web client + the live realtime loop rest on lint/typecheck/build only.
-6. **5 services + 16 Postgres tables documented but unimplemented (MEDIUM).** tenant/notification/call-signaling/moderation/audit; tenancy/calls/moderation tables have no schema.
+6. **4 services + most Postgres tables documented but unimplemented (MEDIUM).** UPDATE 2026-06-18: **notification-service is now built** (first of the 5) — a flag-gated idempotent `message.created.v1` consumer that writes one notification record per event (`notifications` + `notification_processed_events` tables); recipient fan-out/delivery deferred. Still unimplemented: tenant/call-signaling/moderation/audit; tenancy/calls/moderation tables have no schema.
 7. **Receipts single-status CQL (LOW/MEDIUM).** read can overwrite delivered; needs delivered_at/read_at columns.
 8. **Cross-day `bucket_date` partition miss for edit/delete (LOW, tracked).** Editing a prior-day message misses its partition; fix: derive bucket_date from the timeuuid.
 9. **Empty PRODUCT_REQUIREMENTS.md (MEDIUM).** No authoritative spec.

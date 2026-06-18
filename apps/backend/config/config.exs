@@ -50,6 +50,7 @@ config :auth_service, :tokens,
 config :user_service, ecto_repos: [UserService.Repo]
 config :conversation_service, ecto_repos: [ConversationService.Repo]
 config :message_service, ecto_repos: [MessageService.Repo]
+config :notification_service, ecto_repos: [NotificationService.Repo]
 
 config :message_service, :scylla,
   nodes:
@@ -81,6 +82,15 @@ config :message_service,
        "in_memory" -> MessageService.MessageStore.InMemoryAdapter
        _ -> MessageService.MessageStore.QueryPlanAdapter
      end)
+
+config :notification_service, :kafka,
+  brokers: System.get_env("KAFKA_BROKERS") || "localhost:9094",
+  client_id: System.get_env("KAFKA_CLIENT_ID") || "notification-service"
+
+# notification-service consumer is OFF by default: with this off, NotificationService.Application
+# starts no children (no Repo, no Kafka client, no consumer) → plain mix test stays Docker-free.
+config :notification_service,
+  consumer_enabled: System.get_env("NOTIFICATION_CONSUMER_ENABLED") in ["true", "1", "yes"]
 
 config :shared_infra,
   scylla_client_adapter: SharedInfra.Scylla.UnavailableClient,

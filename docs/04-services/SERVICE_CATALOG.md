@@ -259,6 +259,15 @@ Redis temporary state:
 
 ## 8. notification-service
 
+> ✅ **EXISTS (2026-06-18)** — the FIRST of the 5 documented-only services to be built
+> (`apps/backend/apps/notification_service`). First slice: an idempotent consumer that turns
+> each `message.created.v1` into ONE notification record (`type: "message_created"`), deduped
+> via notification-service's OWN ledger `notification_processed_events` keyed `(consumer, event_id)`.
+> Flag-gated by `NOTIFICATION_CONSUMER_ENABLED` (default off; nothing connects at boot).
+> **NOT yet built:** recipient fan-out (one record per participant — needs ConversationService
+> participant data), push/email/SMS delivery, `notification_preferences`/`push_tokens` tables,
+> and `notification.sent.v1`/`notification.failed.v1` publishing.
+
 ### Responsibility
 
 Handles push, email, and SMS notifications.

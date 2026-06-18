@@ -2,6 +2,43 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] notification-service: first missing service built; per-service idempotency ledger
+
+- **Context:** Audit finding #6 — 5 documented services have no code. notification-service is the
+  first to build: it consumes `message.created.v1` and reuses the proven `(consumer, event_id)`
+  dedupe pattern. Two design questions had to be settled because this is the blueprint the other
+  4 services copy.
+- **Decision A — per-service idempotency ledger (NOT a shared one):** notification-service owns its
+  own `notification_processed_events` table (its own `NotificationService.Repo`), rather than
+  reusing message-service's `processed_events`. **Rationale:** the target is independent
+  microservices each owning their data; a shared ledger couples two services through one table (the
+  shared-database anti-pattern) — message-service would "own" rows notification-service depends on.
+  The only pull toward sharing was avoiding a table-name clash in today's single physical Postgres;
+  a service-prefixed table name solves that without coupling, and when services get separate
+  databases each carries its own ledger unchanged. **Blueprint: every future service gets
+  `<service>_processed_events` in its own Repo.** The `(consumer, event_id)` PK is kept verbatim so
+  the dedupe core copies unchanged and supports multiple internal consumers later.
+- **Decision B — Repo started WITH the consumer flag; tests start their own Repo:** the Repo is
+  never unconditionally supervised. With `NOTIFICATION_CONSUMER_ENABLED` OFF (default),
+  `NotificationService.Application.children/0` returns `[]` → no Repo/client/consumer at boot →
+  plain `mix test` stays Docker-free. With the flag ON, children = `[Repo, brod client, consumer]`
+  together, so the consumer can persist in dev/prod (this closes the latent "Repo not supervised"
+  gap that message-service's projection consumer still has, scoped to the new app). The Repo-only
+  `postgres_integration` idempotency test gets its Repo from `DataCase` setup (`Repo.start_link` +
+  `Sandbox.checkout`), **decoupled from the flag** — so the exactly-once proof works regardless.
+- **Decision — dedupe core COPIED, not extracted:** `NotificationService.Notifications.apply_message_created/1`
+  and the `brod_group_subscriber_v2` cb are copied from the conversation-summary consumer rather
+  than refactored into a `shared_infra` base. Extracting a shared base is a separate future refactor
+  (DEFERRED — not done now, to avoid an unrelated rewrite). Per-service copies are acceptable while
+  the pattern stabilizes across the first few services.
+- **Decision — recipient fan-out DEFERRED:** the first slice writes ONE notification record per
+  event (`type: "message_created"`, no recipient). `message.created.v1` carries `sender_user_id`,
+  not recipients, so per-participant fan-out needs ConversationService participant data
+  (cross-service) — a later slice. This proves the new service end-to-end first.
+- **Status:** Implemented + verified. Exactly-once proof (`notifications_test.exs`,
+  postgres_integration) and live broker round-trip (`message_created_consumer_integration_test.exs`,
+  kafka_integration) both pass; plain `mix test` unchanged at 186; pg 243→245.
+
 ## [2026-06-18] First stateful, idempotent consumer = the dedupe blueprint for notification-service
 
 - **Context:** The log/ack consumer proved the pipe but does nothing. The next consumer must

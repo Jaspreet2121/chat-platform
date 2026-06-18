@@ -19,6 +19,11 @@
 >   (`KAFKA_PROJECTION_CONSUMER_ENABLED`, distinct group `message-service-conversation-summary`,
 >   default off). It maintains the `conversation_message_summaries` projection, deduped via the
 >   `processed_events` ledger, exactly-once on redelivery. See **Idempotency** below.
+> - **✅ a SECOND service now consumes it:** `NotificationService.Events.MessageCreatedConsumer`
+>   (the new **notification-service**, flag `NOTIFICATION_CONSUMER_ENABLED`, distinct group
+>   `notification-service-message-created`, default off) writes ONE notification record per event,
+>   deduped via notification-service's OWN ledger `notification_processed_events` (per-service
+>   ownership; same `(consumer, event_id)` pattern). No recipient fan-out yet.
 >
 > All consumers/producers are flag-gated and default off, so plain `mix test` stays Docker-free
 > and nothing connects at boot. Everything else below remains 🔴 documented-only.
@@ -543,8 +548,12 @@ Payload:
 > `brod_group_subscriber_v2`, flag-gated by `KAFKA_CONSUMER_ENABLED`, group
 > `message-service-log-consumer`) consumes this topic and **logs + commits** the offset —
 > NO projection/fanout/behavior coupling yet. The full produce→consume pipe is verified
-> against a live broker (`mix test --include kafka_integration`). A real reactive consumer
-> (fanout/notifications) is the next Kafka slice.
+> against a live broker (`mix test --include kafka_integration`). Two STATEFUL consumers also
+> exist: `MessageService.Events.ConversationSummaryConsumer` (the `conversation_message_summaries`
+> projection) and `NotificationService.Events.MessageCreatedConsumer` (the new notification-service,
+> one notification record per event) — both idempotent via `(consumer, event_id)` ledgers, distinct
+> groups, flag-gated/default off. Next: recipient fan-out (per-participant notifications, needs
+> ConversationService data).
 
 Topic:
 
