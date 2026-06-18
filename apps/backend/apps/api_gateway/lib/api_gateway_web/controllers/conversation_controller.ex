@@ -13,7 +13,7 @@ defmodule ApiGatewayWeb.ConversationController do
 
   defp placeholder_create_conversation(conn, params) do
     with :ok <- require_fields(params, ["type", "participant_user_ids"]),
-         {:ok, response} <- ConversationService.Conversations.create_conversation(params) do
+         {:ok, response} <- SharedInfra.ConversationClient.create_conversation(params) do
       conn
       |> put_status(:created)
       |> json(response)
@@ -30,7 +30,7 @@ defmodule ApiGatewayWeb.ConversationController do
          {:ok, response} <-
            params
            |> Map.put("created_by", session.user_id)
-           |> ConversationService.Conversations.create_conversation() do
+           |> SharedInfra.ConversationClient.create_conversation() do
       conn
       |> put_status(:created)
       |> json(response)
@@ -50,7 +50,7 @@ defmodule ApiGatewayWeb.ConversationController do
   end
 
   defp placeholder_list_conversations(conn, params) do
-    with {:ok, response} <- ConversationService.Conversations.list_conversations(params) do
+    with {:ok, response} <- SharedInfra.ConversationClient.list_conversations(params) do
       json(conn, response)
     end
   end
@@ -62,7 +62,7 @@ defmodule ApiGatewayWeb.ConversationController do
          {:ok, response} <-
            params
            |> Map.put("user_id", session.user_id)
-           |> ConversationService.Conversations.list_conversations() do
+           |> SharedInfra.ConversationClient.list_conversations() do
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
@@ -82,7 +82,7 @@ defmodule ApiGatewayWeb.ConversationController do
   defp placeholder_show_conversation(conn, conversation_id, params) do
     params = Map.put(params, "conversation_id", conversation_id)
 
-    with {:ok, response} <- ConversationService.Conversations.get_conversation(params) do
+    with {:ok, response} <- SharedInfra.ConversationClient.get_conversation(params) do
       json(conn, response)
     end
   end
@@ -95,7 +95,7 @@ defmodule ApiGatewayWeb.ConversationController do
            params
            |> Map.put("conversation_id", conversation_id)
            |> Map.put("user_id", session.user_id)
-           |> ConversationService.Conversations.get_conversation() do
+           |> SharedInfra.ConversationClient.get_conversation() do
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
@@ -119,7 +119,7 @@ defmodule ApiGatewayWeb.ConversationController do
          {:ok, response} <-
            params
            |> Map.put("conversation_id", conversation_id)
-           |> ConversationService.Participants.add_participant() do
+           |> SharedInfra.ConversationClient.add_participant() do
       json(conn, response)
     else
       _ -> invalid_request(conn)
@@ -135,7 +135,7 @@ defmodule ApiGatewayWeb.ConversationController do
            params
            |> Map.put("conversation_id", conversation_id)
            |> Map.put("actor_user_id", session.user_id)
-           |> ConversationService.Participants.add_participant() do
+           |> SharedInfra.ConversationClient.add_participant() do
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
@@ -153,7 +153,7 @@ defmodule ApiGatewayWeb.ConversationController do
 
   defp placeholder_remove_participant(conn, conversation_id, user_id) do
     with {:ok, response} <-
-           ConversationService.Participants.remove_participant(%{
+           SharedInfra.ConversationClient.remove_participant(%{
              "conversation_id" => conversation_id,
              "user_id" => user_id
            }) do
@@ -166,7 +166,7 @@ defmodule ApiGatewayWeb.ConversationController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
-           ConversationService.Participants.remove_participant(%{
+           SharedInfra.ConversationClient.remove_participant(%{
              "conversation_id" => conversation_id,
              "user_id" => user_id,
              "actor_user_id" => session.user_id

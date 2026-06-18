@@ -2,6 +2,21 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Microservices split sub-slice 2 — Conversation service-client boundary (in-process)
+
+- **Context:** repeat the proven Auth seam (sub-slice 1) for ConversationService. `get_conversation` is
+  used for membership authz from BOTH api_gateway (conversation_controller + message_controller:270) and
+  realtime_gateway (topic_authorization), plus the conversation/participant CRUD from the gateway.
+- **Decision:** `SharedInfra.ConversationClient` (behaviour + dispatcher, adapter from
+  `:shared_infra, :conversation_client_adapter`) + `ConversationService.ConversationClientInProcess`
+  (default, delegates to `ConversationService.{Conversations,Participants}` with identical shapes).
+  Functions: create/list/get_conversation, add/remove_participant. Edge apps now call
+  `SharedInfra.ConversationClient.*`; no `ConversationService.*` calls remain in edge code (grep-confirmed).
+  Same layering as Auth (behaviour in shared_infra, adapter in the service, resolved from config at runtime).
+- **Status:** Implemented + verified, zero behavior change. plain `mix test` 203→205 (existing 203 INTACT +
+  2 delegation tests); pg 271→273. Sub-slice 2 of ~12-18. (conversation_service already depended on
+  shared_infra from the producer slice — no mix.exs change needed.) Next: User/Message/Media repeat it.
+
 ## [2026-06-18] Microservices split BEGINS — service-client boundary pattern (sub-slice 1: Auth, in-process)
 
 - **Context:** the firm decision is to split the umbrella into separately-deployable microservice

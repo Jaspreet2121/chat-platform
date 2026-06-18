@@ -267,7 +267,7 @@ defmodule ApiGatewayWeb.MessageController do
   # placeholder/Docker-free path is unchanged (enforcement is only meaningful
   # when conversation persistence is enabled).
   defp authorize_membership(conversation_id, user_id) do
-    case ConversationService.Conversations.get_conversation(%{
+    case SharedInfra.ConversationClient.get_conversation(%{
            "conversation_id" => conversation_id,
            "user_id" => user_id
          }) do

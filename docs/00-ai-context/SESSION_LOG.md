@@ -1,5 +1,13 @@
 # Session Log
 
+## [2026-06-18] Slice: MICROSERVICES split sub-slice 2 — Conversation service-client boundary (in-process)
+- Status: ✅ green (zero behavior change; same pattern as Auth sub-slice 1)
+- Files changed: new `apps/shared_infra/lib/shared_infra/conversation_client.ex` (behaviour + dispatcher, adapter from `:shared_infra, :conversation_client_adapter`); new `apps/conversation_service/lib/conversation_service/conversation_client_in_process.ex` (`@behaviour SharedInfra.ConversationClient`, delegates to `ConversationService.{Conversations,Participants}`); `config/config.exs` (`conversation_client_adapter` default); converted edge call-sites in api_gateway/conversation_controller (10), api_gateway/message_controller membership check (1), realtime_gateway/topic_authorization (1) → `SharedInfra.ConversationClient.*`; new plain test `conversation_client_in_process_test.exs`. (conversation_service already deps shared_infra — no mix.exs change.)
+- Functions behind the boundary: create_conversation, list_conversations, get_conversation, add_participant, remove_participant (all single-map-arg, identical shapes via in-process delegation). Future `CONVERSATION_CLIENT_ADAPTER=http` drops in without touching call-sites.
+- Verification: mix format clean; mix compile --warnings-as-errors clean; grep confirms NO edge code calls `ConversationService.{Conversations,Participants}.*` directly (all via `SharedInfra.ConversationClient`); `mix test` → **205 passed / 73 excluded, 0 failures** (existing 203 INTACT + 2 delegation tests); `mix test --include postgres_integration` → **273 passed, 0 failures** (271 + 2); web untouched.
+- Non-negotiables: byte-for-byte delegation (existing conversation/gateway/realtime tests unchanged); only Conversation touched (user/message/media untouched); REST contract + error envelope unchanged; `{:conversation_service, in_umbrella: true}` left in edge mix.exs (removed with the HTTP adapter later). Sub-slice 2 of ~12-18.
+- Next: User (sub-slice 3), then Message, Media; then internal HTTP APIs + HTTP adapters, shared_infra extraction, per-service releases/Docker, optional DB-per-service, compose + container run. (Deploy sub-slice 3b — single container — still pending.)
+
 ## [2026-06-18] Slice: MICROSERVICES split sub-slice 1 — Auth service-client boundary (in-process, flag-gated)
 - Status: ✅ green (zero behavior change; the seam that de-risks the whole migration)
 - Context: firm decision to split the umbrella into separately-deployable service containers. Inspection found all cross-app coupling is at the EDGE apps (api_gateway, realtime_gateway); services already event-decoupled. ~12-18 sub-slices; this is #1 — Auth first (its `current_session` is hit by every authed request).
