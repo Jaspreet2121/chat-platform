@@ -33,7 +33,6 @@ defmodule MessageService.MessageCreatedEventTest do
   alias MessageService.Messages
   alias MessageService.MessageStore
 
-  @conversation_id "11111111-1111-4111-8111-111111111111"
   @sender_user_id "22222222-2222-4222-8222-222222222222"
 
   setup do
@@ -81,17 +80,19 @@ defmodule MessageService.MessageCreatedEventTest do
       MessageService.CaptureKafkaProducer
     )
 
+    conversation_id = unique_conversation_id()
+
     assert {:ok, created} =
              Messages.create_message(%{
-               "conversation_id" => @conversation_id,
+               "conversation_id" => conversation_id,
                "sender_user_id" => @sender_user_id,
                "message_type" => "text",
                "body" => "Hello events"
              })
 
-    # Publish runs in a Task; assert_receive waits for the async capture.
-    assert_receive {:kafka_published, "message.events.v1", key, envelope}, 1_000
-    assert key == @conversation_id
+    # Publish runs in a Task; assert_receive (scoped to this conversation_id, so a stray
+    # async publish from another test can't satisfy or trip it) waits for the async capture.
+    assert_receive {:kafka_published, "message.events.v1", ^conversation_id, envelope}, 1_000
 
     # Valid standard envelope with the expected event type + payload.
     assert envelope.event_type == "message.created.v1"
@@ -101,7 +102,7 @@ defmodule MessageService.MessageCreatedEventTest do
     assert is_binary(envelope.correlation_id)
     assert envelope.actor_user_id == @sender_user_id
     assert envelope.payload["message_id"] == created.message_id
-    assert envelope.payload["conversation_id"] == @conversation_id
+    assert envelope.payload["conversation_id"] == conversation_id
     assert envelope.payload["message_type"] == "text"
 
     # The captured envelope is itself valid per the contract.
@@ -117,15 +118,18 @@ defmodule MessageService.MessageCreatedEventTest do
       MessageService.CaptureKafkaProducer
     )
 
+    conversation_id = unique_conversation_id()
+
     assert {:ok, _created} =
              Messages.create_message(%{
-               "conversation_id" => @conversation_id,
+               "conversation_id" => conversation_id,
                "sender_user_id" => @sender_user_id,
                "message_type" => "text",
                "body" => "No publish"
              })
 
-    refute_received {:kafka_published, _topic, _key, _value}
+    # Scoped to THIS conversation_id so a stray async publish from another test can't trip it.
+    refute_received {:kafka_published, _topic, ^conversation_id, _value}
   end
 
   test "create SUCCEEDS even when the producer raises (fire-and-forget)" do
@@ -137,10 +141,12 @@ defmodule MessageService.MessageCreatedEventTest do
       MessageService.FailingKafkaProducer
     )
 
+    conversation_id = unique_conversation_id()
+
     # The producer raises; message creation must still succeed and persist.
     assert {:ok, created} =
              Messages.create_message(%{
-               "conversation_id" => @conversation_id,
+               "conversation_id" => conversation_id,
                "sender_user_id" => @sender_user_id,
                "message_type" => "text",
                "body" => "Broker down"
@@ -150,10 +156,13 @@ defmodule MessageService.MessageCreatedEventTest do
     assert created.status == "active"
 
     # And the message really is persisted (durability not coupled to the broker).
-    assert {:ok, timeline} = Messages.list_messages(%{"conversation_id" => @conversation_id})
+    assert {:ok, timeline} = Messages.list_messages(%{"conversation_id" => conversation_id})
     assert [listed] = timeline.messages
     assert listed.body == "Broker down"
   end
+
+  defp unique_conversation_id,
+    do: "conv-" <> Integer.to_string(System.unique_integer([:positive]))
 
   defp start_in_memory_store! do
     case MessageStore.InMemoryAdapter.start_link() do

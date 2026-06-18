@@ -531,8 +531,13 @@ Payload:
 > A real **brod-backed adapter** (`SharedInfra.Kafka.BrodProducer`) is selected by
 > `KAFKA_PRODUCER_ADAPTER=brod` (default stays `NoopProducer` → no-op): it JSON-encodes the
 > envelope (jason) and **async**-produces with the `:hash` partitioner (per-conversation order).
-> The flag-gated brod client is supervised in `MessageService.Application`. Verified against a
-> live broker (`mix test --include kafka_integration`). **Consumer is still pending.**
+> The flag-gated brod client is supervised in `MessageService.Application`. A **minimal
+> consumer** also exists: `MessageService.Events.MessageCreatedLogConsumer` (a
+> `brod_group_subscriber_v2`, flag-gated by `KAFKA_CONSUMER_ENABLED`, group
+> `message-service-log-consumer`) consumes this topic and **logs + commits** the offset —
+> NO projection/fanout/behavior coupling yet. The full produce→consume pipe is verified
+> against a live broker (`mix test --include kafka_integration`). A real reactive consumer
+> (fanout/notifications) is the next Kafka slice.
 
 Topic:
 

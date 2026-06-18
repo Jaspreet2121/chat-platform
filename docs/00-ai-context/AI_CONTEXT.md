@@ -99,4 +99,4 @@ Phase 0: Documentation and architecture planning.
 
 ## Current Next Step
 
-Kafka first event `message.created.v1` reaches a real broker via the brod-backed producer (flag-gated, async, default `NoopProducer`; verified live). Next Kafka step: the **consumer side** (separate slice). Other open work: PG message store enablement in dev/prod (Repo not auto-started); message-list pagination; block-state/tenant authz + `Permissions.authorize/1` placeholder; ScyllaDB live backend (Phase 8). CI now installs cmake for the brod NIF.
+Kafka pipe is end-to-end for `message.created.v1`: brod-backed producer (flag-gated, async) → broker → minimal `MessageCreatedLogConsumer` (`brod_group_subscriber_v2`, `KAFKA_CONSUMER_ENABLED`, log/ack only); verified live. Next Kafka step: a **real reactive consumer** (fanout/notifications — MUST dedupe on envelope `event_id`, at-least-once), likely in realtime_gateway/notification-service. Other open work: PG message store enablement in dev/prod (Repo not auto-started); message-list pagination; block-state/tenant authz + `Permissions.authorize/1` placeholder; ScyllaDB live backend (Phase 8). CI now installs cmake for the brod NIF.

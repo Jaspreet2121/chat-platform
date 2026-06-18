@@ -2,6 +2,28 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Minimal log/ack Kafka consumer (completes the pipe, no behavior coupling)
+
+- **Context:** `message.created.v1` reaches the broker but nothing consumes it. The milestone
+  needs a consumer; the first one should prove the pipe without risk.
+- **Decision:** A MINIMAL consumer — `MessageService.Events.MessageCreatedLogConsumer`, a
+  `brod_group_subscriber_v2` callback module that decodes + **logs + commits** the offset, with
+  NO DB writes / fanout / notifications / behavior coupling. Flag-gated by `KAFKA_CONSUMER_ENABLED`
+  (default off), supervised in `MessageService.Application` (started only under the flag, after the
+  brod client; the client gate now also starts when the consumer is enabled). Reuses the existing
+  `:message_service_kafka_client`. group_id `message-service-log-consumer`.
+- **Decision — brod_group_subscriber_v2 over the old `SharedInfra.Kafka.Consumer` poll behaviour:**
+  the poll behaviour (subscribe/poll/ack) is a model mismatch for brod's push/callback subscriber;
+  it stays unused.
+- **Poison-message handling:** a JSON-undecodable / handler-raising message is logged and the offset
+  is STILL committed (no crash-loop / partition wedge).
+- **CARRIED-FORWARD CONSTRAINT (at-least-once):** brod commits AFTER handling → redelivery is
+  possible. The log consumer is safe (no side effects, idempotent). The NEXT **stateful** consumer
+  (projections/fanout/notifications) MUST dedupe on the envelope `event_id` (present) or use
+  idempotent upserts — do not bake in a non-idempotent handler.
+- **Status:** Implemented + verified live (`--include kafka_integration` produce→consume round-trip,
+  1 passed). Plain `mix test` Docker-free (flag off → no consumer). Real reactive consumer = next slice.
+
 ## [2026-06-18] brod-backed Kafka producer adapter: async-only, :hash partitioner
 
 - **Context:** Making `message.created.v1` actually reach a broker (it was emitted through the
