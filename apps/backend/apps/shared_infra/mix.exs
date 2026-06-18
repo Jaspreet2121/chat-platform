@@ -22,6 +22,8 @@ defmodule SharedInfra.MixProject do
   end
 
   defp deps do
-    []
+    [
+      {:brod, "~> 4.0"}
+    ]
   end
 end

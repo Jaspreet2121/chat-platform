@@ -1,5 +1,20 @@
 # Kafka Event Catalog
 
+> **Implementation status (2026-06-18): this catalog is a SPECIFICATION, not a record of
+> wired code.** No event is produced or consumed yet. The `producer:` field on each event
+> below names the *intended* producer, not an existing one. What exists today: a dormant
+> `SharedInfra.Kafka.Producer` dispatcher with a non-connecting `NoopProducer` default
+> (selected by `:shared_infra, :kafka_producer_adapter`), and a `SharedInfra.Events.Envelope`
+> build/validate contract for the standard envelope below. No broker driver is installed
+> (brod was deferred — its `crc32cer` NIF needs a C toolchain/`cmake` not present here; see
+> DECISION_LOG 2026-06-18) and nothing connects during tests. The first real event flow
+> (`message.created.v1`) is a future slice.
+>
+> **Topic discrepancy to reconcile:** `infra/docker/kafka/topics.env` declares
+> `message.events.v1` with **6 partitions**, but docker-compose sets `AUTO_CREATE_TOPICS=true`
+> + `NUM_PARTITIONS=3`, so unless `create-topics.sh` runs first the topic would be auto-created
+> with 3 partitions. Ensure explicit topic creation runs before first produce.
+
 ## Purpose
 
 This document defines all Kafka topics and events used by the chat-platform backend.

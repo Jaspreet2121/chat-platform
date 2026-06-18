@@ -343,6 +343,7 @@ Important files:
 Current behavior:
 
 - Defines dependency-free behaviours for future Redis clients, Kafka producers, Kafka consumers, and ScyllaDB clients.
+- `SharedInfra.Kafka.Producer` is now a dispatcher (selects `:shared_infra, :kafka_producer_adapter`) with a non-connecting `SharedInfra.Kafka.NoopProducer` default; `SharedInfra.Events.Envelope` builds/validates the standard event envelope. Both are dormant (no producer/consumer wired; no broker driver installed — brod deferred, `crc32cer` NIF needs cmake).
 - Provides safe config helpers over existing Redis, Kafka, and ScyllaDB placeholders.
 - Provides dummy adapters for unit tests without live Redis, Kafka, or ScyllaDB connections.
 - No production connection pools, Kafka publishing/consuming, Redis Presence, or live ScyllaDB execution exists yet.

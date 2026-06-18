@@ -2,6 +2,38 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Kafka: brod chosen (decimal-free); envelope contract before producing; brod compile deferred
+
+- **Context:** Starting the Kafka event backbone (0% wired). Driver candidates: brod, kafka_ex,
+  broadway_kafka. The Xandra lesson: verify dependency compatibility BEFORE adopting.
+- **Decision — driver:** **brod** — it is `decimal`-free (deps: kafka_protocol/crc32cer/snappyer),
+  so unlike Xandra it does NOT conflict with the project's `decimal ~> 3.0` / `ecto 3.14`.
+  `mix deps.get` confirmed clean resolution (decimal/ecto unchanged).
+- **Blocker found (deferred, not hacked):** brod **resolves but does not compile** in this
+  environment — its transitive NIF `crc32cer` requires a C toolchain (`cmake`) that is not
+  installed (`make: cmake: No such file`). So the brod dependency is **deferred to the
+  producer-wiring slice (c)**, gated on resolving the NIF build (install cmake, or a
+  pure-Erlang CRC path / NIF-free driver). The (a)+(b) scaffolding below needs no broker
+  driver, so it landed brod-free.
+- **Decision — envelope contract first:** added `SharedInfra.Events.Envelope` (build/validate the
+  documented standard envelope) and a dormant `SharedInfra.Kafka.Producer` dispatcher with a
+  non-connecting `NoopProducer` default (mirrors `Scylla.Client`/`UnavailableClient`), BEFORE any
+  producer hook — so every future producer emits a consistent, validated shape.
+- **Rationale:** define the contract + safe dispatcher seam now (pure Elixir, Docker-free, zero
+  behavior change); add the real broker driver + first event flow once the NIF/toolchain blocker
+  is cleared. Adapter boundary keeps the driver swappable.
+- **Status:** (a) dispatcher + NoopProducer + (b) envelope contract: implemented, dormant.
+  **Update 2026-06-18 (slice c, step 1): brod `~> 4.0` re-added and now COMPILES** (cmake 4.3.3
+  installed; `crc32cer` NIF builds). brod 4.5.5 / kafka_protocol 4.3.4 / crc32cer 1.1.3 in the
+  lock. brod is **present but unused** — dispatcher still defaults to `NoopProducer`, nothing
+  connects, test counts unchanged (183/56). Live brod-backed adapter + first event flow
+  (`message.created.v1`) remain for slice (c) step 2.
+- **Build-tool requirement (RESOLVED in CI, 2026-06-18 step 1.5):** the backend needs a **C
+  toolchain + cmake** to build brod's `crc32cer` NIF. `.github/workflows/backend-ci.yml` now
+  installs it (`apt-get install -y cmake build-essential`) after `setup-beam` and before
+  `mix deps.get`/`compile` (workflow lines 31-32). Final proof is the next CI run on push.
+  Local dev requires the same (e.g. `brew install cmake`).
+
 ## [2026-06-18] Message durability on Postgres now; ScyllaDB deferred
 
 - **Context:** Messages were only ever stored in-memory (no live persistence). The

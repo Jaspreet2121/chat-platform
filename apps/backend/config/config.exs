@@ -79,7 +79,8 @@ config :message_service,
      end)
 
 config :shared_infra,
-  scylla_client_adapter: SharedInfra.Scylla.UnavailableClient
+  scylla_client_adapter: SharedInfra.Scylla.UnavailableClient,
+  kafka_producer_adapter: SharedInfra.Kafka.NoopProducer
 
 config :media_service,
   media_persistence: System.get_env("MEDIA_DB_BACKED") in ["true", "1", "yes"],
