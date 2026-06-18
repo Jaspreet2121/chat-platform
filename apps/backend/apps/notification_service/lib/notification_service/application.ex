@@ -14,20 +14,27 @@ defmodule NotificationService.Application do
     Supervisor.start_link(children(), strategy: :one_for_one, name: NotificationService.Supervisor)
   end
 
-  # NOTHING starts unless a consumer flag is on. When EITHER consumer is enabled we start the
-  # Repo + the (shared) brod client, plus each enabled consumer. The Repo is NOT supervised
-  # unconditionally — with both flags off (the default) this returns [], so nothing connects at
-  # boot and plain `mix test` stays Docker-free. The Repo-only postgres_integration tests start
-  # their own Repo via DataCase, independent of these flags.
+  # Repo is supervised at boot in dev/prod (so DB-backed requests work); NOT in :test (config
+  # sets `start_repo: false`), where DataCase starts it per-test → plain `mix test` stays
+  # Docker-free. The (shared) brod client + consumers start ONLY under their consumer flags
+  # (both default off ⇒ no Kafka children, nothing connects at boot).
   defp children do
+    repo =
+      if Application.get_env(:notification_service, :start_repo, true),
+        do: [NotificationService.Repo],
+        else: []
+
     consumers =
       maybe(message_consumer_enabled?(), &message_created_child_spec/0) ++
         maybe(participants_consumer_enabled?(), &participants_child_spec/0)
 
-    case consumers do
-      [] -> []
-      _ -> [NotificationService.Repo, brod_client_child_spec()] ++ consumers
-    end
+    kafka =
+      case consumers do
+        [] -> []
+        _ -> [brod_client_child_spec()] ++ consumers
+      end
+
+    repo ++ kafka
   end
 
   defp maybe(true, build_spec), do: [build_spec.()]

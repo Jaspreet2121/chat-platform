@@ -14,13 +14,20 @@ defmodule MessageService.Application do
   # client. With both flags off (the default) this returns [], so nothing connects at boot
   # and plain `mix test` stays Docker-free.
   defp children do
+    # Repo is supervised at boot in dev/prod (so DB-backed requests work); NOT in :test
+    # (config sets `start_repo: false`), where DataCase starts it per-test → Docker-free.
+    repo =
+      if Application.get_env(:message_service, :start_repo, true),
+        do: [MessageService.Repo],
+        else: []
+
     client = if kafka_client_needed?(), do: [brod_client_child_spec()], else: []
     log_consumer = if kafka_consumer_enabled?(), do: [kafka_consumer_child_spec()], else: []
 
     projection_consumer =
       if kafka_projection_consumer_enabled?(), do: [conversation_summary_child_spec()], else: []
 
-    client ++ log_consumer ++ projection_consumer
+    repo ++ client ++ log_consumer ++ projection_consumer
   end
 
   defp kafka_client_needed? do

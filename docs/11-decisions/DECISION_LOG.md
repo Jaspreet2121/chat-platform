@@ -2,6 +2,39 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Deploy sub-slice 1: prod fail-fast secret guard + runtime/release config + Repo supervision
+
+- **Context:** The project had NEVER run as a booted server (only flag-gated/in-memory locally), and a
+  deploy reality-check surfaced two foundational gaps: (1) NO app supervised its Repo at boot
+  (`children = []`), so a real server would crash on the first DB request; (2) secrets fell back to
+  insecure hardcoded placeholders silently (audit #4). There was also no `prod.exs`/`runtime.exs`/release,
+  so `MIX_ENV=prod` couldn't even boot.
+- **Decision — supervise Repos, gated OFF in `:test`:** each Repo-owning app (auth/user/conversation/
+  message/notification) now starts its Repo at boot via `Application.get_env(:<app>, :start_repo, true)`.
+  Default `true` (dev/prod start the Repo so the server serves DB requests); `config/test.exs` sets
+  `start_repo: false` for all five, so `:test` does NOT start Repos at boot — `DataCase` starts them
+  per-test and plain `mix test` stays Docker-free. Chose a runtime config flag (not `Mix.env`, which is
+  unavailable in releases). Verified: gate is `false` in `:test`, `true` in `:dev`.
+- **Decision — prod fail-fast secret guard:** `config/runtime.exs` runs its guard ONLY when
+  `config_env() == :prod` (dev/test keep their placeholders, untouched). `SharedInfra.ProdConfig`
+  refuses to boot if `SECRET_KEY_BASE`/`TOKEN_SECRET`/`OTP_SECRET` are missing or match a known insecure
+  placeholder (`*-change-before-production`, `*-placeholder-*`), and requires `DATABASE_URL`. The guard
+  is a PURE function (reads env / inspects a string) so it is unit-tested without booting prod
+  (`SharedInfra.ProdConfigTest`, 8 plain tests). It covers EVERY insecure default found in inspection
+  (tokens.ex, otp.ex, endpoint secret_key_base).
+- **Decision — runtime/release config:** added `config/prod.exs` (minimal — its absence would make
+  `import_config "#{config_env()}.exs"` fail under prod), `config/runtime.exs` (wires all 5 Repos from
+  `DATABASE_URL` + pool/SSL, the endpoint from `SECRET_KEY_BASE`/`PHX_HOST`/`WEB_ORIGIN` with
+  `server: true`, auth secrets, and Kafka brokers only if `KAFKA_BROKERS` is set), and a `releases:`
+  block in the umbrella `mix.exs` bundling all 8 apps.
+- **Hosting plan:** Fly.io (umbrella release) + managed Postgres + Vercel web; Kafka DEFERRED (flag-gated)
+  — first deploy runs core chat (Postgres) ON, Kafka OFF, then enables Kafka once a broker is provisioned.
+  See [DEPLOYMENT.md](../09-devops/DEPLOYMENT.md).
+- **Status:** Code-verified. Plain `mix test` 192→200 (existing 192 intact + 8 guard tests; 0 Repo-connect
+  leaks → Docker-free preserved); `postgres_integration` 260→268; release/runtime config compiles. NOT
+  verified here (deploy-only, sub-slice 3): a real release boot, managed-PG TLS, public WSS, secret-store
+  wiring. Containerize (2) and deploy (3) are next.
+
 ## [2026-06-18] Notification recipient fan-out (sub-slice c) + per-(event_id,recipient) idempotency; DataCase Repo-unlink fix
 
 - **Context:** Final cross-service slice — notification-service now fans out one notification per

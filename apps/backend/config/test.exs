@@ -34,6 +34,14 @@ config :conversation_service, ConversationService.Repo, postgres_config
 config :message_service, MessageService.Repo, postgres_config
 config :notification_service, NotificationService.Repo, postgres_config
 
+# Repos are NOT supervised at boot in :test — DataCase starts them per-test, so plain
+# `mix test` stays Docker-free (nothing connects unless a DB-tagged test runs).
+config :auth_service, start_repo: false
+config :user_service, start_repo: false
+config :conversation_service, start_repo: false
+config :message_service, start_repo: false
+config :notification_service, start_repo: false
+
 config :api_gateway, ApiGatewayWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   secret_key_base:

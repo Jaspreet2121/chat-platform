@@ -46,7 +46,10 @@ apps/backend/
   config/
     config.exs
     dev.exs
-    test.exs
+    test.exs        # sets `start_repo: false` for the 5 Repo apps → Docker-free test boot
+    prod.exs        # minimal prod compile-time config
+    runtime.exs     # prod-only: fail-fast secret guard + Repo/Endpoint/Kafka wiring from env
+  mix.exs           # `releases: [chat_platform: ...]` — umbrella release of all 8 apps
   apps/
     api_gateway/
     auth_service/
@@ -369,6 +372,7 @@ Shared Redis, Kafka, and ScyllaDB client boundaries for backend services.
 Important files:
 
 - `apps/backend/apps/shared_infra/lib/shared_infra/redis/client.ex`
+- `apps/backend/apps/shared_infra/lib/shared_infra/prod_config.ex` (prod fail-fast secret guard; called from `config/runtime.exs`; unit-tested in `prod_config_test.exs`)
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/producer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/consumer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/scylla/client.ex`
@@ -388,4 +392,6 @@ Current behavior:
 - `SharedInfra.Kafka.Producer` is a dispatcher (selects `:shared_infra, :kafka_producer_adapter`); default `NoopProducer`, or the real `SharedInfra.Kafka.BrodProducer` (jason-encode + async `:brod.produce` + `:hash`) via `KAFKA_PRODUCER_ADAPTER=brod`. The flag-gated brod client is supervised in `MessageService.Application` (started only when the brod adapter is selected). `SharedInfra.Events.Envelope` builds/validates the standard envelope. `message.created.v1` is produced fire-and-forget (consumer side pending).
 - Provides safe config helpers over existing Redis, Kafka, and ScyllaDB placeholders.
 - Provides dummy adapters for unit tests without live Redis, Kafka, or ScyllaDB connections.
-- No production connection pools, Kafka publishing/consuming, Redis Presence, or live ScyllaDB execution exists yet.
+- `SharedInfra.ProdConfig` is the prod fail-fast secret guard: `config/runtime.exs` (prod-only) calls `require_secret!/1`/`require_present!/1` to refuse boot on missing/placeholder `SECRET_KEY_BASE`/`TOKEN_SECRET`/`OTP_SECRET`/`DATABASE_URL`.
+- **Repo supervision (deploy boot):** each Repo-owning app (auth/user/conversation/message/notification) supervises its Repo at boot via `Application.get_env(:<app>, :start_repo, true)` — default true (dev/prod), `false` in `config/test.exs` so `:test` does not start Repos at boot (DataCase does, per-test) → plain `mix test` stays Docker-free.
+- No production connection pools wired beyond the runtime.exs Repo config (deploy-only verification), no live Kafka in prod (flag-gated, staged off), Redis Presence/Scylla still pending.

@@ -92,10 +92,19 @@ Nuance: over the **realtime channel**, creating a message requires first *joinin
 - **Fail-closed guard** (`user_socket.ex` `require_db_backed_sessions`): auth-on but session-layer-off → connection rejected (no silent placeholder identity). Tested (1 Docker-free + 2 pg-integration).
 - OFF (local-dev default): trusts a client-provided `user_id` param — unauthenticated by design.
 
-### Insecure default secrets (deploy-config risk code can't enforce)
-- `auth_service/otp.ex` OTP secret falls back to literal `"local-otp-secret-change-before-production"` when env unset.
-- `auth_service/tokens.ex` token secret falls back to `"local-token-secret-change-before-production"` (after `TOKEN_SECRET`/`SECRET_KEY_BASE`).
-- All persistence/auth flags **default OFF**; nothing in code forces prod to enable them.
+### Insecure default secrets — ✅ GUARDED in prod (2026-06-18)
+- The dev fallbacks still exist for dev/test (`otp.ex` `"local-otp-secret-change-before-production"`,
+  `tokens.ex` `"local-token-secret-change-before-production"`), BUT `config/runtime.exs` now **fails
+  fast in `:prod`** via `SharedInfra.ProdConfig`: it refuses to boot if `SECRET_KEY_BASE`/`TOKEN_SECRET`/
+  `OTP_SECRET` are missing or match a known insecure placeholder, and requires `DATABASE_URL`. So a
+  misconfigured prod deploy no longer boots silently insecure (audit #4 mitigated). Guard logic is
+  unit-tested (`SharedInfra.ProdConfigTest`).
+- Flags still default OFF, but `docs/09-devops/DEPLOYMENT.md` enumerates the exact prod flag set; a real
+  deploy turns DB-backed core chat ON.
+- **"Never run as a server" gap fixed:** Repos are now supervised at boot in dev/prod (gated off in
+  `:test` so plain `mix test` stays Docker-free) — previously `children = []` meant a booted server
+  crashed on the first DB request. `config/runtime.exs` + `config/prod.exs` + a `mix release` config now
+  exist so `MIX_ENV=prod` can build/boot. Actual deploy (containerize + host) is the next sub-slices.
 
 ---
 

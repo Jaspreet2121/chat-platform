@@ -16,7 +16,16 @@ defmodule ConversationService.Application do
   # nothing connects at boot and plain `mix test` stays Docker-free. The default producer adapter
   # is the non-connecting NoopProducer, which needs no client at all.
   defp children do
-    if kafka_client_needed?(), do: [brod_client_child_spec()], else: []
+    # Repo is supervised at boot in dev/prod (so DB-backed requests work); NOT in :test
+    # (config sets `start_repo: false`), where DataCase starts it per-test → Docker-free.
+    repo =
+      if Application.get_env(:conversation_service, :start_repo, true),
+        do: [ConversationService.Repo],
+        else: []
+
+    client = if kafka_client_needed?(), do: [brod_client_child_spec()], else: []
+
+    repo ++ client
   end
 
   defp kafka_client_needed? do
