@@ -247,24 +247,32 @@ Same shape/role as `processed_events` above, but owned by notification-service. 
 | event_id | uuid | Primary key (part 2) — the envelope `event_id` |
 | inserted_at | timestamptz | When this consumer first applied the event |
 
-## notifications (first slice: one record per message.created.v1)
+## notifications (one record per RECIPIENT — fan-out)
 
 | Column | Type | Notes |
 |---|---|---|
 | id | uuid | Primary key |
-| type | text | `message_created` (first slice) |
+| type | text | `message_created` |
 | source_event_id | uuid | The `message.created.v1` envelope `event_id` |
+| recipient_user_id | uuid | Who is notified — an active participant, EXCLUDING the sender |
 | conversation_id | uuid | Nullable |
 | message_id | uuid | Nullable |
-| sender_user_id | uuid | Nullable — the message author (NOT the recipient; fan-out deferred) |
+| sender_user_id | uuid | The message author (NOT a recipient) |
 | read | boolean | Default false |
 | created_at | timestamptz | The source message's `created_at` |
 | inserted_at | timestamptz | Default `now()` |
 
-The ledger insert and this notification insert run in ONE `Repo.transaction`, so an
-at-least-once redelivery creates the notification exactly once. Recipient fan-out (one row
-per conversation participant) is deferred — `message.created.v1` carries the sender, not
-recipients, so fan-out needs ConversationService participant data (now supplied by the local
+UNIQUE index `notifications_source_event_recipient_uidx (source_event_id, recipient_user_id)`
+(see [042_notifications_fanout.sql](../../infra/docker/postgres/init/042_notifications_fanout.sql)).
+On a `message.created.v1`, `NotificationService.Notifications.apply_message_created/1` reads the
+active recipient set from `conversation_participants_readmodel` (`WHERE conversation_id=? AND active`,
+excluding `sender_user_id`) and `insert_all`s one row per recipient with `on_conflict: :nothing` — the
+unique index is the **durable per-recipient idempotency guard** (safe under redelivery/retry, and a
+participant set that grew between deliveries adds only the new recipients). The
+`notification_processed_events` ledger remains the coarse event-level gate; both run in ONE
+`Repo.transaction`. If the read-model has no active participants yet (cold-start race), fan-out
+notifies NOBODY (0 rows) and is NOT retried — an accepted eventual-consistency limitation.
+`message.created.v1` carries the sender, not recipients; recipients come from the local
 read-model below).
 
 ## conversation_participants_readmodel (local participant read-model — soft-state + LWW)

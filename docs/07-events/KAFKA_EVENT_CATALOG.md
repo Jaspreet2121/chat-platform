@@ -19,11 +19,15 @@
 >   (`KAFKA_PROJECTION_CONSUMER_ENABLED`, distinct group `message-service-conversation-summary`,
 >   default off). It maintains the `conversation_message_summaries` projection, deduped via the
 >   `processed_events` ledger, exactly-once on redelivery. See **Idempotency** below.
-> - **✅ a SECOND service now consumes it:** `NotificationService.Events.MessageCreatedConsumer`
+> - **✅ a SECOND service consumes it WITH FAN-OUT:** `NotificationService.Events.MessageCreatedConsumer`
 >   (the new **notification-service**, flag `NOTIFICATION_CONSUMER_ENABLED`, distinct group
->   `notification-service-message-created`, default off) writes ONE notification record per event,
->   deduped via notification-service's OWN ledger `notification_processed_events` (per-service
->   ownership; same `(consumer, event_id)` pattern). No recipient fan-out yet.
+>   `notification-service-message-created`, default off) writes ONE notification per ACTIVE
+>   conversation participant (resolved from the local `conversation_participants_readmodel`),
+>   EXCLUDING the sender. Coarse dedupe via the `notification_processed_events` ledger
+>   `(consumer, event_id)`; durable per-recipient idempotency via a UNIQUE
+>   `(source_event_id, recipient_user_id)` index + `on_conflict: :nothing`. Empty read-model
+>   (cold-start) → notifies nobody (accepted). The cross-service recipient flow
+>   (conversation events → read-model → fan-out) is now COMPLETE.
 >
 > All consumers/producers are flag-gated and default off, so plain `mix test` stays Docker-free
 > and nothing connects at boot. Everything else below remains 🔴 documented-only.

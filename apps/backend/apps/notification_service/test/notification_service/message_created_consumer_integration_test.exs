@@ -15,13 +15,14 @@ defmodule NotificationService.MessageCreatedConsumerIntegrationTest do
   import Ecto.Query
 
   alias NotificationService.Repo
+  alias NotificationService.Schemas.ConversationParticipantReadModel
   alias NotificationService.Schemas.Notification
 
   @client :notification_service_kafka_client
   @topic "message.events.v1"
 
   @tag :kafka_integration
-  test "produce -> consumer writes a notification record" do
+  test "produce -> consumer fans out a notification to the active recipient" do
     start_repo_shared!()
 
     case :brod.start_link_client([{~c"localhost", 9094}], @client, auto_start_producers: true) do
@@ -55,6 +56,12 @@ defmodule NotificationService.MessageCreatedConsumerIntegrationTest do
 
     event_id = Ecto.UUID.generate()
     conversation_id = Ecto.UUID.generate()
+    sender = Ecto.UUID.generate()
+    recipient = Ecto.UUID.generate()
+
+    # Seed the local read-model so fan-out has an active recipient (besides the sender).
+    seed_participant(conversation_id, sender)
+    seed_participant(conversation_id, recipient)
 
     envelope = %{
       "event_id" => event_id,
@@ -66,7 +73,7 @@ defmodule NotificationService.MessageCreatedConsumerIntegrationTest do
       "payload" => %{
         "conversation_id" => conversation_id,
         "message_id" => Ecto.UUID.generate(),
-        "sender_user_id" => Ecto.UUID.generate(),
+        "sender_user_id" => sender,
         "message_type" => "text",
         "created_at" => "2026-06-18T10:00:00Z"
       }
@@ -75,13 +82,30 @@ defmodule NotificationService.MessageCreatedConsumerIntegrationTest do
     {:ok, encoded} = Jason.encode(envelope)
     assert :ok = :brod.produce_sync(@client, @topic, :hash, conversation_id, encoded)
 
-    # The consumer handles our event (scoped to this event_id) and writes the notification.
+    # The consumer handles our event (scoped to this event_id) and fans out the notification.
     assert_receive {:notification_applied, ^event_id, {:ok, :applied}}, 20_000
 
-    notification = Repo.one(from(n in Notification, where: n.source_event_id == ^event_id))
-    assert notification
+    notifications = Repo.all(from(n in Notification, where: n.source_event_id == ^event_id))
+    assert [notification] = notifications
     assert notification.type == "message_created"
     assert notification.conversation_id == conversation_id
+    assert notification.recipient_user_id == recipient
+    refute notification.recipient_user_id == sender
+  end
+
+  defp seed_participant(conversation_id, user_id) do
+    now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+    Repo.insert_all(ConversationParticipantReadModel, [
+      %{
+        conversation_id: conversation_id,
+        user_id: user_id,
+        active: true,
+        role: "member",
+        last_event_at: now,
+        updated_at: now
+      }
+    ])
   end
 
   defp start_repo_shared! do

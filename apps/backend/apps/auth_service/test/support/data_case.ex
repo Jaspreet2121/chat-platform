@@ -23,8 +23,14 @@ defmodule AuthService.DataCase do
 
   defp start_repo!(repo) do
     case repo.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
+      # Unlink so a failing test's abnormal exit cannot kill the shared Repo and cascade
+      # "no process" Sandbox.checkout failures into the rest of the suite.
+      {:ok, pid} ->
+        Process.unlink(pid)
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
     end
   end
 end

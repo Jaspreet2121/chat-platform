@@ -1,10 +1,10 @@
 defmodule NotificationService.Schemas.Notification do
   @moduledoc """
-  A notification record. The first slice writes ONE record per `message.created.v1`
-  (`type: "message_created"`), capturing the source event reference and the message
-  facts (sender/conversation/message ids). No recipient yet — recipient fan-out (one
-  record per conversation participant) is a deferred slice that needs participant data
-  from ConversationService.
+  A notification record, written one-per-RECIPIENT by the `message.created.v1` fan-out
+  (`type: "message_created"`): `recipient_user_id` is who is notified (an active conversation
+  participant, excluding the sender), `sender_user_id` is who sent the message. Idempotency
+  per `(source_event_id, recipient_user_id)` via a UNIQUE index (see
+  `NotificationService.Notifications`).
   """
 
   use Ecto.Schema
@@ -14,6 +14,7 @@ defmodule NotificationService.Schemas.Notification do
   schema "notifications" do
     field(:type, :string)
     field(:source_event_id, :binary_id)
+    field(:recipient_user_id, :binary_id)
     field(:conversation_id, :binary_id)
     field(:message_id, :binary_id)
     field(:sender_user_id, :binary_id)

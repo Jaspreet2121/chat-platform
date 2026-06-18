@@ -2,6 +2,37 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Notification recipient fan-out (sub-slice c) + per-(event_id,recipient) idempotency; DataCase Repo-unlink fix
+
+- **Context:** Final cross-service slice — notification-service now fans out one notification per
+  conversation participant by reading its local `conversation_participants_readmodel` (built in (b))
+  instead of writing one record per event. Completes the event-driven recipient flow with NO sync call.
+- **Decision — fan-out with TWO-layer idempotency:** `apply_message_created/1` reads the active recipient
+  set (`WHERE conversation_id=? AND active`, EXCLUDING `sender_user_id`) and `insert_all`s one
+  notification per recipient. (1) The `notification_processed_events` ledger `(consumer, event_id)` stays
+  the COARSE event-level gate. (2) A new UNIQUE index `notifications(source_event_id, recipient_user_id)`
+  + `on_conflict: :nothing` is the DURABLE per-recipient guard — idempotent under redelivery/retry and
+  tolerant of a participant set that grew between deliveries (only new recipients get inserted). Both in
+  ONE `Repo.transaction`; commit-after-write unchanged.
+- **Decision — cold-start limitation accepted:** if the read-model has no active participants for the
+  conversation yet (the participant events haven't been consumed), fan-out notifies NOBODY (0 rows) and
+  is NOT retried. Accepted eventual-consistency trade-off (seeding from creation events makes the common
+  case fine); documented, not engineered around.
+- **Decision — schema change:** `notifications` gains `recipient_user_id` (who is notified, vs
+  `sender_user_id` = author). One-row-per-event behavior from the first notification slice is REPLACED by
+  one-row-per-recipient (the prior test was updated, not deleted).
+- **Test-infra fix (root-caused this slice):** the full `postgres_integration` umbrella suite was FLAKY —
+  `Sandbox.checkout` intermittently exited with "no process". Cause: the `DataCase`s started the Repo via
+  `Repo.start_link()` LINKED to the test process, so a single failing test's abnormal exit killed the
+  shared Repo and cascaded checkout failures across the rest of that app's suite. Fix: `Process.unlink/1`
+  the started Repo (the pattern user_service's DataCase already used) in the notification/conversation/
+  auth/message DataCases. Pre-existing latent bug exposed by the added pg-test load; one-line, uniform,
+  low-risk. Verified: full pg suite 5/5 green at 260 after the fix (was failing ~2/3 of runs before).
+- **Status:** Implemented + verified. Plain `mix test` 192 (unchanged; Docker-free); `postgres_integration`
+  257→260 (+3 net new fan-out tests; 5/5 stable). Key proofs pass: sender-excluded count (3 participants →
+  2 notifications) and redelivery-idempotency (still 2). Live `kafka_integration` fan-out wiring green.
+  **The cross-service recipient flow (a→b→c) is COMPLETE.**
+
 ## [2026-06-18] Out-of-order-tolerant read-model: soft-state + occurred_at LWW (reusable template) — sub-slice b
 
 - **Context:** notification-service builds a LOCAL participant read-model from

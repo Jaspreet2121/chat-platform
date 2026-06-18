@@ -29,7 +29,7 @@ Roadmap position: Phases 0/1/3 done, **Phase 4 (Chat MVP) ~85%**, Phase 5 (Media
 | **media_service** | upload/download URLs | 🟡 flag-gated (`MEDIA_DB_BACKED`) | media_test (9) | real MinIO SigV4 signer; default adapter unavailable; no upload verification; no DB metadata table schema |
 | **realtime_gateway** | WS channels + presence | 🟡 flag-gated (`REALTIME_AUTH_DB_BACKED`) | channels_test (22) + 2 pg socket-auth | presence local-only (no Redis); socket auth fails-closed but OFF by default |
 | **shared_infra** | kafka/redis/scylla boundaries + rate limiter | 🟡 | config + rate_limiter (20/1) | Kafka/Scylla are behaviours only; real Redis rate-limiter adapter exists |
-| **notification_service** | consumes `message.created.v1` → notification record | 🟡 flag-gated (`NOTIFICATION_CONSUMER_ENABLED`) | notifications idempotency (2 pg) + 1 kafka wiring | FIRST of the 5 missing services now built; minimal consumer, no recipient fan-out yet |
+| **notification_service** | `message.created.v1` → fan-out one notification per recipient; local participant read-model from `conversation.events.v1` | 🟡 flag-gated (`NOTIFICATION_CONSUMER_ENABLED`, `NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED`) | fan-out + read-model convergence (pg) + kafka wiring | FIRST of the 5 missing services; **recipient fan-out DONE** — full event-driven cross-service flow (conversation events → read-model → per-recipient notifications) complete |
 | *tenant / call-signaling / moderation / audit* | documented services | 🔴 **no code** | — | no `apps/backend/apps/<name>` dir exists (notification-service now built; 4 of 5 remain) |
 
 ---
