@@ -1,12 +1,16 @@
 defmodule MessageService.CaptureKafkaProducer do
   @moduledoc false
-  # Same-process fake: create_message publishes synchronously in the test process,
-  # so send(self(), ...) lands in the test mailbox for assert_received.
+  # Publishing now runs in a Task (separate process), so we send to the test pid
+  # recorded in app env (set in setup) rather than self(); the test uses assert_receive.
   @behaviour SharedInfra.Kafka.Producer
 
   @impl true
   def produce(topic, key, value, _opts \\ []) do
-    send(self(), {:kafka_published, topic, key, value})
+    case Application.get_env(:shared_infra, :capture_test_pid) do
+      pid when is_pid(pid) -> send(pid, {:kafka_published, topic, key, value})
+      _ -> :ok
+    end
+
     {:ok, :captured}
   end
 end
@@ -47,11 +51,13 @@ defmodule MessageService.MessageCreatedEventTest do
 
     Application.put_env(:message_service, :message_persistence, true)
     Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
+    Application.put_env(:shared_infra, :capture_test_pid, self())
     start_in_memory_store!()
     MessageStore.InMemoryAdapter.reset()
 
     on_exit(fn ->
       MessageStore.InMemoryAdapter.reset()
+      Application.delete_env(:shared_infra, :capture_test_pid)
       Application.put_env(:message_service, :message_persistence, previous.persistence)
       Application.put_env(:message_service, :message_store_adapter, previous.adapter)
       Application.put_env(:message_service, :kafka_publish_enabled, previous.publish)
@@ -83,7 +89,8 @@ defmodule MessageService.MessageCreatedEventTest do
                "body" => "Hello events"
              })
 
-    assert_received {:kafka_published, "message.events.v1", key, envelope}
+    # Publish runs in a Task; assert_receive waits for the async capture.
+    assert_receive {:kafka_published, "message.events.v1", key, envelope}, 1_000
     assert key == @conversation_id
 
     # Valid standard envelope with the expected event type + payload.

@@ -23,7 +23,8 @@ defmodule SharedInfra.MixProject do
 
   defp deps do
     [
-      {:brod, "~> 4.0"}
+      {:brod, "~> 4.0"},
+      {:jason, "~> 1.4"}
     ]
   end
 end

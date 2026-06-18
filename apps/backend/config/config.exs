@@ -81,7 +81,11 @@ config :message_service,
 
 config :shared_infra,
   scylla_client_adapter: SharedInfra.Scylla.UnavailableClient,
-  kafka_producer_adapter: SharedInfra.Kafka.NoopProducer
+  kafka_producer_adapter:
+    (case System.get_env("KAFKA_PRODUCER_ADAPTER") do
+       "brod" -> SharedInfra.Kafka.BrodProducer
+       _ -> SharedInfra.Kafka.NoopProducer
+     end)
 
 config :media_service,
   media_persistence: System.get_env("MEDIA_DB_BACKED") in ["true", "1", "yes"],

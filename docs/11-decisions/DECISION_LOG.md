@@ -2,6 +2,31 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] brod-backed Kafka producer adapter: async-only, :hash partitioner
+
+- **Context:** Making `message.created.v1` actually reach a broker (it was emitted through the
+  boundary but swallowed by `NoopProducer`). The emit point runs inline on the message-create path.
+- **Decision — async only:** `SharedInfra.Kafka.BrodProducer` uses **`:brod.produce/5` (async)**,
+  NEVER `produce_sync`. Additionally, the emit at `Messages.publish_message_created/1` is wrapped in
+  **`Task.start`** (unlinked). Rationale: the existing `try/rescue/catch` protects *correctness* but
+  not *latency* — a sync produce (or even a lazy producer-start / metadata fetch) could stall a
+  create on broker latency. Async + Task.start decouples create latency entirely from the broker
+  (fire-and-forget for BOTH correctness and latency). Proven: create succeeds even when the producer
+  raises (step-2 test), and the create path never awaits an ack.
+- **Decision — `:hash` partitioner** on the key (`conversation_id`): preserves per-conversation
+  message ordering within a topic. This depends on a stable partition count → see topic decision.
+- **Decision — topic partitions:** added a one-shot `kafka-init` docker-compose service running
+  `create-topics.sh` so `message.events.v1` is created with the declared **6 partitions** before
+  produce, instead of `AUTO_CREATE_TOPICS` giving 3.
+- **Decision — jason reused:** envelope JSON encoding uses jason (already in the lock); declared as a
+  direct dep of `shared_infra` so the module is in compile scope (no new package). `Jason.encode/1`
+  (not `encode!`) — encode errors are logged + returned `{:error,_}`, never raised at the caller.
+- **Flag-gating:** brod client started ONLY when `KAFKA_PRODUCER_ADAPTER=brod` selects the adapter
+  (`MessageService.Application` conditional child); default stays `NoopProducer` → no client → no
+  connect → plain `mix test` Docker-free.
+- **Status:** Implemented + verified against a live broker (`--include kafka_integration`, 1 passed,
+  6 partitions confirmed). **Consumer side is a separate later slice.**
+
 ## [2026-06-18] First Kafka event (`message.created.v1`) is fire-and-forget
 
 - **Context:** Wiring the first real producer. A message create persists to the durable store

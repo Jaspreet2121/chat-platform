@@ -88,6 +88,26 @@ services:
     networks:
       - chat-platform-network
 
+  # One-shot: creates the topics from topics.env with their declared partition counts
+  # (e.g. message.events.v1 = 6) BEFORE producers publish, so :hash partitioning has a
+  # stable partition count. Without this, AUTO_CREATE_TOPICS would create them at
+  # NUM_PARTITIONS=3 on first produce. The script waits for Kafka readiness itself.
+  kafka-init:
+    image: bitnamilegacy/kafka:3.7.1-debian-12-r4
+    container_name: chat-platform-kafka-init
+    depends_on:
+      - kafka
+    entrypoint: ["/bin/bash", "/create-topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVER: "kafka:9092"
+      TOPICS_FILE: "/topics.env"
+    volumes:
+      - ./kafka/create-topics.sh:/create-topics.sh:ro
+      - ./kafka/topics.env:/topics.env:ro
+    networks:
+      - chat-platform-network
+    restart: "no"
+
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
     container_name: chat-platform-kafka-ui

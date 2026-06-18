@@ -136,25 +136,28 @@ defmodule MessageService.Messages do
   # adapter is the non-connecting NoopProducer, so nothing connects.
   defp publish_message_created(response) do
     if kafka_publish_enabled?() do
-      try do
-        case build_message_created_envelope(response) do
-          {:ok, envelope} ->
-            Producer.produce(@message_topic, response.conversation_id, envelope)
-
-          {:error, reason} ->
-            Logger.warning(
-              "message.created envelope invalid, skipping publish: #{inspect(reason)}"
-            )
-        end
-      rescue
-        error -> Logger.warning("message.created publish raised, ignored: #{inspect(error)}")
-      catch
-        kind, value ->
-          Logger.warning("message.created publish #{kind}, ignored: #{inspect(value)}")
-      end
+      # Task.start (unlinked) so the create path NEVER blocks on a broker — not even on a
+      # lazy producer-start / metadata fetch — and a crash in the publish can't reach the
+      # caller. Combined with async produce in the adapter, fire-and-forget holds for BOTH
+      # correctness and latency.
+      Task.start(fn -> do_publish_message_created(response) end)
     end
 
     :ok
+  end
+
+  defp do_publish_message_created(response) do
+    case build_message_created_envelope(response) do
+      {:ok, envelope} ->
+        Producer.produce(@message_topic, response.conversation_id, envelope)
+
+      {:error, reason} ->
+        Logger.warning("message.created envelope invalid, skipping publish: #{inspect(reason)}")
+    end
+  rescue
+    error -> Logger.warning("message.created publish raised, ignored: #{inspect(error)}")
+  catch
+    kind, value -> Logger.warning("message.created publish #{kind}, ignored: #{inspect(value)}")
   end
 
   defp build_message_created_envelope(response) do

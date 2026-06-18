@@ -16,10 +16,11 @@
 >
 > Everything else below remains 🔴 documented-only (no producer/consumer in code).
 >
-> **Topic discrepancy to reconcile:** `infra/docker/kafka/topics.env` declares
-> `message.events.v1` with **6 partitions**, but docker-compose sets `AUTO_CREATE_TOPICS=true`
-> + `NUM_PARTITIONS=3`, so unless `create-topics.sh` runs first the topic would be auto-created
-> with 3 partitions. Ensure explicit topic creation runs before first produce.
+> **Topic partitions (resolved 2026-06-18):** a one-shot `kafka-init` service in
+> docker-compose now runs `create-topics.sh`, creating `message.events.v1` with its declared
+> **6 partitions** (from `topics.env`) before producers publish — so `:hash` partitioning has a
+> stable partition count rather than relying on `AUTO_CREATE_TOPICS` (which would give 3). The
+> live kafka_integration run confirmed 6 partitions (brod started producers 0–5).
 
 ## Purpose
 
@@ -525,9 +526,13 @@ Payload:
 ## message.created.v1
 
 > ✅ **WIRED (2026-06-18)** — produced fire-and-forget after a successful message persist
-> (`MessageService.Messages.publish_message_created/1`), flag-gated by `KAFKA_PUBLISH_ENABLED`,
-> via the `SharedInfra.Kafka.Producer` boundary (default `NoopProducer` → no-op). Key =
-> `conversation_id`. A live broker-backed adapter + consumer are still pending.
+> (`MessageService.Messages.publish_message_created/1`, wrapped in `Task.start`), flag-gated by
+> `KAFKA_PUBLISH_ENABLED`, via the `SharedInfra.Kafka.Producer` boundary, key = `conversation_id`.
+> A real **brod-backed adapter** (`SharedInfra.Kafka.BrodProducer`) is selected by
+> `KAFKA_PRODUCER_ADAPTER=brod` (default stays `NoopProducer` → no-op): it JSON-encodes the
+> envelope (jason) and **async**-produces with the `:hash` partitioner (per-conversation order).
+> The flag-gated brod client is supervised in `MessageService.Application`. Verified against a
+> live broker (`mix test --include kafka_integration`). **Consumer is still pending.**
 
 Topic:
 
