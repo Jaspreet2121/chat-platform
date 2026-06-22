@@ -117,6 +117,9 @@ config :user_service,
 config :message_service,
   http_api_enabled: System.get_env("MESSAGE_HTTP_API_ENABLED") in ["true", "1", "yes"]
 
+config :media_service,
+  http_api_enabled: System.get_env("MEDIA_HTTP_API_ENABLED") in ["true", "1", "yes"]
+
 config :shared_infra, conversation_client_adapter: ConversationService.ConversationClientInProcess
 config :shared_infra, user_client_adapter: UserService.UserClientInProcess
 config :shared_infra, message_client_adapter: MessageService.MessageClientInProcess

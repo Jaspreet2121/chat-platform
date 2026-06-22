@@ -2,6 +2,24 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Microservices internal HTTP API — Media service; INTERNAL-API SET COMPLETE (all 5)
+
+- **Context:** last of the internal-API set (Auth/Conversation/User/Message done). media_service is the
+  simplest (no Repo, 3 routes).
+- **Decision:** `MediaService.HTTP.Router` (Plug) — routes 1:1 with `SharedInfra.MediaClient`
+  (create_upload, complete_upload, get_download_url) → `MediaService.Media` → `encode_result`. Atom-keyed
+  upload/download maps; `:media_invalid` preserved. Listener `Plug.Cowboy` gated `MEDIA_HTTP_API_ENABLED`
+  (+ `MEDIA_HTTP_PORT`, default 4105), default off — the listener is media_service's ONLY supervised child
+  (no Repo). media_service +plug/plug_cowboy/jason.
+- **MILESTONE — internal-API set COMPLETE:** all 5 services (Auth/Conversation/User/Message/Media) now have
+  internal HTTP APIs (Plug routers reusing `SharedInfra.InternalApi` + `TokenPlug`), each gated default-off.
+  The wire contract (result-envelope + error-atom preservation + key rehydration) is uniform and documented
+  in INTERNAL_API.md. Nothing calls them yet — the in-process `SharedInfra.*Client` adapters remain default.
+- **Status:** Implemented + verified, zero behavior change. plain `mix test` 240→244 (existing 240 INTACT +
+  4 plain tests, incl. the FIRST router-level error-atom round-trip — media's invalid path deterministically
+  returns `:media_invalid`; `MediaService.Supervisor` children `== []` in test → no listener at boot); pg 308→312.
+  Next phase: HTTP client adapters (`*ClientHttp`) flip `SharedInfra.*Client` to network behind a flag.
+
 ## [2026-06-18] Microservices internal HTTP API — Message service (heaviest, 9 routes)
 
 - **Context:** fourth internal HTTP API (Auth/Conversation/User done); MessageService is the heaviest (9

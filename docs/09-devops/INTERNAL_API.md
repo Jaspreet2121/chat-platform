@@ -120,6 +120,22 @@ Error atoms (preserved): `:message_invalid`, `:message_forbidden`.
 > so plain Plug.Test round-trips are clean; this only bites the DB path. (Server side is unaffected —
 > it only JSON-encodes.)
 
+## Media internal API
+
+`MediaService.HTTP.Router` (Plug; gated `MEDIA_HTTP_API_ENABLED` + `MEDIA_HTTP_PORT`, default 4105;
+media-service owns no Repo, so the listener is its only child):
+
+| Method + path | In-process call |
+|---|---|
+| `POST /internal/media/create_upload` | `Media.create_upload/1` |
+| `POST /internal/media/complete_upload` | `Media.complete_upload/1` |
+| `POST /internal/media/download_url` | `Media.get_download_url/1` |
+
+Atom-keyed responses: upload → `media_id, object_key, upload_url, expires_at`; download →
+`media_id, download_url, expires_at`. Error atom (preserved): `:media_invalid`. (`create_upload`
+generates a UUID `media_id`, so it is non-deterministic — fidelity is asserted on the deterministic
+error path in tests.)
+
 ## Transport auth (NEW security surface)
 
 `SharedInfra.InternalApi.TokenPlug` requires the `x-internal-token` header to match
@@ -146,6 +162,6 @@ encode/decode round-trip + TokenPlug are unit-tested in `SharedInfra.InternalApi
 - ✅ Conversation internal HTTP API (`ConversationService.HTTP.Router`) — built, gated off.
 - ✅ User internal HTTP API (`UserService.HTTP.Router`) — built, gated off.
 - ✅ Message internal HTTP API (`MessageService.HTTP.Router`, 9 routes) — built, gated off.
-- ⏳ Media internal API — copy this template (last one).
-- ⏳ HTTP client adapters (`*ClientHttp`) — flip `SharedInfra.*Client` to network behind a flag.
+- ✅ Media internal HTTP API (`MediaService.HTTP.Router`) — built, gated off. **INTERNAL-API SET COMPLETE (all 5).**
+- ⏳ HTTP client adapters (`*ClientHttp`) — flip `SharedInfra.*Client` to network behind a flag. **(next phase)**
 - ⏳ Per-service releases / Dockerfiles / compose.
