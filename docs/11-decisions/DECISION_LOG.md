@@ -2,6 +2,24 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Microservices internal HTTP API — Message service (heaviest, 9 routes)
+
+- **Context:** fourth internal HTTP API (Auth/Conversation/User done); MessageService is the heaviest (9
+  functions across Messages/Timeline/Receipts). Same template.
+- **Decision:** `MessageService.HTTP.Router` (Plug) — 9 routes 1:1 with `SharedInfra.MessageClient`
+  (create/send/list/update/edit/delete_message, `list_timeline`→`Timeline.list_messages`, mark_read/
+  mark_delivered) → `MessageService.{Messages,Timeline,Receipts}` → `encode_result`. Error atoms
+  `:message_invalid`/`:message_forbidden` preserved. Listener gated `MESSAGE_HTTP_API_ENABLED`
+  (+ `MESSAGE_HTTP_PORT`, default 4104), default off. message_service +plug/plug_cowboy.
+- **Decision — documented metadata fidelity caveat:** a message's `metadata` is a FREE-FORM, string-keyed
+  map; the generic `decode_result` atomizes keys, which would corrupt it. The future Message HTTP client
+  adapter MUST preserve `metadata`'s string keys (skip atomizing that sub-map). Placeholder paths carry no
+  metadata, so plain round-trips are clean; the caveat bites only the DB path. Documented in INTERNAL_API.md.
+- **Status:** Implemented + verified, zero behavior change. plain `mix test` 235→240 (existing 235 INTACT +
+  5 plain Plug.Test tests covering Messages/Timeline/Receipts + the list_timeline distinction + TokenPlug;
+  `MessageService.Supervisor` children `== []` in test → no listener at boot); pg 303→308. Only **Media**
+  internal API remains, then the HTTP client adapters.
+
 ## [2026-06-18] Microservices internal HTTP API — User service (copies the template)
 
 - **Context:** third internal HTTP API (Auth, Conversation done), copying the same template.

@@ -92,6 +92,34 @@ recursing into nested maps/lists.)
 Atom-keyed response key set (client adapter rehydrates): `user_id, display_name, avatar_media_id, bio`.
 Error atom (preserved): `:profile_invalid`.
 
+## Message internal API (heaviest — 9 routes)
+
+`MessageService.HTTP.Router` (Plug; gated `MESSAGE_HTTP_API_ENABLED` + `MESSAGE_HTTP_PORT`, default 4104):
+
+| Method + path | In-process call |
+|---|---|
+| `POST /internal/messages/create` | `Messages.create_message/1` |
+| `POST /internal/messages/send` | `Messages.send_message/1` |
+| `POST /internal/messages/list` | `Messages.list_messages/1` |
+| `POST /internal/messages/update` | `Messages.update_message/1` |
+| `POST /internal/messages/edit` | `Messages.edit_message/1` |
+| `POST /internal/messages/delete` | `Messages.delete_message/1` |
+| `POST /internal/timeline/list` | `Timeline.list_messages/1` (the client's `list_timeline`) |
+| `POST /internal/receipts/mark_read` | `Receipts.mark_read/1` |
+| `POST /internal/receipts/mark_delivered` | `Receipts.mark_delivered/1` |
+
+Atom-keyed responses: message map (`conversation_id, message_id, sender_user_id, message_type, body,
+media_id, status, reply_to_message_id, metadata, created_at`), list as `%{conversation_id, messages: [...]}`.
+Error atoms (preserved): `:message_invalid`, `:message_forbidden`.
+
+> ⚠️ **Fidelity caveat for the future Message HTTP client adapter:** a message's **`metadata`** is a
+> FREE-FORM map (its keys are data — e.g. media `width`/`height` — not a fixed schema) and is
+> **string-keyed in-process**. The generic `decode_result/1` atomizes map keys, which would corrupt
+> `metadata` (string keys → atoms). The Message client adapter MUST preserve `metadata`'s original
+> string keys (skip atomizing that sub-map). The persistence-off placeholder paths carry NO `metadata`,
+> so plain Plug.Test round-trips are clean; this only bites the DB path. (Server side is unaffected —
+> it only JSON-encodes.)
+
 ## Transport auth (NEW security surface)
 
 `SharedInfra.InternalApi.TokenPlug` requires the `x-internal-token` header to match
@@ -117,6 +145,7 @@ encode/decode round-trip + TokenPlug are unit-tested in `SharedInfra.InternalApi
 - ✅ Auth internal HTTP API (server side), `SharedInfra.InternalApi` + `TokenPlug` — built, gated off.
 - ✅ Conversation internal HTTP API (`ConversationService.HTTP.Router`) — built, gated off.
 - ✅ User internal HTTP API (`UserService.HTTP.Router`) — built, gated off.
-- ⏳ Message / Media internal APIs — copy this template.
+- ✅ Message internal HTTP API (`MessageService.HTTP.Router`, 9 routes) — built, gated off.
+- ⏳ Media internal API — copy this template (last one).
 - ⏳ HTTP client adapters (`*ClientHttp`) — flip `SharedInfra.*Client` to network behind a flag.
 - ⏳ Per-service releases / Dockerfiles / compose.

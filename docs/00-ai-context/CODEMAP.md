@@ -388,6 +388,7 @@ Important files:
 - `apps/backend/apps/auth_service/lib/auth_service/http/router.ex` — `AuthService.HTTP.Router` (Plug, not Phoenix): the internal HTTP API for auth (routes 1:1 with `SharedInfra.AuthClient`). Listener is a `Plug.Cowboy` child in `AuthService.Application`, gated `AUTH_HTTP_API_ENABLED` (default off → no listener at boot). The Auth TEMPLATE; user/message/media copy it. NOT called yet (in-process adapters stay default).
 - `apps/backend/apps/conversation_service/lib/conversation_service/http/router.ex` — `ConversationService.HTTP.Router` (same template; routes 1:1 with `SharedInfra.ConversationClient`; atom-keyed conversation/participant responses). Listener gated `CONVERSATION_HTTP_API_ENABLED` (default off).
 - `apps/backend/apps/user_service/lib/user_service/http/router.ex` — `UserService.HTTP.Router` (same template; routes 1:1 with `SharedInfra.UserClient`; profile responses atom-keyed). Listener gated `USER_HTTP_API_ENABLED` (default off).
+- `apps/backend/apps/message_service/lib/message_service/http/router.ex` — `MessageService.HTTP.Router` (same template; 9 routes 1:1 with `SharedInfra.MessageClient` incl. `list_timeline`→`Timeline.list_messages`; metadata is free-form/string-keyed — client adapter must not atomize it). Listener gated `MESSAGE_HTTP_API_ENABLED` (default off).
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/producer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/consumer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/scylla/client.ex`

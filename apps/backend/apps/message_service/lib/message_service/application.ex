@@ -27,7 +27,30 @@ defmodule MessageService.Application do
     projection_consumer =
       if kafka_projection_consumer_enabled?(), do: [conversation_summary_child_spec()], else: []
 
-    repo ++ client ++ log_consumer ++ projection_consumer
+    repo ++ client ++ log_consumer ++ projection_consumer ++ http_children()
+  end
+
+  # Internal HTTP API listener starts ONLY under MESSAGE_HTTP_API_ENABLED (default off), so the
+  # umbrella boot + plain `mix test` start no listener. Bind on a private network in deployment.
+  defp http_children do
+    if http_api_enabled?() do
+      [
+        {Plug.Cowboy,
+         scheme: :http, plug: MessageService.HTTP.Router, options: [port: http_port()]}
+      ]
+    else
+      []
+    end
+  end
+
+  defp http_api_enabled? do
+    Application.get_env(:message_service, :http_api_enabled, false) ||
+      System.get_env("MESSAGE_HTTP_API_ENABLED") in ["true", "1", "yes"]
+  end
+
+  defp http_port do
+    Application.get_env(:message_service, :http_port) ||
+      String.to_integer(System.get_env("MESSAGE_HTTP_PORT") || "4104")
   end
 
   defp kafka_client_needed? do
