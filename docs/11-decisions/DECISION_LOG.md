@@ -2,6 +2,22 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Microservices internal HTTP API — Conversation service (copies the Auth template)
+
+- **Context:** second internal HTTP API, copying the Auth template (`SharedInfra.InternalApi` + `TokenPlug`
+  + a Plug router + gated `Plug.Cowboy` child). Server side only; nothing calls it yet → zero behavior change.
+- **Decision:** `ConversationService.HTTP.Router` (Plug) with routes 1:1 to `SharedInfra.ConversationClient`
+  (create/list/get_conversation, add/remove_participant), each delegating to
+  `ConversationService.{Conversations,Participants}` and serializing via `SharedInfra.InternalApi.encode_result`.
+  Conversation/participant responses are atom-keyed maps (nested lists of participant maps); the shared
+  `decode_result` rehydrates them recursively. Error atoms preserved (`:conversation_forbidden`,
+  `:participant_invalid`, etc.). Key sets + error atoms documented in INTERNAL_API.md.
+- **Decision — listener gated off:** `Plug.Cowboy` child under `CONVERSATION_HTTP_API_ENABLED`
+  (+ `CONVERSATION_HTTP_PORT`, default 4102), default off. Verified `ConversationService.Supervisor`
+  children `== []` in test env.
+- **Status:** Implemented + verified, zero behavior change. plain `mix test` 227→231 (+4 plain Plug.Test tests;
+  existing 227 INTACT); pg 295→299. Next: user/message/media internal APIs, then the HTTP client adapters.
+
 ## [2026-06-18] Microservices split — internal HTTP API phase: Auth template (server side, gated)
 
 - **Context:** with the 5 edge→service seams routed through `SharedInfra.*Client`, each service now

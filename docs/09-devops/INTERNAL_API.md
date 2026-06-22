@@ -55,6 +55,30 @@ returning atom-keyed maps must likewise document its key set here as it is built
 | `POST /internal/tokens/refresh` | `Tokens.refresh/1` | `{"refresh_token"}` |
 | `POST /internal/tokens/revoke` | `Tokens.revoke/1` | `{"refresh_token"}` |
 
+## Conversation internal API
+
+`ConversationService.HTTP.Router` (Plug; gated `CONVERSATION_HTTP_API_ENABLED` + `CONVERSATION_HTTP_PORT`, default 4102):
+
+| Method + path | In-process call |
+|---|---|
+| `POST /internal/conversations/create` | `Conversations.create_conversation/1` |
+| `POST /internal/conversations/list` | `Conversations.list_conversations/1` |
+| `POST /internal/conversations/get` | `Conversations.get_conversation/1` |
+| `POST /internal/participants/add` | `Participants.add_participant/1` |
+| `POST /internal/participants/remove` | `Participants.remove_participant/1` |
+
+**Atom-keyed responses (client adapter must rehydrate these key sets):**
+- create → `conversation_id, tenant_id, type, title, created_by, participant_user_ids, created_at`
+- list → `%{conversations: [<summary maps>]}`
+- get → conversation detail + `participants: [%{user_id, role, joined_at, left_at}]`
+- add_participant → `conversation_id, user_id, role, joined_at`
+- remove_participant → `conversation_id, user_id, removed, left_at`
+
+**Error atoms (preserved):** `:conversation_invalid`, `:conversation_not_found`, `:conversation_forbidden`,
+`:participant_invalid`, `:participant_forbidden`, `:participant_already_exists`, `:participant_not_found`,
+`:participant_owner_remove_forbidden`. (`decode_result` rebuilds these via `String.to_existing_atom/1`,
+recursing into nested maps/lists.)
+
 ## Transport auth (NEW security surface)
 
 `SharedInfra.InternalApi.TokenPlug` requires the `x-internal-token` header to match
@@ -78,6 +102,7 @@ encode/decode round-trip + TokenPlug are unit-tested in `SharedInfra.InternalApi
 ## Status
 
 - ✅ Auth internal HTTP API (server side), `SharedInfra.InternalApi` + `TokenPlug` — built, gated off.
-- ⏳ Conversation / User / Message / Media internal APIs — copy this template.
+- ✅ Conversation internal HTTP API (`ConversationService.HTTP.Router`) — built, gated off.
+- ⏳ User / Message / Media internal APIs — copy this template.
 - ⏳ HTTP client adapters (`*ClientHttp`) — flip `SharedInfra.*Client` to network behind a flag.
 - ⏳ Per-service releases / Dockerfiles / compose.

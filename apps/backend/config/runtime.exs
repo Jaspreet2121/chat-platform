@@ -57,6 +57,10 @@ if config_env() == :prod do
     config :auth_service, http_port: String.to_integer(port)
   end
 
+  if port = System.get_env("CONVERSATION_HTTP_PORT") do
+    config :conversation_service, http_port: String.to_integer(port)
+  end
+
   # --- Kafka brokers (only if provided; Kafka stays OFF on the first deploy via its flags) ---
   if brokers = System.get_env("KAFKA_BROKERS") do
     config :message_service, :kafka, brokers: brokers, client_id: "message-service"
