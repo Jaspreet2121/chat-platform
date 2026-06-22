@@ -2,6 +2,25 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Microservices split sub-slice 5 — Media service-client boundary; client-boundary set COMPLETE
+
+- **Context:** last of the client-boundary set (Auth/Conversation/User/Message done). MediaService is the
+  simplest seam — only api_gateway/media_controller, and media_service has no Repo (storage-adapter based).
+- **Decision:** `SharedInfra.MediaClient` (behaviour + dispatcher, adapter from `:shared_infra, :media_client_adapter`)
+  + `MediaService.MediaClientInProcess` (default, delegates to `MediaService.Media` with identical shapes).
+  Functions: create_upload, complete_upload, get_download_url. media_controller now calls
+  `SharedInfra.MediaClient.*`; no `MediaService.Media.*` calls remain in edge code (grep-confirmed).
+  media_service now deps shared_infra (no cycle). Future `MEDIA_CLIENT_ADAPTER=http` drops in unchanged.
+- **MILESTONE — client-boundary set COMPLETE:** all five edge→service seams (Auth, Conversation, User,
+  Message, Media) now route through `SharedInfra.*Client` dispatchers with in-process default adapters.
+  No edge app (api_gateway, realtime_gateway) calls any `*Service.*` domain module directly anymore. The
+  edge↔service interface is now a single swappable layer — each service's HTTP adapter + container split
+  can land independently without touching call sites.
+- **Status:** Implemented + verified, zero behavior change. plain `mix test` 211→215 (existing 211 INTACT +
+  4 delegation tests); pg 279→283. Sub-slice 5 of ~12-18. Next phase: internal HTTP API per service +
+  HTTP client adapters, then shared_infra extraction, per-service releases/Docker, optional DB-per-service,
+  compose + container run.
+
 ## [2026-06-18] Microservices split sub-slice 4 — Message service-client boundary (in-process, heaviest seam)
 
 - **Context:** repeat the proven seam for MessageService — the heaviest (15 call-sites across BOTH edges:

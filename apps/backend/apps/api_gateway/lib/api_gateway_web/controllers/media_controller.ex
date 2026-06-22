@@ -15,7 +15,7 @@ defmodule ApiGatewayWeb.MediaController do
     with {:ok, response} <-
            params
            |> Map.put("owner_user_id", "user_placeholder")
-           |> MediaService.Media.create_upload() do
+           |> SharedInfra.MediaClient.create_upload() do
       conn
       |> put_status(:created)
       |> json(response)
@@ -31,7 +31,7 @@ defmodule ApiGatewayWeb.MediaController do
          {:ok, response} <-
            params
            |> Map.put("owner_user_id", session.user_id)
-           |> MediaService.Media.create_upload() do
+           |> SharedInfra.MediaClient.create_upload() do
       conn
       |> put_status(:created)
       |> json(response)
@@ -54,7 +54,7 @@ defmodule ApiGatewayWeb.MediaController do
            params
            |> Map.put("media_id", media_id)
            |> Map.put("owner_user_id", "user_placeholder")
-           |> MediaService.Media.complete_upload() do
+           |> SharedInfra.MediaClient.complete_upload() do
       json(conn, response)
     else
       _ -> invalid_request(conn)
@@ -69,7 +69,7 @@ defmodule ApiGatewayWeb.MediaController do
            params
            |> Map.put("media_id", media_id)
            |> Map.put("owner_user_id", session.user_id)
-           |> MediaService.Media.complete_upload() do
+           |> SharedInfra.MediaClient.complete_upload() do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
@@ -90,7 +90,7 @@ defmodule ApiGatewayWeb.MediaController do
            params
            |> Map.put("media_id", media_id)
            |> Map.put("owner_user_id", "user_placeholder")
-           |> MediaService.Media.get_download_url() do
+           |> SharedInfra.MediaClient.get_download_url() do
       json(conn, response)
     else
       _ -> invalid_request(conn)
@@ -105,7 +105,7 @@ defmodule ApiGatewayWeb.MediaController do
            params
            |> Map.put("media_id", media_id)
            |> Map.put("owner_user_id", session.user_id)
-           |> MediaService.Media.get_download_url() do
+           |> SharedInfra.MediaClient.get_download_url() do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)

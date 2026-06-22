@@ -23,6 +23,10 @@ defmodule MediaService.MixProject do
   end
 
   defp deps do
-    []
+    [
+      # Implements the SharedInfra.MediaClient behaviour (MediaService.MediaClientInProcess).
+      # No cycle: shared_infra does not depend on media_service.
+      {:shared_infra, in_umbrella: true}
+    ]
   end
 end

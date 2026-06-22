@@ -102,6 +102,7 @@ config :shared_infra, auth_client_adapter: AuthService.AuthClientInProcess
 config :shared_infra, conversation_client_adapter: ConversationService.ConversationClientInProcess
 config :shared_infra, user_client_adapter: UserService.UserClientInProcess
 config :shared_infra, message_client_adapter: MessageService.MessageClientInProcess
+config :shared_infra, media_client_adapter: MediaService.MediaClientInProcess
 
 config :shared_infra,
   scylla_client_adapter: SharedInfra.Scylla.UnavailableClient,

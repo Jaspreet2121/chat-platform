@@ -381,6 +381,9 @@ Important files:
 - `apps/backend/apps/user_service/lib/user_service/user_client_in_process.ex` (default in-process adapter delegating to `UserService.Profiles`)
 - `apps/backend/apps/shared_infra/lib/shared_infra/message_client.ex` (Message service-client boundary; adapter from `:shared_infra, :message_client_adapter`; both edges call this instead of `MessageService.*`; `list_timeline` → `Timeline.list_messages`)
 - `apps/backend/apps/message_service/lib/message_service/message_client_in_process.ex` (default in-process adapter delegating to `MessageService.{Messages,Timeline,Receipts}`)
+- `apps/backend/apps/shared_infra/lib/shared_infra/media_client.ex` (Media service-client boundary; adapter from `:shared_infra, :media_client_adapter`; edge apps call this instead of `MediaService.Media.*`)
+- `apps/backend/apps/media_service/lib/media_service/media_client_in_process.ex` (default in-process adapter delegating to `MediaService.Media`)
+- **Client-boundary set COMPLETE:** all 5 edge→service seams (Auth/Conversation/User/Message/Media) route through `SharedInfra.*Client` dispatchers (in-process default adapters); no edge app (api_gateway, realtime_gateway) calls any `*Service.*` domain module directly.
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/producer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/consumer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/scylla/client.ex`
