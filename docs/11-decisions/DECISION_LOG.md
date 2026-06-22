@@ -2,6 +2,22 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Microservices split sub-slice 4 — Message service-client boundary (in-process, heaviest seam)
+
+- **Context:** repeat the proven seam for MessageService — the heaviest (15 call-sites across BOTH edges:
+  api_gateway/message_controller + realtime_gateway/conversation_channel).
+- **Decision:** `SharedInfra.MessageClient` (behaviour + dispatcher, adapter from `:shared_infra, :message_client_adapter`)
+  + `MessageService.MessageClientInProcess` (default, delegates to `MessageService.{Messages,Timeline,Receipts}`
+  with identical shapes). 9 functions: create/send/list/update/edit/delete_message (Messages), `list_timeline`
+  (→ `Timeline.list_messages`, named distinctly to avoid colliding with `Messages.list_messages`), mark_read/
+  mark_delivered (Receipts). Edge apps now call `SharedInfra.MessageClient.*`; no `MessageService.{Messages,
+  Timeline,Receipts}.*` calls remain in edge code (grep-confirmed). The conversation membership authz on the
+  create/edit/delete path still goes through `SharedInfra.ConversationClient` (sub-slice 2) — left as-is.
+- **Status:** Implemented + verified, zero behavior change. plain `mix test` 207→211 (existing 207 INTACT +
+  4 delegation tests; the realtime channel + message tests all pass unchanged); pg 275→279. message_service
+  already depended on shared_infra (no mix.exs change). Sub-slice 4 of ~12-18 — only Media left for the
+  client-boundary set, then internal HTTP APIs + HTTP adapters.
+
 ## [2026-06-18] Microservices split sub-slice 3 — User service-client boundary (in-process)
 
 - **Context:** repeat the proven Auth/Conversation seam for UserService.

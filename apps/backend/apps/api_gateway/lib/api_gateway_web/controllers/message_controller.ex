@@ -15,7 +15,7 @@ defmodule ApiGatewayWeb.MessageController do
     params = Map.put(params, "conversation_id", conversation_id)
 
     with :ok <- validate_send_payload(params),
-         {:ok, response} <- MessageService.Messages.send_message(params) do
+         {:ok, response} <- SharedInfra.MessageClient.send_message(params) do
       conn
       |> put_status(:created)
       |> json(response)
@@ -35,7 +35,7 @@ defmodule ApiGatewayWeb.MessageController do
          {:ok, response} <-
            params
            |> Map.put("sender_user_id", session.user_id)
-           |> MessageService.Messages.create_message() do
+           |> SharedInfra.MessageClient.create_message() do
       conn
       |> put_status(:created)
       |> json(response)
@@ -57,7 +57,7 @@ defmodule ApiGatewayWeb.MessageController do
   defp placeholder_list_messages(conn, conversation_id, params) do
     params = Map.put(params, "conversation_id", conversation_id)
 
-    with {:ok, response} <- MessageService.Timeline.list_messages(params) do
+    with {:ok, response} <- SharedInfra.MessageClient.list_timeline(params) do
       json(conn, response)
     end
   end
@@ -69,7 +69,7 @@ defmodule ApiGatewayWeb.MessageController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          :ok <- authorize_membership(conversation_id, session.user_id),
-         {:ok, response} <- MessageService.Messages.list_messages(params) do
+         {:ok, response} <- SharedInfra.MessageClient.list_messages(params) do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
@@ -93,7 +93,7 @@ defmodule ApiGatewayWeb.MessageController do
       |> Map.put("message_id", message_id)
 
     with :ok <- require_fields(params, ["body"]),
-         {:ok, response} <- MessageService.Messages.edit_message(params) do
+         {:ok, response} <- SharedInfra.MessageClient.edit_message(params) do
       json(conn, response)
     else
       _ -> invalid_request(conn)
@@ -113,7 +113,7 @@ defmodule ApiGatewayWeb.MessageController do
          {:ok, response} <-
            params
            |> Map.put("actor_user_id", session.user_id)
-           |> MessageService.Messages.update_message() do
+           |> SharedInfra.MessageClient.update_message() do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
@@ -132,7 +132,7 @@ defmodule ApiGatewayWeb.MessageController do
 
   defp placeholder_delete_message(conn, conversation_id, message_id) do
     with {:ok, response} <-
-           MessageService.Messages.delete_message(%{
+           SharedInfra.MessageClient.delete_message(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id
            }) do
@@ -145,7 +145,7 @@ defmodule ApiGatewayWeb.MessageController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
-           MessageService.Messages.delete_message(%{
+           SharedInfra.MessageClient.delete_message(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id,
              "actor_user_id" => session.user_id
@@ -168,7 +168,7 @@ defmodule ApiGatewayWeb.MessageController do
 
   defp placeholder_mark_read(conn, conversation_id, message_id) do
     with {:ok, response} <-
-           MessageService.Receipts.mark_read(%{
+           SharedInfra.MessageClient.mark_read(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id
            }) do
@@ -181,7 +181,7 @@ defmodule ApiGatewayWeb.MessageController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
-           MessageService.Receipts.mark_read(%{
+           SharedInfra.MessageClient.mark_read(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id,
              "user_id" => session.user_id
@@ -203,7 +203,7 @@ defmodule ApiGatewayWeb.MessageController do
 
   defp placeholder_mark_delivered(conn, conversation_id, message_id) do
     with {:ok, response} <-
-           MessageService.Receipts.mark_delivered(%{
+           SharedInfra.MessageClient.mark_delivered(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id
            }) do
@@ -216,7 +216,7 @@ defmodule ApiGatewayWeb.MessageController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
-           MessageService.Receipts.mark_delivered(%{
+           SharedInfra.MessageClient.mark_delivered(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id,
              "user_id" => session.user_id

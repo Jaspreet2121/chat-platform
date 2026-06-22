@@ -94,7 +94,7 @@ defmodule RealtimeGateway.ConversationChannel do
            payload
            |> Map.put("conversation_id", socket.assigns.conversation_id)
            |> Map.put("sender_user_id", sender_user_id)
-           |> MessageService.Messages.create_message() do
+           |> SharedInfra.MessageClient.create_message() do
       broadcast_from(socket, "message_created", response)
       {:reply, {:ok, response}, socket}
     else
@@ -118,7 +118,7 @@ defmodule RealtimeGateway.ConversationChannel do
            payload
            |> Map.put("conversation_id", socket.assigns.conversation_id)
            |> Map.put("actor_user_id", actor_user_id)
-           |> MessageService.Messages.update_message() do
+           |> SharedInfra.MessageClient.update_message() do
       broadcast_from(socket, "message_updated", response)
       {:reply, {:ok, response}, socket}
     else
@@ -135,7 +135,7 @@ defmodule RealtimeGateway.ConversationChannel do
            payload
            |> Map.put("conversation_id", socket.assigns.conversation_id)
            |> Map.put("actor_user_id", actor_user_id)
-           |> MessageService.Messages.delete_message() do
+           |> SharedInfra.MessageClient.delete_message() do
       broadcast_from(socket, "message_deleted", response)
       {:reply, {:ok, response}, socket}
     else
