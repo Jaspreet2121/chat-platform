@@ -99,6 +99,15 @@ config :notification_service,
 # Default = in-process (delegates to AuthService.*, zero behavior change). A future HTTP adapter
 # (separate auth-service container) is selected by overriding this in runtime config.
 config :shared_infra, auth_client_adapter: AuthService.AuthClientInProcess
+
+# Internal service-to-service HTTP APIs (microservices split). The token guards the internal
+# APIs (TokenPlug fails closed if unset); nil by default in dev/test. Each service's internal
+# HTTP listener is flag-gated (e.g. AUTH_HTTP_API_ENABLED), default off → no listener at boot.
+config :shared_infra, internal_api_token: System.get_env("INTERNAL_API_TOKEN")
+
+config :auth_service,
+  http_api_enabled: System.get_env("AUTH_HTTP_API_ENABLED") in ["true", "1", "yes"]
+
 config :shared_infra, conversation_client_adapter: ConversationService.ConversationClientInProcess
 config :shared_infra, user_client_adapter: UserService.UserClientInProcess
 config :shared_infra, message_client_adapter: MessageService.MessageClientInProcess

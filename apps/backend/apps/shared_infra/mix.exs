@@ -24,7 +24,9 @@ defmodule SharedInfra.MixProject do
   defp deps do
     [
       {:brod, "~> 4.0"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      # For SharedInfra.InternalApi.TokenPlug (internal service-to-service auth plug).
+      {:plug, "~> 1.14"}
     ]
   end
 end

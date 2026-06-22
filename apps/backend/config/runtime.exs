@@ -46,6 +46,17 @@ if config_env() == :prod do
     check_origin: check_origin,
     server: true
 
+  # --- Internal service-to-service HTTP APIs (microservices split) --------------------------
+  # When any internal HTTP API is enabled, an INTERNAL_API_TOKEN must be set (TokenPlug fails
+  # closed otherwise). Bind these listeners on a PRIVATE network in deployment.
+  if System.get_env("INTERNAL_API_TOKEN") do
+    config :shared_infra, internal_api_token: System.get_env("INTERNAL_API_TOKEN")
+  end
+
+  if port = System.get_env("AUTH_HTTP_PORT") do
+    config :auth_service, http_port: String.to_integer(port)
+  end
+
   # --- Kafka brokers (only if provided; Kafka stays OFF on the first deploy via its flags) ---
   if brokers = System.get_env("KAFKA_BROKERS") do
     config :message_service, :kafka, brokers: brokers, client_id: "message-service"

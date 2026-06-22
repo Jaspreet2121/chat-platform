@@ -2,6 +2,36 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Microservices split — internal HTTP API phase: Auth template (server side, gated)
+
+- **Context:** with the 5 edge→service seams routed through `SharedInfra.*Client`, each service now
+  needs an internal HTTP API so the future HTTP client adapters can call over the network. The 5
+  services had no HTTP surface. Auth built first as the template; the other 4 copy it. Nothing calls it
+  yet (in-process adapters stay default) → zero behavior change.
+- **Decision — two envelopes, never conflated:** the PUBLIC user-facing envelope
+  (`ApiGatewayWeb.ErrorResponse`) is gateway-only and untouched. A NEW INTERNAL result-envelope
+  (`SharedInfra.InternalApi`) round-trips the in-process result: `{:ok, map}` ⇄ `{"ok": map}`,
+  `{:error, atom}` ⇄ `{"error": "atom_name"}`, bare value ⇄ `{"result": value}`. **Error atoms are
+  preserved** because the gateway pattern-matches on them; collapsing to codes would break it.
+- **Decision — serialization fidelity / atom-key rehydration:** `decode_result/1` rehydrates JSON
+  string keys back to atoms via `String.to_existing_atom/1` (atoms exist in loaded service code),
+  recursively, with a string fallback. The `current_session` atom-keyed map (gateway reads
+  `session.user_id`) has a documented key set (`user_id, session_id, device_id, platform, issued_at,
+  expires_at`) in docs/09-devops/INTERNAL_API.md so the client adapter rehydrates unambiguously.
+  All internal responses are HTTP 200 (ok/error is a domain result in the body, not transport status).
+- **Decision — Plug, not Phoenix:** internal APIs are a few JSON routes → `Plug.Router` + `Plug.Cowboy`
+  (lighter than a Phoenix.Endpoint). `AuthService.HTTP.Router` maps routes 1:1 to `SharedInfra.AuthClient`'s
+  contract.
+- **Decision — listener gated off (Docker-free preserved):** the `Plug.Cowboy` child starts ONLY under
+  `AUTH_HTTP_API_ENABLED` (+ `AUTH_HTTP_PORT`, default 4101), default off. Verified: `AuthService.Supervisor`
+  children `== []` in test env → no listener at boot, plain `mix test` unaffected.
+- **Decision — internal service-to-service auth = NEW security surface:** `SharedInfra.InternalApi.TokenPlug`
+  requires `x-internal-token` == `INTERNAL_API_TOKEN` (constant-time), **fails closed** if unset; intended
+  to run on a private network. Flagged prominently as a new attack surface.
+- **Status:** Implemented + verified, zero behavior change (nothing calls the API; in-process default holds).
+  plain `mix test` 215→227 (+12 plain Plug.Test/round-trip/token tests; existing 215 INTACT); pg 283→295.
+  Next: copy the template to conversation/user/message/media, THEN the HTTP client adapters flip traffic.
+
 ## [2026-06-18] Microservices split sub-slice 5 — Media service-client boundary; client-boundary set COMPLETE
 
 - **Context:** last of the client-boundary set (Auth/Conversation/User/Message done). MediaService is the

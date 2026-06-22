@@ -384,6 +384,8 @@ Important files:
 - `apps/backend/apps/shared_infra/lib/shared_infra/media_client.ex` (Media service-client boundary; adapter from `:shared_infra, :media_client_adapter`; edge apps call this instead of `MediaService.Media.*`)
 - `apps/backend/apps/media_service/lib/media_service/media_client_in_process.ex` (default in-process adapter delegating to `MediaService.Media`)
 - **Client-boundary set COMPLETE:** all 5 edge→service seams (Auth/Conversation/User/Message/Media) route through `SharedInfra.*Client` dispatchers (in-process default adapters); no edge app (api_gateway, realtime_gateway) calls any `*Service.*` domain module directly.
+- `apps/backend/apps/shared_infra/lib/shared_infra/internal_api.ex` — `SharedInfra.InternalApi` (internal service↔service result-envelope: encode_result/decode_result, atom-key rehydration, preserves error atoms) + `SharedInfra.InternalApi.TokenPlug` (internal `x-internal-token` auth, fails closed). Shared base for all services' internal HTTP APIs. Contract: `docs/09-devops/INTERNAL_API.md`.
+- `apps/backend/apps/auth_service/lib/auth_service/http/router.ex` — `AuthService.HTTP.Router` (Plug, not Phoenix): the internal HTTP API for auth (routes 1:1 with `SharedInfra.AuthClient`). Listener is a `Plug.Cowboy` child in `AuthService.Application`, gated `AUTH_HTTP_API_ENABLED` (default off → no listener at boot). The Auth TEMPLATE; conversation/user/message/media copy it. NOT called yet (in-process adapters stay default).
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/producer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/consumer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/scylla/client.ex`
