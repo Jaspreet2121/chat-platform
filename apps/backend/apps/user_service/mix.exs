@@ -25,6 +25,9 @@ defmodule UserService.MixProject do
 
   defp deps do
     [
+      # Implements the SharedInfra.UserClient behaviour (UserService.UserClientInProcess).
+      # No cycle: shared_infra does not depend on user_service.
+      {:shared_infra, in_umbrella: true},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, ">= 0.0.0"}
     ]

@@ -1,5 +1,13 @@
 # Session Log
 
+## [2026-06-18] Slice: MICROSERVICES split sub-slice 3 — User service-client boundary (in-process)
+- Status: ✅ green (zero behavior change; same pattern as Auth/Conversation)
+- Files changed: new `apps/shared_infra/lib/shared_infra/user_client.ex` (behaviour + dispatcher, adapter from `:shared_infra, :user_client_adapter`); new `apps/user_service/lib/user_service/user_client_in_process.ex` (`@behaviour SharedInfra.UserClient`, delegates to `UserService.Profiles`); `apps/user_service/mix.exs` (+`{:shared_infra, in_umbrella: true}` — no cycle); `config/config.exs` (`user_client_adapter` default); converted api_gateway/user_controller (5 call-sites) → `SharedInfra.UserClient.*`; new plain test `user_client_in_process_test.exs`.
+- Functions behind the boundary: get_current_profile, get_public_profile, update_current_profile (identical shapes via in-process delegation). Future `USER_CLIENT_ADAPTER=http` drops in without touching call-sites.
+- Verification: mix format clean; mix compile --warnings-as-errors clean; grep confirms NO edge code calls `UserService.*` directly; `mix test` → **207 passed / 73 excluded, 0 failures** (existing 205 INTACT + 2 delegation tests); `mix test --include postgres_integration` → **275 passed, 0 failures** (273 + 2); web untouched.
+- Non-negotiables: byte-for-byte delegation (existing user/gateway tests unchanged); only User touched (message/media untouched); REST contract + error envelope unchanged; `{:user_service, in_umbrella: true}` left in edge mix.exs. Sub-slice 3 of ~12-18.
+- Next: Message (sub-slice 4), Media (5); then internal HTTP APIs + HTTP adapters, shared_infra extraction, per-service releases/Docker, optional DB-per-service, compose + container run.
+
 ## [2026-06-18] Slice: MICROSERVICES split sub-slice 2 — Conversation service-client boundary (in-process)
 - Status: ✅ green (zero behavior change; same pattern as Auth sub-slice 1)
 - Files changed: new `apps/shared_infra/lib/shared_infra/conversation_client.ex` (behaviour + dispatcher, adapter from `:shared_infra, :conversation_client_adapter`); new `apps/conversation_service/lib/conversation_service/conversation_client_in_process.ex` (`@behaviour SharedInfra.ConversationClient`, delegates to `ConversationService.{Conversations,Participants}`); `config/config.exs` (`conversation_client_adapter` default); converted edge call-sites in api_gateway/conversation_controller (10), api_gateway/message_controller membership check (1), realtime_gateway/topic_authorization (1) → `SharedInfra.ConversationClient.*`; new plain test `conversation_client_in_process_test.exs`. (conversation_service already deps shared_infra — no mix.exs change.)

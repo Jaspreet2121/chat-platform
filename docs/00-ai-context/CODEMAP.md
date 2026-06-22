@@ -377,6 +377,8 @@ Important files:
 - `apps/backend/apps/auth_service/lib/auth_service/auth_client_in_process.ex` (default in-process adapter delegating to `AuthService.Sessions/OTP/Tokens`; HTTP adapter is a later sub-slice)
 - `apps/backend/apps/shared_infra/lib/shared_infra/conversation_client.ex` (Conversation service-client boundary; adapter from `:shared_infra, :conversation_client_adapter`; edge apps call this instead of `ConversationService.*`)
 - `apps/backend/apps/conversation_service/lib/conversation_service/conversation_client_in_process.ex` (default in-process adapter delegating to `ConversationService.{Conversations,Participants}`)
+- `apps/backend/apps/shared_infra/lib/shared_infra/user_client.ex` (User service-client boundary; adapter from `:shared_infra, :user_client_adapter`; edge apps call this instead of `UserService.*`)
+- `apps/backend/apps/user_service/lib/user_service/user_client_in_process.ex` (default in-process adapter delegating to `UserService.Profiles`)
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/producer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/kafka/consumer.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/scylla/client.ex`

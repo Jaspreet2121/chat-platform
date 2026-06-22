@@ -181,7 +181,8 @@ Split the umbrella into separately-deployable service containers (network comms,
 
 - [x] **Sub-slice 1 — service-client boundary (Auth):** `SharedInfra.AuthClient` (behaviour + dispatcher) + `AuthService.AuthClientInProcess` (default, in-process). Edge apps call `SharedInfra.AuthClient.*` (no `AuthService.*` left); a future `AUTH_CLIENT_ADAPTER=http` drops in without touching call sites. Zero behavior change (200→203 plain, 268→271 pg).
 - [x] **Sub-slice 2 — service-client boundary (Conversation):** `SharedInfra.ConversationClient` + `ConversationService.ConversationClientInProcess` (default in-process). Edge apps (conversation_controller, message_controller membership authz, realtime topic_authorization) call `SharedInfra.ConversationClient.*` (no `ConversationService.*` left). Zero behavior change (203→205 plain, 271→273 pg).
-- [ ] Sub-slices 3-5 — repeat the client-boundary for User, Message, Media (each: behaviour + in-process adapter + convert edge call-sites, in-umbrella, verified).
+- [x] **Sub-slice 3 — service-client boundary (User):** `SharedInfra.UserClient` + `UserService.UserClientInProcess` (default in-process). api_gateway/user_controller calls `SharedInfra.UserClient.*` (no `UserService.*` left). Zero behavior change (205→207 plain, 273→275 pg).
+- [ ] Sub-slices 4-5 — repeat the client-boundary for Message, Media (each: behaviour + in-process adapter + convert edge call-sites, in-umbrella, verified).
 - [ ] Internal HTTP API per service (each service grows a Plug endpoint exposing its functions + error envelope) + HTTP client adapters (flip one caller→callee pair to network behind the flag, integration-test).
 - [ ] Extract `shared_infra` to a shareable (git) dependency; services pin it.
 - [ ] Per-service release + Dockerfile + runtime/config split.

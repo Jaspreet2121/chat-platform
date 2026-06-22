@@ -2,6 +2,18 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Microservices split sub-slice 3 — User service-client boundary (in-process)
+
+- **Context:** repeat the proven Auth/Conversation seam for UserService.
+- **Decision:** `SharedInfra.UserClient` (behaviour + dispatcher, adapter from `:shared_infra, :user_client_adapter`)
+  + `UserService.UserClientInProcess` (default, delegates to `UserService.Profiles` with identical shapes).
+  Functions: get_current_profile, get_public_profile, update_current_profile. api_gateway/user_controller
+  now calls `SharedInfra.UserClient.*`; no `UserService.*` calls remain in edge code (grep-confirmed).
+  user_service now deps shared_infra (no cycle). Future `USER_CLIENT_ADAPTER=http` drops in without touching
+  call sites.
+- **Status:** Implemented + verified, zero behavior change. plain `mix test` 205→207 (existing 205 INTACT +
+  2 delegation tests); pg 273→275. Sub-slice 3 of ~12-18. Next: Message, Media.
+
 ## [2026-06-18] Microservices split sub-slice 2 — Conversation service-client boundary (in-process)
 
 - **Context:** repeat the proven Auth seam (sub-slice 1) for ConversationService. `get_conversation` is

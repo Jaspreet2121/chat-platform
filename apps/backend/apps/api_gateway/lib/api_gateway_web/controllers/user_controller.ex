@@ -23,7 +23,7 @@ defmodule ApiGatewayWeb.UserController do
 
   def profile(conn, %{"user_id" => user_id} = params) do
     with {:ok, response} <-
-           UserService.Profiles.get_public_profile(Map.put(params, "user_id", user_id)) do
+           SharedInfra.UserClient.get_public_profile(Map.put(params, "user_id", user_id)) do
       json(conn, response)
     else
       {:error, :profile_invalid} -> invalid_request(conn)
@@ -31,7 +31,7 @@ defmodule ApiGatewayWeb.UserController do
   end
 
   defp placeholder_current_profile(conn, params) do
-    with {:ok, response} <- UserService.Profiles.get_current_profile(params) do
+    with {:ok, response} <- SharedInfra.UserClient.get_current_profile(params) do
       json(conn, response)
     end
   end
@@ -41,7 +41,7 @@ defmodule ApiGatewayWeb.UserController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
-           UserService.Profiles.get_current_profile(%{"user_id" => session.user_id}) do
+           SharedInfra.UserClient.get_current_profile(%{"user_id" => session.user_id}) do
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
@@ -52,7 +52,7 @@ defmodule ApiGatewayWeb.UserController do
 
   defp placeholder_update_current_profile(conn, params) do
     with :ok <- validate_update_payload(params),
-         {:ok, response} <- UserService.Profiles.update_current_profile(params) do
+         {:ok, response} <- SharedInfra.UserClient.update_current_profile(params) do
       json(conn, response)
     else
       _ -> invalid_request(conn)
@@ -65,7 +65,7 @@ defmodule ApiGatewayWeb.UserController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
-           UserService.Profiles.update_current_profile(
+           SharedInfra.UserClient.update_current_profile(
              Map.put(params, "user_id", session.user_id)
            ) do
       json(conn, response)
