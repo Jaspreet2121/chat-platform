@@ -2,6 +2,18 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-18] Microservices internal HTTP API — User service (copies the template)
+
+- **Context:** third internal HTTP API (Auth, Conversation done), copying the same template.
+- **Decision:** `UserService.HTTP.Router` (Plug) — routes 1:1 with `SharedInfra.UserClient`
+  (get_current_profile, get_public_profile, update_current_profile) → `UserService.Profiles` →
+  `encode_result`. Atom-keyed profile maps (`user_id, display_name, avatar_media_id, bio`) round-trip
+  via the shared envelope; `:profile_invalid` preserved. Listener `Plug.Cowboy` gated
+  `USER_HTTP_API_ENABLED` (+ `USER_HTTP_PORT`, default 4103), default off. user_service +plug/plug_cowboy/jason.
+- **Status:** Implemented + verified, zero behavior change. plain `mix test` 231→235 (existing 231 INTACT +
+  4 plain Plug.Test tests; `UserService.Supervisor` children `== []` in test → no listener at boot);
+  pg 299→303. Next: message/media internal APIs, then the HTTP client adapters.
+
 ## [2026-06-18] Microservices internal HTTP API — Conversation service (copies the Auth template)
 
 - **Context:** second internal HTTP API, copying the Auth template (`SharedInfra.InternalApi` + `TokenPlug`

@@ -79,6 +79,19 @@ returning atom-keyed maps must likewise document its key set here as it is built
 `:participant_owner_remove_forbidden`. (`decode_result` rebuilds these via `String.to_existing_atom/1`,
 recursing into nested maps/lists.)
 
+## User internal API
+
+`UserService.HTTP.Router` (Plug; gated `USER_HTTP_API_ENABLED` + `USER_HTTP_PORT`, default 4103):
+
+| Method + path | In-process call |
+|---|---|
+| `POST /internal/profiles/current` | `Profiles.get_current_profile/1` |
+| `POST /internal/profiles/public` | `Profiles.get_public_profile/1` |
+| `POST /internal/profiles/update` | `Profiles.update_current_profile/1` |
+
+Atom-keyed response key set (client adapter rehydrates): `user_id, display_name, avatar_media_id, bio`.
+Error atom (preserved): `:profile_invalid`.
+
 ## Transport auth (NEW security surface)
 
 `SharedInfra.InternalApi.TokenPlug` requires the `x-internal-token` header to match
@@ -103,6 +116,7 @@ encode/decode round-trip + TokenPlug are unit-tested in `SharedInfra.InternalApi
 
 - ✅ Auth internal HTTP API (server side), `SharedInfra.InternalApi` + `TokenPlug` — built, gated off.
 - ✅ Conversation internal HTTP API (`ConversationService.HTTP.Router`) — built, gated off.
-- ⏳ User / Message / Media internal APIs — copy this template.
+- ✅ User internal HTTP API (`UserService.HTTP.Router`) — built, gated off.
+- ⏳ Message / Media internal APIs — copy this template.
 - ⏳ HTTP client adapters (`*ClientHttp`) — flip `SharedInfra.*Client` to network behind a flag.
 - ⏳ Per-service releases / Dockerfiles / compose.

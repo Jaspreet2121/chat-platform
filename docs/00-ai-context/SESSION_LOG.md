@@ -1,5 +1,13 @@
 # Session Log
 
+## [2026-06-18] Slice: MICROSERVICES internal HTTP API — User (copies the template)
+- Status: ✅ green (zero behavior change; nothing calls it — in-process adapter stays default)
+- Files changed: new `apps/user_service/lib/user_service/http/router.ex` (`UserService.HTTP.Router`, Plug, routes 1:1 with `SharedInfra.UserClient`); `apps/user_service/lib/user_service/application.ex` (gated `Plug.Cowboy` child); `apps/user_service/mix.exs` (+plug, plug_cowboy, jason); `config/config.exs` (`user_service http_api_enabled`); `config/runtime.exs` (`USER_HTTP_PORT`); new test `user_service/test/user_service/http/router_test.exs`; INTERNAL_API.md (user routes + key set). Reused `SharedInfra.InternalApi` + `TokenPlug`.
+- Routes: get_current_profile, get_public_profile, update_current_profile → in-process call → `encode_result`. Profile responses atom-keyed (`user_id, display_name, avatar_media_id, bio`); `:profile_invalid` preserved. Gated `USER_HTTP_API_ENABLED` (+ `USER_HTTP_PORT`, default 4103), default off.
+- Verification: mix format clean; compile --warnings-as-errors clean; `UserService.Supervisor` children `== []` in test env (no listener at boot); `mix test` → **235 passed / 73 excluded, 0 failures** (231 + 4 plain Plug.Test tests incl. decode-fidelity for atom-keyed profile + TokenPlug reject); `mix test --include postgres_integration` → **303 passed, 0 failures** (299 + 4); web untouched.
+- Non-negotiables: PUBLIC envelope untouched; error atoms preserved; listener gated off (children==[]); fidelity proven (decode_result(body) == in-process); Docker-free; only User touched.
+- Next: message/media internal APIs (copy the template); then HTTP client adapters flip `SharedInfra.*Client` to network behind a flag.
+
 ## [2026-06-18] Slice: MICROSERVICES internal HTTP API — Conversation (copies the Auth template)
 - Status: ✅ green (zero behavior change; nothing calls it — in-process adapter stays default)
 - Files changed: new `apps/conversation_service/lib/conversation_service/http/router.ex` (`ConversationService.HTTP.Router`, Plug, routes 1:1 with `SharedInfra.ConversationClient`); `apps/conversation_service/lib/conversation_service/application.ex` (gated `Plug.Cowboy` child); `apps/conversation_service/mix.exs` (+plug, plug_cowboy); `config/config.exs` (`conversation_service http_api_enabled`); `config/runtime.exs` (prod reads `CONVERSATION_HTTP_PORT`); new test `conversation_service/test/conversation_service/http/router_test.exs`; `docs/09-devops/INTERNAL_API.md` (conversation routes + atom-key sets + error atoms). Reused `SharedInfra.InternalApi` + `TokenPlug` (no new shared code).
