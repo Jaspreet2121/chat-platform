@@ -45,6 +45,8 @@ defmodule SharedInfra.HttpClient do
   end
 
   defp do_request(method, url, headers, body, unavailable, decode_opts) do
+    ensure_req_started()
+
     case Req.request(
            method: method,
            url: url,
@@ -74,6 +76,17 @@ defmodule SharedInfra.HttpClient do
     kind, value ->
       Logger.warning("internal HTTP call #{kind}: #{inspect(value)}")
       {:error, unavailable}
+  end
+
+  # Req's default Finch pool is started lazily under `Req.FinchSupervisor`, part of the `:req`
+  # application's supervision tree. If `:req` isn't started (a fresh per-app test boot / a release
+  # that didn't start it), the lazy `start_child` hits a non-existent supervisor → `exit :noproc`.
+  # `ensure_all_started/1` is idempotent (no-op once started), so this guarantees the pool exists
+  # before every call, across CI/local/prod alike. Layer 1 (extra_applications) covers the normal
+  # boot; this is the bulletproof request-path backstop.
+  defp ensure_req_started do
+    Application.ensure_all_started(:req)
+    :ok
   end
 
   defp decode(body, unavailable, decode_opts) do

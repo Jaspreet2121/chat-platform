@@ -1,5 +1,15 @@
 # Session Log
 
+## [2026-06-24] Slice: ensure :req started → fix Finch pool :noproc (CI-proven follow-up to the Req swap)
+- Status: ✅ green on a COLD rebuild; real proof = CI `integration` job green on push.
+- Root cause (CI run a76bdf1): after the :httpc→Req swap, the inets/`:http_util` error was GONE (Req works on OTP 27.3), but internal HTTP calls hit `{:noproc, {GenServer, :call, [Req.FinchSupervisor, ...]}}` — the `:req` app wasn't started in CI's per-app test boot, so Req's default Finch pool supervisor was absent → `catch` mapped to `{:error, :*_unavailable}` → user_service http_integration assertions failed (24 tests, 2 failures).
+- Why local passed: warm umbrella boot started `:req`; CI's clean per-app boot didn't. Reproduced locally ONLY after `rm -rf _build deps` (cold rebuild) — warm boot masked it.
+- Fix (both layers): `apps/shared_infra/mix.exs` (`:req` added to `extra_applications` → starts with the app); `apps/shared_infra/lib/shared_infra/http_client.ex` (`ensure_req_started/0` = `Application.ensure_all_started(:req)`, called at top of `do_request/6` before `Req.request` — idempotent request-path backstop). DECISION_LOG.
+- Latent prod bug: a release not starting `:req` would 503 every internal service→service call — surfaced by the integration job, not the warm local suite.
+- Contract unchanged: idempotent ensure; transport/decode/failure-mapping identical.
+- Verification (cold rebuild): compile --warnings-as-errors clean; plain `mix test` **255/89** unchanged; `--include postgres_integration --include http_integration` → **339/0**, zero `:noproc`/`FinchSupervisor` warnings.
+- Next: commit + push → watch CI `integration` + `backend` go green.
+
 ## [2026-06-24] Slice: HttpClient transport :httpc → Req (CI-proven inets fragility)
 - Status: ✅ green locally; real proof = CI `integration` job green on push.
 - Root cause (CI-proven, not app bug): GitHub runner OTP 27.3.x inets had `http_util_which=:non_existing` (temporary INETS DIAG line: otp=27, inets_vsn=9.3.2.6) → `:httpc.request` → `:http_util.timestamp/0` UndefinedFunctionError on every http_integration round-trip. Local (OTP 29, inets 9.7.1) + prod Docker have working :httpc, so it passed locally for 3 attempts. Known :httpc/inets env fragility across inets 8.x/9.x.

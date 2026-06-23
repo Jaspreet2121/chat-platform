@@ -2,6 +2,34 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-24] `:req` not started → Finch pool `:noproc` (CI-proven follow-up to the `:httpc`→Req swap)
+
+- **What:** after swapping to Req, internal HTTP calls in CI's per-app test boot hit
+  `{:noproc, {GenServer, :call, [Req.FinchSupervisor, ...]}}` — the `:req` application wasn't started, so
+  Req's default Finch pool supervisor (`Req.FinchSupervisor`) was absent and the lazy pool `start_child`
+  exited; the adapter's `catch` then mapped it to `{:error, :*_unavailable}`. Fixed with BOTH layers:
+  (a) `:req` added to `shared_infra` `extra_applications`
+  ([shared_infra/mix.exs:25](../../apps/backend/apps/shared_infra/mix.exs#L25)) so it starts with the app;
+  (b) `Application.ensure_all_started(:req)` on the request path —
+  `ensure_req_started/0` ([http_client.ex:87-88](../../apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex#L87))
+  called at the top of `do_request/6` before `Req.request`
+  ([http_client.ex:48](../../apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex#L48)).
+- **Why it passed locally but failed in CI:** the local **warm umbrella** boot happened to start `:req`; CI's
+  **clean per-app** boot did not. Proven by CI run a76bdf1 (integration job): the inets/`:http_util` error was
+  fully GONE (Req transport works on the OTP-27.3 runner), replaced by the Finch-pool `:noproc`. Reproduced
+  locally only after a **cold rebuild** (`rm -rf _build deps`) — the warm boot had masked it. This is the same
+  class of cross-environment boot-path gap the temporary `INETS DIAG` exposed for inets.
+- **Latent prod impact:** a release that didn't start `:req` would have 503'd EVERY internal service→service
+  call — surfaced by the integration job, not by the warm local suite. Layer (a) covers normal app/release boot;
+  layer (b) is the bulletproof request-path backstop.
+- **Contract unchanged:** `ensure_all_started(:req)` is idempotent (no-op where already started); all
+  transport/decode/failure-mapping behavior identical (timeouts, `decode_body: false`, `decode_result/2` +
+  `skip_atomize`, `{:error, :*_unavailable}` mapping untouched).
+- **Status:** Implemented + verified on a COLD rebuild (`rm -rf _build deps` → `mix deps.get`): `mix compile
+  --warnings-as-errors` clean; plain `mix test` **255/89** unchanged (Docker-free); `mix test --include
+  postgres_integration --include http_integration` → **339/0** with ZERO `:noproc`/`FinchSupervisor` warnings.
+  Real proof remains the CI `integration` job going green on push.
+
 ## [2026-06-24] HttpClient transport — swap OTP `:httpc` → Req (CI-proven inets fragility)
 
 - **What:** the internal service→service HTTP transport in `SharedInfra.HttpClient` changed from OTP `:httpc`
