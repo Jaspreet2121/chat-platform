@@ -1,5 +1,14 @@
 # Session Log
 
+## [2026-06-24] Slice: HttpClient transport :httpc → Req (CI-proven inets fragility)
+- Status: ✅ green locally; real proof = CI `integration` job green on push.
+- Root cause (CI-proven, not app bug): GitHub runner OTP 27.3.x inets had `http_util_which=:non_existing` (temporary INETS DIAG line: otp=27, inets_vsn=9.3.2.6) → `:httpc.request` → `:http_util.timestamp/0` UndefinedFunctionError on every http_integration round-trip. Local (OTP 29, inets 9.7.1) + prod Docker have working :httpc, so it passed locally for 3 attempts. Known :httpc/inets env fragility across inets 8.x/9.x.
+- Tried first (don't re-tread): (a) `ensure_all_started(:inets)` — insufficient (module genuinely absent, not unstarted); (b) bump CI OTP/Elixir to 29.0/1.18.4-otp-29 — rejected (latest 27.x ships the broken inets; `-otp-29` setup-beam build availability unresolved). Chose Req: version-independent, own transport, removes inets dep, already the planned direction.
+- Files: `apps/shared_infra/lib/shared_infra/http_client.ex` (`Req.request` replaces the lone `:httpc.request`; `decode_body: false`; removed `ensure_inets_started/0` + temp `INETS DIAG` `:persistent_term` probe); `apps/shared_infra/mix.exs` (`+ {:req, "~> 0.5"}`; dropped `:inets` from extra_applications, kept `:ssl` for TLS); `mix.lock` (req 0.6.2 + finch/mint/nimble_pool/hpax/nimble_options). `.github/workflows/backend-ci.yml` OTP bump REVERTED (stays 27.3/1.18.4 — Req is the fix). DECISION_LOG, AI_CONTEXT.
+- Contract preserved (zero behavior change): x-internal-token header; POST content-type application/json + Jason body; decode_body:false → our `decode_result/2` (atom rehydration + `skip_atomize: ["metadata"]`) unchanged; same connect/receive timeouts + `retry: false`; same `{:error, :*_unavailable}` for non-200/transport-fail/raise/throw.
+- Verification: format clean; compile --warnings-as-errors clean; plain `mix test` **255/89** unchanged; `--include postgres_integration --include http_integration` → **339/0**.
+- Next: commit + push → watch CI `integration` + `backend` go green. Then CI Layer 3 (compose differential, label/nightly).
+
 ## [2026-06-23] Slice: HttpClient fix — ensure :inets started before :httpc (CI-surfaced latent prod bug)
 - Status: ✅ green locally (no regression); real proof = the CI `integration` job going green.
 - Root cause (single, environmental — NOT logic): fresh CI runner had `:inets` unstarted → `:httpc.request` raised `:http_util.timestamp/0` UndefinedFunctionError → rescue turned it into a spurious `{:error, :*_unavailable}`, failing ALL 5 adapters' http_integration round-trips. pg suite (323) all passed. Also a latent PROD bug (release container would hit the same).

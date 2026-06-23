@@ -2,6 +2,46 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-24] HttpClient transport — swap OTP `:httpc` → Req (CI-proven inets fragility)
+
+- **What:** the internal service→service HTTP transport in `SharedInfra.HttpClient` changed from OTP `:httpc`
+  to **Req** (Finch/Mint) — one isolated module
+  ([http_client.ex:48](../../apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex#L48), `Req.request(...)`)
+  + a new dep `{:req, "~> 0.5"}` ([shared_infra/mix.exs:35](../../apps/backend/apps/shared_infra/mix.exs#L35),
+  resolved to req 0.6.2 + finch/mint/nimble_pool/hpax/nimble_options in mix.lock). `:inets` dropped from
+  `shared_infra` `extra_applications`; `:ssl` retained for TLS
+  ([shared_infra/mix.exs:23](../../apps/backend/apps/shared_infra/mix.exs#L23)).
+- **Why (real, CI-proven):** the GitHub runner's OTP 27.3.x build had `:http_util` as `:non_existing` — proven by
+  a temporary `INETS DIAG` line on the CI `integration` job: `otp=27 inets_vsn=9.3.2.6 http_util_which=:non_existing`.
+  `:httpc.request` internally calls `:http_util.timestamp/0`, which raised `UndefinedFunctionError` on EVERY
+  `http_integration` round-trip (the adapter's rescue then masked it as `{:error, :*_unavailable}`). This is a
+  known `:httpc`/inets environment fragility (seen across inets 8.x/9.x), NOT an app bug. Local (OTP 29, inets
+  9.7.1) and the prod Docker image both have a working `:httpc`, so only the CI runner's build was affected — which
+  is why http_integration passed locally across all prior attempts.
+- **What was tried first (so nobody re-treads):** (a) `Application.ensure_all_started(:inets)` in `do_request` —
+  insufficient: the module was genuinely ABSENT from the runner's code path (`:non_existing`), not merely
+  unstarted. (b) Bumping CI OTP/Elixir (tried OTP 29.0 / `1.18.4-otp-29`) — rejected: the latest 27.x already
+  ships the broken inets, and a `1.18.4-otp-29` precompiled build's availability in `setup-beam` was an unresolved
+  risk (Elixir 1.18 predates OTP 29). Req was chosen instead: version-independent, carries its own pure-Elixir
+  transport, removes the inets dependency for CI/local/prod alike, and was already the project's planned direction.
+- **Contract preserved (zero behavior change):** same headers incl. `x-internal-token`
+  ([:91](../../apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex#L91)); POST `content-type:
+  application/json` with a `Jason`-encoded body
+  ([:36-37](../../apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex#L36)); `decode_body: false`
+  ([:53](../../apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex#L53)) so JSON parsing stays ours
+  (`decode/3` → `SharedInfra.InternalApi.decode_result/2`,
+  [:79-86](../../apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex#L79)) — atom-key rehydration +
+  `skip_atomize: ["metadata"]` ([message_client_http.ex:19](../../apps/backend/apps/shared_infra/lib/shared_infra/message_client_http.ex#L19))
+  unchanged; same connect/receive timeouts ([:55-56](../../apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex#L55),
+  `retry: false`); same `{:error, :*_unavailable}` mapping for non-200 / transport-failure / raise / throw
+  ([:62-76](../../apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex#L62)).
+- **Status:** Implemented + verified locally. `mix compile --warnings-as-errors` clean; plain `mix test`
+  **255/89** unchanged (Docker-free; default path never touches the transport); `mix test --include
+  postgres_integration --include http_integration` → **339/0**. CI version bump fully reverted (jobs stay on OTP
+  27.3 / Elixir 1.18.4) — Req, not an OTP bump, is the fix. The temporary `INETS DIAG` probe is removed. THE REAL
+  PROOF is the CI `integration` job going green on push — exactly the value Layer 2 delivered (it surfaced a real
+  cross-environment transport bug the in-process suite never could).
+
 ## [2026-06-23] HttpClient — ensure `:inets` started before `:httpc` (CI-surfaced latent prod bug)
 
 - **Context:** the new `integration` job's first run failed every `http_integration` round-trip across all 5

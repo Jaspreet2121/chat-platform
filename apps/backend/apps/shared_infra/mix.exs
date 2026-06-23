@@ -17,10 +17,10 @@ defmodule SharedInfra.MixProject do
 
   def application do
     [
-      # :inets/:ssl provide :httpc, the HTTP client used by SharedInfra.HttpClient for the
-      # service→service HTTP adapters. Zero new deps (ships with OTP); isolated behind the
-      # helper so it can be swapped for Req when a package registry is reachable.
-      extra_applications: [:logger, :inets, :ssl]
+      # :ssl is retained for TLS (e.g. postgrex / Req's Mint transport over https). The
+      # service→service HTTP client is now Req (Finch/Mint) in SharedInfra.HttpClient — no longer
+      # OTP :httpc, so :inets is no longer needed.
+      extra_applications: [:logger, :ssl]
     ]
   end
 
@@ -28,6 +28,11 @@ defmodule SharedInfra.MixProject do
     [
       {:brod, "~> 4.0"},
       {:jason, "~> 1.4"},
+      # HTTP client for the service→service HTTP adapters (SharedInfra.HttpClient). Replaces OTP
+      # :httpc, whose inets ships :http_util inconsistently across builds (a fresh CI runner's
+      # OTP 27.3 inets had http_util_which=:non_existing → :httpc raised). :req auto-starts its
+      # Finch pool when the app boots — no supervision-tree change.
+      {:req, "~> 0.5"},
       # For SharedInfra.InternalApi.TokenPlug (internal service-to-service auth plug).
       {:plug, "~> 1.14"}
     ]
