@@ -1,5 +1,13 @@
 # Session Log
 
+## [2026-06-24] Slice: CI Layer 3 — gated compose distributed-failure differential (gateway→auth 401/503/recover)
+- Status: ✅ verified locally end-to-end; gated job proven on CI via manual workflow_dispatch.
+- Files: NEW `scripts/ci/compose_differential.sh` (committed, `set -euo pipefail`, +x); `.github/workflows/backend-ci.yml` (+`workflow_dispatch`/`schedule` triggers; NEW `compose-integration` job, gated + `timeout-minutes: 30`). DECISION_LOG, ROADMAP.
+- Script: against a running `docker-compose.prod.yml`, asserts `GET /api/v1/auth/session` (bogus token) on `:4000` → (a) auth up = 401 `auth.session_invalid`; (b) `stop auth` = 503 `auth.unavailable` (gateway alive, no crash); (c) `start auth` = 401 (recovery). Polls /health + each state (`READY_TIMEOUT=90`); exits non-zero on mismatch; caller owns up/down.
+- Job: gated `if:` (workflow_dispatch || schedule nightly `0 4 * * *` || PR label `ci:compose`) so normal push/PR SKIP it; `up -d --build --wait` → script → `if: always()` `down -v`; dummy non-placeholder secrets via job `env:` (satisfy prod guard, compose interpolates). `backend` + `integration` jobs byte-unchanged.
+- Verification: built 6 images, `up --wait` (all healthy), script PASSED all 3 states (401/503/401), torn down `-v`, removed temp `.env`; fast gate `mix test` **255/89** unchanged (Docker-free). YAML valid (ruby parse; timeout-minutes=30, gate correct).
+- Next: optional DB-per-service (deferred — cross-service FKs); notification_service container; full OTP+message round-trip (needs Mailpit); re-enable Kafka/MinIO when staged; deploy 3b.
+
 ## [2026-06-24] Slice: ensure :req started → fix Finch pool :noproc (CI-proven follow-up to the Req swap)
 - Status: ✅ green on a COLD rebuild; real proof = CI `integration` job green on push.
 - Root cause (CI run a76bdf1): after the :httpc→Req swap, the inets/`:http_util` error was GONE (Req works on OTP 27.3), but internal HTTP calls hit `{:noproc, {GenServer, :call, [Req.FinchSupervisor, ...]}}` — the `:req` app wasn't started in CI's per-app test boot, so Req's default Finch pool supervisor was absent → `catch` mapped to `{:error, :*_unavailable}` → user_service http_integration assertions failed (24 tests, 2 failures).

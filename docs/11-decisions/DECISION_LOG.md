@@ -2,6 +2,30 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-24] CI Layer 3 — gated compose distributed-failure differential (gateway→auth 401/503/recover)
+
+- **Context:** Layers 1-2 (fast Docker-free `mix test`; pg + http_integration against a Postgres service) guard
+  the in-process + adapter paths, but nothing in CI exercised the REAL multi-container network path or the
+  graceful-degradation contract proven live in the compose-prod slice.
+- **Decision — committed differential script:** `scripts/ci/compose_differential.sh` (`set -euo pipefail`,
+  executable) drives the gateway→auth contract against a RUNNING `docker-compose.prod.yml` stack via the
+  documented endpoint `GET /api/v1/auth/session` (bogus token) on the published gateway port `:4000`:
+  (a) auth up → **401 `auth.session_invalid`**; (b) `docker compose stop auth` → **503 `auth.unavailable`**
+  (transport-failure → 503, gateway alive, no crash); (c) `start auth` → **401** (recovery). It polls `/health`
+  + each expected state with a timeout (`READY_TIMEOUT=90`), prints PASS/FAIL + body, exits non-zero on
+  mismatch. Version-controlled (runnable by CI and humans) rather than fragile inline YAML; the caller owns
+  stack up/down.
+- **Decision — gated `compose-integration` job** in
+  [.github/workflows/backend-ci.yml](../../.github/workflows/backend-ci.yml): runs ONLY on `workflow_dispatch`,
+  the nightly `schedule` (cron `0 4 * * *`), or a PR labelled `ci:compose` (the `if:` guard). NOT on the
+  per-push fast path — the cold build of 6 images is minutes of wall-clock and must not slow normal feedback.
+  `timeout-minutes: 30` (fail-fast on a hung build); `up -d --build --wait` → run the script → `if: always()`
+  `down -v` teardown. Dummy non-placeholder secrets via job `env:` satisfy the prod guard (compose interpolates
+  them). The `backend` and `integration` jobs are byte-unchanged.
+- **Status:** Implemented + verified LOCALLY end-to-end: built 6 images, `up --wait`, the script PASSED all 3
+  states (401 / 503 / 401), torn down with `-v`; fast gate `mix test` **255/89** unchanged (Docker-free). The
+  gated job won't auto-run on push (by design) — proven on CI via manual `workflow_dispatch`.
+
 ## [2026-06-24] `:req` not started → Finch pool `:noproc` (CI-proven follow-up to the `:httpc`→Req swap)
 
 - **What:** after swapping to Req, internal HTTP calls in CI's per-app test boot hit

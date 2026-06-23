@@ -5,6 +5,11 @@ on:
     branches:
       - main
   pull_request:
+  # Layer 3 (compose-integration) is heavy (Docker build + multi-container bring-up), so it is
+  # NOT on the per-push fast path — it runs on manual dispatch, nightly, or a PR labelled ci:compose.
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * *" # nightly 04:00 UTC
 
 permissions:
   contents: read
@@ -135,3 +140,44 @@ jobs:
 
       - name: Test (postgres_integration + http_integration)
         run: mix test --include postgres_integration --include http_integration
+
+  # Layer 3: the REAL distributed-failure proof — brings up docker-compose.prod.yml (gateway +
+  # services as separate containers, gateway flipped to HTTP adapters) and runs the gateway→auth
+  # 401/503/recovery differential over the network. GATED (NOT on the per-push fast path): runs only
+  # on manual dispatch, the nightly schedule, or a PR explicitly labelled `ci:compose`. Does NOT
+  # touch the `backend` or `integration` jobs.
+  compose-integration:
+    name: Compose integration (gateway→auth 401/503/recover differential)
+    runs-on: ubuntu-latest
+    # Fail-fast on a hung cold build (6 images); the differential script keeps READY_TIMEOUT=90.
+    timeout-minutes: 30
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'ci:compose'))
+
+    # Dummy non-placeholder secrets so config/runtime.exs's prod guard passes (these only satisfy the
+    # guard; nothing real). compose interpolates them into docker-compose.prod.yml's x-secrets.
+    env:
+      SECRET_KEY_BASE: ci_compose_secret_key_base_0123456789abcdef0123456789abcdef
+      TOKEN_SECRET: ci_compose_token_secret_0123456789abcdef
+      OTP_SECRET: ci_compose_otp_secret_0123456789abcdef
+      INTERNAL_API_TOKEN: ci_compose_internal_token_0123456789abcdef
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ubuntu-latest ships Docker + Compose v2. Build images + bring the stack up; --wait blocks
+      # until postgres is healthy and the rest are running (the differential script then waits for
+      # the gateway's /health + the gateway→auth path before asserting).
+      - name: Build + start the prod-shaped stack
+        run: docker compose -f docker-compose.prod.yml up -d --build --wait
+
+      - name: Distributed-failure differential (401 / 503 / recovery)
+        run: bash scripts/ci/compose_differential.sh
+
+      - name: Tear down (always)
+        if: always()
+        run: docker compose -f docker-compose.prod.yml down -v
