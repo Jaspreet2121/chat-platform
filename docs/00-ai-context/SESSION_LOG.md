@@ -1,5 +1,14 @@
 # Session Log
 
+## [2026-06-23] Slice: CI rework Layer 2 — `integration` job (pg + http_integration in CI)
+- Status: ✅ green locally (CI-config only; the real proof is the GitHub Actions run on this push)
+- Files: `.github/workflows/backend-ci.yml` (NEW `integration` job, parallel to the UNCHANGED `backend` fast gate), `docs/09-devops/LOCAL_DEV_SETUP.md` (stale-doc fix: load ALL init/*.sql not just 010; CI-job note), DECISION_LOG, AI_CONTEXT, ROADMAP.
+- `integration` job: ubuntu-latest, setup-beam OTP 27.3/Elixir 1.18.4, cmake+build-essential+postgresql-client, same deps/_build cache; `postgres:16` service container (health-checked) → `chat_platform_test`; loads ALL `infra/docker/postgres/init/*.sql` in filename order (001..042 → 36 tables) with `ON_ERROR_STOP=1`; `POSTGRES_TEST_*` env → service; runs `mix test --include postgres_integration --include http_integration`.
+- Fast gate UNTOUCHED: `backend` job still `mix format --check-formatted` / `compile --warnings-as-errors` / `mix test` (255/89, Docker-free).
+- Verification: workflow YAML valid (ruby parse — jobs: backend, integration; integration service: postgres; test step has both --include tags; backend `mix test` byte-unchanged). Local `mix test` still **255 / 89, 0 failures** (no app/test code changed). Real proof = the Actions run reproducing pg 323 + 5 adapters' http_integration green.
+- Risks to watch in run #1: http_integration fixed-port binding on the shared runner; schema-load order/ON_ERROR_STOP; psql client availability (installed explicitly).
+- Next: Layer 3 — compose-integration job (gateway→auth 401/503/recover differential via curl), label/nightly-gated so it doesn't slow PRs.
+
 ## [2026-06-23] Slice: MICROSERVICES split — docker-compose.prod.yml (first multi-container bring-up) — CORE SPLIT PROVEN LIVE
 - Status: ✅ green (compose + docs + a .gitignore exception; no app code). Proven live with Docker.
 - Files: NEW `docker-compose.prod.yml` (repo root; 7 containers on `chatnet`), NEW `.env.prod.example` (secret template), `.gitignore` (+`!.env.prod.example`). DEPLOYMENT.md (compose runbook + ports table + schema-via-initdb + startup/503 + debug loop), DECISION_LOG, AI_CONTEXT, ROADMAP, CODEMAP.

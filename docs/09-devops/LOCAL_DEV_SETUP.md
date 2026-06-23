@@ -183,12 +183,20 @@ plain `mix test` so the normal suite does not require a live database.
 
 From the project root, start PostgreSQL and prepare the test database:
 
+Load **ALL** the init SQL in filename order (001..042 → 36 tables), not just
+`010` — the `postgres_integration` suite also needs message-store (020),
+projections (030) and notifications (040-042). Loading only `010` will fail
+those tests. (This matches what the CI `integration` job and the compose
+`docker-entrypoint-initdb.d` mount do.)
+
 ```bash
 cd infra/docker
 docker compose up -d postgres
 docker exec chat-platform-postgres createdb -U chat_user chat_platform_test
 cd ../..
-docker exec -i chat-platform-postgres psql -U chat_user -d chat_platform_test < infra/docker/postgres/init/010_initial_schema.sql
+for f in $(ls infra/docker/postgres/init/*.sql | sort); do
+  docker exec -i chat-platform-postgres psql -U chat_user -d chat_platform_test -v ON_ERROR_STOP=1 < "$f"
+done
 ```
 
 If the database already exists, drop and recreate it before loading the schema:
@@ -196,7 +204,9 @@ If the database already exists, drop and recreate it before loading the schema:
 ```bash
 docker exec chat-platform-postgres dropdb -U chat_user --if-exists chat_platform_test
 docker exec chat-platform-postgres createdb -U chat_user chat_platform_test
-docker exec -i chat-platform-postgres psql -U chat_user -d chat_platform_test < infra/docker/postgres/init/010_initial_schema.sql
+for f in $(ls infra/docker/postgres/init/*.sql | sort); do
+  docker exec -i chat-platform-postgres psql -U chat_user -d chat_platform_test -v ON_ERROR_STOP=1 < "$f"
+done
 ```
 
 ### Docker PostgreSQL on Port 5432
@@ -261,10 +271,14 @@ The default backend GitHub Actions workflow does not start Docker services. It
 runs `mix deps.get`, `mix format --check-formatted`,
 `mix compile --warnings-as-errors`, and `mix test` from `apps/backend`.
 
-PostgreSQL integration tests remain opt-in locally for now. A CI integration
-job should create a PostgreSQL service database, load
-`infra/docker/postgres/init/010_initial_schema.sql`, set `POSTGRES_TEST_*`
-variables, and then run `mix test --include postgres_integration`.
+PostgreSQL integration tests remain opt-in locally. In CI the `integration` job
+([.github/workflows/backend-ci.yml](../../.github/workflows/backend-ci.yml))
+does this automatically: a `postgres:16` service container, loads ALL of
+`infra/docker/postgres/init/*.sql` (001..042) into `chat_platform_test`, sets
+`POSTGRES_TEST_*`, and runs
+`mix test --include postgres_integration --include http_integration` — locking
+both the DB suite (323) and the 5 HTTP client adapters' round-trips into CI,
+parallel to (and without touching) the fast Docker-free `backend` gate.
 
 The Redis-backed rate limiter and MinIO/S3 presigned URL adapters are available
 behind config. ScyllaDB message storage has a shared client boundary, with live

@@ -52,3 +52,86 @@ jobs:
 
       - name: Test
         run: mix test
+
+  # Layer 2: locks the DISTRIBUTED/DB behavior into CI without touching the fast gate above.
+  # Runs the already-existing postgres_integration (323) + http_integration (the 5 HTTP client
+  # adapters' real-localhost round-trips) tags against a Postgres service container. Parallel to
+  # `backend`; never blocks the quick Docker-free signal. (Compose/network differential = Layer 3,
+  # a later label/nightly-gated job — NOT here.)
+  integration:
+    name: Integration (postgres_integration + http_integration)
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: apps/backend
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: chat_user
+          POSTGRES_PASSWORD: chat_password
+          POSTGRES_DB: chat_platform_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U chat_user -d chat_platform_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    # config/test.exs reads these to point the Repos at the service container (still :test, so the
+    # placeholder secrets are fine — no prod guard on this path).
+    env:
+      POSTGRES_TEST_HOST: localhost
+      POSTGRES_TEST_PORT: "5432"
+      POSTGRES_TEST_USER: chat_user
+      POSTGRES_TEST_PASSWORD: chat_password
+      POSTGRES_TEST_DATABASE: chat_platform_test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Erlang and Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3"
+          elixir-version: "1.18.4"
+
+      - name: Install build toolchain (cmake for brod/crc32cer NIF) + psql client
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake build-essential postgresql-client
+
+      - name: Cache Mix deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            apps/backend/deps
+            apps/backend/_build
+          key: ${{ runner.os }}-backend-mix-${{ hashFiles('apps/backend/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-backend-mix-
+
+      # CRITICAL: load the WHOLE init set in filename order (001..042 → 36 tables), NOT just 010.
+      # The pg suite covers message-store (020), projections (030) and notifications (040-042);
+      # loading only 010_initial_schema.sql would fail those tests. ON_ERROR_STOP aborts on any
+      # SQL error so a bad load fails the job loudly instead of running tests against half a schema.
+      - name: Load full schema into chat_platform_test (ALL init/*.sql in order)
+        working-directory: ${{ github.workspace }}
+        env:
+          PGPASSWORD: chat_password
+        run: |
+          for f in $(ls infra/docker/postgres/init/*.sql | sort); do
+            echo "Applying $f"
+            psql -h localhost -p 5432 -U chat_user -d chat_platform_test -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Install dependencies
+        run: mix deps.get
+
+      - name: Compile
+        run: mix compile --warnings-as-errors
+
+      - name: Test (postgres_integration + http_integration)
+        run: mix test --include postgres_integration --include http_integration

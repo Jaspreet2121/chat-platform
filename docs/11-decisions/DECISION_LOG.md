@@ -2,6 +2,32 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-23] CI rework — layered CI: fast gate (unchanged) + `integration` job (pg + http_integration in CI)
+
+- **Context:** CI only ran the fast Docker-free umbrella `mix test` (255/89, in-process path). The DB suite
+  (323) and the 5 HTTP client adapters' `http_integration` round-trips ran ONLY locally → the microservices
+  runtime + the wire contract were unguarded; a change could break a network/DB path and CI stay green.
+- **Decision — add a SECOND job `integration`, parallel to `backend`, leaving the fast gate UNTOUCHED.** Same
+  triggers/toolchain (setup-beam OTP 27.3/Elixir 1.18.4, cmake/build-essential, same deps/_build cache key) +
+  a `postgres:16` SERVICE container (health-checked) creating `chat_platform_test`. Runs
+  `mix test --include postgres_integration --include http_integration`. Layer 1 (fast Docker-free `mix test`,
+  255/89) stays the quick signal on every push; Layer 2 locks the distributed/DB behavior without slowing it.
+- **Decision — load the FULL schema, not just 010.** The job loads ALL `infra/docker/postgres/init/*.sql` in
+  filename order (001..042 → 36 tables) with `ON_ERROR_STOP=1`. The 323 suite needs message-store (020),
+  projections (030), notifications (040-042); loading only `010_initial_schema.sql` (as the stale
+  LOCAL_DEV_SETUP.md said) would fail those tests. Fixed the doc to match (the doc + CI job now agree).
+- **Decision — secrets:** Layer 2 runs in `:test` (placeholder secrets fine — no prod guard); only Layer 3
+  (compose, `:prod`) will need dummy CI secrets. **Per-service test jobs deferred** (umbrella suite + the two
+  integration tags already cover each service; per-service jobs add N× overhead for little signal — revisit if
+  repos/release cadences diverge). **Compose/network differential = Layer 3**, a later label/nightly-gated job
+  (heavy image build; must not slow PRs) — NOT in this slice.
+- **Status:** Implemented. Workflow YAML validated locally (both jobs parse; `backend` `mix test` byte-unchanged;
+  `integration` has the postgres service + the two `--include` tags). Fast gate locally still 255/89. CI-config
+  only — no app/test code. **The real proof is the GitHub Actions run:** the `integration` job must reproduce
+  the local numbers (pg 323 + the 5 adapters' http_integration green) against the service container with the
+  full schema; watch the first run. Risks to watch in run #1: http_integration fixed-port binding on the shared
+  runner; schema-load ordering/`ON_ERROR_STOP`. Next: Layer 3 compose differential (label/nightly).
+
 ## [2026-06-23] Microservices split — docker-compose.prod.yml (first real multi-container bring-up) — CORE SPLIT PROVEN
 
 - **Context:** per-service images build; now run them as separate containers with the gateway calling services
