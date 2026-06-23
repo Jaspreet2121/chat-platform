@@ -38,6 +38,7 @@ defmodule ApiGatewayWeb.MediaController do
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :media_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -75,6 +76,7 @@ defmodule ApiGatewayWeb.MediaController do
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :media_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -112,6 +114,7 @@ defmodule ApiGatewayWeb.MediaController do
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :media_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end

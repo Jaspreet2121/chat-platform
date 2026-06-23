@@ -153,7 +153,13 @@ config :shared_infra,
      end),
   message_service_url: System.get_env("MESSAGE_SERVICE_URL")
 
-config :shared_infra, media_client_adapter: MediaService.MediaClientInProcess
+config :shared_infra,
+  media_client_adapter:
+    (case System.get_env("MEDIA_CLIENT_ADAPTER") do
+       "http" -> SharedInfra.MediaClientHttp
+       _ -> MediaService.MediaClientInProcess
+     end),
+  media_service_url: System.get_env("MEDIA_SERVICE_URL")
 
 config :shared_infra,
   scylla_client_adapter: SharedInfra.Scylla.UnavailableClient,

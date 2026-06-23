@@ -210,4 +210,8 @@ encode/decode round-trip + TokenPlug are unit-tested in `SharedInfra.InternalApi
 - ✅ Message internal HTTP API (`MessageService.HTTP.Router`, 9 routes) — built, gated off.
 - ✅ Media internal HTTP API (`MediaService.HTTP.Router`) — built, gated off. **INTERNAL-API SET COMPLETE (all 5).**
 - ⏳ HTTP client adapters (`*ClientHttp`) — flip `SharedInfra.*Client` to network behind a flag. **(next phase)**
-- ⏳ Per-service releases / Dockerfiles / compose.
+- ✅ `SharedInfra.MediaClientHttp` (done) — `@behaviour SharedInfra.MediaClient`; calls the media internal API;
+  `unavailable_atom: :media_unavailable`. Atom-keyed upload/download maps. Config: `MEDIA_SERVICE_URL`,
+  `MEDIA_CLIENT_ADAPTER=http`. Gateway maps `:media_unavailable`→503 at every media_controller site.
+  **CLIENT-ADAPTER SET COMPLETE — all 5 `SharedInfra.*Client`s can flip to HTTP behind their flag.**
+- ⏳ shared_infra extraction → per-service releases / Dockerfiles / docker-compose.prod.

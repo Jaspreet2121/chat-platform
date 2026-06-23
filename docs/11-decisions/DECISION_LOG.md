@@ -2,6 +2,25 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-23] Microservices HTTP client adapter — Media; CLIENT-ADAPTER SET COMPLETE (all 5)
+
+- **Context:** last of the 5 HTTP client adapters. Flip via `MEDIA_CLIENT_ADAPTER=http`; default in-process.
+- **Decision:** `SharedInfra.MediaClientHttp` (in shared_infra) — `@behaviour SharedInfra.MediaClient`; 3
+  callbacks → `HttpClient.post_result` with `MEDIA_SERVICE_URL` + route + `unavailable: :media_unavailable`
+  (no metadata caveat). Gateway maps `:media_unavailable`→503 at every media_controller site (after the
+  existing `:auth_unavailable`). Placeholder paths (persistence off) keep their `_ -> invalid_request`
+  catch-all (no crash; misconfig if http-adapter + persistence-off). Additive; dead in the default path.
+- **MILESTONE — client-adapter set COMPLETE:** all 5 `SharedInfra.*Client` dispatchers (Auth, Conversation,
+  User, Message, Media) now have HTTP adapters selectable by a per-service `*_CLIENT_ADAPTER=http` flag +
+  `*_SERVICE_URL`, each with transport-failure → `{:error, :*_unavailable}` → gateway 503 / realtime reject,
+  and proven shape-identical round-trips (incl. atom-keyed maps + message `metadata` string-keyed). Defaults
+  all in-process → the umbrella behaves identically until a flag is flipped.
+- **Status:** Implemented + verified. plain `mix test` 254→255 (+1 plain 503-mapping test; existing 254 INTACT);
+  pg 322→323; `mix test --include http_integration` → all 5 adapters pass (media 3 + message 4 + user 3 +
+  conversation 3 + auth 3; round-trips == in-process, dead port → `:*_unavailable`). Default in-process; no
+  listener at boot. Next phase: shared_infra extraction → per-service releases/Dockerfiles → docker-compose.prod
+  → optional DB-per-service → CI rework.
+
 ## [2026-06-23] Microservices HTTP client adapter — Message + the metadata caveat (decoder skip option)
 
 - **Context:** fourth HTTP client adapter (the heaviest, 9 callbacks) — and the one carrying the documented
