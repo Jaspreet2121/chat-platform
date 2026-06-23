@@ -132,6 +132,97 @@ multi-container deploy.
   `TokenPlug` rejecting unauthenticated calls, fail-closed). Postgres connection retries in the background against
   the absent DB without crashing boot (expected — nothing to talk to yet).
 
+## Multi-container bring-up — docker-compose.prod.yml (done 2026-06-23)
+
+[docker-compose.prod.yml](../../docker-compose.prod.yml) (repo root) runs each service as its OWN container on a
+shared bridge network (`chatnet`), with the **gateway flipped to the HTTP client adapters** so it calls the
+services over the network (`*_CLIENT_ADAPTER=http` + `*_SERVICE_URL=http://<svc>:<port>`). Core chat only —
+Kafka/Redis/Scylla/MinIO are intentionally absent (staged rollout; their flags stay off). The dev infra compose
+([infra/docker/docker-compose.yml](../../infra/docker/docker-compose.yml)) still has those for later.
+
+**Containers + ports** (service ports are internal/`expose`d on `chatnet`; only the gateway publishes to the host):
+
+| container | RELEASE | internal port | enable + DB flag |
+|---|---|---|---|
+| postgres | postgres:16-alpine | 5432 | `chat_user` / `chat_platform`, named volume `pgdata`, healthcheck |
+| auth | auth_service | 4101 | `AUTH_HTTP_API_ENABLED=true`, `AUTH_SESSION_DB_BACKED=true` |
+| conversation | conversation_service | 4102 | `CONVERSATION_HTTP_API_ENABLED=true`, `CONVERSATION_DB_BACKED=true` |
+| user | user_service | 4103 | `USER_HTTP_API_ENABLED=true`, `USER_PROFILE_DB_BACKED=true` |
+| message | message_service | 4104 | `MESSAGE_HTTP_API_ENABLED=true`, `MESSAGE_DB_BACKED=true`, `MESSAGE_STORE_ADAPTER=postgres` |
+| media | media_service | 4105 | `MEDIA_HTTP_API_ENABLED=true`, `MEDIA_DB_BACKED=true` (full object storage needs MinIO — deferred) |
+| **gateway** | gateway | **4000 → host 4000** | all 5 `*_CLIENT_ADAPTER=http` + `*_SERVICE_URL` |
+
+**Schema** is applied automatically: `infra/docker/postgres/init` (001..042, ordered) is mounted into the
+postgres container's `/docker-entrypoint-initdb.d`. Postgres auto-runs those `*.sql` IN FILENAME ORDER on the
+FIRST init of an empty volume — so the full schema exists before any service connects. (Verified: 36 tables.)
+
+**Shared `INTERNAL_API_TOKEN`** — one value across the gateway + every service (from `.env`); `TokenPlug` rejects
+mismatches with 401.
+
+### Runbook (run on YOUR machine)
+
+```sh
+# 1. Secrets → .env (compose auto-loads it from the repo root). Generate each with openssl:
+cp .env.prod.example .env
+# edit .env and set (each a long random value):
+#   INTERNAL_API_TOKEN=$(openssl rand -hex 32)
+#   SECRET_KEY_BASE=$(openssl rand -hex 64)      # or: (cd apps/backend && mix phx.gen.secret)
+#   TOKEN_SECRET=$(openssl rand -hex 32)
+#   OTP_SECRET=$(openssl rand -hex 32)
+
+# 2. Build all images (one umbrella compile, shared across releases; then 6 release assemblies).
+docker compose -f docker-compose.prod.yml build
+
+# 3. Start. Postgres comes up + runs the init SQL on first boot; services wait for it (healthcheck).
+docker compose -f docker-compose.prod.yml up -d
+
+# 4. Wait for health + schema (first boot runs 001..042 — a few seconds).
+curl -s localhost:4000/health           # → {"status":"ok","service":"api_gateway"}
+docker compose -f docker-compose.prod.yml exec postgres \
+  psql -U chat_user -d chat_platform -c "\dt" | tail -5   # tables present
+
+# 5. Smoke test the cross-network path (these traverse gateway → service over HTTP):
+curl -i localhost:4000/api/v1/auth/session -H 'authorization: Bearer bogus'   # → 401 auth.session_invalid (gateway reached auth)
+curl -i -X POST localhost:4000/api/v1/auth/otp/request \
+  -H 'content-type: application/json' -d '{"email":"you@example.com"}'        # → gateway → auth (OTP). A full
+#   OTP login + message round-trip (gateway→auth, gateway→conversation membership, gateway→message) needs an
+#   email channel to read the OTP (Mailpit is in the dev infra compose); add it to exercise the full login.
+
+# Logs / restart one service:
+docker compose -f docker-compose.prod.yml logs -f gateway      # or: auth | conversation | message | ...
+docker compose -f docker-compose.prod.yml restart message
+
+# Tear down (keep data):           docker compose -f docker-compose.prod.yml down
+# Tear down + wipe DB volume:       docker compose -f docker-compose.prod.yml down -v
+```
+
+**Startup ordering:** services wait for postgres' healthcheck (`depends_on: condition: service_healthy`); the
+gateway waits only for the services to START (not be ready — the slim release images have no `curl` for a readiness
+probe). If the gateway calls a service before it's listening, the HTTP adapters return `{:error, :*_unavailable}`
+→ **503** (not a crash), and it recovers automatically once the service is up. This is the failure semantics built
+in the client-adapter slices paying off.
+
+### Debug loop — likely first multi-container failures (symptom → cause → fix)
+
+- **503 `*.unavailable` right after `up`** → gateway reached a service before it finished booting (or that service
+  crashed). *Fix:* usually transient — retry after a few seconds; if persistent, `docker compose logs <svc>` to see
+  why that container isn't listening.
+- **401 from a service on every call (even valid)** → `INTERNAL_API_TOKEN` differs between the gateway and that
+  service. *Fix:* it must be IDENTICAL everywhere; it comes from one `.env` value, so rebuild/recreate after editing
+  `.env` (`up -d` re-reads env; a running container keeps its old env).
+- **Service can't resolve `http://auth:4101`** → not on the same compose network, or a typo in `*_SERVICE_URL`.
+  *Fix:* all services share `chatnet`; the host in `*_SERVICE_URL` must equal the compose SERVICE name.
+- **Relation/table does not exist** → schema not applied. Postgres only runs `/docker-entrypoint-initdb.d` on a
+  FRESH (empty) volume; if `pgdata` was already initialized (e.g. before the init mount was added), the SQL is
+  skipped. *Fix:* `docker compose -f docker-compose.prod.yml down -v` to wipe the volume, then `up` again.
+- **A service behaves as if persistence is off** (data not saved) → its `*_DB_BACKED` flag isn't set. *Fix:* set
+  the right flag (table above); for message also `MESSAGE_STORE_ADAPTER=postgres`.
+- **`FATAL: PHX_HOST is not set` / `DATABASE_URL is not set` on boot** → a required prod env var is missing. *Fix:*
+  every release needs the full secret set + `PHX_HOST` (see the shared-`runtime.exs` note above); they come from
+  `.env` via the compose `x-secrets` anchor.
+- **Port 4000 already in use** → something else holds the host port. *Fix:* stop it, or change the gateway's
+  published port mapping in the compose file.
+
 ## Hosting plan (recommended)
 
 - **Backend:** Fly.io running the umbrella release (`MIX_ENV=prod mix release chat_platform`), websockets supported.

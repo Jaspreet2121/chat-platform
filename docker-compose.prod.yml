@@ -1,0 +1,175 @@
+# Production-shaped multi-container bring-up: each service runs as its OWN container, built from
+# the parameterized apps/backend/Dockerfile (RELEASE build-arg). The gateway talks to the services
+# over the compose network via the HTTP client adapters (*_CLIENT_ADAPTER=http + *_SERVICE_URL).
+#
+# This is the FIRST real cross-network proof of the microservices split. Core chat only — Kafka,
+# Redis, Scylla and MinIO are intentionally NOT here (staged rollout; their flags stay off). They
+# can be added later (the dev infra compose at infra/docker/docker-compose.yml has them).
+#
+#   cp .env.prod.example .env        # then fill in the secrets (see DEPLOYMENT.md runbook)
+#   docker compose -f docker-compose.prod.yml build
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Secrets come from a .env file in this directory (compose auto-loads it). They are NEVER baked
+# into images — config/runtime.exs reads them at boot and fails fast if missing/insecure.
+
+name: chat-platform-prod
+
+# --- Shared env every release needs ----------------------------------------------------------
+# runtime.exs (evaluated by EVERY release in :prod) requires all of these present; PHX_HOST is a
+# gateway concern but is currently required for every release (documented quirk).
+x-secrets: &secrets
+  MIX_ENV: prod
+  DATABASE_URL: postgres://chat_user:chat_password@postgres:5432/chat_platform
+  DATABASE_SSL: "false"
+  PHX_HOST: localhost
+  SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in .env}
+  TOKEN_SECRET: ${TOKEN_SECRET:?set TOKEN_SECRET in .env}
+  OTP_SECRET: ${OTP_SECRET:?set OTP_SECRET in .env}
+  # One shared token across gateway + all services — TokenPlug rejects mismatches with 401.
+  INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env}
+
+x-service-base: &service-base
+  restart: unless-stopped
+  networks: [chatnet]
+  # Services need Postgres ready before they serve DB requests.
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: chat_platform
+      POSTGRES_USER: chat_user
+      POSTGRES_PASSWORD: chat_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Postgres auto-runs *.sql here IN FILENAME ORDER on the FIRST init of an empty volume.
+      # 001..042 are already ordered → the full schema is applied before any service connects.
+      # (On an already-initialized volume these are NOT re-run — see the debug loop in DEPLOYMENT.md.)
+      - ./infra/docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    networks: [chatnet]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat_user -d chat_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  auth:
+    <<: *service-base
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+      args: {RELEASE: auth_service, SERVICE_PORT: "4101"}
+    environment:
+      <<: *secrets
+      AUTH_HTTP_API_ENABLED: "true"
+      AUTH_HTTP_PORT: "4101"
+      AUTH_SESSION_DB_BACKED: "true"
+    expose: ["4101"]
+
+  conversation:
+    <<: *service-base
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+      args: {RELEASE: conversation_service, SERVICE_PORT: "4102"}
+    environment:
+      <<: *secrets
+      CONVERSATION_HTTP_API_ENABLED: "true"
+      CONVERSATION_HTTP_PORT: "4102"
+      CONVERSATION_DB_BACKED: "true"
+    expose: ["4102"]
+
+  user:
+    <<: *service-base
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+      args: {RELEASE: user_service, SERVICE_PORT: "4103"}
+    environment:
+      <<: *secrets
+      USER_HTTP_API_ENABLED: "true"
+      USER_HTTP_PORT: "4103"
+      USER_PROFILE_DB_BACKED: "true"
+    expose: ["4103"]
+
+  message:
+    <<: *service-base
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+      args: {RELEASE: message_service, SERVICE_PORT: "4104"}
+    environment:
+      <<: *secrets
+      MESSAGE_HTTP_API_ENABLED: "true"
+      MESSAGE_HTTP_PORT: "4104"
+      MESSAGE_DB_BACKED: "true"
+      # Explicit Postgres store for the first deploy (default QueryPlanAdapter; Scylla is later).
+      MESSAGE_STORE_ADAPTER: postgres
+    expose: ["4104"]
+
+  media:
+    <<: *service-base
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+      args: {RELEASE: media_service, SERVICE_PORT: "4105"}
+    environment:
+      <<: *secrets
+      MEDIA_HTTP_API_ENABLED: "true"
+      MEDIA_HTTP_PORT: "4105"
+      MEDIA_DB_BACKED: "true"
+      # NOTE: full media object storage needs MinIO (deferred — staged rollout). The container
+      # boots + the gateway's media routes resolve; uploads need the MinIO adapter added later.
+    expose: ["4105"]
+
+  gateway:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+      args: {RELEASE: gateway, SERVICE_PORT: "4000"}
+    restart: unless-stopped
+    networks: [chatnet]
+    environment:
+      <<: *secrets
+      PORT: "4000"
+      # Flip every client to HTTP + point at the service containers by name on the compose network.
+      AUTH_CLIENT_ADAPTER: http
+      AUTH_SERVICE_URL: http://auth:4101
+      CONVERSATION_CLIENT_ADAPTER: http
+      CONVERSATION_SERVICE_URL: http://conversation:4102
+      USER_CLIENT_ADAPTER: http
+      USER_SERVICE_URL: http://user:4103
+      MESSAGE_CLIENT_ADAPTER: http
+      MESSAGE_SERVICE_URL: http://message:4104
+      MEDIA_CLIENT_ADAPTER: http
+      MEDIA_SERVICE_URL: http://media:4105
+    ports:
+      - "4000:4000"
+    # Start order only (containers, not readiness — the release images have no curl for a
+    # readiness probe). If the gateway calls a service before it's listening, the HTTP adapters
+    # return {:error, :*_unavailable} → 503 (NOT a crash); it recovers once the service is up.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth:
+        condition: service_started
+      conversation:
+        condition: service_started
+      user:
+        condition: service_started
+      message:
+        condition: service_started
+      media:
+        condition: service_started
+
+networks:
+  chatnet:
+    driver: bridge
+
+volumes:
+  pgdata:

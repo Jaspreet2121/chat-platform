@@ -1,5 +1,13 @@
 # Session Log
 
+## [2026-06-23] Slice: MICROSERVICES split — docker-compose.prod.yml (first multi-container bring-up) — CORE SPLIT PROVEN LIVE
+- Status: ✅ green (compose + docs + a .gitignore exception; no app code). Proven live with Docker.
+- Files: NEW `docker-compose.prod.yml` (repo root; 7 containers on `chatnet`), NEW `.env.prod.example` (secret template), `.gitignore` (+`!.env.prod.example`). DEPLOYMENT.md (compose runbook + ports table + schema-via-initdb + startup/503 + debug loop), DECISION_LOG, AI_CONTEXT, ROADMAP, CODEMAP.
+- Design: each service its own container built from the parameterized Dockerfile (RELEASE arg); gateway flipped to HTTP (`*_CLIENT_ADAPTER=http` + `*_SERVICE_URL=http://<svc>:<port>`); services on `*_HTTP_API_ENABLED=true` + `*_HTTP_PORT` + `*_DB_BACKED` (message also `MESSAGE_STORE_ADAPTER=postgres`). Ports: auth 4101, conversation 4102, user 4103, message 4104, media 4105, gateway 4000 (only gateway published to host). One shared Postgres; schema via `infra/docker/postgres/init`→`/docker-entrypoint-initdb.d` (001..042, first-init only). Shared `INTERNAL_API_TOKEN` from `.env`. Kafka/Redis/Scylla/MinIO intentionally OFF (staged; media object storage deferred to MinIO).
+- VERIFICATION (Docker available — the REAL proof): `docker compose config` valid; all 6 images build; `up -d` → 7/7 containers running; `GET /health`→200; schema = **36 tables** auto-applied. Cross-network: `GET /api/v1/auth/session` (bogus)→**401 auth.session_invalid** (gateway→auth over HTTP); STOP auth→**503 auth.unavailable** (transport-failure fallback); RESTART auth→401 again (auto-recovery, no crash). Tore down with `-v`. `mix test` → **255 / 89, 0 failures** UNCHANGED; pg 323 unaffected; web untouched (`NEXT_PUBLIC_API_BASE_URL=http://localhost:4000`).
+- Note: full OTP login + message round-trip needs an email channel (Mailpit, in the dev infra compose) to read the OTP — documented in the runbook; core cross-network path proven via the session/503 differential instead.
+- Next: optional DB-per-service (cross-service FKs block it — deferred) + CI rework (per-service jobs + compose integration). Pending: notification_service per-service release; re-enable Kafka/MinIO when staged; deploy 3b (single container on a host).
+
 ## [2026-06-23] Slice: MICROSERVICES split — per-service Dockerfiles (one parameterized Dockerfile)
 - Status: ✅ green (build/config only — no app code; verified WITH Docker)
 - Approach (a): ONE parameterized Dockerfile (`ARG RELEASE`), not six. Default `RELEASE=chat_platform` reproduces the all-in-one 3b image (folded the single-container Dockerfile in). Each per-service image bundles only its app + shared_infra (mix release subset).

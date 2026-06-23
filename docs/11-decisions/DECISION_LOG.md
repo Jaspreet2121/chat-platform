@@ -2,6 +2,39 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-23] Microservices split — docker-compose.prod.yml (first real multi-container bring-up) — CORE SPLIT PROVEN
+
+- **Context:** per-service images build; now run them as separate containers with the gateway calling services
+  over the network — the first real cross-network proof of the split.
+- **Decision — `docker-compose.prod.yml` at repo ROOT.** It spans both `apps/backend` (build context) and
+  `infra/docker/postgres/init` (schema mount), so root is the natural home. 7 containers (postgres + auth +
+  conversation + user + message + media + gateway) on a shared bridge `chatnet`; services reachable by name
+  (`http://auth:4101` …). Ports = code defaults (auth 4101, conversation 4102, user 4103, message 4104, media
+  4105, gateway 4000). YAML anchors (`x-secrets`, `x-service-base`) keep per-service env DRY. Service ports are
+  internal (`expose`); only the gateway publishes `4000:4000`.
+- **Decision — gateway flipped to HTTP.** Gateway env sets all 5 `*_CLIENT_ADAPTER=http` + `*_SERVICE_URL`; each
+  service sets its `*_HTTP_API_ENABLED=true` + `*_HTTP_PORT` + `*_DB_BACKED` (+ message `MESSAGE_STORE_ADAPTER=
+  postgres`). All five services share ONE Postgres for the first deploy (per runtime.exs).
+- **Decision — schema via initdb.** Mount `infra/docker/postgres/init` (001..042, ordered) into the postgres
+  container's `/docker-entrypoint-initdb.d`; Postgres auto-runs `*.sql` in filename order on FIRST init of an
+  empty volume → full schema before any service connects (the natural compose fit; no migration runner needed).
+- **Decision — staged rollout, Kafka/Redis/Scylla/MinIO OFF.** Core chat first; their flags stay off. Can be
+  added later (dev infra compose has them). Consequence: full media object storage (MinIO) and the event
+  consumers are deferred; media container still boots + the gateway's media routes resolve.
+- **Decision — startup ordering + 503 fallback.** Services wait for postgres' healthcheck; the gateway waits only
+  for services to START (slim images have no curl for a readiness probe). A gateway call to a not-yet-listening
+  service returns `:*_unavailable`→503, NOT a crash — the client-adapter failure semantics pay off here.
+- **Secrets:** one shared `INTERNAL_API_TOKEN` + `SECRET_KEY_BASE`/`TOKEN_SECRET`/`OTP_SECRET` from a repo-root
+  `.env` (compose auto-loads; `.env.prod.example` template committed, `.env` gitignored — added
+  `!.env.prod.example` exception). Never baked into images.
+- **Status:** Implemented + PROVEN LIVE (Docker available). `docker compose config` valid; all 6 service images
+  build; `up -d` → all 7 containers running; `GET /health` → 200; schema = 36 tables auto-applied. **Cross-network
+  proof:** `GET /api/v1/auth/session` (bogus token) → 401 `auth.session_invalid` (gateway→auth over HTTP); STOP
+  auth → same call → **503 `auth.unavailable`** (transport-failure fallback); RESTART auth → 401 again
+  (auto-recovery, no gateway crash). Compose + docs only — plain `mix test` 255/89 unchanged; web untouched
+  (separate deploy; `NEXT_PUBLIC_API_BASE_URL=http://localhost:4000`). **The microservices split is now proven
+  end-to-end across containers.** Next: optional DB-per-service + CI rework; re-enable Kafka/MinIO when staged.
+
 ## [2026-06-23] Microservices split — per-service Docker images via ONE parameterized Dockerfile
 
 - **Context:** the per-service releases assemble; now each needs a container image bundling one release. Choice:

@@ -34,7 +34,9 @@ chat-platform/
     frontend/
   docs/
   infra/
-    docker/
+    docker/                  # dev infra compose (postgres/redis/scylla/kafka/minio/mailpit) + postgres/init (001..042)
+  docker-compose.prod.yml    # PROD multi-container: 7 containers (postgres + 5 services + gateway) on chatnet; gateway → services over HTTP
+  .env.prod.example          # secret template for docker-compose.prod.yml (.env is gitignored)
 ```
 
 ## Backend
