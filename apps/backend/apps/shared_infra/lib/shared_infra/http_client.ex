@@ -40,6 +40,7 @@ defmodule SharedInfra.HttpClient do
   end
 
   defp do_request(method, request, unavailable, decode_opts) do
+    ensure_inets_started()
     http_opts = [connect_timeout: connect_timeout(), timeout: receive_timeout()]
 
     case :httpc.request(method, request, http_opts, body_format: :binary) do
@@ -62,6 +63,18 @@ defmodule SharedInfra.HttpClient do
     kind, value ->
       Logger.warning("internal HTTP call #{kind}: #{inspect(value)}")
       {:error, unavailable}
+  end
+
+  # `:httpc` lives in OTP's `:inets`; calling it before `:inets` is started raises
+  # `:http_util.timestamp/0` UndefinedFunctionError (which the rescue above would otherwise turn
+  # into a spurious `:*_unavailable`). `extra_applications: [:inets, :ssl]` in mix.exs does NOT
+  # reliably cover every test/release boot path (a fresh CI runner exposed this), so we guarantee
+  # it here in the request path. `ensure_all_started/1` is idempotent — a no-op once started — so
+  # the per-call cost is negligible. `:ssl` is included for any https base URL.
+  defp ensure_inets_started do
+    Application.ensure_all_started(:inets)
+    Application.ensure_all_started(:ssl)
+    :ok
   end
 
   defp decode(body, unavailable, decode_opts) do

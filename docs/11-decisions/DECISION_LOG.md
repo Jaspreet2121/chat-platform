@@ -2,6 +2,31 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-23] HttpClient — ensure `:inets` started before `:httpc` (CI-surfaced latent prod bug)
+
+- **Context:** the new `integration` job's first run failed every `http_integration` round-trip across all 5
+  adapters with `[warning] internal HTTP call raised: %UndefinedFunctionError{module: :http_util, function:
+  :timestamp, arity: 0}` → adapter returned `{:error, :*_unavailable}`. `:http_util.timestamp/0` is part of
+  OTP's `:inets`; on a fresh CI runner `:inets` wasn't started, so `:httpc.request` raised and the rescue in
+  [http_client.ex:57](../../apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex#L57) converted it into
+  a spurious unavailable. Locally `:inets` happened to already be running, so it passed — exactly the gap CI
+  exists to catch. The `postgres_integration` suite (323) all passed; only the `:httpc` transport was affected.
+- **Root cause:** single + environmental, NOT a logic bug. `shared_infra` already lists `:inets`/`:ssl` in
+  `extra_applications` ([mix.exs:23](../../apps/backend/apps/shared_infra/mix.exs#L23)), but that does NOT
+  reliably start them across every test/release boot path — a fresh runner proved it. This is also a LATENT PROD
+  bug: a release container would hit the same unstarted-`:inets` raise → so fix it in code, not just CI.
+- **Decision:** `SharedInfra.HttpClient.do_request/4` now calls a tiny `ensure_inets_started/0`
+  (`Application.ensure_all_started(:inets)` + `:ssl`) before every `:httpc` call. Idempotent (no-op once started)
+  → negligible per-call cost, guarantees the transport apps are up in CI / prod release / local alike. Kept
+  `extra_applications` as-is (correct, just insufficient alone). NO change to adapter logic, the result-envelope,
+  or the failure mapping — genuine transport failures (dead port etc.) still map to `{:error, :*_unavailable}`.
+- **Status:** Implemented + verified locally. `mix compile --warnings-as-errors` clean; plain `mix test` 255/89
+  unchanged (default path doesn't touch `:httpc`); `mix test --include postgres_integration --include
+  http_integration` against a Postgres service (full schema) → **339 passed, 0 failures** (323 pg + 16 adapter
+  round-trips), incl. the dead-port tests still returning `:*_unavailable`. Local caveat: `:inets` was already
+  running locally, so this proves NO regression — the actual unstarted-`:inets` fix is proven by the fresh CI
+  runner. THE REAL PROOF: the `integration` job going green on this push. This is precisely the value of Layer 2.
+
 ## [2026-06-23] CI rework — layered CI: fast gate (unchanged) + `integration` job (pg + http_integration in CI)
 
 - **Context:** CI only ran the fast Docker-free umbrella `mix test` (255/89, in-process path). The DB suite

@@ -1,5 +1,12 @@
 # Session Log
 
+## [2026-06-23] Slice: HttpClient fix — ensure :inets started before :httpc (CI-surfaced latent prod bug)
+- Status: ✅ green locally (no regression); real proof = the CI `integration` job going green.
+- Root cause (single, environmental — NOT logic): fresh CI runner had `:inets` unstarted → `:httpc.request` raised `:http_util.timestamp/0` UndefinedFunctionError → rescue turned it into a spurious `{:error, :*_unavailable}`, failing ALL 5 adapters' http_integration round-trips. pg suite (323) all passed. Also a latent PROD bug (release container would hit the same).
+- Files: `apps/shared_infra/lib/shared_infra/http_client.ex` (added `ensure_inets_started/0` = `Application.ensure_all_started(:inets)` + `:ssl`, called at the top of `do_request/4`; idempotent). NO change to adapter logic / envelope / failure mapping. `extra_applications` already had `:inets`/`:ssl` (mix.exs:23) but that didn't reliably start them across all boot paths — request-path ensure is the robust fix. DECISION_LOG.
+- Verification: compile --warnings-as-errors clean; plain `mix test` → **255 / 89, 0 failures** UNCHANGED (default path never touches :httpc); `mix test --include postgres_integration --include http_integration` against a local Postgres service (full schema, 36 tables) → **339 passed, 0 failures** (323 pg + 16 adapter round-trips; dead-port tests still return `:*_unavailable`). Caveat: :inets was already up locally, so local run proves NO REGRESSION; the unstarted-:inets fix itself is proven by the fresh CI runner.
+- Next: watch CI `integration` go green (and `backend` stays green) on this push; then CI Layer 3 (compose differential, label/nightly).
+
 ## [2026-06-23] Slice: CI rework Layer 2 — `integration` job (pg + http_integration in CI)
 - Status: ✅ green locally (CI-config only; the real proof is the GitHub Actions run on this push)
 - Files: `.github/workflows/backend-ci.yml` (NEW `integration` job, parallel to the UNCHANGED `backend` fast gate), `docs/09-devops/LOCAL_DEV_SETUP.md` (stale-doc fix: load ALL init/*.sql not just 010; CI-job note), DECISION_LOG, AI_CONTEXT, ROADMAP.
