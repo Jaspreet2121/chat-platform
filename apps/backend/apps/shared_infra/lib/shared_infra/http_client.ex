@@ -72,9 +72,29 @@ defmodule SharedInfra.HttpClient do
   # it here in the request path. `ensure_all_started/1` is idempotent — a no-op once started — so
   # the per-call cost is negligible. `:ssl` is included for any https base URL.
   defp ensure_inets_started do
-    Application.ensure_all_started(:inets)
-    Application.ensure_all_started(:ssl)
+    inets = Application.ensure_all_started(:inets)
+    ssl = Application.ensure_all_started(:ssl)
+    log_inets_diagnostics_once(inets, ssl)
     :ok
+  end
+
+  # TEMPORARY CI diagnostic — remove once the CI :http_util undef is root-caused.
+  # Logs exactly once per VM (guarded via :persistent_term). Read-only; does not
+  # alter request behavior.
+  defp log_inets_diagnostics_once(inets, ssl) do
+    if :persistent_term.get({__MODULE__, :inets_diag_logged}, false) == false do
+      :persistent_term.put({__MODULE__, :inets_diag_logged}, true)
+
+      Logger.warning(
+        "INETS DIAG " <>
+          "otp=#{:erlang.system_info(:otp_release)} " <>
+          "inets_start=#{inspect(inets)} ssl_start=#{inspect(ssl)} " <>
+          "inets_vsn=#{inspect(Application.spec(:inets, :vsn))} " <>
+          "http_util_which=#{inspect(:code.which(:http_util))} " <>
+          "http_util_loaded=#{inspect(Code.ensure_loaded?(:http_util))} " <>
+          "timestamp_exported=#{inspect(function_exported?(:http_util, :timestamp, 0))}"
+      )
+    end
   end
 
   defp decode(body, unavailable, decode_opts) do
