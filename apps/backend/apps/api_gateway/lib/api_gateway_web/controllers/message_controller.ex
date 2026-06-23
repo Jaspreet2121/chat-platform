@@ -41,6 +41,7 @@ defmodule ApiGatewayWeb.MessageController do
       |> json(response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -73,6 +74,7 @@ defmodule ApiGatewayWeb.MessageController do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -117,6 +119,7 @@ defmodule ApiGatewayWeb.MessageController do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :message_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -153,6 +156,7 @@ defmodule ApiGatewayWeb.MessageController do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :message_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -189,6 +193,7 @@ defmodule ApiGatewayWeb.MessageController do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -224,6 +229,7 @@ defmodule ApiGatewayWeb.MessageController do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -245,6 +251,9 @@ defmodule ApiGatewayWeb.MessageController do
   defp present?(value), do: not is_nil(value) and value != ""
 
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "message.invalid_request")
+
+  defp service_unavailable(conn),
+    do: ErrorResponse.service_unavailable(conn, "message.unavailable")
 
   defp unauthorized(conn),
     do:

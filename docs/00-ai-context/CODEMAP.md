@@ -374,7 +374,9 @@ Important files:
 - `apps/backend/apps/shared_infra/lib/shared_infra/redis/client.ex`
 - `apps/backend/apps/shared_infra/lib/shared_infra/prod_config.ex` (prod fail-fast secret guard; called from `config/runtime.exs`; unit-tested in `prod_config_test.exs`)
 - `apps/backend/apps/shared_infra/lib/shared_infra/auth_client.ex` (Auth service-client boundary: behaviour + dispatcher; adapter from `:shared_infra, :auth_client_adapter`; the microservices-split seam — edge apps call this instead of `AuthService.*`)
-- `apps/backend/apps/auth_service/lib/auth_service/auth_client_in_process.ex` (default in-process adapter delegating to `AuthService.Sessions/OTP/Tokens`; HTTP adapter is a later sub-slice)
+- `apps/backend/apps/auth_service/lib/auth_service/auth_client_in_process.ex` (default in-process adapter delegating to `AuthService.Sessions/OTP/Tokens`)
+- `apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex` (`SharedInfra.HttpClient` — shared `:httpc` helper for all HTTP client adapters: build req + `x-internal-token` + JSON + timeouts; 200→`decode_result`, transport failure→`{:error, unavailable_atom}`. Req intended but offline-unavailable → `:httpc`, isolated here for later swap)
+- `apps/backend/apps/shared_infra/lib/shared_infra/auth_client_http.ex` (`SharedInfra.AuthClientHttp` — HTTP adapter for `SharedInfra.AuthClient`, lives in shared_infra not auth_service; flip via `AUTH_CLIENT_ADAPTER=http`+`AUTH_SERVICE_URL`; transport failure→`:auth_unavailable`, gateway→503)
 - `apps/backend/apps/shared_infra/lib/shared_infra/conversation_client.ex` (Conversation service-client boundary; adapter from `:shared_infra, :conversation_client_adapter`; edge apps call this instead of `ConversationService.*`)
 - `apps/backend/apps/conversation_service/lib/conversation_service/conversation_client_in_process.ex` (default in-process adapter delegating to `ConversationService.{Conversations,Participants}`)
 - `apps/backend/apps/shared_infra/lib/shared_infra/user_client.ex` (User service-client boundary; adapter from `:shared_infra, :user_client_adapter`; edge apps call this instead of `UserService.*`)

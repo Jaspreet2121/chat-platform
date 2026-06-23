@@ -17,7 +17,10 @@ defmodule SharedInfra.MixProject do
 
   def application do
     [
-      extra_applications: [:logger]
+      # :inets/:ssl provide :httpc, the HTTP client used by SharedInfra.HttpClient for the
+      # service→service HTTP adapters. Zero new deps (ships with OTP); isolated behind the
+      # helper so it can be swapped for Req when a package registry is reachable.
+      extra_applications: [:logger, :inets, :ssl]
     ]
   end
 

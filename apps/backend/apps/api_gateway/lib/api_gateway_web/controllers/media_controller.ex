@@ -37,6 +37,7 @@ defmodule ApiGatewayWeb.MediaController do
       |> json(response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -73,6 +74,7 @@ defmodule ApiGatewayWeb.MediaController do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -109,11 +111,14 @@ defmodule ApiGatewayWeb.MediaController do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
 
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "media.invalid_request")
+
+  defp service_unavailable(conn), do: ErrorResponse.service_unavailable(conn, "media.unavailable")
 
   defp unauthorized(conn),
     do: ErrorResponse.unauthorized(conn, "media.unauthorized", "Missing or invalid access token")

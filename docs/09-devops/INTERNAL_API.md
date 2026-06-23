@@ -136,6 +136,34 @@ Atom-keyed responses: upload → `media_id, object_key, upload_url, expires_at`;
 generates a UUID `media_id`, so it is non-deterministic — fidelity is asserted on the deterministic
 error path in tests.)
 
+## HTTP client adapters (caller side) — flip traffic to the network
+
+Each `SharedInfra.*Client` dispatcher selects an adapter from config. Default = the in-process
+adapter (in the service app). Setting e.g. `AUTH_CLIENT_ADAPTER=http` flips it to the HTTP adapter,
+which lives in **shared_infra** (the gateway/realtime containers depend on shared_infra but NOT on
+the service apps post-split).
+
+- **`SharedInfra.HttpClient`** — shared helper all 5 adapters reuse. `post_result/4` / `get_result/3`
+  build the request (`AUTH_SERVICE_URL` + path + `x-internal-token` + JSON), apply timeouts (2s connect /
+  5s receive, configurable via `:shared_infra, :http_client_connect_timeout`/`_receive_timeout`), and:
+  - HTTP **200 + JSON envelope** → `decode_result/1` (domain `{:ok,_}`/`{:error, domain_atom}` — shape-identical to in-process);
+  - **transport failure** (connect refused / timeout / non-200 / non-JSON) → `{:error, <unavailable_atom>}`.
+  - HTTP lib = OTP `:httpc` (`:inets`). **Req was the intended choice but the package registry was
+    unreachable in this environment, so `:httpc` (zero-dep) is used — isolated in this module so Req can
+    be swapped in by changing only `HttpClient` once a registry is reachable.**
+- **`SharedInfra.AuthClientHttp`** (done) — `@behaviour SharedInfra.AuthClient`; calls the auth internal
+  API; `unavailable_atom: :auth_unavailable`. `persistence_enabled?` fails CLOSED (`false`) on transport
+  failure (never a truthy error tuple). Config: `AUTH_SERVICE_URL`, `AUTH_CLIENT_ADAPTER=http`.
+
+### Gateway failure mapping (additive)
+Transport failure → `{:error, :auth_unavailable}` → the gateway maps it to **HTTP 503** via the new
+`ErrorResponse.service_unavailable/2` (same `{error:{code,message,correlation_id}}` envelope, code
+`"<svc>.unavailable"`). Added at **every `current_session` call-site** (auth/user/message/conversation/
+media controllers) + the auth otp/refresh/logout actions. Existing error-atom clauses are untouched, and
+`:auth_unavailable` only occurs when the HTTP adapter is flipped on (default in-process → these clauses
+are dead in the default path → zero behavior change). The realtime socket already fails closed on any
+auth error (rejects), so no change there.
+
 ## Transport auth (NEW security surface)
 
 `SharedInfra.InternalApi.TokenPlug` requires the `x-internal-token` header to match

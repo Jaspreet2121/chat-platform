@@ -2,6 +2,36 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-23] Microservices HTTP client adapter — Auth (first; traffic can flip to network)
+
+- **Context:** internal HTTP APIs exist (server side, all 5). This builds the FIRST HTTP CLIENT adapter so
+  `AUTH_CLIENT_ADAPTER=http` makes the gateway call auth-service over the network. Default stays in-process
+  (zero behavior change). Sets the adapter + failure-handling template the other 4 copy.
+- **Decision — HTTP lib = `:httpc`, NOT Req (environment-forced):** the plan chose Req for ergonomic
+  timeouts/error tuples, but `mix deps.get` **failed — the package registry (`repo.hex.pm`) is unreachable
+  in this environment and Req isn't cached**, so Req is un-installable here. Pivoted to OTP's `:httpc`
+  (`:inets`/`:ssl` added to shared_infra `extra_applications`) — zero new deps, capable of connect/receive
+  timeouts. **Isolated entirely in `SharedInfra.HttpClient`** so Req can be swapped in later by changing one
+  module once a registry is reachable. (Reported, not silently substituted.)
+- **Decision — `SharedInfra.HttpClient` shared helper:** `post_result/4`/`get_result/3` build request
+  (base URL + path + `x-internal-token` + JSON), apply 2s connect / 5s receive timeouts; HTTP 200 →
+  `InternalApi.decode_result/1` (shape-identical to in-process incl. atom-keyed maps + preserved domain
+  error atoms); any transport failure (connect refused / timeout / non-200 / non-JSON) → `{:error,
+  unavailable_atom}`. All 5 adapters reuse it → uniform failure/timeout/token handling.
+- **Decision — `SharedInfra.AuthClientHttp` lives in shared_infra** (not auth_service — the gateway won't
+  include auth_service post-split). `@behaviour SharedInfra.AuthClient`; transport failure → `:auth_unavailable`;
+  `persistence_enabled?` fails CLOSED (`false`) on failure (never a truthy tuple → realtime socket stays safe).
+- **Decision — gateway failure semantics (NEW, additive):** added `ErrorResponse.service_unavailable/2` (503)
+  + `{:error, :auth_unavailable} -> service_unavailable(conn)` at EVERY `current_session` call-site (auth/user/
+  message/conversation/media) and the auth otp/refresh/logout actions. `session/2` had no catch-all (would have
+  500'd); the others would have wrongly 400'd. `:auth_unavailable` only arises when the adapter is flipped on
+  (default in-process), so these clauses are dead in the default path → zero behavior change. Realtime socket
+  already fails closed on any auth error (no change).
+- **Status:** Implemented + verified. plain `mix test` 244→246 (existing 244 INTACT + 2 plain 503-mapping tests;
+  +3 excluded `:http_integration`); pg 312→314; `mix test --include http_integration` → **3 passed** (real
+  localhost round-trip == in-process; transport failure → `:auth_unavailable`). Default selection in-process;
+  no listener at boot. Next: conversation/user/message/media HTTP adapters (Message: don't atomize `metadata`).
+
 ## [2026-06-18] Microservices internal HTTP API — Media service; INTERNAL-API SET COMPLETE (all 5)
 
 - **Context:** last of the internal-API set (Auth/Conversation/User/Message done). media_service is the

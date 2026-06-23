@@ -53,6 +53,16 @@ if config_env() == :prod do
     config :shared_infra, internal_api_token: System.get_env("INTERNAL_API_TOKEN")
   end
 
+  # Flip a client to its HTTP adapter (calls another service over the network). Default stays
+  # in-process. Each needs the target service's base URL.
+  if System.get_env("AUTH_CLIENT_ADAPTER") == "http" do
+    config :shared_infra, auth_client_adapter: SharedInfra.AuthClientHttp
+  end
+
+  if url = System.get_env("AUTH_SERVICE_URL") do
+    config :shared_infra, auth_service_url: url
+  end
+
   if port = System.get_env("AUTH_HTTP_PORT") do
     config :auth_service, http_port: String.to_integer(port)
   end

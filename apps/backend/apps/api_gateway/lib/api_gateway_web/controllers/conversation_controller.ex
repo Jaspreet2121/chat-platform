@@ -36,6 +36,7 @@ defmodule ApiGatewayWeb.ConversationController do
       |> json(response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :conversation_invalid} -> invalid_request(conn)
       _ -> invalid_request(conn)
     end
@@ -66,6 +67,7 @@ defmodule ApiGatewayWeb.ConversationController do
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :conversation_invalid} -> invalid_request(conn)
       _ -> invalid_request(conn)
     end
@@ -99,6 +101,7 @@ defmodule ApiGatewayWeb.ConversationController do
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :conversation_invalid} -> invalid_request(conn)
       {:error, :conversation_not_found} -> invalid_request(conn)
       {:error, :conversation_forbidden} -> invalid_request(conn)
@@ -139,6 +142,7 @@ defmodule ApiGatewayWeb.ConversationController do
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -174,6 +178,7 @@ defmodule ApiGatewayWeb.ConversationController do
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -190,6 +195,9 @@ defmodule ApiGatewayWeb.ConversationController do
 
   defp invalid_request(conn),
     do: ErrorResponse.invalid_request(conn, "conversation.invalid_request")
+
+  defp service_unavailable(conn),
+    do: ErrorResponse.service_unavailable(conn, "conversation.unavailable")
 
   defp authorization_header(conn) do
     case get_req_header(conn, "authorization") do

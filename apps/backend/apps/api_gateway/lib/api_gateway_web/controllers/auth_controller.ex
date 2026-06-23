@@ -10,6 +10,7 @@ defmodule ApiGatewayWeb.AuthController do
       |> put_status(:accepted)
       |> json(response)
     else
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -21,6 +22,7 @@ defmodule ApiGatewayWeb.AuthController do
       json(conn, response)
     else
       {:error, :otp_invalid} -> otp_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -31,6 +33,7 @@ defmodule ApiGatewayWeb.AuthController do
       json(conn, response)
     else
       {:error, :refresh_invalid} -> refresh_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -41,6 +44,7 @@ defmodule ApiGatewayWeb.AuthController do
       send_resp(conn, :no_content, "")
     else
       {:error, :refresh_invalid} -> refresh_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -52,6 +56,7 @@ defmodule ApiGatewayWeb.AuthController do
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
     end
   end
 
@@ -89,6 +94,9 @@ defmodule ApiGatewayWeb.AuthController do
 
   defp session_invalid(conn),
     do: ErrorResponse.unauthorized(conn, "auth.session_invalid", "Session token is invalid")
+
+  defp service_unavailable(conn),
+    do: ErrorResponse.service_unavailable(conn, "auth.unavailable")
 
   defp authorization_header(conn) do
     conn

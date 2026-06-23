@@ -98,7 +98,16 @@ config :notification_service,
 # Auth client boundary: edge apps call SharedInfra.AuthClient, which dispatches to this adapter.
 # Default = in-process (delegates to AuthService.*, zero behavior change). A future HTTP adapter
 # (separate auth-service container) is selected by overriding this in runtime config.
-config :shared_infra, auth_client_adapter: AuthService.AuthClientInProcess
+# Auth client adapter: in-process by default (zero behavior change). `AUTH_CLIENT_ADAPTER=http`
+# flips it to the network adapter (calls auth-service's internal HTTP API). AUTH_SERVICE_URL is the
+# base URL; INTERNAL_API_TOKEN authenticates the call.
+config :shared_infra,
+  auth_client_adapter:
+    (case System.get_env("AUTH_CLIENT_ADAPTER") do
+       "http" -> SharedInfra.AuthClientHttp
+       _ -> AuthService.AuthClientInProcess
+     end),
+  auth_service_url: System.get_env("AUTH_SERVICE_URL")
 
 # Internal service-to-service HTTP APIs (microservices split). The token guards the internal
 # APIs (TokenPlug fails closed if unset); nil by default in dev/test. Each service's internal
