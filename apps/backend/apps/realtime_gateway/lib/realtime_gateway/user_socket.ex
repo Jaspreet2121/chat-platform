@@ -21,7 +21,7 @@ defmodule RealtimeGateway.UserSocket do
     with :ok <- require_db_backed_sessions(),
          {:ok, authorization} <- authorization_param(params),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}) do
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}) do
       {:ok, assign_session(socket, session.user_id, session.device_id)}
     else
       _ -> :error
@@ -29,12 +29,12 @@ defmodule RealtimeGateway.UserSocket do
   end
 
   # Fail closed: when socket auth is enabled but the Auth session layer is NOT
-  # genuinely DB-backed, `AuthService.Sessions.current_session/1` returns an
+  # genuinely DB-backed, `SharedInfra.AuthClient.current_session/1` returns an
   # unverified placeholder identity. Reject rather than accept it, so enabling
   # REALTIME_AUTH_DB_BACKED without AUTH_SESSION_DB_BACKED cannot silently grant
   # a shared placeholder identity to every socket.
   defp require_db_backed_sessions do
-    if AuthService.Sessions.persistence_enabled?() do
+    if SharedInfra.AuthClient.persistence_enabled?() do
       :ok
     else
       {:error, :session_layer_not_db_backed}

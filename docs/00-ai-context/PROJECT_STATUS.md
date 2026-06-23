@@ -29,7 +29,8 @@ Roadmap position: Phases 0/1/3 done, **Phase 4 (Chat MVP) ~85%**, Phase 5 (Media
 | **media_service** | upload/download URLs | 🟡 flag-gated (`MEDIA_DB_BACKED`) | media_test (9) | real MinIO SigV4 signer; default adapter unavailable; no upload verification; no DB metadata table schema |
 | **realtime_gateway** | WS channels + presence | 🟡 flag-gated (`REALTIME_AUTH_DB_BACKED`) | channels_test (22) + 2 pg socket-auth | presence local-only (no Redis); socket auth fails-closed but OFF by default |
 | **shared_infra** | kafka/redis/scylla boundaries + rate limiter | 🟡 | config + rate_limiter (20/1) | Kafka/Scylla are behaviours only; real Redis rate-limiter adapter exists |
-| *tenant / notification / call-signaling / moderation / audit* | documented services | 🔴 **no code** | — | no `apps/backend/apps/<name>` dir exists |
+| **notification_service** | `message.created.v1` → fan-out one notification per recipient; local participant read-model from `conversation.events.v1` | 🟡 flag-gated (`NOTIFICATION_CONSUMER_ENABLED`, `NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED`) | fan-out + read-model convergence (pg) + kafka wiring | FIRST of the 5 missing services; **recipient fan-out DONE** — full event-driven cross-service flow (conversation events → read-model → per-recipient notifications) complete |
+| *tenant / call-signaling / moderation / audit* | documented services | 🔴 **no code** | — | no `apps/backend/apps/<name>` dir exists (notification-service now built; 4 of 5 remain) |
 
 ---
 
@@ -91,10 +92,19 @@ Nuance: over the **realtime channel**, creating a message requires first *joinin
 - **Fail-closed guard** (`user_socket.ex` `require_db_backed_sessions`): auth-on but session-layer-off → connection rejected (no silent placeholder identity). Tested (1 Docker-free + 2 pg-integration).
 - OFF (local-dev default): trusts a client-provided `user_id` param — unauthenticated by design.
 
-### Insecure default secrets (deploy-config risk code can't enforce)
-- `auth_service/otp.ex` OTP secret falls back to literal `"local-otp-secret-change-before-production"` when env unset.
-- `auth_service/tokens.ex` token secret falls back to `"local-token-secret-change-before-production"` (after `TOKEN_SECRET`/`SECRET_KEY_BASE`).
-- All persistence/auth flags **default OFF**; nothing in code forces prod to enable them.
+### Insecure default secrets — ✅ GUARDED in prod (2026-06-18)
+- The dev fallbacks still exist for dev/test (`otp.ex` `"local-otp-secret-change-before-production"`,
+  `tokens.ex` `"local-token-secret-change-before-production"`), BUT `config/runtime.exs` now **fails
+  fast in `:prod`** via `SharedInfra.ProdConfig`: it refuses to boot if `SECRET_KEY_BASE`/`TOKEN_SECRET`/
+  `OTP_SECRET` are missing or match a known insecure placeholder, and requires `DATABASE_URL`. So a
+  misconfigured prod deploy no longer boots silently insecure (audit #4 mitigated). Guard logic is
+  unit-tested (`SharedInfra.ProdConfigTest`).
+- Flags still default OFF, but `docs/09-devops/DEPLOYMENT.md` enumerates the exact prod flag set; a real
+  deploy turns DB-backed core chat ON.
+- **"Never run as a server" gap fixed:** Repos are now supervised at boot in dev/prod (gated off in
+  `:test` so plain `mix test` stays Docker-free) — previously `children = []` meant a booted server
+  crashed on the first DB request. `config/runtime.exs` + `config/prod.exs` + a `mix release` config now
+  exist so `MIX_ENV=prod` can build/boot. Actual deploy (containerize + host) is the next sub-slices.
 
 ---
 
@@ -127,7 +137,7 @@ Real blockers to shipping: insecure default secrets + flags default-off (unenfor
 3. ~~**No live message persistence (HIGH).**~~ **RESOLVED 2026-06-18** — durability implemented on Postgres (`PostgresAdapter`, `MESSAGE_STORE_ADAPTER=postgres`), pg-integration tested. ScyllaDB (high-write backend) deferred to Phase 8 (ecto/decimal conflict). Remaining: messages still need the Repo started + flag set in prod (not auto-started, same as other services).
 4. **Kafka 0% wired (HIGH for the stated architecture).** Notifications, audit, search, presence fanout, analytics all depend on it.
 5. **No automated web tests (MEDIUM).** The entire web client + the live realtime loop rest on lint/typecheck/build only.
-6. **5 services + 16 Postgres tables documented but unimplemented (MEDIUM).** tenant/notification/call-signaling/moderation/audit; tenancy/calls/moderation tables have no schema.
+6. **4 services + most Postgres tables documented but unimplemented (MEDIUM).** UPDATE 2026-06-18: **notification-service is now built** (first of the 5) — a flag-gated idempotent `message.created.v1` consumer that writes one notification record per event (`notifications` + `notification_processed_events` tables); recipient fan-out/delivery deferred. Still unimplemented: tenant/call-signaling/moderation/audit; tenancy/calls/moderation tables have no schema.
 7. **Receipts single-status CQL (LOW/MEDIUM).** read can overwrite delivered; needs delivered_at/read_at columns.
 8. **Cross-day `bucket_date` partition miss for edit/delete (LOW, tracked).** Editing a prior-day message misses its partition; fix: derive bucket_date from the timeuuid.
 9. **Empty PRODUCT_REQUIREMENTS.md (MEDIUM).** No authoritative spec.

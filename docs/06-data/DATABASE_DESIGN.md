@@ -184,6 +184,124 @@ Purpose:
 
 ---
 
+# Implemented: Message-Service Projection Tables (code-verified)
+
+> The tables below are the ones ACTUALLY created and applied to the local/test
+> Postgres (`chat_platform_test`); the ScyllaDB tables earlier in this document remain
+> aspirational. Source of truth: [030_message_projections.sql](../../infra/docker/postgres/init/030_message_projections.sql),
+> with Ecto schemas
+> [processed_event.ex](../../apps/backend/apps/message_service/lib/message_service/schemas/processed_event.ex)
+> and
+> [conversation_message_summary.ex](../../apps/backend/apps/message_service/lib/message_service/schemas/conversation_message_summary.ex).
+
+## processed_events (idempotency ledger)
+
+Generic dedupe ledger shared by ALL stateful Kafka consumers in message-service. A row
+records that a given consumer has already applied a given event. Keyed by
+`(consumer, event_id)` so the same physical event can be processed independently by
+different consumers, but exactly once per consumer.
+
+| Column | Type | Notes |
+|---|---|---|
+| consumer | text | Primary key (part 1) — logical consumer name, e.g. `conversation-summary` |
+| event_id | uuid | Primary key (part 2) — the envelope `event_id` |
+| inserted_at | timestamptz | When this consumer first applied the event |
+
+Insert uses `ON CONFLICT DO NOTHING`; an affected-row count of `1` means NEW (apply the
+projection), `0` means DUPLICATE (skip). See
+[conversation_summary.ex](../../apps/backend/apps/message_service/lib/message_service/projections/conversation_summary.ex).
+
+## conversation_message_summaries (first projection)
+
+Per-conversation rollup maintained by the `conversation-summary` consumer from
+`message.created.v1`.
+
+| Column | Type | Notes |
+|---|---|---|
+| conversation_id | uuid | Primary key |
+| message_count | bigint | Default 0; atomically incremented per applied event |
+| last_message_id | uuid | Nullable — most recent message id |
+| last_message_at | timestamptz | Nullable — most recent message timestamp |
+| updated_at | timestamptz | Default `now()` |
+
+The ledger insert and this upsert (`ON CONFLICT (conversation_id) DO UPDATE` with an
+atomic `message_count` increment) run in ONE `Repo.transaction`, so an at-least-once
+redelivery re-runs atomically and applies the projection exactly once.
+
+# Implemented: notification-service Tables (code-verified)
+
+> Source of truth: [040_notifications.sql](../../infra/docker/postgres/init/040_notifications.sql),
+> applied to `chat_platform_test`. Owned by `NotificationService.Repo`. notification-service
+> keeps its OWN idempotency ledger (`notification_processed_events`) rather than sharing
+> message-service's `processed_events` — per-service ownership avoids coupling services through
+> one table (see DECISION_LOG, 2026-06-18). NO cross-service FKs.
+
+## notification_processed_events (notification-service's own idempotency ledger)
+
+Same shape/role as `processed_events` above, but owned by notification-service. Keyed
+`(consumer, event_id)`; `INSERT ... ON CONFLICT DO NOTHING` is the dedupe gate.
+
+| Column | Type | Notes |
+|---|---|---|
+| consumer | text | Primary key (part 1) — `notification` |
+| event_id | uuid | Primary key (part 2) — the envelope `event_id` |
+| inserted_at | timestamptz | When this consumer first applied the event |
+
+## notifications (one record per RECIPIENT — fan-out)
+
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid | Primary key |
+| type | text | `message_created` |
+| source_event_id | uuid | The `message.created.v1` envelope `event_id` |
+| recipient_user_id | uuid | Who is notified — an active participant, EXCLUDING the sender |
+| conversation_id | uuid | Nullable |
+| message_id | uuid | Nullable |
+| sender_user_id | uuid | The message author (NOT a recipient) |
+| read | boolean | Default false |
+| created_at | timestamptz | The source message's `created_at` |
+| inserted_at | timestamptz | Default `now()` |
+
+UNIQUE index `notifications_source_event_recipient_uidx (source_event_id, recipient_user_id)`
+(see [042_notifications_fanout.sql](../../infra/docker/postgres/init/042_notifications_fanout.sql)).
+On a `message.created.v1`, `NotificationService.Notifications.apply_message_created/1` reads the
+active recipient set from `conversation_participants_readmodel` (`WHERE conversation_id=? AND active`,
+excluding `sender_user_id`) and `insert_all`s one row per recipient with `on_conflict: :nothing` — the
+unique index is the **durable per-recipient idempotency guard** (safe under redelivery/retry, and a
+participant set that grew between deliveries adds only the new recipients). The
+`notification_processed_events` ledger remains the coarse event-level gate; both run in ONE
+`Repo.transaction`. If the read-model has no active participants yet (cold-start race), fan-out
+notifies NOBODY (0 rows) and is NOT retried — an accepted eventual-consistency limitation.
+`message.created.v1` carries the sender, not recipients; recipients come from the local
+read-model below).
+
+## conversation_participants_readmodel (local participant read-model — soft-state + LWW)
+
+A LOCAL projection of conversation membership, built by `NotificationService.ParticipantReadModel`
+from `conversation.events.v1` (`participant_added`/`participant_removed`). Lets (c) fan-out resolve
+a conversation's recipients WITHOUT a sync call to ConversationService. Source:
+[041_notification_participants_readmodel.sql](../../infra/docker/postgres/init/041_notification_participants_readmodel.sql).
+
+| Column | Type | Notes |
+|---|---|---|
+| conversation_id | uuid | Primary key (part 1) |
+| user_id | uuid | Primary key (part 2) |
+| active | boolean | true = currently a participant; toggled, NEVER hard-deleted |
+| role | text | Nullable — from `participant_added`; untouched on remove |
+| last_event_at | timestamptz | `occurred_at` of the last applied event — the LWW guard |
+| updated_at | timestamptz | Default `now()` |
+
+Two INDEPENDENT correctness mechanisms (see DECISION_LOG 2026-06-18):
+- **Dedupe (same-event redelivery):** `notification_processed_events` with a DISTINCT consumer name
+  `notification-participants` (the `(consumer, event_id)` PK lets it share the ledger table with the
+  message→notification consumer).
+- **Last-writer-wins (different events, out-of-order):** the upsert applies a state change ONLY when
+  the incoming `occurred_at >= last_event_at` (`ON CONFLICT ... DO UPDATE ... WHERE EXCLUDED.last_event_at
+  >= table.last_event_at`). Soft state means a late add after a remove is not lost and a
+  remove-before-add just creates an inactive row. (c) reads `WHERE conversation_id = ? AND active`.
+
+---
+
 # PostgreSQL Initial Tables
 
 ## users_auth

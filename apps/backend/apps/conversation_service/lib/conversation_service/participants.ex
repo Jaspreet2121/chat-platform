@@ -4,6 +4,7 @@ defmodule ConversationService.Participants do
   """
 
   alias ConversationService.ConversationStore
+  alias ConversationService.ParticipantEvents
   alias ConversationService.ParticipantStore
 
   @type participant_attrs :: map()
@@ -53,6 +54,14 @@ defmodule ConversationService.Participants do
              "role" => role,
              "joined_at" => now()
            }) do
+      # After a successful persist, emit participant_added (fire-and-forget).
+      ParticipantEvents.publish_participant_added(%{
+        conversation_id: conversation_id,
+        user_id: target_user_id,
+        role: role,
+        added_by: actor_user_id
+      })
+
       {:ok, participant_response(participant)}
     else
       {:error, reason} -> {:error, reason}
@@ -73,6 +82,13 @@ defmodule ConversationService.Participants do
            ParticipantStore.remove_participant(target_participant, %{
              "left_at" => now()
            }) do
+      # After a successful persist, emit participant_removed (fire-and-forget).
+      ParticipantEvents.publish_participant_removed(%{
+        conversation_id: conversation_id,
+        user_id: target_user_id,
+        removed_by: actor_user_id
+      })
+
       {:ok,
        %{
          conversation_id: removed_participant.conversation_id,

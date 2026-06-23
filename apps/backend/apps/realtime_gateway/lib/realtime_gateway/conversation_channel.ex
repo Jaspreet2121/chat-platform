@@ -94,7 +94,7 @@ defmodule RealtimeGateway.ConversationChannel do
            payload
            |> Map.put("conversation_id", socket.assigns.conversation_id)
            |> Map.put("sender_user_id", sender_user_id)
-           |> MessageService.Messages.create_message() do
+           |> SharedInfra.MessageClient.create_message() do
       broadcast_from(socket, "message_created", response)
       {:reply, {:ok, response}, socket}
     else
@@ -103,6 +103,9 @@ defmodule RealtimeGateway.ConversationChannel do
          {:error,
           %{code: "realtime.unauthorized", message: "Missing or invalid socket authentication"}},
          socket}
+
+      {:error, :message_unavailable} ->
+        unavailable_reply(socket)
 
       _ ->
         {:reply,
@@ -118,12 +121,13 @@ defmodule RealtimeGateway.ConversationChannel do
            payload
            |> Map.put("conversation_id", socket.assigns.conversation_id)
            |> Map.put("actor_user_id", actor_user_id)
-           |> MessageService.Messages.update_message() do
+           |> SharedInfra.MessageClient.update_message() do
       broadcast_from(socket, "message_updated", response)
       {:reply, {:ok, response}, socket}
     else
       {:error, :missing_user} -> unauthorized_reply(socket)
       {:error, :message_forbidden} -> forbidden_reply(socket)
+      {:error, :message_unavailable} -> unavailable_reply(socket)
       _ -> invalid_event_reply(socket)
     end
   end
@@ -135,12 +139,13 @@ defmodule RealtimeGateway.ConversationChannel do
            payload
            |> Map.put("conversation_id", socket.assigns.conversation_id)
            |> Map.put("actor_user_id", actor_user_id)
-           |> MessageService.Messages.delete_message() do
+           |> SharedInfra.MessageClient.delete_message() do
       broadcast_from(socket, "message_deleted", response)
       {:reply, {:ok, response}, socket}
     else
       {:error, :missing_user} -> unauthorized_reply(socket)
       {:error, :message_forbidden} -> forbidden_reply(socket)
+      {:error, :message_unavailable} -> unavailable_reply(socket)
       _ -> invalid_event_reply(socket)
     end
   end
@@ -161,6 +166,12 @@ defmodule RealtimeGateway.ConversationChannel do
   defp invalid_event_reply(socket) do
     {:reply,
      {:error, %{code: "realtime.invalid_event", message: "Message event payload is invalid"}},
+     socket}
+  end
+
+  # message-service unreachable over the network (HTTP adapter): reject with a distinct signal.
+  defp unavailable_reply(socket) do
+    {:reply, {:error, %{code: "realtime.unavailable", message: "Message service is unavailable"}},
      socket}
   end
 

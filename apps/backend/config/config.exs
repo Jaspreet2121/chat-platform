@@ -50,6 +50,7 @@ config :auth_service, :tokens,
 config :user_service, ecto_repos: [UserService.Repo]
 config :conversation_service, ecto_repos: [ConversationService.Repo]
 config :message_service, ecto_repos: [MessageService.Repo]
+config :notification_service, ecto_repos: [NotificationService.Repo]
 
 config :message_service, :scylla,
   nodes:
@@ -70,6 +71,10 @@ config :message_service, :kafka,
 
 config :message_service,
   message_persistence: System.get_env("MESSAGE_DB_BACKED") in ["true", "1", "yes"],
+  kafka_publish_enabled: System.get_env("KAFKA_PUBLISH_ENABLED") in ["true", "1", "yes"],
+  kafka_consumer_enabled: System.get_env("KAFKA_CONSUMER_ENABLED") in ["true", "1", "yes"],
+  kafka_projection_consumer_enabled:
+    System.get_env("KAFKA_PROJECTION_CONSUMER_ENABLED") in ["true", "1", "yes"],
   message_store_adapter:
     (case System.get_env("MESSAGE_STORE_ADAPTER") do
        "scylla" -> MessageService.MessageStore.ScyllaAdapter
@@ -78,8 +83,91 @@ config :message_service,
        _ -> MessageService.MessageStore.QueryPlanAdapter
      end)
 
+config :notification_service, :kafka,
+  brokers: System.get_env("KAFKA_BROKERS") || "localhost:9094",
+  client_id: System.get_env("KAFKA_CLIENT_ID") || "notification-service"
+
+# notification-service consumers are OFF by default: with both flags off,
+# NotificationService.Application starts no children (no Repo, no Kafka client, no consumer) →
+# plain mix test stays Docker-free. The two consumers toggle independently.
+config :notification_service,
+  consumer_enabled: System.get_env("NOTIFICATION_CONSUMER_ENABLED") in ["true", "1", "yes"],
+  participants_consumer_enabled:
+    System.get_env("NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED") in ["true", "1", "yes"]
+
+# Auth client boundary: edge apps call SharedInfra.AuthClient, which dispatches to this adapter.
+# Default = in-process (delegates to AuthService.*, zero behavior change). A future HTTP adapter
+# (separate auth-service container) is selected by overriding this in runtime config.
+# Auth client adapter: in-process by default (zero behavior change). `AUTH_CLIENT_ADAPTER=http`
+# flips it to the network adapter (calls auth-service's internal HTTP API). AUTH_SERVICE_URL is the
+# base URL; INTERNAL_API_TOKEN authenticates the call.
 config :shared_infra,
-  scylla_client_adapter: SharedInfra.Scylla.UnavailableClient
+  auth_client_adapter:
+    (case System.get_env("AUTH_CLIENT_ADAPTER") do
+       "http" -> SharedInfra.AuthClientHttp
+       _ -> AuthService.AuthClientInProcess
+     end),
+  auth_service_url: System.get_env("AUTH_SERVICE_URL")
+
+# Internal service-to-service HTTP APIs (microservices split). The token guards the internal
+# APIs (TokenPlug fails closed if unset); nil by default in dev/test. Each service's internal
+# HTTP listener is flag-gated (e.g. AUTH_HTTP_API_ENABLED), default off → no listener at boot.
+config :shared_infra, internal_api_token: System.get_env("INTERNAL_API_TOKEN")
+
+config :auth_service,
+  http_api_enabled: System.get_env("AUTH_HTTP_API_ENABLED") in ["true", "1", "yes"]
+
+config :conversation_service,
+  http_api_enabled: System.get_env("CONVERSATION_HTTP_API_ENABLED") in ["true", "1", "yes"]
+
+config :user_service,
+  http_api_enabled: System.get_env("USER_HTTP_API_ENABLED") in ["true", "1", "yes"]
+
+config :message_service,
+  http_api_enabled: System.get_env("MESSAGE_HTTP_API_ENABLED") in ["true", "1", "yes"]
+
+config :media_service,
+  http_api_enabled: System.get_env("MEDIA_HTTP_API_ENABLED") in ["true", "1", "yes"]
+
+config :shared_infra,
+  conversation_client_adapter:
+    (case System.get_env("CONVERSATION_CLIENT_ADAPTER") do
+       "http" -> SharedInfra.ConversationClientHttp
+       _ -> ConversationService.ConversationClientInProcess
+     end),
+  conversation_service_url: System.get_env("CONVERSATION_SERVICE_URL")
+
+config :shared_infra,
+  user_client_adapter:
+    (case System.get_env("USER_CLIENT_ADAPTER") do
+       "http" -> SharedInfra.UserClientHttp
+       _ -> UserService.UserClientInProcess
+     end),
+  user_service_url: System.get_env("USER_SERVICE_URL")
+
+config :shared_infra,
+  message_client_adapter:
+    (case System.get_env("MESSAGE_CLIENT_ADAPTER") do
+       "http" -> SharedInfra.MessageClientHttp
+       _ -> MessageService.MessageClientInProcess
+     end),
+  message_service_url: System.get_env("MESSAGE_SERVICE_URL")
+
+config :shared_infra,
+  media_client_adapter:
+    (case System.get_env("MEDIA_CLIENT_ADAPTER") do
+       "http" -> SharedInfra.MediaClientHttp
+       _ -> MediaService.MediaClientInProcess
+     end),
+  media_service_url: System.get_env("MEDIA_SERVICE_URL")
+
+config :shared_infra,
+  scylla_client_adapter: SharedInfra.Scylla.UnavailableClient,
+  kafka_producer_adapter:
+    (case System.get_env("KAFKA_PRODUCER_ADAPTER") do
+       "brod" -> SharedInfra.Kafka.BrodProducer
+       _ -> SharedInfra.Kafka.NoopProducer
+     end)
 
 config :media_service,
   media_persistence: System.get_env("MEDIA_DB_BACKED") in ["true", "1", "yes"],
@@ -122,5 +210,13 @@ config :user_service,
 
 import_config "#{config_env()}.exs"
 
+config :conversation_service, :kafka,
+  brokers: System.get_env("KAFKA_BROKERS") || "localhost:9094",
+  client_id: System.get_env("KAFKA_CLIENT_ID") || "conversation-service"
+
 config :conversation_service,
-  conversation_persistence: System.get_env("CONVERSATION_DB_BACKED") in ["true", "1", "yes"]
+  conversation_persistence: System.get_env("CONVERSATION_DB_BACKED") in ["true", "1", "yes"],
+  # Producer is OFF by default: with this off (or the default NoopProducer adapter),
+  # ConversationService.Application starts no brod client → plain mix test stays Docker-free.
+  conversation_publish_enabled:
+    System.get_env("CONVERSATION_PUBLISH_ENABLED") in ["true", "1", "yes"]

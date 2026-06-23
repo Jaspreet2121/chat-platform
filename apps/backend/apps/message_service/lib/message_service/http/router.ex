@@ -1,0 +1,70 @@
+defmodule MessageService.HTTP.Router do
+  @moduledoc """
+  Internal HTTP API for message-service (Plug, not Phoenix) — the heaviest (9 routes). Routes map
+  1:1 to `SharedInfra.MessageClient`'s contract; each calls the in-process
+  `MessageService.{Messages,Timeline,Receipts}` function and serializes via
+  `SharedInfra.InternalApi.encode_result/1` (preserving error atoms `:message_invalid`,
+  `:message_forbidden`). `list_timeline` maps to `Timeline.list_messages/1` (distinct from
+  `Messages.list_messages/1`), matching the client function names. Transport auth via
+  `SharedInfra.InternalApi.TokenPlug`.
+
+  Started ONLY under `MESSAGE_HTTP_API_ENABLED` (see `MessageService.Application`), default off → no
+  listener at boot. See docs/09-devops/INTERNAL_API.md.
+  """
+  use Plug.Router
+
+  plug(SharedInfra.InternalApi.TokenPlug)
+  plug(:match)
+  plug(Plug.Parsers, parsers: [:json], pass: ["application/json"], json_decoder: Jason)
+  plug(:dispatch)
+
+  post "/internal/messages/create" do
+    send_result(conn, MessageService.Messages.create_message(body(conn)))
+  end
+
+  post "/internal/messages/send" do
+    send_result(conn, MessageService.Messages.send_message(body(conn)))
+  end
+
+  post "/internal/messages/list" do
+    send_result(conn, MessageService.Messages.list_messages(body(conn)))
+  end
+
+  post "/internal/messages/update" do
+    send_result(conn, MessageService.Messages.update_message(body(conn)))
+  end
+
+  post "/internal/messages/edit" do
+    send_result(conn, MessageService.Messages.edit_message(body(conn)))
+  end
+
+  post "/internal/messages/delete" do
+    send_result(conn, MessageService.Messages.delete_message(body(conn)))
+  end
+
+  # list_timeline → Timeline.list_messages (distinct from Messages.list_messages above).
+  post "/internal/timeline/list" do
+    send_result(conn, MessageService.Timeline.list_messages(body(conn)))
+  end
+
+  post "/internal/receipts/mark_read" do
+    send_result(conn, MessageService.Receipts.mark_read(body(conn)))
+  end
+
+  post "/internal/receipts/mark_delivered" do
+    send_result(conn, MessageService.Receipts.mark_delivered(body(conn)))
+  end
+
+  match _ do
+    send_resp(conn, 404, Jason.encode!(%{"error" => "not_found"}))
+  end
+
+  defp body(%{body_params: params}) when is_map(params) and not is_struct(params), do: params
+  defp body(_conn), do: %{}
+
+  defp send_result(conn, result) do
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(SharedInfra.InternalApi.encode_result(result)))
+  end
+end

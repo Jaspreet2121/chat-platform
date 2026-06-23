@@ -4,6 +4,7 @@ defmodule ConversationService.Conversations do
   """
 
   alias ConversationService.ConversationStore
+  alias ConversationService.ParticipantEvents
   alias ConversationService.ParticipantStore
   alias ConversationService.Repo
 
@@ -178,8 +179,19 @@ defmodule ConversationService.Conversations do
         end
       end)
       |> case do
-        {:ok, response} -> {:ok, response}
-        {:error, _reason} -> {:error, :conversation_invalid}
+        {:ok, response} ->
+          # After the tx COMMITS, emit one participant_added per initial participant
+          # (fire-and-forget; never affects the create result).
+          ParticipantEvents.publish_initial_participants(
+            response.conversation_id,
+            response.created_by,
+            response.participant_user_ids
+          )
+
+          {:ok, response}
+
+        {:error, _reason} ->
+          {:error, :conversation_invalid}
       end
     end
   rescue

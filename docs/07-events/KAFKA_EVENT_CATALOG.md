@@ -1,5 +1,43 @@
 # Kafka Event Catalog
 
+> **Implementation status (2026-06-18): this catalog is mostly a SPECIFICATION.** The
+> `producer:` field on each event names the *intended* producer; most are not yet wired.
+> What exists today:
+> - `SharedInfra.Events.Envelope` build/validate contract for the standard envelope below.
+> - `SharedInfra.Kafka.Producer` dispatcher + non-connecting `NoopProducer` default
+>   (`:shared_infra, :kafka_producer_adapter`). A brod-backed live adapter
+>   (`SharedInfra.Kafka.BrodProducer`) is now wired and selected with
+>   `KAFKA_PRODUCER_ADAPTER=brod`; the default remains `NoopProducer` (connects/produces nothing).
+> - **✅ `message.created.v1` is the FIRST wired producer:** emitted **fire-and-forget** after a
+>   successful message persist (`MessageService.Messages.publish_message_created/1`), to topic
+>   `message.events.v1`, key = `conversation_id`. **Flag-gated** (`KAFKA_PUBLISH_ENABLED`, default
+>   off) and best-effort — a publish failure NEVER fails message creation (durability is not
+>   coupled to the broker).
+> - **✅ `message.created.v1` now has CONSUMERS:** a minimal log/ack consumer
+>   (`MessageService.Events.MessageCreatedLogConsumer`, `KAFKA_CONSUMER_ENABLED`) and the FIRST
+>   **stateful, idempotent** consumer — `MessageService.Events.ConversationSummaryConsumer`
+>   (`KAFKA_PROJECTION_CONSUMER_ENABLED`, distinct group `message-service-conversation-summary`,
+>   default off). It maintains the `conversation_message_summaries` projection, deduped via the
+>   `processed_events` ledger, exactly-once on redelivery. See **Idempotency** below.
+> - **✅ a SECOND service consumes it WITH FAN-OUT:** `NotificationService.Events.MessageCreatedConsumer`
+>   (the new **notification-service**, flag `NOTIFICATION_CONSUMER_ENABLED`, distinct group
+>   `notification-service-message-created`, default off) writes ONE notification per ACTIVE
+>   conversation participant (resolved from the local `conversation_participants_readmodel`),
+>   EXCLUDING the sender. Coarse dedupe via the `notification_processed_events` ledger
+>   `(consumer, event_id)`; durable per-recipient idempotency via a UNIQUE
+>   `(source_event_id, recipient_user_id)` index + `on_conflict: :nothing`. Empty read-model
+>   (cold-start) → notifies nobody (accepted). The cross-service recipient flow
+>   (conversation events → read-model → fan-out) is now COMPLETE.
+>
+> All consumers/producers are flag-gated and default off, so plain `mix test` stays Docker-free
+> and nothing connects at boot. Everything else below remains 🔴 documented-only.
+>
+> **Topic partitions (resolved 2026-06-18):** a one-shot `kafka-init` service in
+> docker-compose now runs `create-topics.sh`, creating `message.events.v1` with its declared
+> **6 partitions** (from `topics.env`) before producers publish — so `:hash` partitioning has a
+> stable partition count rather than relying on `AUTO_CREATE_TOPICS` (which would give 3). The
+> live kafka_integration run confirmed 6 partitions (brod started producers 0–5).
+
 ## Purpose
 
 This document defines all Kafka topics and events used by the chat-platform backend.
@@ -428,6 +466,18 @@ Payload:
 
 ## conversation.participant_added.v1
 
+> ✅ **PRODUCED (2026-06-18)** by conversation-service, fire-and-forget after a successful
+> persist (`ConversationService.ParticipantEvents`), flag-gated `CONVERSATION_PUBLISH_ENABLED`
+> (default off; default `NoopProducer` ⇒ nothing connects), key = `conversation_id`. Emitted from
+> ALL three membership points: **conversation creation (one per initial participant)**, explicit
+> add, so the downstream read-model is complete. Implemented payload:
+> `{conversation_id, user_id, role, added_by}`. **✅ CONSUMED (2026-06-18)** by notification-service's
+> participant read-model (`NotificationService.Events.ConversationParticipantsConsumer`, group
+> `notification-service-conversation-participants`, flag `NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED`,
+> default off) → `conversation_participants_readmodel` (soft-state + occurred_at LWW). conversation-service
+> runs its OWN flag-gated brod client (`:conversation_service_kafka_client`); the brod adapter's client
+> is now selectable per-call.
+
 Topic:
 
 conversation.events.v1
@@ -452,6 +502,15 @@ Payload:
 | role | string | yes |
 
 ## conversation.participant_removed.v1
+
+> ✅ **PRODUCED (2026-06-18)** by conversation-service, fire-and-forget after a successful
+> persist (`ConversationService.ParticipantEvents`), flag-gated `CONVERSATION_PUBLISH_ENABLED`
+> (default off), key = `conversation_id`. Implemented payload: `{conversation_id, user_id, removed_by}`.
+> **Discrepancy fixed + ✅ CONSUMED (2026-06-18):** the "Consumed by" list below omits
+> notification-service, but notification-service **DOES consume this event** for its participant
+> read-model (`ConversationParticipantsConsumer`) — a read-model fed only by `participant_added`
+> would never drop departed users. Remove sets `active=false` (soft, LWW-guarded). Treat
+> notification-service as a consumer here.
 
 Topic:
 
@@ -502,6 +561,24 @@ Payload:
 # Message Events
 
 ## message.created.v1
+
+> ✅ **WIRED (2026-06-18)** — produced fire-and-forget after a successful message persist
+> (`MessageService.Messages.publish_message_created/1`, wrapped in `Task.start`), flag-gated by
+> `KAFKA_PUBLISH_ENABLED`, via the `SharedInfra.Kafka.Producer` boundary, key = `conversation_id`.
+> A real **brod-backed adapter** (`SharedInfra.Kafka.BrodProducer`) is selected by
+> `KAFKA_PRODUCER_ADAPTER=brod` (default stays `NoopProducer` → no-op): it JSON-encodes the
+> envelope (jason) and **async**-produces with the `:hash` partitioner (per-conversation order).
+> The flag-gated brod client is supervised in `MessageService.Application`. A **minimal
+> consumer** also exists: `MessageService.Events.MessageCreatedLogConsumer` (a
+> `brod_group_subscriber_v2`, flag-gated by `KAFKA_CONSUMER_ENABLED`, group
+> `message-service-log-consumer`) consumes this topic and **logs + commits** the offset —
+> NO projection/fanout/behavior coupling yet. The full produce→consume pipe is verified
+> against a live broker (`mix test --include kafka_integration`). Two STATEFUL consumers also
+> exist: `MessageService.Events.ConversationSummaryConsumer` (the `conversation_message_summaries`
+> projection) and `NotificationService.Events.MessageCreatedConsumer` (the new notification-service,
+> one notification record per event) — both idempotent via `(consumer, event_id)` ledgers, distinct
+> groups, flag-gated/default off. Next: recipient fan-out (per-participant notifications, needs
+> ConversationService data).
 
 Topic:
 
@@ -1206,6 +1283,20 @@ Recommended approach:
 - Use unique constraints where possible.
 - Kafka consumers should retry safely.
 - Dead-letter topic should be added later.
+
+**Implemented reference (code-verified):** `MessageService.Projections.ConversationSummary.apply_message_created/1`
+is the concrete blueprint every future stateful consumer (e.g. notification-service) should copy.
+In ONE `Repo.transaction`:
+
+1. `INSERT ... ON CONFLICT DO NOTHING` into `processed_events` keyed `(consumer, event_id)`;
+   affected count `1` ⇒ NEW, `0` ⇒ DUPLICATE.
+2. Only when NEW, apply the projection upsert (atomic increment). Both commit or both roll back.
+
+Commit ordering in `MessageService.Events.ConversationSummaryConsumer` (at-least-once):
+DB transaction succeeds → `{:ok, :commit}`; transient DB error → no commit (redeliver);
+structurally-invalid/poison event (e.g. malformed `event_id`) → log + commit (skip, never wedge
+the partition). Verified by `conversation_summary_projection_test.exs` (exactly-once, postgres_integration)
+and `conversation_summary_consumer_integration_test.exs` (live round-trip, kafka_integration).
 
 ---
 

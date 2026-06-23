@@ -19,7 +19,7 @@ defmodule RealtimeGateway.TopicAuthorization do
   defp authorize_conversation_join(conversation_id, socket) do
     with {:ok, user_id} <- socket_user_id(socket),
          {:ok, _conversation} <-
-           ConversationService.Conversations.get_conversation(%{
+           SharedInfra.ConversationClient.get_conversation(%{
              "conversation_id" => conversation_id,
              "user_id" => user_id
            }) do
@@ -35,6 +35,11 @@ defmodule RealtimeGateway.TopicAuthorization do
              :conversation_invalid
            ] ->
         {:error, %{code: "realtime.forbidden", message: "Conversation join is forbidden"}}
+
+      # Conversation service unreachable over the network (HTTP adapter): reject the join with a
+      # distinct unavailable signal rather than a forbidden/internal_error.
+      {:error, :conversation_unavailable} ->
+        {:error, %{code: "realtime.unavailable", message: "Conversation service is unavailable"}}
     end
   rescue
     _error ->

@@ -15,7 +15,7 @@ defmodule ApiGatewayWeb.MessageController do
     params = Map.put(params, "conversation_id", conversation_id)
 
     with :ok <- validate_send_payload(params),
-         {:ok, response} <- MessageService.Messages.send_message(params) do
+         {:ok, response} <- SharedInfra.MessageClient.send_message(params) do
       conn
       |> put_status(:created)
       |> json(response)
@@ -30,17 +30,20 @@ defmodule ApiGatewayWeb.MessageController do
     with :ok <- validate_send_payload(params),
          {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          :ok <- authorize_membership(conversation_id, session.user_id),
          {:ok, response} <-
            params
            |> Map.put("sender_user_id", session.user_id)
-           |> MessageService.Messages.create_message() do
+           |> SharedInfra.MessageClient.create_message() do
       conn
       |> put_status(:created)
       |> json(response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -57,7 +60,7 @@ defmodule ApiGatewayWeb.MessageController do
   defp placeholder_list_messages(conn, conversation_id, params) do
     params = Map.put(params, "conversation_id", conversation_id)
 
-    with {:ok, response} <- MessageService.Timeline.list_messages(params) do
+    with {:ok, response} <- SharedInfra.MessageClient.list_timeline(params) do
       json(conn, response)
     end
   end
@@ -67,12 +70,15 @@ defmodule ApiGatewayWeb.MessageController do
 
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          :ok <- authorize_membership(conversation_id, session.user_id),
-         {:ok, response} <- MessageService.Messages.list_messages(params) do
+         {:ok, response} <- SharedInfra.MessageClient.list_messages(params) do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -93,7 +99,7 @@ defmodule ApiGatewayWeb.MessageController do
       |> Map.put("message_id", message_id)
 
     with :ok <- require_fields(params, ["body"]),
-         {:ok, response} <- MessageService.Messages.edit_message(params) do
+         {:ok, response} <- SharedInfra.MessageClient.edit_message(params) do
       json(conn, response)
     else
       _ -> invalid_request(conn)
@@ -109,14 +115,16 @@ defmodule ApiGatewayWeb.MessageController do
     with :ok <- require_fields(params, ["body"]),
          {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            params
            |> Map.put("actor_user_id", session.user_id)
-           |> MessageService.Messages.update_message() do
+           |> SharedInfra.MessageClient.update_message() do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
       {:error, :message_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -132,7 +140,7 @@ defmodule ApiGatewayWeb.MessageController do
 
   defp placeholder_delete_message(conn, conversation_id, message_id) do
     with {:ok, response} <-
-           MessageService.Messages.delete_message(%{
+           SharedInfra.MessageClient.delete_message(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id
            }) do
@@ -143,9 +151,9 @@ defmodule ApiGatewayWeb.MessageController do
   defp delete_message_from_store(conn, conversation_id, message_id) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
-           MessageService.Messages.delete_message(%{
+           SharedInfra.MessageClient.delete_message(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id,
              "actor_user_id" => session.user_id
@@ -153,6 +161,8 @@ defmodule ApiGatewayWeb.MessageController do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
       {:error, :message_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -168,7 +178,7 @@ defmodule ApiGatewayWeb.MessageController do
 
   defp placeholder_mark_read(conn, conversation_id, message_id) do
     with {:ok, response} <-
-           MessageService.Receipts.mark_read(%{
+           SharedInfra.MessageClient.mark_read(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id
            }) do
@@ -179,9 +189,9 @@ defmodule ApiGatewayWeb.MessageController do
   defp mark_read_in_store(conn, conversation_id, message_id) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
-           MessageService.Receipts.mark_read(%{
+           SharedInfra.MessageClient.mark_read(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id,
              "user_id" => session.user_id
@@ -189,6 +199,8 @@ defmodule ApiGatewayWeb.MessageController do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -203,7 +215,7 @@ defmodule ApiGatewayWeb.MessageController do
 
   defp placeholder_mark_delivered(conn, conversation_id, message_id) do
     with {:ok, response} <-
-           MessageService.Receipts.mark_delivered(%{
+           SharedInfra.MessageClient.mark_delivered(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id
            }) do
@@ -214,9 +226,9 @@ defmodule ApiGatewayWeb.MessageController do
   defp mark_delivered_in_store(conn, conversation_id, message_id) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
-           AuthService.Sessions.current_session(%{"authorization" => authorization}),
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
-           MessageService.Receipts.mark_delivered(%{
+           SharedInfra.MessageClient.mark_delivered(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id,
              "user_id" => session.user_id
@@ -224,6 +236,8 @@ defmodule ApiGatewayWeb.MessageController do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -246,6 +260,9 @@ defmodule ApiGatewayWeb.MessageController do
 
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "message.invalid_request")
 
+  defp service_unavailable(conn),
+    do: ErrorResponse.service_unavailable(conn, "message.unavailable")
+
   defp unauthorized(conn),
     do:
       ErrorResponse.unauthorized(conn, "message.unauthorized", "Missing or invalid access token")
@@ -267,11 +284,13 @@ defmodule ApiGatewayWeb.MessageController do
   # placeholder/Docker-free path is unchanged (enforcement is only meaningful
   # when conversation persistence is enabled).
   defp authorize_membership(conversation_id, user_id) do
-    case ConversationService.Conversations.get_conversation(%{
+    case SharedInfra.ConversationClient.get_conversation(%{
            "conversation_id" => conversation_id,
            "user_id" => user_id
          }) do
       {:ok, _conversation} -> :ok
+      # Propagate transport-unavailable so the controller maps it to 503 (not a 403 forbidden).
+      {:error, :conversation_unavailable} -> {:error, :conversation_unavailable}
       _ -> {:error, :conversation_membership_forbidden}
     end
   end
