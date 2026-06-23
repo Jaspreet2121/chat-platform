@@ -158,6 +158,10 @@ the service apps post-split).
   conversation internal API; `unavailable_atom: :conversation_unavailable`. Atom-keyed conversation/participant
   maps + nested participant lists round-trip via the recursive `decode_result`. Config:
   `CONVERSATION_SERVICE_URL`, `CONVERSATION_CLIENT_ADAPTER=http`.
+- **`SharedInfra.UserClientHttp`** (done) — `@behaviour SharedInfra.UserClient`; calls the user internal API;
+  `unavailable_atom: :user_unavailable`. Atom-keyed profile maps round-trip. Config: `USER_SERVICE_URL`,
+  `USER_CLIENT_ADAPTER=http`. Gateway maps `:user_unavailable`→503 at every user_controller site (incl. the
+  public-`profile` action which had no catch-all — fixed).
 
 ### Gateway failure mapping (additive)
 Transport failure → `{:error, :auth_unavailable}` → the gateway maps it to **HTTP 503** via the new

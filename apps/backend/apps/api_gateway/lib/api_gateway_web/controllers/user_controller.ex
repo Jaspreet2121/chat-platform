@@ -27,6 +27,7 @@ defmodule ApiGatewayWeb.UserController do
       json(conn, response)
     else
       {:error, :profile_invalid} -> invalid_request(conn)
+      {:error, :user_unavailable} -> service_unavailable(conn)
     end
   end
 
@@ -46,6 +47,7 @@ defmodule ApiGatewayWeb.UserController do
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :user_unavailable} -> service_unavailable(conn)
       {:error, :profile_invalid} -> session_invalid(conn)
       _ -> session_invalid(conn)
     end
@@ -73,6 +75,7 @@ defmodule ApiGatewayWeb.UserController do
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :user_unavailable} -> service_unavailable(conn)
       {:error, :profile_invalid} -> invalid_request(conn)
       _ -> invalid_request(conn)
     end

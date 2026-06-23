@@ -2,6 +2,24 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-23] Microservices HTTP client adapter — User (copies the pattern)
+
+- **Context:** third HTTP client adapter. Flip via `USER_CLIENT_ADAPTER=http`; default in-process → zero
+  behavior change.
+- **Decision:** `SharedInfra.UserClientHttp` (in shared_infra) — `@behaviour SharedInfra.UserClient`; 3
+  callbacks → `HttpClient.post_result` with `USER_SERVICE_URL` + route + `unavailable: :user_unavailable`.
+  Atom-keyed profile maps round-trip via `decode_result`.
+- **Decision — gateway 503 mapping, fixing a no-catch-all hazard:** added `{:error, :user_unavailable}` → 503
+  at every `UserClient` call-site. The public **`profile/2`** action (NOT persistence-gated — always calls
+  `get_public_profile`) had only a `:profile_invalid` clause and NO catch-all → `:user_unavailable` would have
+  crashed it (500); added the clause. The two persistence paths got the clause after their existing
+  `:auth_unavailable`. Placeholder paths (persistence off) left unhandled + documented (HTTP-adapter implies
+  persistence on). Existing clauses untouched; dead in the default path.
+- **Status:** Implemented + verified. plain `mix test` 248→249 (+1 plain 503-mapping test; existing 248 INTACT);
+  pg 316→317; `mix test --include http_integration` → user 3 passed (round-trip == in-process incl. atom-keyed
+  profile; dead port → `:user_unavailable`) + conversation 3 + auth 3 (regression). Default in-process; no
+  listener at boot. Next: message (don't atomize `metadata`) + media HTTP adapters.
+
 ## [2026-06-23] Microservices HTTP client adapter — Conversation (copies the Auth pattern)
 
 - **Context:** second HTTP client adapter, copying the Auth template (`SharedInfra.HttpClient` +
