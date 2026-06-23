@@ -26,9 +26,6 @@ defmodule RealtimeGateway.MixProject do
     [
       {:phoenix, "~> 1.7"},
       {:phoenix_pubsub, "~> 2.1"},
-      {:auth_service, in_umbrella: true},
-      {:conversation_service, in_umbrella: true},
-      {:message_service, in_umbrella: true},
       {:shared_infra, in_umbrella: true}
     ]
   end

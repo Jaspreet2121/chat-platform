@@ -2,6 +2,34 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-23] Microservices split — per-service releases + edge dep cleanup (mechanism iii; NO shared_infra package)
+
+- **Context:** to ship each service as its own container we need release packaging that bundles one service at
+  a time. Phase-1 inspection found shared_infra has ZERO compile-time coupling to any service (only runtime
+  default-adapter atoms + doc comments) and the edge apps (api_gateway, realtime_gateway) had ZERO residual
+  `*Service.*` code references (all calls go via `SharedInfra.*Client`).
+- **Decision — mechanism (iii): no shared_infra package extraction.** shared_infra stays `{:in_umbrella}`;
+  per-service `mix release` definitions from the monorepo bundle each app. Rejected separate-repo (i) — a
+  2-repo edit→tag→bump workflow is needless friction given zero compile-coupling; rejected dual path-dep (ii)
+  as redundant with in_umbrella. Lowest dev friction; plain `mix test` stays Docker-free + unchanged.
+- **Decision — the REAL decoupling: drop unused edge→service in_umbrella deps.** Removed
+  `{:auth/:conversation/:user/:message/:media_service, in_umbrella}` from `api_gateway/mix.exs` and
+  `{:auth/:conversation/:message_service, in_umbrella}` from `realtime_gateway/mix.exs` (kept
+  `{:shared_infra, in_umbrella}` — needed for the `*Client` dispatchers). These deps were unused at the code
+  level (verified zero refs) but would have bundled all 5 services into the gateway image. This is what makes
+  the gateway release lean.
+- **Decision — per-service releases in `apps/backend/mix.exs`:** `auth_service`, `user_service`,
+  `conversation_service`, `message_service`, `media_service` (each `[<svc>, shared_infra]`), plus `gateway`
+  (`[api_gateway, realtime_gateway, shared_infra]`). Kept the all-in-one `chat_platform` release for the
+  single-container baseline. (notification_service has no per-service release yet — add when it's containerized.)
+- **Status:** Implemented + verified. Packaging-only — ZERO runtime behavior change. `mix compile
+  --warnings-as-errors` clean AFTER the dep-drop; plain `mix test` 255/89 UNCHANGED (in-process adapters still
+  resolve — the dep governed compile-order/bundling, not runtime resolution → no hidden assumption); pg 323
+  unchanged. All 7 releases assemble under `MIX_ENV=prod mix release` (runtime.exs secrets guard runs at boot,
+  not assembly). Bundling confirmed lean: `gateway/lib` = api_gateway + realtime_gateway + shared_infra only
+  (no service apps); `auth_service/lib` = auth_service + shared_infra only. Next: per-service Dockerfiles →
+  docker-compose.prod → optional DB-per-service → CI rework.
+
 ## [2026-06-23] Microservices HTTP client adapter — Media; CLIENT-ADAPTER SET COMPLETE (all 5)
 
 - **Context:** last of the 5 HTTP client adapters. Flip via `MEDIA_CLIENT_ADAPTER=http`; default in-process.

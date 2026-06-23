@@ -49,7 +49,7 @@ apps/backend/
     test.exs        # sets `start_repo: false` for the 5 Repo apps → Docker-free test boot
     prod.exs        # minimal prod compile-time config
     runtime.exs     # prod-only: fail-fast secret guard + Repo/Endpoint/Kafka wiring from env
-  mix.exs           # `releases: [chat_platform: ...]` — umbrella release of all 8 apps
+  mix.exs           # releases: all-in-one `chat_platform` (all 9 apps) + per-service `auth_service`/`user_service`/`conversation_service`/`message_service`/`media_service` (each `[<svc>, shared_infra]`) + `gateway` (`[api_gateway, realtime_gateway, shared_infra]`)
   apps/
     api_gateway/
     auth_service/
