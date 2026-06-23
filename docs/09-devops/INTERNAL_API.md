@@ -162,6 +162,16 @@ the service apps post-split).
   `unavailable_atom: :user_unavailable`. Atom-keyed profile maps round-trip. Config: `USER_SERVICE_URL`,
   `USER_CLIENT_ADAPTER=http`. Gateway maps `:user_unavailable`→503 at every user_controller site (incl. the
   public-`profile` action which had no catch-all — fixed).
+- **`SharedInfra.MessageClientHttp`** (done) — `@behaviour SharedInfra.MessageClient`, 9 callbacks (incl.
+  `list_timeline`→`/internal/timeline/list`); `unavailable_atom: :message_unavailable`. Config:
+  `MESSAGE_SERVICE_URL`, `MESSAGE_CLIENT_ADAPTER=http`. Gateway maps `:message_unavailable`→503 at every
+  message_controller site; realtime `conversation_channel` maps it → `realtime.unavailable` (create/update/delete).
+  **⚠️ METADATA CAVEAT resolved via decoder option:** every call decodes with
+  `decode: [skip_atomize: ["metadata"]]`. `SharedInfra.InternalApi.decode_result/2` gained an
+  `opts[:skip_atomize]` (list of string keys whose VALUE is left verbatim/string-keyed at ANY depth) so a
+  message's free-form `metadata` stays string-keyed (matching in-process) and arbitrary atoms are never minted
+  from user input. Default `[]` → other adapters fully atomize (unchanged). Proven deterministically in
+  `SharedInfra.InternalApiSkipAtomizeTest`.
 
 ### Gateway failure mapping (additive)
 Transport failure → `{:error, :auth_unavailable}` → the gateway maps it to **HTTP 503** via the new

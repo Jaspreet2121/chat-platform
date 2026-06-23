@@ -2,6 +2,29 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-23] Microservices HTTP client adapter — Message + the metadata caveat (decoder skip option)
+
+- **Context:** fourth HTTP client adapter (the heaviest, 9 callbacks) — and the one carrying the documented
+  `metadata` fidelity caveat. Flip via `MESSAGE_CLIENT_ADAPTER=http`; default in-process → zero behavior change.
+- **Decision — metadata caveat resolved via option (i):** `SharedInfra.InternalApi.decode_result/2` gained
+  `opts[:skip_atomize]` — a list of string keys whose VALUE is left verbatim (NOT recursed/atomized) at ANY
+  depth. `SharedInfra.MessageClientHttp` decodes every call with `skip_atomize: ["metadata"]`, so a message's
+  FREE-FORM, user-provided `metadata` stays string-keyed (matching in-process) and arbitrary atoms are never
+  minted from user input (atom-table exhaustion). Chose (i) over per-adapter post-processing because it's
+  generic + the default `[]` leaves the other 3 adapters' behavior provably unchanged (their callers don't pass
+  it). Threaded through `HttpClient.post_result(..., decode: [...])`.
+- **Decision — `SharedInfra.MessageClientHttp`:** 9 callbacks → `HttpClient.post_result` with
+  `MESSAGE_SERVICE_URL` + route + `unavailable: :message_unavailable` + `decode: [skip_atomize: ["metadata"]]`.
+  `list_timeline` → `/internal/timeline/list`.
+- **Decision — gateway + realtime 503 mapping (additive):** `{:error, :message_unavailable}` → 503 at every
+  message_controller MessageClient site (after the existing `:auth_unavailable`); realtime `conversation_channel`
+  create/update/delete → `realtime.unavailable` (new `unavailable_reply/1`). Dead in the default path.
+- **Status:** Implemented + verified. plain `mix test` 249→254 (+5 plain: 3 `decode_result` skip-atomize proofs
+  [metadata string-keyed at top level + nested in lists; default fully-atomizes] + gateway 503 + realtime
+  unavailable; existing 249 INTACT); pg 317→322; `mix test --include http_integration` → message 4 + user 3 +
+  conversation 3 + auth 3 passed (round-trips == in-process; dead port → `:message_unavailable`). Default
+  in-process. Next: Media HTTP adapter (last) → then shared_infra extraction, releases/Docker, compose.
+
 ## [2026-06-23] Microservices HTTP client adapter — User (copies the pattern)
 
 - **Context:** third HTTP client adapter. Flip via `USER_CLIENT_ADAPTER=http`; default in-process → zero

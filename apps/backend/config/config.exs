@@ -145,7 +145,14 @@ config :shared_infra,
      end),
   user_service_url: System.get_env("USER_SERVICE_URL")
 
-config :shared_infra, message_client_adapter: MessageService.MessageClientInProcess
+config :shared_infra,
+  message_client_adapter:
+    (case System.get_env("MESSAGE_CLIENT_ADAPTER") do
+       "http" -> SharedInfra.MessageClientHttp
+       _ -> MessageService.MessageClientInProcess
+     end),
+  message_service_url: System.get_env("MESSAGE_SERVICE_URL")
+
 config :shared_infra, media_client_adapter: MediaService.MediaClientInProcess
 
 config :shared_infra,

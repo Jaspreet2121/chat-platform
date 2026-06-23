@@ -79,6 +79,14 @@ if config_env() == :prod do
     config :shared_infra, user_service_url: url
   end
 
+  if System.get_env("MESSAGE_CLIENT_ADAPTER") == "http" do
+    config :shared_infra, message_client_adapter: SharedInfra.MessageClientHttp
+  end
+
+  if url = System.get_env("MESSAGE_SERVICE_URL") do
+    config :shared_infra, message_service_url: url
+  end
+
   if port = System.get_env("AUTH_HTTP_PORT") do
     config :auth_service, http_port: String.to_integer(port)
   end

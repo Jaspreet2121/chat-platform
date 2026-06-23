@@ -42,6 +42,7 @@ defmodule ApiGatewayWeb.MessageController do
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
       {:error, :conversation_unavailable} -> service_unavailable(conn)
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
@@ -76,6 +77,7 @@ defmodule ApiGatewayWeb.MessageController do
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
       {:error, :conversation_unavailable} -> service_unavailable(conn)
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
@@ -122,6 +124,7 @@ defmodule ApiGatewayWeb.MessageController do
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
       {:error, :message_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -159,6 +162,7 @@ defmodule ApiGatewayWeb.MessageController do
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
       {:error, :message_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -196,6 +200,7 @@ defmodule ApiGatewayWeb.MessageController do
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -232,6 +237,7 @@ defmodule ApiGatewayWeb.MessageController do
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end

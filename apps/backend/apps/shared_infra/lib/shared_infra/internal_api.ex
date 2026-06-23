@@ -28,23 +28,38 @@ defmodule SharedInfra.InternalApi do
   result shape. Map keys are rehydrated to atoms via `String.to_existing_atom/1` (the atoms
   exist in the service code); error names likewise. Unknown keys/atoms fall back to the string
   (never crashes).
+
+  `opts[:skip_atomize]` is a list of string keys whose VALUE is left untouched (NOT recursed into /
+  atomized) at any depth — for FREE-FORM, user-provided maps like a message's `metadata`. Atomizing
+  those would (a) mint arbitrary atoms from user input (atom-table exhaustion) and (b) change the
+  shape vs in-process (where `metadata` stays string-keyed). Default `[]` → fully atomized (the
+  behavior the other adapters rely on; unchanged).
   """
-  def decode_result(%{"ok" => value}), do: {:ok, atomize_keys(value)}
-  def decode_result(%{"error" => name}) when is_binary(name), do: {:error, safe_existing_atom(name)}
-  def decode_result(%{"result" => value}), do: value
+  def decode_result(envelope, opts \\ [])
+
+  def decode_result(%{"ok" => value}, opts), do: {:ok, atomize_keys(value, skip(opts))}
+  def decode_result(%{"error" => name}, _opts) when is_binary(name), do: {:error, safe_existing_atom(name)}
+  def decode_result(%{"result" => value}, _opts), do: value
+
+  defp skip(opts), do: Keyword.get(opts, :skip_atomize, [])
 
   @doc "Configured internal service-to-service token (nil if unset → TokenPlug fails closed)."
   def internal_token, do: Application.get_env(:shared_infra, :internal_api_token)
 
-  defp atomize_keys(map) when is_map(map) do
-    Map.new(map, fn {k, v} -> {safe_key(k), atomize_value(v)} end)
+  defp atomize_keys(map, skip) when is_map(map) do
+    Map.new(map, fn {k, v} ->
+      # A skipped key keeps its VALUE verbatim (free-form map left string-keyed), but the key
+      # itself is still atomized so siblings/shape match the in-process result.
+      value = if is_binary(k) and k in skip, do: v, else: atomize_value(v, skip)
+      {safe_key(k), value}
+    end)
   end
 
-  defp atomize_keys(value), do: value
+  defp atomize_keys(value, _skip), do: value
 
-  defp atomize_value(v) when is_map(v), do: atomize_keys(v)
-  defp atomize_value(v) when is_list(v), do: Enum.map(v, &atomize_value/1)
-  defp atomize_value(v), do: v
+  defp atomize_value(v, skip) when is_map(v), do: atomize_keys(v, skip)
+  defp atomize_value(v, skip) when is_list(v), do: Enum.map(v, &atomize_value(&1, skip))
+  defp atomize_value(v, _skip), do: v
 
   defp safe_key(k) when is_binary(k), do: safe_existing_atom(k)
   defp safe_key(k), do: k

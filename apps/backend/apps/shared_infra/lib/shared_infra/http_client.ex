@@ -26,23 +26,25 @@ defmodule SharedInfra.HttpClient do
   @spec post_result(String.t(), String.t(), map(), keyword()) :: term()
   def post_result(base_url, path, body, opts) do
     unavailable = Keyword.fetch!(opts, :unavailable)
+    decode_opts = Keyword.get(opts, :decode, [])
     encoded = Jason.encode!(body)
     request = {url(base_url, path), headers(), ~c"application/json", encoded}
-    do_request(:post, request, unavailable)
+    do_request(:post, request, unavailable, decode_opts)
   end
 
   @spec get_result(String.t(), String.t(), keyword()) :: term()
   def get_result(base_url, path, opts) do
     unavailable = Keyword.fetch!(opts, :unavailable)
-    do_request(:get, {url(base_url, path), headers()}, unavailable)
+    decode_opts = Keyword.get(opts, :decode, [])
+    do_request(:get, {url(base_url, path), headers()}, unavailable, decode_opts)
   end
 
-  defp do_request(method, request, unavailable) do
+  defp do_request(method, request, unavailable, decode_opts) do
     http_opts = [connect_timeout: connect_timeout(), timeout: receive_timeout()]
 
     case :httpc.request(method, request, http_opts, body_format: :binary) do
       {:ok, {{_version, 200, _reason}, _headers, body}} ->
-        decode(body, unavailable)
+        decode(body, unavailable, decode_opts)
 
       {:ok, {{_version, status, _reason}, _headers, _body}} ->
         Logger.warning("internal HTTP call #{inspect(method)} returned status #{status}")
@@ -62,10 +64,13 @@ defmodule SharedInfra.HttpClient do
       {:error, unavailable}
   end
 
-  defp decode(body, unavailable) do
+  defp decode(body, unavailable, decode_opts) do
     case Jason.decode(body) do
-      {:ok, envelope} when is_map(envelope) -> SharedInfra.InternalApi.decode_result(envelope)
-      _ -> {:error, unavailable}
+      {:ok, envelope} when is_map(envelope) ->
+        SharedInfra.InternalApi.decode_result(envelope, decode_opts)
+
+      _ ->
+        {:error, unavailable}
     end
   end
 
