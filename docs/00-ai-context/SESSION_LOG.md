@@ -1,5 +1,14 @@
 # Session Log
 
+## [2026-06-23] Slice: MICROSERVICES split — per-service Dockerfiles (one parameterized Dockerfile)
+- Status: ✅ green (build/config only — no app code; verified WITH Docker)
+- Approach (a): ONE parameterized Dockerfile (`ARG RELEASE`), not six. Default `RELEASE=chat_platform` reproduces the all-in-one 3b image (folded the single-container Dockerfile in). Each per-service image bundles only its app + shared_infra (mix release subset).
+- Files changed: `apps/backend/Dockerfile` (parameterized: `ARG RELEASE`/`ARG SERVICE_PORT`; build stage `mix release "$RELEASE"` → `cp` to fixed `/release`; runtime `ENV RELEASE_BIN` + `CMD exec /app/bin/$RELEASE_BIN start`; `EXPOSE $SERVICE_PORT`). `.dockerignore` confirmed still suitable (unchanged). DEPLOYMENT.md (per-service build table + ports + shared-runtime.exs note + local verification), DECISION_LOG, AI_CONTEXT, ROADMAP, CODEMAP.
+- Ports: auth 4101, conversation 4102, user 4103, message 4104, media 4105, gateway 4000.
+- Verification (Docker available): built `chat/auth_service` + `chat/gateway` for real → both succeed, **≈259 MB** each; `docker run` auth WITHOUT secrets → fail-fast (`FATAL: DATABASE_URL`/`PHX_HOST`, proves nothing baked + release boots far enough to enforce guard); auth WITH dummy secrets + `AUTH_HTTP_API_ENABLED=true -p 4101:4101` → **boots + listens** (host `curl POST :4101/internal/session/current` → **HTTP 401** from `TokenPlug` fail-closed; Postgres retried in background, no boot crash). `mix test` → **255 / 89, 0 failures** UNCHANGED (Dockerfile not on the compile/test path); pg 323 unaffected by same reasoning; web untouched.
+- Shared-runtime.exs note (documented, no code change): every release requires the full prod env in :prod (incl. PHX_HOST even for a pure service) — per-release guard refinement deferred.
+- Next: `docker-compose.prod.yml` — the first real multi-container bring-up (services on `*_HTTP_API_ENABLED=true`, gateway on `*_CLIENT_ADAPTER=http` + `*_SERVICE_URL`).
+
 ## [2026-06-23] Slice: MICROSERVICES split — per-service releases + drop edge→service deps (packaging only)
 - Status: ✅ green (build/release packaging only — ZERO runtime behavior change)
 - Mechanism (iii) from Phase-1 inspection: NO shared_infra package extraction. shared_infra stays in_umbrella (zero compile-coupling verified); per-service `mix release` from the monorepo bundle each app.

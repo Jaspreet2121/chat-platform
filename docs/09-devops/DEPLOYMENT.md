@@ -88,6 +88,50 @@ docker run --rm -p 4000:4000 \
 (`FATAL: ... known insecure placeholder`). A full serving boot against a real managed Postgres is
 sub-slice 3.
 
+## Per-service images (microservices split, done 2026-06-23)
+
+The single [apps/backend/Dockerfile](../../apps/backend/Dockerfile) is now **parameterized** by a `RELEASE`
+build-arg (one Dockerfile, not six — the release name is the only thing that varies; build context, build/runtime
+stages, and the secret guard are identical). With no build-arg it defaults to `RELEASE=chat_platform` →
+reproduces the original all-in-one image (the 3b baseline is unchanged). Each per-service image bundles ONLY that
+app + `shared_infra` (+ hex deps + ERTS), NOT the other services — `mix release <name>` selects the subset (see
+[apps/backend/mix.exs](../../apps/backend/mix.exs) `releases:`).
+
+| RELEASE | apps bundled | port (build-arg `SERVICE_PORT`) | env to enable its listener |
+|---|---|---|---|
+| `auth_service` | auth_service + shared_infra | 4101 | `AUTH_HTTP_API_ENABLED=true` |
+| `conversation_service` | conversation_service + shared_infra | 4102 | `CONVERSATION_HTTP_API_ENABLED=true` |
+| `user_service` | user_service + shared_infra | 4103 | `USER_HTTP_API_ENABLED=true` |
+| `message_service` | message_service + shared_infra | 4104 | `MESSAGE_HTTP_API_ENABLED=true` |
+| `media_service` | media_service + shared_infra | 4105 | `MEDIA_HTTP_API_ENABLED=true` |
+| `gateway` | api_gateway + realtime_gateway + shared_infra | 4000 | (serves by default) |
+| `chat_platform` | all 9 apps (all-in-one) | 4000 | default build |
+
+```sh
+# from repo root (build context = apps/backend):
+docker build --build-arg RELEASE=auth_service --build-arg SERVICE_PORT=4101 -t chat/auth_service apps/backend
+docker build --build-arg RELEASE=gateway      --build-arg SERVICE_PORT=4000 -t chat/gateway      apps/backend
+docker build                                                                -t chat/all          apps/backend  # chat_platform
+```
+
+The runtime `CMD` is `exec /app/bin/$RELEASE_BIN start` (release name carried via the `RELEASE_BIN` env so the
+shell-form CMD can read it; `exec` makes the release PID 1 so `SIGTERM` reaches the VM).
+
+**NOTE — shared `runtime.exs`:** every release evaluates the same `config/runtime.exs`, so in `:prod` ALL of
+`DATABASE_URL`, `SECRET_KEY_BASE`, `TOKEN_SECRET`, `OTP_SECRET`, `PHX_HOST` must be present even for a non-gateway
+service container (`PHX_HOST` is a gateway concern but is currently required for every release — set it to any
+hostname for a pure service). Refining the guard to be per-release is a later option; not needed for the first
+multi-container deploy.
+
+**Verified locally (2026-06-23, Docker available):**
+- Built `chat/auth_service` and `chat/gateway` for real — both succeed, **≈ 259 MB** each.
+- `docker run chat/auth_service` with NO secrets → fails fast (`FATAL: DATABASE_URL is not set`, then `PHX_HOST`),
+  proving no secrets baked + the per-service release boots far enough to enforce the guard.
+- `docker run chat/auth_service` with dummy-valid secrets + `AUTH_HTTP_API_ENABLED=true -e AUTH_HTTP_PORT=4101 -p
+  4101:4101` → **boots and listens**: host `curl -X POST :4101/internal/session/current` → **HTTP 401** (the
+  `TokenPlug` rejecting unauthenticated calls, fail-closed). Postgres connection retries in the background against
+  the absent DB without crashing boot (expected — nothing to talk to yet).
+
 ## Hosting plan (recommended)
 
 - **Backend:** Fly.io running the umbrella release (`MIX_ENV=prod mix release chat_platform`), websockets supported.

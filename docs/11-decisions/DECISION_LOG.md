@@ -2,6 +2,31 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-23] Microservices split — per-service Docker images via ONE parameterized Dockerfile
+
+- **Context:** the per-service releases assemble; now each needs a container image bundling one release. Choice:
+  (a) one parameterized Dockerfile with a `RELEASE` build-arg, or (b) one Dockerfile per service.
+- **Decision: (a) — one parameterized Dockerfile.** The release name is the ONLY thing that varies (build
+  context = `apps/backend`, identical build/runtime stages, identical secret guard); six near-identical files
+  would be pure duplication + drift risk. `ARG RELEASE=chat_platform` (re-declared per stage); build stage
+  `mix release "$RELEASE"` then `cp` to a fixed `/release` path so the runtime stage is release-agnostic;
+  `ENV RELEASE_BIN=$RELEASE` + `CMD ["/bin/sh","-c","exec /app/bin/$RELEASE_BIN start"]` (exec → release is
+  PID 1 so SIGTERM reaches the VM; shell form needed because ARG isn't readable at container runtime). `ARG
+  SERVICE_PORT` drives `EXPOSE` (metadata only).
+- **Decision: folded the single-container Dockerfile INTO the parameterized one.** Default `RELEASE=chat_platform`
+  → `docker build apps/backend` with no build-arg reproduces the original all-in-one image (3b baseline
+  unchanged). One Dockerfile, no duplication.
+- **Note (no code change):** the shared `config/runtime.exs` makes EVERY release require the full prod env in
+  `:prod` (incl. `PHX_HOST`, a gateway concern) — documented in DEPLOYMENT.md; per-release guard refinement is a
+  later option, out of scope here.
+- **Status:** Implemented + verified WITH Docker (available this session). Built `chat/auth_service` +
+  `chat/gateway` for real → both succeed, ≈259 MB each. auth image NO secrets → fail-fast (`DATABASE_URL`/`PHX_HOST`
+  guard, proving nothing baked + the per-service release boots far enough to enforce it); auth image with dummy
+  secrets + `AUTH_HTTP_API_ENABLED=true` → boots and the Plug listener answers on 4101 (`curl` → HTTP 401 from
+  `TokenPlug`, fail-closed), Postgres retried in background without crashing boot. Build/config only — plain
+  `mix test` 255/89 unchanged (Dockerfile adds no app code; not on the Elixir compile/test path). `.dockerignore`
+  unchanged (still suits per-service builds). Next: `docker-compose.prod.yml` — first real multi-container bring-up.
+
 ## [2026-06-23] Microservices split — per-service releases + edge dep cleanup (mechanism iii; NO shared_infra package)
 
 - **Context:** to ship each service as its own container we need release packaging that bundles one service at
