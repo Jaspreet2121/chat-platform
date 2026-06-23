@@ -35,6 +35,11 @@ defmodule RealtimeGateway.TopicAuthorization do
              :conversation_invalid
            ] ->
         {:error, %{code: "realtime.forbidden", message: "Conversation join is forbidden"}}
+
+      # Conversation service unreachable over the network (HTTP adapter): reject the join with a
+      # distinct unavailable signal rather than a forbidden/internal_error.
+      {:error, :conversation_unavailable} ->
+        {:error, %{code: "realtime.unavailable", message: "Conversation service is unavailable"}}
     end
   rescue
     _error ->

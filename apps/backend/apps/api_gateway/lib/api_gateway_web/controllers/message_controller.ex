@@ -42,6 +42,7 @@ defmodule ApiGatewayWeb.MessageController do
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -75,6 +76,7 @@ defmodule ApiGatewayWeb.MessageController do
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
@@ -281,6 +283,8 @@ defmodule ApiGatewayWeb.MessageController do
            "user_id" => user_id
          }) do
       {:ok, _conversation} -> :ok
+      # Propagate transport-unavailable so the controller maps it to 503 (not a 403 forbidden).
+      {:error, :conversation_unavailable} -> {:error, :conversation_unavailable}
       _ -> {:error, :conversation_membership_forbidden}
     end
   end

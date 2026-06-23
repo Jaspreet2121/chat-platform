@@ -154,6 +154,10 @@ the service apps post-split).
 - **`SharedInfra.AuthClientHttp`** (done) — `@behaviour SharedInfra.AuthClient`; calls the auth internal
   API; `unavailable_atom: :auth_unavailable`. `persistence_enabled?` fails CLOSED (`false`) on transport
   failure (never a truthy error tuple). Config: `AUTH_SERVICE_URL`, `AUTH_CLIENT_ADAPTER=http`.
+- **`SharedInfra.ConversationClientHttp`** (done) — `@behaviour SharedInfra.ConversationClient`; calls the
+  conversation internal API; `unavailable_atom: :conversation_unavailable`. Atom-keyed conversation/participant
+  maps + nested participant lists round-trip via the recursive `decode_result`. Config:
+  `CONVERSATION_SERVICE_URL`, `CONVERSATION_CLIENT_ADAPTER=http`.
 
 ### Gateway failure mapping (additive)
 Transport failure → `{:error, :auth_unavailable}` → the gateway maps it to **HTTP 503** via the new

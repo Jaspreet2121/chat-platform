@@ -2,6 +2,29 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-23] Microservices HTTP client adapter — Conversation (copies the Auth pattern)
+
+- **Context:** second HTTP client adapter, copying the Auth template (`SharedInfra.HttpClient` +
+  `decode_result`). Flip via `CONVERSATION_CLIENT_ADAPTER=http`; default in-process → zero behavior change.
+- **Decision:** `SharedInfra.ConversationClientHttp` (in shared_infra) — `@behaviour SharedInfra.ConversationClient`;
+  5 callbacks → `HttpClient.post_result` with `CONVERSATION_SERVICE_URL` + route + `unavailable: :conversation_unavailable`.
+  Atom-keyed conversation/participant maps + nested participant lists round-trip via the recursive `decode_result`.
+- **Decision — gateway/realtime 503 mapping (additive, every call-site):** `{:error, :conversation_unavailable}`
+  → 503 added at every `ConversationClient` site: conversation_controller (all actions, after the existing
+  `:auth_unavailable` clause), message_controller membership gate (`authorize_membership` now PROPAGATES
+  `:conversation_unavailable` instead of collapsing it to `:conversation_membership_forbidden`/403, and the
+  two membership-gated actions map it to 503), and realtime `topic_authorization` (new clause →
+  `realtime.unavailable`, instead of falling through to the `rescue` internal_error). Existing atom clauses
+  untouched; `:conversation_unavailable` only arises when the adapter is flipped (default in-process) → dead
+  in the default path → zero behavior change.
+- **Note (latent, documented):** the conversation_controller PLACEHOLDER paths (persistence OFF) have no else
+  and would crash on `:conversation_unavailable` — but flipping to the HTTP adapter implies the real path
+  (persistence on); HTTP-adapter + persistence-off is a misconfiguration, not handled.
+- **Status:** Implemented + verified. plain `mix test` 246→248 (+2 plain 503-mapping tests — gateway + realtime;
+  existing 246 INTACT); pg 314→316; `mix test --include http_integration` → conversation 3 passed (round-trip ==
+  in-process incl. atom-keyed/nested; dead port → `:conversation_unavailable`) + auth 3 passed (regression).
+  Default in-process; no listener at boot. Next: user/message/media HTTP adapters (Message: don't atomize `metadata`).
+
 ## [2026-06-23] Microservices HTTP client adapter — Auth (first; traffic can flip to network)
 
 - **Context:** internal HTTP APIs exist (server side, all 5). This builds the FIRST HTTP CLIENT adapter so

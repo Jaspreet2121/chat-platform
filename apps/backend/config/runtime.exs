@@ -63,6 +63,14 @@ if config_env() == :prod do
     config :shared_infra, auth_service_url: url
   end
 
+  if System.get_env("CONVERSATION_CLIENT_ADAPTER") == "http" do
+    config :shared_infra, conversation_client_adapter: SharedInfra.ConversationClientHttp
+  end
+
+  if url = System.get_env("CONVERSATION_SERVICE_URL") do
+    config :shared_infra, conversation_service_url: url
+  end
+
   if port = System.get_env("AUTH_HTTP_PORT") do
     config :auth_service, http_port: String.to_integer(port)
   end
