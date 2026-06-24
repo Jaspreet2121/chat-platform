@@ -110,6 +110,23 @@ if config_env() == :prod do
     config :shared_infra, message_service_url: url
   end
 
+  # Message store backend — selected at RUNTIME. config.exs picks the adapter at COMPILE time, so a
+  # release bakes the build-time default (MESSAGE_STORE_ADAPTER unset → QueryPlanAdapter, which is the
+  # "unavailable" placeholder) and ignores the container's MESSAGE_STORE_ADAPTER env → message
+  # send/list fail with :message_store_unavailable (surfaced as 400 at the gateway). Read it at boot
+  # here, same as the client-adapter flips above. Only overrides when the env is set, so dev/test keep
+  # their compile-time default (Docker-free `mix test` unaffected). See DECISION_LOG [2026-06-24].
+  if adapter = System.get_env("MESSAGE_STORE_ADAPTER") do
+    config :message_service,
+      message_store_adapter:
+        (case adapter do
+           "scylla" -> MessageService.MessageStore.ScyllaAdapter
+           "postgres" -> MessageService.MessageStore.PostgresAdapter
+           "in_memory" -> MessageService.MessageStore.InMemoryAdapter
+           _ -> MessageService.MessageStore.QueryPlanAdapter
+         end)
+  end
+
   if System.get_env("MEDIA_CLIENT_ADAPTER") == "http" do
     config :shared_infra, media_client_adapter: SharedInfra.MediaClientHttp
   end
