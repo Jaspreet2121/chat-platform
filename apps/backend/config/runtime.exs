@@ -1,5 +1,28 @@
 import Config
 
+# --- Auth OTP delivery config (ALL envs) ----------------------------------------------------------
+# MUST be here (not config.exs): config.exs is compile-time for a release, so it would bake the
+# BUILD-time env (mode "none", api_key nil, enabled false) and ignore the running container's env.
+# runtime.exs is evaluated at BOOT, so the release (and dev/test) read the actual env. Tests still
+# override via Application.put_env after boot. DEFAULT "none" keeps prod safe (no plaintext OTP).
+config :auth_service, otp_delivery_mode: System.get_env("OTP_DELIVERY_MODE") || "none"
+
+# OTP SMS delivery via SMSGatewayHub (DLT). DEFAULT OFF. api_key/entity_id/template_login_id/route
+# are secrets: env only, never committed. Keys match AuthService.SmsClient exactly.
+config :auth_service, :sms,
+  enabled: System.get_env("OTP_SMS_DELIVERY_ENABLED") in ["true", "1", "yes"],
+  base_url: System.get_env("SMS_GATEWAY_HUB_BASE_URL") || "https://www.smsgatewayhub.com",
+  send_path: System.get_env("SMS_GATEWAY_HUB_SEND_PATH") || "/api/mt/SendSMS",
+  api_key: System.get_env("SMS_GATEWAY_HUB_API_KEY"),
+  senderid: System.get_env("SMS_GATEWAY_HUB_SENDER_ID") || "ISOOBC",
+  channel: System.get_env("SMS_GATEWAY_HUB_CHANNEL") || "2",
+  dcs: System.get_env("SMS_GATEWAY_HUB_DCS") || "0",
+  flashsms: System.get_env("SMS_GATEWAY_HUB_FLASHSMS") || "0",
+  route: System.get_env("SMS_GATEWAY_HUB_ROUTE"),
+  entity_id: System.get_env("SMS_ENTITY_ID"),
+  template_login_id: System.get_env("SMS_TEMPLATE_LOGIN_ID"),
+  country_prefix: System.get_env("SMS_COUNTRY_PREFIX") || "91"
+
 # Runtime config — evaluated at BOOT (in a release) / after compile (in mix). Only the :prod
 # branch runs in production; dev/test are untouched (they keep their compile-time placeholders),
 # so plain `mix test` is unaffected. In :prod we FAIL FAST on missing/insecure secrets via

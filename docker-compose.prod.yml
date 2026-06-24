@@ -74,6 +74,12 @@ services:
       AUTH_HTTP_API_ENABLED: "true"
       AUTH_HTTP_PORT: "4101"
       AUTH_SESSION_DB_BACKED: "true"
+      # DB-backed auth (matches fly.toml). Without the OTP flags, request_otp takes the placeholder
+      # branch (no persist/echo/verify) and login can't complete.
+      AUTH_OTP_REQUEST_DB_BACKED: "true"
+      AUTH_OTP_VERIFY_DB_BACKED: "true"
+      AUTH_REFRESH_TOKEN_DB_BACKED: "true"
+      AUTH_LOGOUT_DB_BACKED: "true"
       # OTP SMS delivery (SMSGatewayHub/DLT) runs HERE — auth_service owns the OTP request path; the
       # gateway proxies to auth over HTTP, so these belong on the auth container only. All from .env;
       # DEFAULT OFF (set OTP_SMS_DELIVERY_ENABLED=true + the secrets to enable real sends).
@@ -291,6 +297,9 @@ services:
     environment:
       <<: *secrets
       PORT: "4000"
+      # Trustworthy realtime socket identity (verifies the bearer via auth over HTTP). Runtime-read
+      # by realtime_gateway.UserSocket; matches fly.toml.
+      REALTIME_AUTH_DB_BACKED: "true"
       # Flip every client to HTTP + point at the service containers by name on the compose network.
       AUTH_CLIENT_ADAPTER: http
       AUTH_SERVICE_URL: http://auth:4101

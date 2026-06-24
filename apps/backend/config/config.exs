@@ -115,27 +115,11 @@ config :shared_infra,
 config :shared_infra, internal_api_token: System.get_env("INTERNAL_API_TOKEN")
 
 config :auth_service,
-  http_api_enabled: System.get_env("AUTH_HTTP_API_ENABLED") in ["true", "1", "yes"],
-  # OTP delivery mode — LOCAL/STAGING convenience to obtain the code without SMS. DEFAULT "none"
-  # (prod-safe: nothing surfaced). "echo" returns the code in the OTP-request response; "log" logs it.
-  # Independent of OTP_SMS_DELIVERY_ENABLED (local demo = SMS off + OTP_DELIVERY_MODE=echo).
-  otp_delivery_mode: System.get_env("OTP_DELIVERY_MODE") || "none"
+  http_api_enabled: System.get_env("AUTH_HTTP_API_ENABLED") in ["true", "1", "yes"]
 
-# OTP SMS delivery via SMSGatewayHub (DLT). DEFAULT OFF — plain `mix test` and existing flows never
-# call out. `api_key`/`entity_id`/`template_login_id`/`route` are secrets: env only, never committed.
-config :auth_service, :sms,
-  enabled: System.get_env("OTP_SMS_DELIVERY_ENABLED") in ["true", "1", "yes"],
-  base_url: System.get_env("SMS_GATEWAY_HUB_BASE_URL") || "https://www.smsgatewayhub.com",
-  send_path: System.get_env("SMS_GATEWAY_HUB_SEND_PATH") || "/api/mt/SendSMS",
-  api_key: System.get_env("SMS_GATEWAY_HUB_API_KEY"),
-  senderid: System.get_env("SMS_GATEWAY_HUB_SENDER_ID") || "ISOOBC",
-  channel: System.get_env("SMS_GATEWAY_HUB_CHANNEL") || "2",
-  dcs: System.get_env("SMS_GATEWAY_HUB_DCS") || "0",
-  flashsms: System.get_env("SMS_GATEWAY_HUB_FLASHSMS") || "0",
-  route: System.get_env("SMS_GATEWAY_HUB_ROUTE"),
-  entity_id: System.get_env("SMS_ENTITY_ID"),
-  template_login_id: System.get_env("SMS_TEMPLATE_LOGIN_ID"),
-  country_prefix: System.get_env("SMS_COUNTRY_PREFIX") || "91"
+# NOTE: `:auth_service, :otp_delivery_mode` + the `:auth_service, :sms` block are RUNTIME config —
+# they read env that a RELEASE only has at BOOT (config.exs is compile-time → would bake the
+# build-time values). They live in config/runtime.exs instead. See DECISION_LOG [2026-06-24].
 
 config :conversation_service,
   http_api_enabled: System.get_env("CONVERSATION_HTTP_API_ENABLED") in ["true", "1", "yes"]
