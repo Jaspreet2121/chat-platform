@@ -8,6 +8,8 @@ defmodule MediaService.Media do
 
   alias MediaService.Storage
 
+  # Kept in sync with the frontend allowedMediaTypes set (apps/web chat page). video/quicktime (.mov)
+  # is what Mac screen recordings / iPhone clips use; video/webm + video/x-matroska (.mkv) are common too.
   @allowed_content_types MapSet.new([
                            "image/jpeg",
                            "image/png",
@@ -15,7 +17,10 @@ defmodule MediaService.Media do
                            "application/pdf",
                            "audio/mpeg",
                            "audio/mp4",
-                           "video/mp4"
+                           "video/mp4",
+                           "video/quicktime",
+                           "video/webm",
+                           "video/x-matroska"
                          ])
 
   @type media_attrs :: map()

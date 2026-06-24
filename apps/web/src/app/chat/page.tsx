@@ -39,6 +39,9 @@ import {
 } from "@/components/chat";
 import { cn } from "@/lib/cn";
 
+// Kept in sync with the backend allow-list (MediaService.Media @allowed_content_types). The file
+// picker's accept attribute is intentionally broader (image/*,video/*,…) so valid files aren't greyed
+// out; anything picked outside this set is rejected client-side with a friendly message before upload.
 const allowedMediaTypes = new Set([
   "image/jpeg",
   "image/png",
@@ -46,7 +49,10 @@ const allowedMediaTypes = new Set([
   "application/pdf",
   "audio/mpeg",
   "audio/mp4",
-  "video/mp4"
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
+  "video/x-matroska"
 ]);
 
 export default function ChatPage() {
@@ -625,7 +631,7 @@ export default function ChatPage() {
           onClearFile={handleClearSelectedFile}
           mediaStatus={mediaStatus}
           fileInputRef={fileInputRef}
-          acceptTypes={Array.from(allowedMediaTypes).join(",")}
+          acceptTypes="image/*,video/*,audio/*,application/pdf"
         />
 
         <ConversationDetailsPanel
