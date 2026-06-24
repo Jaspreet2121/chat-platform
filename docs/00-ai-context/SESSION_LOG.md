@@ -1,5 +1,13 @@
 # Session Log
 
+## [2026-06-24] Slice: MinIO into the compose stack — media object storage (stack feature-complete)
+- Status: ✅ green; live mc round-trip proven. Last staged-OFF infra piece; additive to the proven core.
+- Files: `docker-compose.prod.yml` (+minio internal-only +curl healthcheck +minio_data volume; +minio-init one-shot creating the chat-media bucket via bundled mc; media flipped to MEDIA_STORAGE_ADAPTER=minio + MINIO_ENDPOINT=http://minio:9000 + bucket/creds/path-style; media depends_on postgres healthy + minio-init completed). DECISION_LOG, ROADMAP.
+- minio/minio image bundles curl + mc (verified) → curl healthcheck + minio-init reuses the same image (no extra pull). Internal-only avoids clashing with the dev minio on 9000/9001.
+- Verification: fast `mix test` **273/91** Docker-free UNCHANGED (MinioAdapter presign tests are plain unit tests, already counted); compose config valid (12 services); no Elixir code changed. Live e2e (full stack up --build --wait): minio healthy, minio-init exited 0, chat-media bucket present; `mc cp` 28B object → `mc stat`/`mc cat` byte-identical (marker matched); media booted with MinioAdapter, no crash; teardown clean.
+- Deferred: gateway→media→MinIO authed presign+upload path needs OTP/Mailpit (covered by media presign unit tests) → folds into the Mailpit slice. MinioAdapter only generates presigned URLs; clients PUT/GET direct to MinIO (the mc round-trip proves the storage end).
+- The compose stack is now FEATURE-COMPLETE (postgres + 5 services + gateway + kafka/kafka-init/notification + minio/minio-init). Next milestone: deploy 3b (run a stack on a real host).
+
 ## [2026-06-24] Slice: Kafka event-backbone + notification_service into the compose stack
 - Status: ✅ green; live e2e proven. Event backbone + the last service now run as containers; deferred consumer guards closed.
 - Files (10): `docker-compose.prod.yml` (+kafka KRaft internal-only +healthcheck, +kafka-init one-shot, +notification container; message/conversation get KAFKA_PRODUCER_ADAPTER=brod + publish flags + KAFKA_BROKERS=kafka:9092; +kafka_data volume); `apps/backend/mix.exs` (+notification_service per-service release); 4 consumers (+`{:consumer_correlation, Correlation.get()}` guard); 3 kafka_integration tests (+pinned assertion). DECISION_LOG, ROADMAP.

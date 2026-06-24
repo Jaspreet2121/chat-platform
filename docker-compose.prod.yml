@@ -134,9 +134,22 @@ services:
       MEDIA_HTTP_API_ENABLED: "true"
       MEDIA_HTTP_PORT: "4105"
       MEDIA_DB_BACKED: "true"
-      # NOTE: full media object storage needs MinIO (deferred — staged rollout). The container
-      # boots + the gateway's media routes resolve; uploads need the MinIO adapter added later.
+      # Object storage via MinIO: the adapter generates presigned URLs against this endpoint/bucket.
+      MEDIA_STORAGE_ADAPTER: minio
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_BUCKET: chat-media
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_REGION: us-east-1
+      MINIO_PATH_STYLE: "true"
     expose: ["4105"]
+    # Override the service-base depends_on (shallow `<<:` merge) to add minio-init: the bucket must
+    # exist before media serves uploads. Keeps the postgres-healthy gate too.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
 
   # --- Event backbone (staged-in 2026-06-24) -------------------------------------------------
   # KRaft Kafka (no zookeeper), mirroring the dev infra compose. Internal listener kafka:9092
@@ -216,6 +229,42 @@ services:
       kafka-init:
         condition: service_completed_successfully
 
+  # --- Media object storage (staged-in 2026-06-24) -------------------------------------------
+  # MinIO (S3-compatible), internal-only: services reach it at minio:9000 over chatnet. NOT
+  # published to the host (avoids clashing with the dev infra compose's minio on 9000/9001).
+  # minio/minio is fine for prod parity (S3 API). The media service generates presigned URLs
+  # against this endpoint/bucket; clients PUT/GET directly to MinIO.
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    networks: [chatnet]
+    expose: ["9000", "9001"]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # One-shot: create the `chat-media` bucket (the dev compose does NOT) before media serves uploads.
+  # Reuses the minio image (it bundles `mc`). Waits for minio healthy, makes the bucket, exits 0.
+  minio-init:
+    image: minio/minio:latest
+    networks: [chatnet]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - "mc alias set local http://minio:9000 minioadmin minioadmin && mc mb --ignore-existing local/chat-media && mc ls local/"
+    restart: "no"
+
   gateway:
     build:
       context: ./apps/backend
@@ -263,3 +312,4 @@ networks:
 volumes:
   pgdata:
   kafka_data:
+  minio_data:

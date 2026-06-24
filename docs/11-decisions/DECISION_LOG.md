@@ -2,6 +2,35 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-24] MinIO into the compose stack — media object storage (compose stack feature-complete)
+
+- **Context:** the last staged-OFF infra piece. media ran on the default `QueryPlanAdapter`; real object
+  storage needs MinIO + the `chat-media` bucket. Orthogonal to the event backbone; additive to the proven core.
+- **Decision — compose ([docker-compose.prod.yml](../../docker-compose.prod.yml)):**
+  - `minio` (minio/minio; [:237](../../docker-compose.prod.yml#L237)) — **internal-only** (`expose`, no host
+    publish): services reach it at `minio:9000`; avoids clashing with the dev infra compose's minio on 9000/9001.
+    `curl` healthcheck on `/minio/health/ready` (the image bundles curl + mc — verified). `minio_data` volume.
+    (minio/minio is the S3-API image; no relocated-namespace concern, unlike `bitnamilegacy` kafka.)
+  - `minio-init` ([:256](../../docker-compose.prod.yml#L256)) — one-shot reusing the minio image's bundled `mc`:
+    `mc alias set` + `mc mb --ignore-existing local/chat-media`, then exits 0. The dev compose never created the
+    bucket; this does. `depends_on minio: healthy`.
+  - media flipped to object storage ([:138](../../docker-compose.prod.yml#L138)): `MEDIA_STORAGE_ADAPTER=minio`
+    ([config.exs:175](../../apps/backend/config/config.exs#L175) selects `MediaService.Storage.MinioAdapter`),
+    `MINIO_ENDPOINT=http://minio:9000`, bucket `chat-media`, creds `minioadmin`, `MINIO_PATH_STYLE=true`.
+    `depends_on` rewritten to **postgres healthy + minio-init completed** (spelled both, since `<<: *service-base`
+    shallow-overrides the anchor's depends_on) so the bucket exists before media serves uploads.
+- **Status:** Implemented + verified. Fast `mix test` **273/91** Docker-free UNCHANGED (MinIO not required; the
+  `MinioAdapter` presign tests at media_test.exs:118-167 are plain unit tests, already counted); compose config
+  valid; no Elixir code changed. **Live e2e** (full stack `up --build --wait`): minio healthy, minio-init exited
+  0, `chat-media` bucket present; `mc cp` a 28-byte object → `mc stat`/`mc cat` returned it byte-identical —
+  deterministic proof the container's MinIO wiring (endpoint, bucket, creds) works; media booted with the
+  MinioAdapter, no crash; teardown clean. **The compose stack is now feature-complete** (postgres + 5 services +
+  gateway + kafka/kafka-init/notification + minio/minio-init).
+- **Deferred (recorded):** the gateway→media→MinIO **authed presign+upload** path is not exercised here (the
+  authed media route needs OTP/Mailpit, same scoping as the Kafka slice). Covered by media's existing presign
+  unit tests. Folds into the future Mailpit slice. (MinioAdapter only *generates* presigned URLs; clients
+  PUT/GET directly to MinIO — the `mc` round-trip proves that path's storage end.)
+
 ## [2026-06-24] Kafka event-backbone + notification_service into the compose stack
 
 - **Context:** the compose stack ran core chat only (Kafka/MinIO staged OFF), and notification_service —
