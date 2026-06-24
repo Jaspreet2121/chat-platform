@@ -18,7 +18,6 @@ import {
   getConversation,
   getCurrentSession,
   getMe,
-  getMediaDownloadUrl,
   getPublicProfile,
   listConversations,
   listMessages
@@ -30,6 +29,14 @@ import {
   joinConversationChannel
 } from "@/lib/realtime";
 import type { Socket } from "phoenix";
+import {
+  ChatHeader,
+  Composer,
+  ConversationSidebar,
+  MessageList,
+  StatusBanner
+} from "@/components/chat";
+import { cn } from "@/lib/cn";
 
 const allowedMediaTypes = new Set([
   "image/jpeg",
@@ -529,566 +536,97 @@ export default function ChatPage() {
     router.replace("/login");
   }
 
+  // --- Presentational derivations (no logic change) -------------------------------------------
+  const participantCount = selectedConversation?.participants?.length ?? 0;
+  const headerSubtitle =
+    participantCount > 0
+      ? `${participantCount} participant${participantCount === 1 ? "" : "s"}`
+      : selectedConversation?.type;
+  // The signed-in identity now lives in the sidebar; the "Opened …" line is implicit in the header.
+  // Surface only transient, actionable status (sends, errors) as a subtle banner.
+  const showBanner = Boolean(
+    status && !status.startsWith("Signed in as") && !status.startsWith("Opened ")
+  );
+  const bannerTone: "neutral" | "error" = /fail|could not|invalid|error|unable|first/i.test(status)
+    ? "error"
+    : "neutral";
+
   return (
-    <main className="min-h-screen bg-paper">
-      <div className="mx-auto grid min-h-screen max-w-6xl grid-cols-1 border-x border-line bg-white md:grid-cols-[340px_1fr]">
-        <aside className="border-b border-line bg-slate-50 md:border-b-0 md:border-r">
-          <div className="border-b border-line p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-medium text-mint">Chat Platform</p>
-                <h1 className="mt-1 text-xl font-semibold text-ink">Conversations</h1>
-              </div>
-              <button
-                className="rounded-md border border-line bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-400"
-                onClick={handleLogout}
-                type="button"
-              >
-                Logout
-              </button>
-            </div>
-            {session ? (
-              <div className="mt-2 flex items-center gap-2">
-                <Avatar profile={currentProfile} size="sm" />
-                <div className="min-w-0">
-                  <p className="truncate text-xs font-medium text-ink">
-                    {currentProfile?.display_name || "Signed in"}
-                  </p>
-                  <p className="truncate text-xs text-slate-500">{session.user_id}</p>
-                </div>
-              </div>
-            ) : null}
-          </div>
-
-          <form className="border-b border-line p-3" onSubmit={handleCreateConversation}>
-            <div className="space-y-3">
-              <input
-                className="w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-                placeholder="New conversation title"
-                value={newTitle}
-                onChange={(event) => setNewTitle(event.target.value)}
-              />
-
-              <div className="rounded-md border border-line bg-white p-2">
-                <div className="flex gap-2">
-                  <input
-                    className="min-w-0 flex-1 rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-                    placeholder="Participant user ID"
-                    value={lookupUserId}
-                    onChange={(event) => setLookupUserId(event.target.value)}
-                  />
-                  <button
-                    className="rounded-md border border-line px-3 py-2 text-sm font-medium text-slate-700 hover:border-slate-400 disabled:cursor-not-allowed disabled:text-slate-400"
-                    disabled={isLookingUpProfile}
-                    onClick={handleLookupProfile}
-                    type="button"
-                  >
-                    {isLookingUpProfile ? "Looking..." : "Lookup"}
-                  </button>
-                </div>
-
-                {lookupStatus ? (
-                  <p className="mt-2 text-xs text-slate-600">{lookupStatus}</p>
-                ) : null}
-
-                {lookupProfile ? (
-                  <div className="mt-2 flex items-center justify-between gap-2 rounded-md bg-slate-50 p-2">
-                    <ProfileSummary profile={lookupProfile} />
-                    <button
-                      className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white"
-                      onClick={handleAddParticipant}
-                      type="button"
-                    >
-                      Add
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-
-              {selectedParticipants.length > 0 ? (
-                <div className="space-y-2">
-                  {selectedParticipants.map((participant) => (
-                    <div
-                      className="flex items-center justify-between gap-2 rounded-md border border-line bg-white p-2"
-                      key={participant.user_id}
-                    >
-                      <ProfileSummary profile={participant} />
-                      <button
-                        className="rounded-md border border-line px-2 py-1 text-xs text-slate-600 hover:border-slate-400"
-                        onClick={() => handleRemoveParticipant(participant.user_id)}
-                        type="button"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              <button
-                className="w-full rounded-md bg-ink px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-400"
-                disabled={isCreatingConversation || selectedParticipants.length === 0}
-                type="submit"
-              >
-                {isCreatingConversation ? "Creating..." : "New conversation"}
-              </button>
-            </div>
-          </form>
-
-          <div className="p-3">
-            {isLoading ? (
-              <EmptyPanel label="Loading conversations..." />
-            ) : conversations.length === 0 ? (
-              <EmptyPanel label="No conversations yet. Create one to begin." />
-            ) : (
-              <div className="space-y-2">
-                {conversations.map((conversation) => (
-                  <button
-                    className={`w-full rounded-md border px-3 py-3 text-left transition ${
-                      selectedConversationId === conversation.conversation_id
-                        ? "border-brand bg-blue-50"
-                        : "border-line bg-white hover:border-slate-400"
-                    }`}
-                    key={conversation.conversation_id}
-                    onClick={() => setSelectedConversationId(conversation.conversation_id)}
-                    type="button"
-                  >
-                    <span className="block truncate text-sm font-medium text-ink">
-                      {conversation.title || conversation.conversation_id}
-                    </span>
-                    <span className="mt-1 block truncate text-xs text-slate-500">
-                      {conversation.last_message_preview || conversation.type}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </aside>
-
-        <section className="flex min-h-screen flex-col">
-          <header className="border-b border-line px-5 py-4">
-            <h2 className="truncate text-lg font-semibold text-ink">{selectedTitle}</h2>
-            <p className="mt-1 text-sm text-slate-600">{status}</p>
-            {typingUser ? (
-              <p className="mt-1 text-xs font-medium text-mint">{typingUser} typing...</p>
-            ) : null}
-          </header>
-
-          <div className="flex-1 space-y-3 overflow-y-auto px-5 py-5">
-            {!selectedConversationId ? (
-              <EmptyPanel label="Select or create a conversation." />
-            ) : messages.length === 0 ? (
-              <EmptyPanel label="No messages yet. Send the first one." />
-            ) : (
-              messages.map((message) => (
-                <MessageBubble
-                  isOwn={message.sender_user_id === session?.user_id}
-                  key={message.message_id}
-                  message={message}
-                  onDelete={handleDeleteMessage}
-                  onEdit={handleEditMessage}
-                />
-              ))
-            )}
-          </div>
-
-          <form className="border-t border-line p-4" onSubmit={handleSend}>
-            {selectedFile ? (
-              <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-line bg-slate-50 px-3 py-2 text-sm">
-                <span className="min-w-0 truncate text-slate-700">
-                  {selectedFile.name} · {formatFileSize(selectedFile.size)}
-                </span>
-                <button
-                  className="shrink-0 rounded-md border border-line px-2 py-1 text-xs text-slate-600 hover:border-slate-400"
-                  disabled={isSending}
-                  onClick={handleClearSelectedFile}
-                  type="button"
-                >
-                  Remove
-                </button>
-              </div>
-            ) : null}
-
-            {mediaStatus ? (
-              <p className="mb-3 text-xs font-medium text-mint">{mediaStatus}</p>
-            ) : null}
-
-            <div className="flex gap-3">
-              <input
-                className="hidden"
-                disabled={!selectedConversationId || isSending}
-                onChange={(event) => handleFileChange(event.target.files?.[0] ?? null)}
-                ref={fileInputRef}
-                type="file"
-                accept={Array.from(allowedMediaTypes).join(",")}
-              />
-              <button
-                className="rounded-md border border-line px-3 py-2 font-medium text-slate-700 hover:border-slate-400 disabled:cursor-not-allowed disabled:text-slate-400"
-                disabled={!selectedConversationId || isSending}
-                onClick={() => fileInputRef.current?.click()}
-                type="button"
-              >
-                Attach
-              </button>
-              <input
-                className="min-w-0 flex-1 rounded-md border border-line px-3 py-2 outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-                disabled={!selectedConversationId}
-                placeholder={
-                  selectedFile
-                    ? "Add a caption"
-                    : selectedConversationId
-                      ? "Type a message"
-                      : "Select a conversation first"
-                }
-                value={draft}
-                onChange={(event) => handleDraftChange(event.target.value)}
-              />
-              <button
-                className="rounded-md bg-brand px-5 py-2 font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-400"
-                disabled={
-                  !selectedConversationId ||
-                  (!draft.trim() && !selectedFile) ||
-                  isSending
-                }
-                type="submit"
-              >
-                {isSending ? "Sending..." : selectedFile ? "Send media" : "Send"}
-              </button>
-            </div>
-          </form>
-        </section>
+    <main className="flex h-screen overflow-hidden bg-bg">
+      {/* Sidebar — full width on mobile when no conversation is open, fixed pane at md+ */}
+      <div
+        className={cn(
+          "w-full shrink-0 md:block md:w-[340px]",
+          selectedConversationId ? "hidden md:block" : "block"
+        )}
+      >
+        <ConversationSidebar
+          session={session}
+          currentProfile={currentProfile}
+          onLogout={handleLogout}
+          newTitle={newTitle}
+          onNewTitleChange={setNewTitle}
+          onCreateConversation={handleCreateConversation}
+          isCreatingConversation={isCreatingConversation}
+          lookupUserId={lookupUserId}
+          onLookupUserIdChange={setLookupUserId}
+          onLookup={handleLookupProfile}
+          isLookingUpProfile={isLookingUpProfile}
+          lookupStatus={lookupStatus}
+          lookupProfile={lookupProfile}
+          onAddParticipant={handleAddParticipant}
+          selectedParticipants={selectedParticipants}
+          onRemoveParticipant={handleRemoveParticipant}
+          conversations={conversations}
+          selectedConversationId={selectedConversationId}
+          onSelectConversation={setSelectedConversationId}
+          isLoading={isLoading}
+        />
       </div>
+
+      {/* Chat pane */}
+      <section
+        className={cn(
+          "relative min-w-0 flex-1 flex-col",
+          selectedConversationId ? "flex" : "hidden md:flex"
+        )}
+      >
+        {showBanner && <StatusBanner message={status} tone={bannerTone} />}
+
+        <ChatHeader
+          conversationId={selectedConversationId}
+          title={selectedTitle}
+          subtitle={headerSubtitle ?? undefined}
+          typingUser={typingUser}
+          onBack={() => setSelectedConversationId("")}
+        />
+
+        <MessageList
+          messages={messages}
+          currentUserId={session?.user_id}
+          isLoading={isLoading}
+          hasConversation={Boolean(selectedConversationId)}
+          onEdit={handleEditMessage}
+          onDelete={handleDeleteMessage}
+        />
+
+        <Composer
+          draft={draft}
+          onDraftChange={handleDraftChange}
+          onSubmit={handleSend}
+          hasConversation={Boolean(selectedConversationId)}
+          isSending={isSending}
+          selectedFile={selectedFile}
+          onPickFile={() => fileInputRef.current?.click()}
+          onFileChange={handleFileChange}
+          onClearFile={handleClearSelectedFile}
+          mediaStatus={mediaStatus}
+          fileInputRef={fileInputRef}
+          acceptTypes={Array.from(allowedMediaTypes).join(",")}
+        />
+      </section>
     </main>
   );
-}
-
-function EmptyPanel({ label }: { label: string }) {
-  return (
-    <div className="flex min-h-40 items-center justify-center rounded-md border border-dashed border-line p-4 text-center text-sm text-slate-600">
-      {label}
-    </div>
-  );
-}
-
-function ProfileSummary({ profile }: { profile: UserProfile }) {
-  return (
-    <div className="flex min-w-0 items-center gap-2">
-      <Avatar profile={profile} />
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-ink">
-          {profile.display_name || "Unnamed profile"}
-        </p>
-        <p className="truncate text-xs text-slate-500">{profile.user_id}</p>
-      </div>
-    </div>
-  );
-}
-
-function Avatar({
-  profile,
-  size = "md"
-}: {
-  profile: UserProfile | null;
-  size?: "sm" | "md";
-}) {
-  const label = profile?.display_name || profile?.user_id || "?";
-  const initials = label.slice(0, 2).toUpperCase();
-  const sizeClass = size === "sm" ? "h-8 w-8 text-xs" : "h-9 w-9 text-sm";
-
-  return (
-    <div
-      aria-label={label}
-      className={`${sizeClass} flex shrink-0 items-center justify-center rounded-full bg-mint font-semibold text-white`}
-      title={label}
-    >
-      {initials}
-    </div>
-  );
-}
-
-function MessageBubble({
-  message,
-  isOwn,
-  onEdit,
-  onDelete
-}: {
-  message: Message;
-  isOwn: boolean;
-  onEdit: (messageId: string, body: string) => Promise<void>;
-  onDelete: (messageId: string) => Promise<void>;
-}) {
-  const isMedia = Boolean(message.media_id);
-  const isDeleted = message.status === "deleted";
-  const isEdited = Boolean(message.edited_at);
-  const canEdit = isOwn && !isDeleted && !isMedia;
-  const canDelete = isOwn && !isDeleted;
-
-  const [isEditing, setIsEditing] = useState(false);
-  const [editDraft, setEditDraft] = useState(message.body ?? "");
-  const [isBusy, setIsBusy] = useState(false);
-
-  function startEdit() {
-    setEditDraft(message.body ?? "");
-    setIsEditing(true);
-  }
-
-  async function saveEdit() {
-    const next = editDraft.trim();
-
-    if (!next) {
-      return;
-    }
-
-    setIsBusy(true);
-
-    try {
-      await onEdit(message.message_id, next);
-      setIsEditing(false);
-    } catch {
-      // Failure status is surfaced by the parent; keep the edit box open.
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
-  async function removeMessage() {
-    setIsBusy(true);
-
-    try {
-      await onDelete(message.message_id);
-    } catch {
-      // Failure status is surfaced by the parent.
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
-  return (
-    <article
-      className={`max-w-xl rounded-md border px-4 py-3 ${
-        isOwn ? "ml-auto border-blue-200 bg-blue-50" : "border-line bg-slate-50"
-      }`}
-    >
-      <p className="truncate text-xs text-slate-500">{message.sender_user_id}</p>
-
-      {isDeleted ? (
-        <p className="mt-1 text-sm italic text-slate-400">Message deleted</p>
-      ) : isEditing ? (
-        <div className="mt-1 space-y-2">
-          <input
-            className="w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-            disabled={isBusy}
-            onChange={(event) => setEditDraft(event.target.value)}
-            value={editDraft}
-          />
-          <div className="flex gap-2">
-            <button
-              className="rounded-md bg-brand px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-400"
-              disabled={isBusy || !editDraft.trim()}
-              onClick={saveEdit}
-              type="button"
-            >
-              {isBusy ? "Saving..." : "Save"}
-            </button>
-            <button
-              className="rounded-md border border-line px-3 py-1.5 text-xs font-medium text-slate-700 hover:border-slate-400 disabled:cursor-not-allowed disabled:text-slate-400"
-              disabled={isBusy}
-              onClick={() => setIsEditing(false)}
-              type="button"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : isMedia ? (
-        <MediaMessageContent message={message} />
-      ) : (
-        <p className="mt-1 text-ink">{message.body || message.message_type}</p>
-      )}
-
-      <div className="mt-2 flex items-center justify-between gap-3">
-        <p className="text-xs text-slate-500">
-          {message.status}
-          {isEdited && !isDeleted ? " · edited" : ""}
-        </p>
-        {!isEditing && (canEdit || canDelete) ? (
-          <div className="flex gap-2">
-            {canEdit ? (
-              <button
-                className="text-xs font-medium text-slate-600 hover:text-ink disabled:cursor-not-allowed disabled:text-slate-400"
-                disabled={isBusy}
-                onClick={startEdit}
-                type="button"
-              >
-                Edit
-              </button>
-            ) : null}
-            {canDelete ? (
-              <button
-                className="text-xs font-medium text-red-600 hover:text-red-700 disabled:cursor-not-allowed disabled:text-slate-400"
-                disabled={isBusy}
-                onClick={removeMessage}
-                type="button"
-              >
-                {isBusy ? "Working..." : "Delete"}
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-    </article>
-  );
-}
-
-function MediaMessageContent({ message }: { message: Message }) {
-  const objectKey = metadataString(message.metadata, "object_key");
-  const contentType = metadataString(message.metadata, "content_type");
-  const mediaId = message.media_id;
-  const isImage = Boolean(contentType && contentType.startsWith("image/"));
-  const canResolve = Boolean(mediaId && objectKey);
-
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [previewFailed, setPreviewFailed] = useState(false);
-
-  // Resolve the download URL once when an image preview is possible, reusing the
-  // same resolver the "Open media" link uses. The resolved URL is shared with the
-  // link below so opening an image does not trigger a second request.
-  useEffect(() => {
-    if (!isImage || !mediaId || !objectKey) {
-      return;
-    }
-
-    let isActive = true;
-
-    getMediaDownloadUrl(mediaId, objectKey)
-      .then((response) => {
-        if (isActive) {
-          setPreviewUrl(response.download_url);
-        }
-      })
-      .catch(() => {
-        if (isActive) {
-          setPreviewFailed(true);
-        }
-      });
-
-    return () => {
-      isActive = false;
-    };
-  }, [isImage, mediaId, objectKey]);
-
-  const showPreview = isImage && previewUrl && !previewFailed;
-
-  return (
-    <div className="mt-2 space-y-2">
-      <div className="rounded-md border border-line bg-white p-3">
-        <p className="text-sm font-medium text-ink">Media attachment</p>
-        {message.body || message.caption ? (
-          <p className="mt-1 text-sm text-slate-700">{message.body || message.caption}</p>
-        ) : null}
-        {showPreview ? (
-          // Presigned media URLs are dynamic/remote; next/image would need
-          // remotePatterns config, so a plain <img> is intentional here.
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            alt={message.caption || message.body || "Image attachment"}
-            className="mt-2 max-h-64 w-full rounded-md object-cover"
-            loading="lazy"
-            onError={() => setPreviewFailed(true)}
-            src={previewUrl as string}
-          />
-        ) : null}
-        <p className="mt-2 break-all text-xs text-slate-500">{message.media_id}</p>
-      </div>
-      {canResolve ? (
-        <OpenMediaLink
-          mediaId={mediaId as string}
-          objectKey={objectKey as string}
-          prefetchedUrl={isImage ? previewUrl : null}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function OpenMediaLink({
-  mediaId,
-  objectKey,
-  prefetchedUrl
-}: {
-  mediaId: string;
-  objectKey: string;
-  prefetchedUrl?: string | null;
-}) {
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  async function handleOpenMedia() {
-    if (prefetchedUrl) {
-      setDownloadUrl(prefetchedUrl);
-      window.open(prefetchedUrl, "_blank", "noopener,noreferrer");
-      return;
-    }
-
-    setIsLoading(true);
-    setError("");
-
-    try {
-      const response = await getMediaDownloadUrl(mediaId, objectKey);
-      setDownloadUrl(response.download_url);
-      window.open(response.download_url, "_blank", "noopener,noreferrer");
-    } catch (openError) {
-      setError(openError instanceof Error ? openError.message : "Could not open media.");
-    } finally {
-      setIsLoading(false);
-    }
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <button
-        className="rounded-md border border-line bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:border-slate-400 disabled:cursor-not-allowed disabled:text-slate-400"
-        disabled={isLoading}
-        onClick={handleOpenMedia}
-        type="button"
-      >
-        {isLoading ? "Opening..." : "Open media"}
-      </button>
-      {downloadUrl ? (
-        <a
-          className="text-xs font-medium text-brand underline"
-          href={downloadUrl}
-          rel="noreferrer"
-          target="_blank"
-        >
-          Link ready
-        </a>
-      ) : null}
-      {error ? <span className="text-xs text-red-600">{error}</span> : null}
-    </div>
-  );
-}
-
-function metadataString(metadata: Message["metadata"], key: string) {
-  if (!metadata || typeof metadata[key] !== "string") {
-    return null;
-  }
-
-  return metadata[key];
-}
-
-function formatFileSize(size: number) {
-  if (size < 1024) {
-    return `${size} B`;
-  }
-
-  if (size < 1024 * 1024) {
-    return `${(size / 1024).toFixed(1)} KB`;
-  }
-
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function mergeMessage(messages: Message[], message: Message) {
