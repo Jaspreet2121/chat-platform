@@ -60,6 +60,7 @@ defmodule MessageService.ConversationSummaryConsumerIntegrationTest do
 
     conversation_id = Ecto.UUID.generate()
     event_id = Ecto.UUID.generate()
+    correlation_id = Ecto.UUID.generate()
 
     {:ok, envelope} =
       Envelope.build(%{
@@ -68,7 +69,7 @@ defmodule MessageService.ConversationSummaryConsumerIntegrationTest do
         event_version: 1,
         producer: "message-service",
         occurred_at: "2026-06-18T10:00:00Z",
-        correlation_id: Ecto.UUID.generate(),
+        correlation_id: correlation_id,
         payload: %{
           "conversation_id" => conversation_id,
           "message_id" => Ecto.UUID.generate(),
@@ -81,6 +82,9 @@ defmodule MessageService.ConversationSummaryConsumerIntegrationTest do
 
     # The consumer handles our event (scoped to this conversation_id) and applies the projection.
     assert_receive {:conversation_summary_applied, ^conversation_id, {:ok, :applied}}, 20_000
+
+    # Correlation guard: the consumer extracted the envelope's correlation_id into its metadata.
+    assert_receive {:consumer_correlation, ^correlation_id}, 5_000
 
     # The projection + ledger rows exist (read after the worker is done with the event).
     assert %{message_count: count} = Repo.get(ConversationMessageSummary, conversation_id)

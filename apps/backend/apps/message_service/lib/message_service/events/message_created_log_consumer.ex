@@ -65,8 +65,13 @@ defmodule MessageService.Events.MessageCreatedLogConsumer do
   # kafka_integration test). No-op in normal operation.
   defp notify_test(payload) do
     case Application.get_env(:message_service, :kafka_consumer_test_pid) do
-      pid when is_pid(pid) -> send(pid, payload)
-      _ -> :ok
+      pid when is_pid(pid) ->
+        send(pid, payload)
+        # Regression guard: proves correlation_id reached this consumer process's Logger metadata.
+        send(pid, {:consumer_correlation, SharedInfra.Correlation.get()})
+
+      _ ->
+        :ok
     end
   end
 end

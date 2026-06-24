@@ -2,6 +2,52 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-24] Kafka event-backbone + notification_service into the compose stack
+
+- **Context:** the compose stack ran core chat only (Kafka/MinIO staged OFF), and notification_service —
+  a pure Kafka consumer — had neither a per-service release nor a container. Bring the event backbone +
+  notification into `docker-compose.prod.yml`, and close the deferred consumer-correlation guards now that a
+  live broker exists. MinIO stays a separate slice.
+- **Decision — compose ([docker-compose.prod.yml](../../docker-compose.prod.yml)):**
+  - `kafka` (KRaft, no zookeeper; [:147](../../docker-compose.prod.yml#L147)) — **internal-only** (`expose`, no host
+    publish): a prod broker shouldn't be host-exposed, and it avoids clashing with the dev infra compose's kafka
+    on 9094. Services reach it at `kafka:9092`. Healthcheck = `kafka-topics.sh --list`. **TODO:** `bitnamilegacy/*`
+    is Bitnami's relocated namespace — revisit for a real prod registry.
+  - `kafka-init` ([:182](../../docker-compose.prod.yml#L182)) — one-shot reusing `topics.env`/`create-topics.sh` to
+    create topics at their **declared partition counts** (message.events.v1 = 6) before any produce/consume.
+    NOT `AUTO_CREATE` — `:hash` keying needs a stable partition count. `depends_on kafka: healthy`, then exits 0.
+  - `notification` ([:201](../../docker-compose.prod.yml#L201)) — `RELEASE=notification_service`, both consumer
+    flags on, **no published port** (pure consumer). `depends_on postgres: healthy + kafka-init:
+    service_completed_successfully` (topics exist before it joins; `begin_offset: :latest` ⇒ it must be joined
+    before events are produced).
+  - message/conversation: `KAFKA_PRODUCER_ADAPTER=brod` + the publish flag + `KAFKA_BROKERS=kafka:9092`.
+    **DISCOVERY:** `KAFKA_PUBLISH_ENABLED`/`CONVERSATION_PUBLISH_ENABLED` alone leave the adapter on
+    `NoopProducer` ([config.exs:167](../../apps/backend/config/config.exs#L167)) — `KAFKA_PRODUCER_ADAPTER=brod`
+    is ALSO required to actually emit (and to start the brod client at boot). Producing stays fire-and-forget, so
+    core message creation succeeds even if the broker is down → core deps unchanged (postgres only), additive.
+- **Decision — per-service release ([mix.exs:59](../../apps/backend/mix.exs#L59)):** `notification_service:
+  [shared_infra, notification_service]`, mirroring the others; assembles lean.
+- **Decision — deferred consumer-correlation guards (review findings 1 & 2) CLOSED:** all 4 consumers emit
+  `{:consumer_correlation, SharedInfra.Correlation.get()}` after `Correlation.put(envelope["correlation_id"])`
+  ([e.g. conversation_participants_consumer.ex:97](../../apps/backend/apps/notification_service/lib/notification_service/events/conversation_participants_consumer.ex#L97));
+  the 3 consumer `kafka_integration` tests assert it with a PINNED expected value (the topic is shared, so a
+  bound match would race on stray events). **3/3 pass over a live broker** — deterministic proof the consumer
+  extracts correlation_id into its process Logger metadata.
+- **Status:** Implemented + verified. Fast `mix test` **273/91** Docker-free UNCHANGED (Kafka not required);
+  `mix compile --warnings-as-errors` clean; notification release assembles lean; compose config valid (10
+  services); `kafka_integration` guards 3/3 over the live dev broker. **Live e2e** (prod stack `up --build
+  --wait`, direct broker produce): participant_added(sender+recipient) → read-model → message.created (known
+  correlation_id) → **exactly one notification row for the recipient, sender excluded** — real cross-network
+  fan-out through the notification container (JSON logs show it joined `notification-service-message-created`,
+  `begin_offset=:latest`); teardown clean.
+- **Known limitations (recorded):**
+  1. `SharedInfra.Logging.JsonFormatter` renders brod's charlist metadata (e.g. `file`) as int arrays — valid
+     JSON, key fields (`message`/`level`/`time`/`correlation_id`) clean; cosmetic-only. Minor follow-up:
+     printable-charlist heuristic.
+  2. The gateway→broker→notification FULL path is not exercised here (direct broker produce; the gateway-authed
+     message path needs OTP/Mailpit). Covered by existing `kafka_integration` producer + unit tests; full path
+     deferred to a future Mailpit slice.
+
 ## [2026-06-24] Observability — correlation_id end-to-end + prod JSON structured logs
 
 - **Context:** the public error envelope carried a literal `"corr_placeholder"` (audit-flagged) — no real

@@ -63,13 +63,15 @@ defmodule NotificationService.MessageCreatedConsumerIntegrationTest do
     seed_participant(conversation_id, sender)
     seed_participant(conversation_id, recipient)
 
+    correlation_id = Ecto.UUID.generate()
+
     envelope = %{
       "event_id" => event_id,
       "event_type" => "message.created.v1",
       "event_version" => 1,
       "producer" => "message-service",
       "occurred_at" => "2026-06-18T10:00:00Z",
-      "correlation_id" => Ecto.UUID.generate(),
+      "correlation_id" => correlation_id,
       "payload" => %{
         "conversation_id" => conversation_id,
         "message_id" => Ecto.UUID.generate(),
@@ -84,6 +86,9 @@ defmodule NotificationService.MessageCreatedConsumerIntegrationTest do
 
     # The consumer handles our event (scoped to this event_id) and fans out the notification.
     assert_receive {:notification_applied, ^event_id, {:ok, :applied}}, 20_000
+
+    # Correlation guard: the consumer extracted the envelope's correlation_id into its metadata.
+    assert_receive {:consumer_correlation, ^correlation_id}, 5_000
 
     notifications = Repo.all(from(n in Notification, where: n.source_event_id == ^event_id))
     assert [notification] = notifications

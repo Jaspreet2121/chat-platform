@@ -70,5 +70,11 @@ defmodule MessageService.MessageCreatedConsumerIntegrationTest do
     assert_receive {:kafka_consumed, consumed, ^key, _offset}, 20_000
     assert consumed["event_type"] == "message.created.v1"
     assert consumed["event_id"] == "evt-" <> key
+
+    # Correlation guard: the consumer extracted the envelope's correlation_id into its process's
+    # Logger metadata (so its logs join the trace). PIN the expected value (the topic is shared, so
+    # stray {:consumer_correlation, _} from other events must not satisfy this).
+    expected_correlation = "corr-" <> key
+    assert_receive {:consumer_correlation, ^expected_correlation}, 5_000
   end
 end

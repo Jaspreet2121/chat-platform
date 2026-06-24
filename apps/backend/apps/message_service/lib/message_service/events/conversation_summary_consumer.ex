@@ -82,6 +82,8 @@ defmodule MessageService.Events.ConversationSummaryConsumer do
       pid when is_pid(pid) ->
         conversation_id = envelope |> Map.get("payload", %{}) |> Map.get("conversation_id")
         send(pid, {:conversation_summary_applied, conversation_id, result})
+        # Regression guard: proves correlation_id reached this consumer process's Logger metadata.
+        send(pid, {:consumer_correlation, SharedInfra.Correlation.get()})
 
       _ ->
         :ok

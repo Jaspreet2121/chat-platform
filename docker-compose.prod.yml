@@ -82,6 +82,10 @@ services:
       CONVERSATION_HTTP_API_ENABLED: "true"
       CONVERSATION_HTTP_PORT: "4102"
       CONVERSATION_DB_BACKED: "true"
+      # Publish participant_added/removed to the live broker (fire-and-forget; see message svc note).
+      KAFKA_PRODUCER_ADAPTER: brod
+      CONVERSATION_PUBLISH_ENABLED: "true"
+      KAFKA_BROKERS: kafka:9092
     expose: ["4102"]
 
   user:
@@ -110,6 +114,13 @@ services:
       MESSAGE_DB_BACKED: "true"
       # Explicit Postgres store for the first deploy (default QueryPlanAdapter; Scylla is later).
       MESSAGE_STORE_ADAPTER: postgres
+      # Publish message.created.v1 to the live broker. BOTH are required: the adapter selects
+      # BrodProducer (else NoopProducer = no-op + no client), the flag gates the produce call.
+      # Producing is fire-and-forget — core message creation succeeds even if the broker is down,
+      # so this stays additive and core deps (postgres only) are unchanged.
+      KAFKA_PRODUCER_ADAPTER: brod
+      KAFKA_PUBLISH_ENABLED: "true"
+      KAFKA_BROKERS: kafka:9092
     expose: ["4104"]
 
   media:
@@ -126,6 +137,84 @@ services:
       # NOTE: full media object storage needs MinIO (deferred — staged rollout). The container
       # boots + the gateway's media routes resolve; uploads need the MinIO adapter added later.
     expose: ["4105"]
+
+  # --- Event backbone (staged-in 2026-06-24) -------------------------------------------------
+  # KRaft Kafka (no zookeeper), mirroring the dev infra compose. Internal listener kafka:9092
+  # (services use this), external localhost:9094 (host tooling). Core chat does NOT depend on
+  # Kafka — only notification (a pure consumer) + the kafka-init one-shot gate on it.
+  # TODO(prod-registry): `bitnamilegacy/*` is Bitnami's relocated namespace — revisit for a real
+  # production registry / a maintained Kafka image before going live.
+  kafka:
+    image: bitnamilegacy/kafka:3.7.1-debian-12-r4
+    restart: unless-stopped
+    networks: [chatnet]
+    # Internal-only broker: services reach it at kafka:9092 over chatnet. NOT published to the host
+    # (a prod broker shouldn't be host-exposed; also avoids clashing with the dev infra compose's
+    # kafka on 9094). For host tooling, attach to chatnet or use `docker compose exec kafka`.
+    expose: ["9092", "9094"]
+    environment:
+      KAFKA_ENABLE_KRAFT: "yes"
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094"
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_CFG_NUM_PARTITIONS: "3"
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    volumes:
+      - kafka_data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # One-shot: create topics at their DECLARED partition counts (message.events.v1 = 6) BEFORE any
+  # produce/consume, so :hash partitioning is stable. Relying on AUTO_CREATE would make them at
+  # NUM_PARTITIONS=3. Waits for kafka healthy, creates from topics.env, then exits 0.
+  kafka-init:
+    image: bitnamilegacy/kafka:3.7.1-debian-12-r4
+    networks: [chatnet]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/create-topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVER: "kafka:9092"
+      TOPICS_FILE: "/topics.env"
+    volumes:
+      - ./infra/docker/kafka/create-topics.sh:/create-topics.sh:ro
+      - ./infra/docker/kafka/topics.env:/topics.env:ro
+    restart: "no"
+
+  # notification_service — pure Kafka consumer (no HTTP API, no published port). Builds the
+  # participant read-model from conversation.events.v1 and fans out one notification per recipient
+  # from message.events.v1. Gates on kafka-init so the topics exist (correct partitions) before it
+  # joins the groups (begin_offset: :latest → only events produced AFTER it joins).
+  notification:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+      args: {RELEASE: notification_service, SERVICE_PORT: "4106"}
+    restart: unless-stopped
+    networks: [chatnet]
+    environment:
+      <<: *secrets
+      KAFKA_BROKERS: kafka:9092
+      NOTIFICATION_CONSUMER_ENABLED: "true"
+      NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
 
   gateway:
     build:
@@ -173,3 +262,4 @@ networks:
 
 volumes:
   pgdata:
+  kafka_data:

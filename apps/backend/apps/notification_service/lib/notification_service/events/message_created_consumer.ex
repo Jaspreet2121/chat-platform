@@ -81,6 +81,9 @@ defmodule NotificationService.Events.MessageCreatedConsumer do
     case Application.get_env(:notification_service, :notification_test_pid) do
       pid when is_pid(pid) ->
         send(pid, {:notification_applied, Map.get(envelope, "event_id"), result})
+        # Regression guard: proves correlation_id was extracted into THIS consumer process's
+        # Logger metadata (Correlation.put/1 ran above). Asserted by the kafka_integration test.
+        send(pid, {:consumer_correlation, SharedInfra.Correlation.get()})
 
       _ ->
         :ok

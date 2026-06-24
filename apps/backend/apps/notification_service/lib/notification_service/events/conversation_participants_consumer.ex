@@ -93,6 +93,8 @@ defmodule NotificationService.Events.ConversationParticipantsConsumer do
     case Application.get_env(:notification_service, :participant_readmodel_test_pid) do
       pid when is_pid(pid) ->
         send(pid, {:participant_readmodel_applied, Map.get(envelope, "event_id"), result})
+        # Regression guard: proves correlation_id reached this consumer process's Logger metadata.
+        send(pid, {:consumer_correlation, SharedInfra.Correlation.get()})
 
       _ ->
         :ok

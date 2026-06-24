@@ -1,5 +1,15 @@
 # Session Log
 
+## [2026-06-24] Slice: Kafka event-backbone + notification_service into the compose stack
+- Status: ✅ green; live e2e proven. Event backbone + the last service now run as containers; deferred consumer guards closed.
+- Files (10): `docker-compose.prod.yml` (+kafka KRaft internal-only +healthcheck, +kafka-init one-shot, +notification container; message/conversation get KAFKA_PRODUCER_ADAPTER=brod + publish flags + KAFKA_BROKERS=kafka:9092; +kafka_data volume); `apps/backend/mix.exs` (+notification_service per-service release); 4 consumers (+`{:consumer_correlation, Correlation.get()}` guard); 3 kafka_integration tests (+pinned assertion). DECISION_LOG, ROADMAP.
+- DISCOVERY: KAFKA_PUBLISH_ENABLED alone leaves NoopProducer — `KAFKA_PRODUCER_ADAPTER=brod` is ALSO required to actually publish + start the brod client. Both set on message/conversation.
+- kafka-init creates topics at DECLARED partition counts (message.events.v1=6) via topics.env — NOT AUTO_CREATE (:hash keying needs a stable count). notification `begin_offset: :latest` → must join before producing (depends_on kafka-init completed).
+- Deferred findings 1&2 CLOSED: 3/3 consumer kafka_integration tests assert the consumer extracted correlation_id into Logger metadata (pinned — shared topic would race a bound match), over a live broker.
+- Verification: fast `mix test` **273/91** Docker-free UNCHANGED; compile --warnings-as-errors clean; notification release lean; compose config valid (10 svcs). Live e2e (prod stack up --build --wait, direct broker produce): participant_added(sender+recipient)→read-model→message.created→**1 notification row for recipient, sender excluded** (real fan-out through containers; JSON logs show group join, begin_offset :latest); teardown clean.
+- Known limits (recorded): (1) JsonFormatter renders brod charlist metadata (file) as int arrays — cosmetic, key fields clean; (2) gateway→broker full path not exercised (direct produce; needs OTP/Mailpit) — covered by kafka_integration producer + unit tests; deferred to a Mailpit slice.
+- Next: MinIO into compose (own slice); deploy 3b (run a stack on a host).
+
 ## [2026-06-24] Slice: Observability — correlation_id end-to-end + prod JSON structured logs
 - Status: ✅ green; adversarial-review-clean. One id traces gateway → internal HTTP → 5 services → Kafka envelope → consumers.
 - New: `SharedInfra.Correlation` (`:crypto` gen, no ecto; valid?/get/put/get_or_generate), `SharedInfra.InternalApi.CorrelationPlug`, `SharedInfra.Logging.JsonFormatter` (hand-rolled, no dep), `ApiGatewayWeb.Plugs.CorrelationId`. + 4 new test files.

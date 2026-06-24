@@ -56,6 +56,10 @@ defmodule ChatPlatform.Backend.MixProject do
         version: "0.1.0",
         applications: [shared_infra: :permanent, message_service: :permanent]
       ],
+      notification_service: [
+        version: "0.1.0",
+        applications: [shared_infra: :permanent, notification_service: :permanent]
+      ],
       media_service: [
         version: "0.1.0",
         applications: [shared_infra: :permanent, media_service: :permanent]
