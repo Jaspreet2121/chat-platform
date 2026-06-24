@@ -184,6 +184,9 @@ config :media_service,
 
 config :media_service, :minio,
   endpoint: System.get_env("MINIO_ENDPOINT") || "http://localhost:9000",
+  # Browser-reachable host used ONLY to sign presigned URLs (SigV4 host match); nil → sign with
+  # :endpoint. For a release this is set authoritatively in runtime.exs (config.exs is compile-time).
+  public_endpoint: System.get_env("MINIO_PUBLIC_ENDPOINT"),
   bucket: System.get_env("MINIO_BUCKET") || "chat-media",
   access_key_id:
     System.get_env("MINIO_ACCESS_KEY") || System.get_env("MINIO_ACCESS_KEY_ID") || "minioadmin",

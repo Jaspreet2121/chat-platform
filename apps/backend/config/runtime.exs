@@ -135,6 +135,38 @@ if config_env() == :prod do
     config :shared_infra, media_service_url: url
   end
 
+  # Media storage backend — selected at RUNTIME (same config.exs-baked trap as message_store_adapter
+  # above: a release would bake QueryPlanAdapter despite MEDIA_STORAGE_ADAPTER=minio). minio →
+  # MinioAdapter. Only overrides when set, so dev/test keep their compile-time default.
+  if adapter = System.get_env("MEDIA_STORAGE_ADAPTER") do
+    config :media_service,
+      media_storage_adapter:
+        (case adapter do
+           "minio" -> MediaService.Storage.MinioAdapter
+           "in_memory" -> MediaService.Storage.InMemoryAdapter
+           _ -> MediaService.Storage.QueryPlanAdapter
+         end)
+  end
+
+  # MinIO connection + signing config — runtime so the release respects the container env (config.exs
+  # bakes build-time defaults). Presigned PUT/GET URLs are signed against MINIO_PUBLIC_ENDPOINT (a
+  # browser-reachable host, e.g. http://localhost:9000) so the SigV4 host matches what the browser
+  # actually hits; server-internal ops use MINIO_ENDPOINT (falls back to it when no public endpoint).
+  if System.get_env("MINIO_ENDPOINT") || System.get_env("MINIO_PUBLIC_ENDPOINT") do
+    config :media_service, :minio,
+      endpoint: System.get_env("MINIO_ENDPOINT") || "http://localhost:9000",
+      public_endpoint: System.get_env("MINIO_PUBLIC_ENDPOINT"),
+      bucket: System.get_env("MINIO_BUCKET") || "chat-media",
+      access_key_id:
+        System.get_env("MINIO_ACCESS_KEY") || System.get_env("MINIO_ACCESS_KEY_ID") || "minioadmin",
+      secret_access_key:
+        System.get_env("MINIO_SECRET_KEY") || System.get_env("MINIO_SECRET_ACCESS_KEY") ||
+          "minioadmin",
+      region: System.get_env("MINIO_REGION") || "us-east-1",
+      url_expires_seconds: String.to_integer(System.get_env("MINIO_URL_EXPIRES_SECONDS") || "900"),
+      path_style: System.get_env("MINIO_PATH_STYLE", "true") in ["true", "1", "yes"]
+  end
+
   if port = System.get_env("AUTH_HTTP_PORT") do
     config :auth_service, http_port: String.to_integer(port)
   end

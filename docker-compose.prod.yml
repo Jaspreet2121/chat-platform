@@ -158,7 +158,12 @@ services:
       MEDIA_DB_BACKED: "true"
       # Object storage via MinIO: the adapter generates presigned URLs against this endpoint/bucket.
       MEDIA_STORAGE_ADAPTER: minio
+      # Internal endpoint for server-side ops; the browser cannot resolve "minio".
       MINIO_ENDPOINT: http://minio:9000
+      # Browser-reachable endpoint used ONLY to sign presigned PUT/GET URLs, so the SigV4 host matches
+      # the host the browser actually hits. MinIO's :9000 is published to the host (see the minio
+      # service). Override for a real deployment (e.g. https://media.example.com).
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       MINIO_BUCKET: chat-media
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
@@ -261,6 +266,10 @@ services:
     restart: unless-stopped
     networks: [chatnet]
     expose: ["9000", "9001"]
+    # Publish the S3 API to the host so the browser can PUT/GET presigned URLs signed against
+    # MINIO_PUBLIC_ENDPOINT (http://localhost:9000). The console (9001) stays internal.
+    ports:
+      - "9000:9000"
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin

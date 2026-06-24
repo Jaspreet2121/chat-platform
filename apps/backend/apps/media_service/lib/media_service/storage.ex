@@ -107,7 +107,9 @@ defmodule MediaService.Storage.MinioAdapter do
     date_stamp = Calendar.strftime(now, "%Y%m%d")
     credential_scope = "#{date_stamp}/#{config[:region]}/#{@service}/aws4_request"
     canonical_uri = canonical_uri(config, object_key)
-    endpoint_uri = URI.parse(config[:endpoint])
+    # Sign against the browser-reachable public endpoint when set (so the SigV4 host header matches the
+    # host the browser actually PUTs/GETs); fall back to the internal endpoint otherwise.
+    endpoint_uri = URI.parse(config[:public_endpoint] || config[:endpoint])
 
     host =
       case endpoint_uri.port do
@@ -214,6 +216,9 @@ defmodule MediaService.Storage.MinioAdapter do
       {:ok,
        [
          endpoint: endpoint,
+         # Optional: browser-reachable host used ONLY to sign presigned URLs (SigV4 host match). When
+         # unset, signing falls back to :endpoint. Internal/server-side ops keep using :endpoint.
+         public_endpoint: Keyword.get(config, :public_endpoint),
          bucket: bucket,
          access_key_id: access_key_id,
          secret_access_key: secret_access_key,
