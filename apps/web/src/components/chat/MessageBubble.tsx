@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Check, Pencil, Trash2, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Check, Download, FileText, Pencil, Trash2, X } from "lucide-react";
 import type { Message } from "@/lib/api";
 import { getMediaDownloadUrl } from "@/lib/api";
 import { Avatar } from "@/components";
@@ -163,123 +163,185 @@ function MediaMessageContent({ message, isOwn }: { message: Message; isOwn: bool
   const contentType = metadataString(message.metadata, "content_type");
   const mediaId = message.media_id;
   const isImage = Boolean(contentType && contentType.startsWith("image/"));
+  const isVideo = Boolean(contentType && contentType.startsWith("video/"));
+  const isAudio = Boolean(contentType && contentType.startsWith("audio/"));
+  const inlinePreviewable = isImage || isVideo || isAudio;
   const canResolve = Boolean(mediaId && objectKey);
 
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [previewFailed, setPreviewFailed] = useState(false);
+  const [url, setUrl] = useState<string | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [isOpening, setIsOpening] = useState(false);
+  const [openError, setOpenError] = useState("");
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const retriedRef = useRef(false);
 
-  // Resolve the download URL once when an image preview is possible, reusing the same resolver the
-  // "Open media" link uses. The resolved URL is shared with the link below so opening an image does
-  // not trigger a second request.
+  const caption = message.body || message.caption;
+  const filename = metadataString(message.metadata, "filename") || "Attachment";
+
+  // Resolve the signed GET URL once for inline-previewable media (image/video/audio) so it can be the
+  // <img>/<video>/<audio> src. PDFs and other types resolve on click instead (openInNewTab).
   useEffect(() => {
-    if (!isImage || !mediaId || !objectKey) return;
+    if (!inlinePreviewable || !mediaId || !objectKey) return;
     let isActive = true;
     getMediaDownloadUrl(mediaId, objectKey)
       .then((response) => {
-        if (isActive) setPreviewUrl(response.download_url);
+        if (isActive) setUrl(response.download_url);
       })
       .catch(() => {
-        if (isActive) setPreviewFailed(true);
+        if (isActive) setLoadFailed(true);
       });
     return () => {
       isActive = false;
     };
-  }, [isImage, mediaId, objectKey]);
+  }, [inlinePreviewable, mediaId, objectKey]);
 
-  const showPreview = isImage && previewUrl && !previewFailed;
-  const subtle = isOwn ? "text-white/70" : "text-faint";
+  // Signed URLs expire (~900s). When an inline preview fails to load, re-resolve ONCE before falling
+  // back to the clickable file row, so a stale URL self-heals without a manual retry.
+  async function handleMediaError() {
+    if (retriedRef.current || !mediaId || !objectKey) {
+      setLoadFailed(true);
+      return;
+    }
+    retriedRef.current = true;
+    try {
+      const response = await getMediaDownloadUrl(mediaId, objectKey);
+      setUrl(response.download_url);
+    } catch {
+      setLoadFailed(true);
+    }
+  }
+
+  // Resolve-on-click for non-inline files (pdf/other, or a failed preview) — open in a new tab.
+  async function openInNewTab() {
+    if (url) {
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (!mediaId || !objectKey) return;
+    setIsOpening(true);
+    setOpenError("");
+    try {
+      const response = await getMediaDownloadUrl(mediaId, objectKey);
+      setUrl(response.download_url);
+      window.open(response.download_url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setOpenError(error instanceof Error ? error.message : "Could not open media.");
+    } finally {
+      setIsOpening(false);
+    }
+  }
 
   return (
     <div className="space-y-2">
-      <p className="text-sm font-medium">Media attachment</p>
-      {message.body || message.caption ? (
-        <p className={cn("text-sm", isOwn ? "text-white/90" : "text-muted")}>
-          {message.body || message.caption}
-        </p>
+      {/* IMAGE — the thumbnail itself opens a full-size lightbox */}
+      {isImage && url && !loadFailed ? (
+        <button
+          type="button"
+          onClick={() => setLightboxOpen(true)}
+          className="group block w-full overflow-hidden rounded-lg"
+          aria-label="Open image"
+        >
+          {/* Presigned URLs are dynamic/remote; next/image would need remotePatterns config, so a
+              plain <img> is intentional. */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            alt={caption || "Image attachment"}
+            className="max-h-64 w-full cursor-pointer rounded-lg object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+            loading="lazy"
+            onError={handleMediaError}
+            src={url}
+          />
+        </button>
       ) : null}
-      {showPreview ? (
-        // Presigned media URLs are dynamic/remote; next/image would need remotePatterns config,
-        // so a plain <img> is intentional here.
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          alt={message.caption || message.body || "Image attachment"}
-          className="max-h-64 w-full rounded-lg object-cover"
-          loading="lazy"
-          onError={() => setPreviewFailed(true)}
-          src={previewUrl as string}
+
+      {/* VIDEO — plays inline with native controls */}
+      {isVideo && url && !loadFailed ? (
+        <video
+          controls
+          src={url}
+          onError={handleMediaError}
+          className="max-h-72 w-full rounded-lg bg-black"
         />
       ) : null}
-      <p className={cn("break-all text-[11px]", subtle)}>{message.media_id}</p>
-      {canResolve ? (
-        <OpenMediaLink
-          mediaId={mediaId as string}
-          objectKey={objectKey as string}
-          prefetchedUrl={isImage ? previewUrl : null}
-          isOwn={isOwn}
+
+      {/* AUDIO — plays inline with native controls */}
+      {isAudio && url && !loadFailed ? (
+        <audio controls src={url} onError={handleMediaError} className="w-full" />
+      ) : null}
+
+      {/* PDF / other / failed-preview — the whole file row is the click target */}
+      {(!inlinePreviewable || loadFailed) && canResolve ? (
+        <button
+          type="button"
+          onClick={openInNewTab}
+          disabled={isOpening}
+          className={cn(
+            "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors disabled:opacity-50",
+            isOwn ? "bg-white/15 hover:bg-white/25" : "bg-bg hover:bg-border"
+          )}
+        >
+          <FileText className="h-5 w-5 shrink-0" aria-hidden />
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">{filename}</span>
+          <Download className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
+        </button>
+      ) : null}
+
+      {caption ? (
+        <p className={cn("text-sm", isOwn ? "text-white/90" : "text-muted")}>{caption}</p>
+      ) : null}
+
+      {openError ? <p className="text-xs text-danger">{openError}</p> : null}
+
+      {lightboxOpen && url ? (
+        <Lightbox
+          src={url}
+          alt={caption || "Image attachment"}
+          onClose={() => setLightboxOpen(false)}
         />
       ) : null}
     </div>
   );
 }
 
-function OpenMediaLink({
-  mediaId,
-  objectKey,
-  prefetchedUrl,
-  isOwn
+function Lightbox({
+  src,
+  alt,
+  onClose
 }: {
-  mediaId: string;
-  objectKey: string;
-  prefetchedUrl?: string | null;
-  isOwn: boolean;
+  src: string;
+  alt: string;
+  onClose: () => void;
 }) {
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  async function handleOpenMedia() {
-    if (prefetchedUrl) {
-      setDownloadUrl(prefetchedUrl);
-      window.open(prefetchedUrl, "_blank", "noopener,noreferrer");
-      return;
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
     }
-    setIsLoading(true);
-    setError("");
-    try {
-      const response = await getMediaDownloadUrl(mediaId, objectKey);
-      setDownloadUrl(response.download_url);
-      window.open(response.download_url, "_blank", "noopener,noreferrer");
-    } catch (openError) {
-      setError(openError instanceof Error ? openError.message : "Could not open media.");
-    } finally {
-      setIsLoading(false);
-    }
-  }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 animate-fade-in"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
       <button
-        className={cn(
-          "rounded-md px-2.5 py-1 text-xs font-medium disabled:opacity-50",
-          isOwn ? "bg-white/15 hover:bg-white/25" : "bg-bg hover:bg-border"
-        )}
-        disabled={isLoading}
-        onClick={handleOpenMedia}
         type="button"
+        onClick={onClose}
+        aria-label="Close"
+        className="absolute right-4 top-4 rounded-lg p-2 text-white/80 transition-colors hover:bg-white/10 hover:text-white"
       >
-        {isLoading ? "Opening..." : "Open media"}
+        <X className="h-6 w-6" aria-hidden />
       </button>
-      {downloadUrl ? (
-        <a
-          className={cn("text-xs font-medium underline", isOwn ? "text-white/90" : "text-brand")}
-          href={downloadUrl}
-          rel="noreferrer"
-          target="_blank"
-        >
-          Link ready
-        </a>
-      ) : null}
-      {error ? <span className="text-xs text-danger">{error}</span> : null}
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={alt}
+        onClick={(event) => event.stopPropagation()}
+        className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain animate-scale-in"
+      />
     </div>
   );
 }
