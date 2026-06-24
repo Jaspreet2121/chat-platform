@@ -32,6 +32,7 @@ import type { Socket } from "phoenix";
 import {
   ChatHeader,
   Composer,
+  ConversationDetailsPanel,
   ConversationSidebar,
   MessageList,
   StatusBanner
@@ -79,6 +80,7 @@ export default function ChatPage() {
   const [isCreatingConversation, setIsCreatingConversation] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [mediaStatus, setMediaStatus] = useState("");
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
   const selectedTitle = useMemo(() => {
     return selectedConversation?.title || selectedConversationId || "Select a conversation";
@@ -599,6 +601,7 @@ export default function ChatPage() {
           subtitle={headerSubtitle ?? undefined}
           typingUser={typingUser}
           onBack={() => setSelectedConversationId("")}
+          onOpenDetails={() => setIsDetailsOpen(true)}
         />
 
         <MessageList
@@ -623,6 +626,14 @@ export default function ChatPage() {
           mediaStatus={mediaStatus}
           fileInputRef={fileInputRef}
           acceptTypes={Array.from(allowedMediaTypes).join(",")}
+        />
+
+        <ConversationDetailsPanel
+          conversation={selectedConversation}
+          conversationId={selectedConversationId}
+          title={selectedTitle}
+          isOpen={isDetailsOpen && Boolean(selectedConversationId)}
+          onClose={() => setIsDetailsOpen(false)}
         />
       </section>
     </main>

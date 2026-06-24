@@ -1,8 +1,22 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Loader2, MessageSquare, MessagesSquare } from "lucide-react";
 import type { Message } from "@/lib/api";
 import { EmptyState } from "./EmptyState";
 import { MessageBubble } from "./MessageBubble";
+
+// Chronological order (oldest → newest) so the newest message sits just above the composer and
+// auto-scroll lands on it. Sorting at render time covers BOTH history load and live socket
+// messages (mergeMessage may append out of order). Ties break on message_id for a stable order.
+function sortChronologically(messages: Message[]): Message[] {
+  return [...messages].sort((a, b) => {
+    const at = Date.parse(a.created_at);
+    const bt = Date.parse(b.created_at);
+    const aTime = Number.isNaN(at) ? 0 : at;
+    const bTime = Number.isNaN(bt) ? 0 : bt;
+    if (aTime !== bTime) return aTime - bTime;
+    return a.message_id < b.message_id ? -1 : a.message_id > b.message_id ? 1 : 0;
+  });
+}
 
 export type MessageListProps = {
   messages: Message[];
@@ -22,6 +36,7 @@ export function MessageList({
   onDelete
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const ordered = useMemo(() => sortChronologically(messages), [messages]);
 
   // Keep the newest message in view as messages arrive (send + realtime).
   useEffect(() => {
@@ -62,7 +77,7 @@ export function MessageList({
 
   return (
     <div className="flex-1 space-y-3 overflow-y-auto px-4 py-5 sm:px-6">
-      {messages.map((message) => (
+      {ordered.map((message) => (
         <MessageBubble
           key={message.message_id}
           message={message}

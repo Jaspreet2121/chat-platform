@@ -4,6 +4,8 @@ export { ConversationListItem } from "./ConversationListItem";
 export type { ConversationListItemProps } from "./ConversationListItem";
 export { ChatHeader } from "./ChatHeader";
 export type { ChatHeaderProps } from "./ChatHeader";
+export { ConversationDetailsPanel } from "./ConversationDetailsPanel";
+export type { ConversationDetailsPanelProps } from "./ConversationDetailsPanel";
 export { MessageList } from "./MessageList";
 export type { MessageListProps } from "./MessageList";
 export { MessageBubble } from "./MessageBubble";
