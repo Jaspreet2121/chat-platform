@@ -26,4 +26,14 @@ declare module "phoenix" {
     channel(topic: string, chanParams?: object): Channel;
     isConnected(): boolean;
   }
+
+  export class Presence {
+    constructor(channel: Channel, opts?: object);
+    onJoin(callback: (id: string, current: unknown, newPres: unknown) => void): void;
+    onLeave(callback: (id: string, current: unknown, leftPres: unknown) => void): void;
+    onSync(callback: () => void): void;
+    list<T = { id: string; metas: unknown[] }>(
+      by?: (id: string, presence: { metas: unknown[] }) => T
+    ): T[];
+  }
 }

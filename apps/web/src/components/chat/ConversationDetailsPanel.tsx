@@ -1,6 +1,7 @@
 import { Users, X } from "lucide-react";
 import type { ConversationDetail } from "@/lib/api";
 import { Avatar, IconButton } from "@/components";
+import { cn } from "@/lib/cn";
 
 export type ConversationDetailsPanelProps = {
   conversation: ConversationDetail | null;
@@ -8,6 +9,8 @@ export type ConversationDetailsPanelProps = {
   title: string;
   isOpen: boolean;
   onClose: () => void;
+  /** user_ids currently present in this conversation (have it open). */
+  onlineUserIds?: string[];
 };
 
 function shortId(id: string): string {
@@ -19,13 +22,15 @@ export function ConversationDetailsPanel({
   conversationId,
   title,
   isOpen,
-  onClose
+  onClose,
+  onlineUserIds = []
 }: ConversationDetailsPanelProps) {
   if (!isOpen) return null;
 
   const type = conversation?.type ?? "conversation";
   const participants = conversation?.participants ?? [];
   const createdBy = conversation?.created_by;
+  const online = new Set(onlineUserIds);
 
   return (
     <div className="fixed inset-0 z-30 flex justify-end">
@@ -69,25 +74,35 @@ export function ConversationDetailsPanel({
 
             {participants.length > 0 ? (
               <ul className="space-y-1">
-                {participants.map((participant) => (
-                  <li
-                    key={participant.user_id}
-                    className="flex items-center gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-elevated"
-                  >
-                    <Avatar id={participant.user_id} size="sm" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-fg">
-                        {shortId(participant.user_id)}
-                      </p>
-                      <p className="truncate text-xs text-faint capitalize">{participant.role}</p>
-                    </div>
-                    {createdBy && participant.user_id === createdBy ? (
-                      <span className="rounded-full bg-brand-subtle/60 px-2 py-0.5 text-[11px] font-medium text-brand-hover">
-                        owner
-                      </span>
-                    ) : null}
-                  </li>
-                ))}
+                {participants.map((participant) => {
+                  const isOnline = online.has(participant.user_id);
+                  return (
+                    <li
+                      key={participant.user_id}
+                      className="flex items-center gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-elevated"
+                    >
+                      <Avatar id={participant.user_id} size="sm" online={isOnline} />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-fg">
+                          {shortId(participant.user_id)}
+                        </p>
+                        <p
+                          className={cn(
+                            "truncate text-xs capitalize",
+                            isOnline ? "text-success" : "text-faint"
+                          )}
+                        >
+                          {isOnline ? "online" : participant.role}
+                        </p>
+                      </div>
+                      {createdBy && participant.user_id === createdBy ? (
+                        <span className="rounded-full bg-brand-subtle/60 px-2 py-0.5 text-[11px] font-medium text-brand-hover">
+                          owner
+                        </span>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
               <p className="px-1 text-sm text-muted">

@@ -95,6 +95,9 @@ export default function ChatPage() {
   const [isSending, setIsSending] = useState(false);
   const [mediaStatus, setMediaStatus] = useState("");
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  // user_ids present in the CURRENT conversation channel (Phoenix.Presence). Per-conversation: it
+  // reflects who has THIS conversation open, not global online state. Reset on conversation switch.
+  const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
 
   const selectedTitle = useMemo(() => {
     return selectedConversation?.title || selectedConversationId || "Select a conversation";
@@ -220,6 +223,9 @@ export default function ChatPage() {
             if (!payload.user_id || payload.user_id !== session?.user_id) {
               setTypingUser(null);
             }
+          }),
+          joinedChannel.onPresence((ids) => {
+            if (isActive) setOnlineUserIds(ids);
           })
         ];
 
@@ -239,6 +245,7 @@ export default function ChatPage() {
       joinedChannel?.leave();
       setChannel(null);
       setTypingUser(null);
+      setOnlineUserIds([]);
     };
   }, [selectedConversationId, session?.user_id]);
 
@@ -583,6 +590,8 @@ export default function ChatPage() {
   }
 
   // --- Presentational derivations (no logic change) -------------------------------------------
+  // Someone OTHER than me is present in the current conversation (drives the header online indicator).
+  const othersOnline = onlineUserIds.some((id) => id !== session?.user_id);
   const participantCount = selectedConversation?.participants?.length ?? 0;
   const headerSubtitle =
     participantCount > 0
@@ -644,6 +653,7 @@ export default function ChatPage() {
           title={selectedTitle}
           subtitle={headerSubtitle ?? undefined}
           typingUser={typingUser}
+          online={othersOnline}
           onBack={() => setSelectedConversationId("")}
           onOpenDetails={() => setIsDetailsOpen(true)}
         />
@@ -678,6 +688,7 @@ export default function ChatPage() {
           title={selectedTitle}
           isOpen={isDetailsOpen && Boolean(selectedConversationId)}
           onClose={() => setIsDetailsOpen(false)}
+          onlineUserIds={onlineUserIds}
         />
       </section>
     </main>

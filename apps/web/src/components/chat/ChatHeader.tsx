@@ -10,6 +10,8 @@ export type ChatHeaderProps = {
   onBack?: () => void;
   /** Opens the conversation details panel (WhatsApp-style); the title/avatar area becomes clickable. */
   onOpenDetails?: () => void;
+  /** True when someone else is present in this conversation (has it open). */
+  online?: boolean;
 };
 
 export function ChatHeader({
@@ -18,7 +20,8 @@ export function ChatHeader({
   subtitle,
   typingUser,
   onBack,
-  onOpenDetails
+  onOpenDetails,
+  online
 }: ChatHeaderProps) {
   return (
     <header className="flex items-center gap-2 border-b border-border bg-surface/60 px-3 py-3 backdrop-blur sm:px-6">
@@ -36,11 +39,13 @@ export function ChatHeader({
         className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1 py-0.5 text-left transition-colors enabled:hover:bg-elevated disabled:cursor-default"
         title={onOpenDetails && conversationId ? "View conversation details" : undefined}
       >
-        {conversationId && <Avatar id={conversationId} name={title} />}
+        {conversationId && <Avatar id={conversationId} name={title} online={online} />}
         <div className="min-w-0">
           <h2 className="truncate text-sm font-semibold text-fg">{title}</h2>
           {typingUser ? (
             <p className="truncate text-xs text-brand-hover">typing…</p>
+          ) : online ? (
+            <p className="truncate text-xs text-success">online</p>
           ) : subtitle ? (
             <p className="truncate text-xs text-muted">{subtitle}</p>
           ) : null}

@@ -7,7 +7,15 @@ export type AvatarProps = {
   /** Display name or label; initials are derived from it (falls back to id). */
   name?: string;
   size?: "sm" | "md" | "lg";
+  /** When true, overlays a small green presence dot (bottom-right). */
+  online?: boolean;
   className?: string;
+};
+
+const dotSizes = {
+  sm: "h-2.5 w-2.5",
+  md: "h-3 w-3",
+  lg: "h-3.5 w-3.5"
 };
 
 // A small, pleasant palette of gradient pairs. The id hash picks one deterministically,
@@ -43,21 +51,33 @@ function initials(label: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-export function Avatar({ id, name, size = "md", className }: AvatarProps) {
+export function Avatar({ id, name, size = "md", online, className }: AvatarProps) {
   const label = name?.trim() || id;
   const palette = useMemo(() => palettes[hash(id) % palettes.length], [id]);
 
   return (
-    <div
-      className={cn(
-        "flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br font-semibold text-white",
-        palette,
-        sizes[size],
-        className
-      )}
-      aria-hidden
-    >
-      {initials(label)}
+    <div className="relative inline-flex shrink-0">
+      <div
+        className={cn(
+          "flex items-center justify-center rounded-full bg-gradient-to-br font-semibold text-white",
+          palette,
+          sizes[size],
+          className
+        )}
+        aria-hidden
+      >
+        {initials(label)}
+      </div>
+      {online ? (
+        <span
+          className={cn(
+            "absolute bottom-0 right-0 rounded-full border-2 border-surface bg-success",
+            dotSizes[size]
+          )}
+          aria-label="Online"
+          title="Online"
+        />
+      ) : null}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { Channel, Socket } from "phoenix";
+import { Channel, Presence, Socket } from "phoenix";
 import type { Message } from "./api";
 import { getAccessToken } from "./session";
 
@@ -22,6 +22,12 @@ export type ConversationChannel = {
   onMessageDeleted: (callback: (message: Message) => void) => () => void;
   onTypingStarted: (callback: (payload: TypingPayload) => void) => () => void;
   onTypingStopped: (callback: (payload: TypingPayload) => void) => () => void;
+  /**
+   * Subscribe to presence changes for THIS conversation. The callback receives the set of user_ids
+   * currently present in the conversation channel (i.e. who has this conversation open). Fires once
+   * immediately with the current state, then on every join/leave. Returns an unsubscribe fn.
+   */
+  onPresence: (callback: (onlineUserIds: string[]) => void) => () => void;
   leave: () => void;
 };
 
@@ -62,6 +68,11 @@ export function joinConversationChannel(
   }
 
   const channel = socket.channel(`conversation:${conversationId}`, {});
+  // Construct Presence BEFORE join so it registers its "presence_state"/"presence_diff" handlers and
+  // catches the initial presence_state the server pushes right after join. These are the default
+  // events the backend (Phoenix.Presence) broadcasts, so no extra config is needed.
+  const presence = new Presence(channel);
+  const onlineUserIds = () => presence.list((id) => id);
 
   return new Promise((resolve, reject) => {
     channel
@@ -81,6 +92,12 @@ export function joinConversationChannel(
           onMessageDeleted: (callback) => subscribe(channel, "message_deleted", callback),
           onTypingStarted: (callback) => subscribe(channel, "typing_started", callback),
           onTypingStopped: (callback) => subscribe(channel, "typing_stopped", callback),
+          onPresence: (callback) => {
+            // Phoenix Presence has a single onSync slot; we only need one consumer (the chat page).
+            presence.onSync(() => callback(onlineUserIds()));
+            callback(onlineUserIds()); // fire once with the current state
+            return () => presence.onSync(() => {});
+          },
           leave: () => channel.leave()
         });
       })
