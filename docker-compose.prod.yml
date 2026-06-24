@@ -78,6 +78,8 @@ services:
       # gateway proxies to auth over HTTP, so these belong on the auth container only. All from .env;
       # DEFAULT OFF (set OTP_SMS_DELIVERY_ENABLED=true + the secrets to enable real sends).
       OTP_SMS_DELIVERY_ENABLED: ${OTP_SMS_DELIVERY_ENABLED:-false}
+      # Local/staging convenience to obtain the OTP without SMS (echo→response, log→logs). DEFAULT none.
+      OTP_DELIVERY_MODE: ${OTP_DELIVERY_MODE:-none}
       SMS_GATEWAY_HUB_API_KEY: ${SMS_GATEWAY_HUB_API_KEY:-}
       SMS_GATEWAY_HUB_SENDER_ID: ${SMS_GATEWAY_HUB_SENDER_ID:-ISOOBC}
       SMS_GATEWAY_HUB_ROUTE: ${SMS_GATEWAY_HUB_ROUTE:-}
