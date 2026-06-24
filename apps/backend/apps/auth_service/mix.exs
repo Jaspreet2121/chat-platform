@@ -30,6 +30,9 @@ defmodule AuthService.MixProject do
       {:shared_infra, in_umbrella: true},
       {:ecto_sql, "~> 3.12"},
       {:postgrex, ">= 0.0.0"},
+      # Outbound HTTP for AuthService.SmsClient (SMSGatewayHub OTP send). NOT SharedInfra.HttpClient
+      # — that injects internal headers + decodes our result-envelope; a 3rd-party API needs raw Req.
+      {:req, "~> 0.5"},
       # Internal HTTP API (Plug, not Phoenix). The listener is flag-gated/default-off.
       {:plug, "~> 1.14"},
       {:plug_cowboy, "~> 2.7"},

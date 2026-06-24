@@ -1,5 +1,14 @@
 # Session Log
 
+## [2026-06-24] Slice: OTP delivery via SMSGatewayHub (DLT) — last login blocker closed
+- Status: ✅ green; flag-gated default-OFF; real provider NEVER called in tests/CI. Closes deploy-3b blocker #1.
+- STEP 0 finding: app generates **6-digit** OTPs (`@default_code_digits 6`); DLT `{#var#}` normally accepts any length but confirm the registered LOGIN template accepts 6 (else ErrorCode 024). NOT changed (product decision).
+- Files: NEW `apps/auth_service/lib/auth_service/sms_client.ex` (Req → SMSGatewayHub /api/mt/SendSMS, query params, DLT text "Dear user, your login OTP is #{code} 1500BC", ErrorCode 000=success, format_number bridges 10-digit→91…); NEW `apps/auth_service/lib/auth_service/otp_delivery.ex` (deliver/3, sms-when-enabled, email no-op, resilient: failure logged but OTP still persisted); `otp.ex` (prepare_request surfaces internal `delivery:` map; request_persisted_otp calls OtpDelivery after persist); `config.exs` (`config :auth_service, :sms`, default OFF, secrets via env); `apps/auth_service/mix.exs` (+`{:req, "~> 0.5"}`). + 2 new test files. DECISION_LOG, ROADMAP.
+- SharedInfra.HttpClient NOT reused (internal headers + envelope decode wrong for 3rd-party) → Req directly. Resilience choice (a): delivery failure logged loudly, OTP still returns normal response (code persisted, user resends).
+- Verification: compile --warnings-as-errors clean; plain `mix test` **281/91** (274 + 7: SmsClient 4 + OtpDelivery 3), Docker-free. Tests stub Req via `plug:` (real provider never called): correct params + verbatim DLT text + 000→:ok / 024→error; flag-OFF → no provider call (safety default); 10-digit→91… normalization.
+- Both deploy-3b blockers now closed (schema-load + OTP). Real SMS send happens only on the host with flag on + secrets. Email delivery = separate future channel.
+- Next: deploy 3b proper (Fly/self-host) — set PHX_HOST/secrets/WEB_ORIGIN, enable OTP_SMS_DELIVERY_ENABLED + SMS secrets, deploy web with API/WS URLs.
+
 ## [2026-06-24] Slice: Release schema-load task for managed Postgres (deploy blocker closed)
 - Status: ✅ green; proven against a throwaway empty DB. Closes deploy-3b blocker #2 (schema-load on a managed DB).
 - Why: schema is raw SQL (no Ecto migrations), managed PG comes empty (no docker-entrypoint-initdb), release image has no psql.

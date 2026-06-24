@@ -2,6 +2,43 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-24] OTP delivery via SMSGatewayHub (DLT) — last login blocker closed
+
+- **Context:** the readiness check flagged TWO deploy-3b blockers — schema-load (closed prior) and **OTP
+  delivery**: `request_otp` hashed + stored the code but never sent it (and it's unrecoverable from the DB), so
+  no human could log in. This wires real SMS delivery via the user's DLT-registered SMSGatewayHub account.
+- **Decision — `AuthService.SmsClient`** ([sms_client.ex](../../apps/backend/apps/auth_service/lib/auth_service/sms_client.ex)):
+  `send_otp/2` POSTs to SMSGatewayHub `/api/mt/SendSMS` with QUERY-STRING params (`APIKey, senderid, channel,
+  DCS, flashsms, number, text, route, EntityId, templateid`) via **Req directly** (NOT `SharedInfra.HttpClient`
+  — that injects internal headers + decodes our result-envelope, wrong for a 3rd-party API; added
+  `{:req, "~> 0.5"}` to auth_service). `text` = the DLT-approved LOGIN template verbatim,
+  `"Dear user, your login OTP is #{code} 1500BC"` (a mismatch is provider ErrorCode 024). Success =
+  `ErrorCode == "000"`; any other → `{:error, {code, message}}` logged; transport failure → `{:error,
+  :sms_unavailable}`; never raises. `format_number/2` bridges a bare 10-digit number to country-code form
+  (`91…`, prefix env-configurable) since `normalize_destination` only trims.
+- **Decision — `AuthService.OtpDelivery`** ([otp_delivery.ex](../../apps/backend/apps/auth_service/lib/auth_service/otp_delivery.ex)):
+  `deliver(destination, code, method)` — SMS via SmsClient when enabled; email is a no-op (future channel).
+  Hooked into `request_persisted_otp` AFTER a successful `create_verification_code`; `prepare_request` now
+  surfaces the plaintext `code` + `destination` in an INTERNAL `delivery:` map (never in the public `response`
+  or the DB).
+- **Decision — resilience (a):** a delivery failure is LOGGED loudly but does NOT fail OTP creation — the code
+  is persisted, so the user can resend (fire-and-forget, mirroring the Kafka producers). Stated over surfacing a
+  delivery error, for resilience.
+- **Decision — config + flag** ([config.exs](../../apps/backend/config/config.exs) `config :auth_service, :sms`):
+  env-driven, **DEFAULT OFF** (`OTP_SMS_DELIVERY_ENABLED`), so plain `mix test` + existing flows never call out.
+  Secrets (`SMS_GATEWAY_HUB_API_KEY`, `SMS_ENTITY_ID`, `SMS_TEMPLATE_LOGIN_ID`, `SMS_GATEWAY_HUB_ROUTE`) are env
+  only — never hardcoded; fixed OTP values `senderid=ISOOBC`, `channel=2`, `DCS=0`, `flashsms=0`.
+- **⚠️ OTP length note:** the app generates **6-digit** OTPs (`@default_code_digits 6`, [otp.ex:17](../../apps/backend/apps/auth_service/lib/auth_service/otp.ex#L17)); the DLT
+  `{#var#}` variable normally accepts any length, but the registered LOGIN template should be confirmed to accept
+  6 digits (else ErrorCode 024). NOT changed here (the code length is a product decision).
+- **Status:** Implemented + verified. `mix compile --warnings-as-errors` clean; plain `mix test` **281/91**
+  (274 + 7: SmsClient 4 + OtpDelivery 3), Docker-free — **delivery off by default + Req `plug:` stub so the REAL
+  provider is NEVER called in tests/CI**. Tests prove: correct params + verbatim DLT text + `000→:ok` /
+  `024→{:error,…}`; flag-off → no provider call (safety default); number normalization. **Closes deploy-3b
+  blocker #1** — a human can log in once the flag is on + secrets set on the host. Email delivery remains a
+  separate future channel. The real send happens only on the deployed host (flag on + secrets); not exercised in
+  CI by design.
+
 ## [2026-06-24] Release schema-load task for managed Postgres (deploy blocker closed)
 
 - **Context:** the schema is RAW SQL (`infra/docker/postgres/init/001..042`), NOT Ecto migrations, and there

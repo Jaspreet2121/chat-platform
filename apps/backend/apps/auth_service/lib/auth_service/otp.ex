@@ -112,7 +112,9 @@ defmodule AuthService.OTP do
            expires_in_seconds: ttl_seconds,
            retry_after_seconds: retry_after_seconds
          },
-         verification_attrs: verification_attrs
+         verification_attrs: verification_attrs,
+         # Internal only — the PLAINTEXT code + destination for delivery. NEVER in `response` or the DB.
+         delivery: %{destination: destination, code: code, method: delivery_method}
        }}
     end
   end
@@ -138,6 +140,13 @@ defmodule AuthService.OTP do
          {:repo, true} <- {:repo, repo_started?()},
          {:ok, verification_code} <-
            AuthService.VerificationCodes.create_verification_code(request.verification_attrs) do
+      # Deliver AFTER a successful persist. Flag-gated + resilient (failure logged, request still ok).
+      AuthService.OtpDelivery.deliver(
+        request.delivery.destination,
+        request.delivery.code,
+        request.delivery.method
+      )
+
       {:ok, %{request.response | otp_request_id: verification_code.id}}
     else
       {:repo, false} -> {:error, :repo_not_started}
