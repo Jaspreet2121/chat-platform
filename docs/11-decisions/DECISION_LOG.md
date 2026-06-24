@@ -2,6 +2,37 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-24] Release schema-load task for managed Postgres (deploy blocker closed)
+
+- **Context:** the schema is RAW SQL (`infra/docker/postgres/init/001..042`), NOT Ecto migrations, and there
+  is no release task. The compose path auto-loads via `docker-entrypoint-initdb.d`, but a managed Postgres (a
+  fresh Fly Postgres) comes EMPTY — and the slim release image has no `psql`. One of the two deploy-3b blockers
+  (the readiness check flagged this + OTP delivery).
+- **Decision — `SharedInfra.Release.load_schema/0`** ([release.ex](../../apps/backend/apps/shared_infra/lib/shared_infra/release.ex)),
+  runnable via `bin/chat_platform eval "SharedInfra.Release.load_schema()"`: `ensure_all_started(:postgrex)`,
+  parse `DATABASE_URL`, read `priv/schema/*.sql` in numeric order, run each (strip line comments, split on `;`
+  — SAFE: the schema is plain DDL, no `$$`/functions/triggers), log each file. Uses **Postgrex** directly (no
+  psql in the image; no Ecto Repo needed). Idempotent — every statement is `CREATE … IF NOT EXISTS`, so a
+  re-run is a safe no-op (proven).
+- **Decision — SQL into the release via `priv` (a kept-in-sync COPY), NOT relocation.** The Docker build context
+  is `apps/backend`, so `infra/docker/postgres/init` (repo root) is OUTSIDE it and can't be `COPY`d; and that
+  path is referenced by the compose initdb mount + CI + several **historical** docs, so relocating it would
+  rewrite history. Instead the SQL is copied to `apps/backend/apps/shared_infra/priv/schema/` (priv ships in
+  every release, readable via `Application.app_dir/2`). `infra/…/init` stays canonical; a drift-guard test
+  ([release_schema_drift_test.exs](../../apps/backend/apps/shared_infra/test/shared_infra/release_schema_drift_test.exs))
+  asserts the two are byte-identical so they can't diverge silently. Added `{:postgrex, "~> 0.17"}` to
+  shared_infra (already in the lock via ecto_sql).
+- **Deploy order:** provision managed Postgres → `fly secrets set` the secrets + `fly postgres attach`
+  (DATABASE_URL) → `bin/chat_platform eval "SharedInfra.Release.load_schema()"` (run-once on the fresh DB) →
+  boot the server.
+- **Status:** Implemented + verified. `mix compile --warnings-as-errors` clean; plain `mix test` **274/91**
+  (273 + the drift-guard test; existing 273 intact, Docker-free). **Local proof** (real): built the
+  `chat_platform` prod release, ran a throwaway EMPTY `postgres:16`, `bin/chat_platform eval load_schema()` →
+  0 tables → all 7 files applied in order (logged) → **36 tables**; an **idempotent re-run** → still 36, no
+  error; key tables (`users_auth`/`user_profiles`/`notifications`/`conversation_participants_readmodel`)
+  present. One deploy blocker (schema-load) CLOSED; **OTP delivery remains** (the other blocker — arrives with
+  the Mailpit/gateway slice).
+
 ## [2026-06-24] MinIO into the compose stack — media object storage (compose stack feature-complete)
 
 - **Context:** the last staged-OFF infra piece. media ran on the default `QueryPlanAdapter`; real object

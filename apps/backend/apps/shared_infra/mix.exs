@@ -36,7 +36,10 @@ defmodule SharedInfra.MixProject do
       # Finch pool when the app boots — no supervision-tree change.
       {:req, "~> 0.5"},
       # For SharedInfra.InternalApi.TokenPlug (internal service-to-service auth plug).
-      {:plug, "~> 1.14"}
+      {:plug, "~> 1.14"},
+      # For SharedInfra.Release.load_schema/0 — runs the raw SQL schema against DATABASE_URL from
+      # within the release (the slim image has no psql). Already in the tree via ecto_sql.
+      {:postgrex, "~> 0.17"}
     ]
   end
 end

@@ -1,5 +1,14 @@
 # Session Log
 
+## [2026-06-24] Slice: Release schema-load task for managed Postgres (deploy blocker closed)
+- Status: ✅ green; proven against a throwaway empty DB. Closes deploy-3b blocker #2 (schema-load on a managed DB).
+- Why: schema is raw SQL (no Ecto migrations), managed PG comes empty (no docker-entrypoint-initdb), release image has no psql.
+- Files: NEW `apps/shared_infra/lib/shared_infra/release.ex` (`SharedInfra.Release.load_schema/0` — Postgrex, reads priv/schema/*.sql in order, strips comments + splits on `;` [plain DDL, no `$$`], idempotent); NEW `apps/shared_infra/priv/schema/*.sql` (release-bundled COPY of infra/docker/postgres/init); NEW drift-guard test (priv == infra byte-identical); `apps/shared_infra/mix.exs` (+`{:postgrex, "~> 0.17"}`). DECISION_LOG, ROADMAP.
+- SQL-into-release = priv bundling (NOT relocation — build context is apps/backend so infra/ is unreachable + it's referenced by compose/CI/historical docs; priv ships automatically via Application.app_dir). Drift-guard prevents the copy diverging.
+- Deploy order: provision PG → fly secrets + postgres attach → `bin/chat_platform eval "SharedInfra.Release.load_schema()"` → boot.
+- Verification: compile --warnings-as-errors clean; plain `mix test` **274/91** (273 + drift guard; existing intact, Docker-free). Local proof: built chat_platform prod release, throwaway empty postgres:16, eval load_schema → 0→**36 tables** (7 files applied in order, logged); idempotent re-run → still 36, no error; key tables present; teardown clean.
+- Next: OTP delivery (deploy blocker #1 — needs an email/SMS channel; arrives with the Mailpit/gateway slice). Then deploy 3b proper (Fly).
+
 ## [2026-06-24] Slice: MinIO into the compose stack — media object storage (stack feature-complete)
 - Status: ✅ green; live mc round-trip proven. Last staged-OFF infra piece; additive to the proven core.
 - Files: `docker-compose.prod.yml` (+minio internal-only +curl healthcheck +minio_data volume; +minio-init one-shot creating the chat-media bucket via bundled mc; media flipped to MEDIA_STORAGE_ADAPTER=minio + MINIO_ENDPOINT=http://minio:9000 + bucket/creds/path-style; media depends_on postgres healthy + minio-init completed). DECISION_LOG, ROADMAP.
