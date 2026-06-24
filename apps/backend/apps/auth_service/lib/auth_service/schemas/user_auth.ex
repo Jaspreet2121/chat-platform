@@ -14,13 +14,14 @@ defmodule AuthService.Schemas.UserAuth do
     field(:email, :string)
     field(:password_hash, :string)
     field(:status, :string, default: "active")
+    field(:is_admin, :boolean, default: false)
     field(:created_at, :utc_datetime_usec)
     field(:updated_at, :utc_datetime_usec)
   end
 
   def changeset(user_auth, attrs) do
     user_auth
-    |> cast(attrs, [:id, :phone_number, :email, :password_hash, :status])
+    |> cast(attrs, [:id, :phone_number, :email, :password_hash, :status, :is_admin])
     |> validate_required([:status])
     |> validate_contact()
     |> validate_inclusion(:status, ["active", "suspended", "deleted"])

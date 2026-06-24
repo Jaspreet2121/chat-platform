@@ -9,6 +9,10 @@ defmodule ApiGatewayWeb.Router do
     plug ApiGatewayWeb.Plugs.RateLimit, limit: 3, window_seconds: 60
   end
 
+  pipeline :admin_required do
+    plug ApiGatewayWeb.Plugs.RequireAdmin
+  end
+
   scope "/", ApiGatewayWeb do
     pipe_through :api
 
@@ -65,5 +69,14 @@ defmodule ApiGatewayWeb.Router do
     post "/uploads", MediaController, :create_upload
     post "/uploads/:media_id/complete", MediaController, :complete_upload
     get "/:media_id/download", MediaController, :download
+  end
+
+  # Admin surface — gated by RequireAdmin (403 for non-admins). Phase 0 ships only the smoke endpoints;
+  # analytics/moderation/health controllers slot under this same scope in later phases.
+  scope "/api/v1/admin", ApiGatewayWeb do
+    pipe_through [:api, :admin_required]
+
+    get "/ping", AdminController, :ping
+    get "/me", AdminController, :me
   end
 end

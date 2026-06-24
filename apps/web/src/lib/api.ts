@@ -43,6 +43,7 @@ export type Session = {
   user_id: string;
   device_id: string;
   platform: string;
+  is_admin?: boolean;
   issued_at: string;
   expires_at: string;
 };

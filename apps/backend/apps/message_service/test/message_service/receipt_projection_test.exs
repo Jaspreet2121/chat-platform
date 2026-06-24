@@ -17,7 +17,11 @@ defmodule MessageService.ReceiptProjectionTest do
     previous = %{
       persistence: Application.get_env(:message_service, :message_persistence, false),
       adapter:
-        Application.get_env(:message_service, :message_store_adapter, MessageStore.QueryPlanAdapter)
+        Application.get_env(
+          :message_service,
+          :message_store_adapter,
+          MessageStore.QueryPlanAdapter
+        )
     }
 
     Application.put_env(:message_service, :message_persistence, true)

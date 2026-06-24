@@ -47,9 +47,9 @@ defmodule AuthService.Sessions do
          :ok <- valid_issuer?(claims),
          :ok <- valid_audience?(claims),
          {:ok, device_session} <- active_device_session(claims),
-         {:ok, _user} <- active_user(claims),
+         {:ok, user} <- active_user(claims),
          :ok <- token_matches_session?(claims, device_session) do
-      {:ok, session_response(claims, device_session)}
+      {:ok, session_response(claims, device_session, user)}
     else
       {:repo, false} -> {:error, :repo_not_started}
       {:error, _reason} -> {:error, :session_invalid}
@@ -120,12 +120,15 @@ defmodule AuthService.Sessions do
     end
   end
 
-  defp session_response(claims, device_session) do
+  defp session_response(claims, device_session, user) do
     %{
       user_id: device_session.user_id,
       session_id: device_session.id,
       device_id: device_session.device_id,
       platform: device_session.platform,
+      # Global platform-admin flag, surfaced so the gateway's RequireAdmin gate + the frontend admin UI
+      # can read it straight off the session (no extra lookup).
+      is_admin: user.is_admin == true,
       issued_at: unix_to_iso8601(claims["iat"]),
       expires_at: unix_to_iso8601(claims["exp"])
     }
@@ -137,6 +140,7 @@ defmodule AuthService.Sessions do
       user_id: "user_placeholder",
       device_id: "device_placeholder",
       platform: "ios",
+      is_admin: false,
       issued_at: "2026-06-16T18:00:00Z",
       expires_at: "2026-06-16T18:15:00Z"
     }

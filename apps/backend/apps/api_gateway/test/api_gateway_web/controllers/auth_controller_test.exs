@@ -99,6 +99,7 @@ defmodule ApiGatewayWeb.AuthControllerTest do
              "user_id" => "user_placeholder",
              "device_id" => "device_placeholder",
              "platform" => "ios",
+             "is_admin" => false,
              "issued_at" => "2026-06-16T18:00:00Z",
              "expires_at" => "2026-06-16T18:15:00Z"
            }
