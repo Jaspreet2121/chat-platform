@@ -303,6 +303,17 @@ services:
       # Trustworthy realtime socket identity (verifies the bearer via auth over HTTP). Runtime-read
       # by realtime_gateway.UserSocket; matches fly.toml.
       REALTIME_AUTH_DB_BACKED: "true"
+      # The gateway runs the edge controllers (users/me, conversations, messages, media) which branch
+      # on these per-domain persistence flags IN THE GATEWAY PROCESS. Without them the controllers take
+      # the placeholder branch (which lacks an else clause) and a client {:error,_} tuple becomes the
+      # action return → Phoenix raises 500. fly.toml is a single all-in-one app so the flags sit on one
+      # process; the split compose topology needs them on the gateway too. (MEDIA_DB_BACKED is also set
+      # here though fly.toml omits it — a latent gap there; media's placeholder has an else so it 200s
+      # but on the wrong path.)
+      USER_PROFILE_DB_BACKED: "true"
+      CONVERSATION_DB_BACKED: "true"
+      MESSAGE_DB_BACKED: "true"
+      MEDIA_DB_BACKED: "true"
       # Flip every client to HTTP + point at the service containers by name on the compose network.
       AUTH_CLIENT_ADAPTER: http
       AUTH_SERVICE_URL: http://auth:4101
