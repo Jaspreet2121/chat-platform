@@ -147,7 +147,9 @@ defmodule AuthService.OTP do
         request.delivery.method
       )
 
-      {:ok, %{request.response | otp_request_id: verification_code.id}}
+      response = %{request.response | otp_request_id: verification_code.id}
+      # echo mode (LOCAL/STAGING) adds :debug_code; default "none" returns it unchanged.
+      {:ok, AuthService.OtpDelivery.echo_code(response, request.delivery.code)}
     else
       {:repo, false} -> {:error, :repo_not_started}
       {:error, _reason} = error -> error

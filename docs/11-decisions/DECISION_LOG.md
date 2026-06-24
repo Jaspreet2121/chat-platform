@@ -2,6 +2,25 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-24] Demo/echo OTP delivery mode for local testing (flag-gated, default-off)
+
+- **Context:** completing an OTP login locally needs the code, but it's SMS-only + stored hashed
+  (unrecoverable) — so local frontend testing was blocked without a real DLT phone. Added a flag-gated way
+  to obtain the code without SMS.
+- **Decision — `OTP_DELIVERY_MODE` env (default `"none"`)**, independent of `OTP_SMS_DELIVERY_ENABLED`:
+  `"echo"` injects the plaintext code into the OTP-request response as `debug_code`
+  ([otp_delivery.ex `echo_code/2`](../../apps/backend/apps/auth_service/lib/auth_service/otp_delivery.ex), wired in
+  `request_persisted_otp`); `"log"` `Logger.warning`s it (not in the response); `"none"` surfaces nothing
+  (prod-safe default — hashed, never exposed). Local demo = SMS off + `OTP_DELIVERY_MODE=echo`. Read via
+  `config :auth_service, otp_delivery_mode` ([config.exs](../../apps/backend/config/config.exs)).
+- **Decision — LOUD prod guard (no crash):** `@compiled_env Mix.env()`; if `:prod` AND mode ∈ {echo,log},
+  `Logger.error` a prominent once-per-VM warning that plaintext OTP exposure is on (private staging ONLY, never
+  real users). Doesn't fail boot — warns.
+- **Status:** Implemented + verified. `mix compile --warnings-as-errors` clean; plain `mix test` **284/91**
+  (281 + 3), Docker-free — **default `"none"` → zero behavior change** (existing flows + any deploy without the
+  env unaffected). Tests: echo→`debug_code` in response; none/default→absent (safety); log→logged, not in
+  response. echo/log are LOCAL/STAGING ONLY; production = `"none"` + real SMS.
+
 ## [2026-06-24] Deploy 3b — self-hosted host config (.env-driven) + runbook
 
 - **Context:** with both code blockers closed (schema-load + OTP delivery), the only gaps to a self-hosted run

@@ -115,7 +115,11 @@ config :shared_infra,
 config :shared_infra, internal_api_token: System.get_env("INTERNAL_API_TOKEN")
 
 config :auth_service,
-  http_api_enabled: System.get_env("AUTH_HTTP_API_ENABLED") in ["true", "1", "yes"]
+  http_api_enabled: System.get_env("AUTH_HTTP_API_ENABLED") in ["true", "1", "yes"],
+  # OTP delivery mode — LOCAL/STAGING convenience to obtain the code without SMS. DEFAULT "none"
+  # (prod-safe: nothing surfaced). "echo" returns the code in the OTP-request response; "log" logs it.
+  # Independent of OTP_SMS_DELIVERY_ENABLED (local demo = SMS off + OTP_DELIVERY_MODE=echo).
+  otp_delivery_mode: System.get_env("OTP_DELIVERY_MODE") || "none"
 
 # OTP SMS delivery via SMSGatewayHub (DLT). DEFAULT OFF — plain `mix test` and existing flows never
 # call out. `api_key`/`entity_id`/`template_login_id`/`route` are secrets: env only, never committed.

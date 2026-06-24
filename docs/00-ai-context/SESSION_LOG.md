@@ -1,5 +1,14 @@
 # Session Log
 
+## [2026-06-24] Slice: Demo/echo OTP delivery mode for local testing (flag-gated, default-off)
+- Status: ✅ green; default "none" → zero behavior change. Unblocks local frontend login testing without SMS.
+- Why: OTP code is SMS-only + hashed (unrecoverable) → couldn't complete a local login. Added a flag-gated echo.
+- Files: `apps/auth_service/lib/auth_service/otp_delivery.ex` (echo_code/2 + log mode in deliver/3 + once-per-VM prod-safety Logger.error guard via @compiled_env Mix.env()); `otp.ex` (request_persisted_otp wraps the response in echo_code); `config.exs` (`config :auth_service, otp_delivery_mode: OTP_DELIVERY_MODE || "none"`). + 1 new test file. DECISION_LOG, ROADMAP.
+- OTP_DELIVERY_MODE (default "none"): "echo" → debug_code in the OTP-request response (visible in the browser); "log" → Logger.warning the code; "none" → nothing (prod-safe). Independent of OTP_SMS_DELIVERY_ENABLED. Controller does json(response) so debug_code passes through both in-process + HTTP paths (:debug_code is a compiled atom → to_existing_atom rehydration OK).
+- Safety: default none unchanged; LOUD once-per-VM Logger.error if :prod + echo/log (private staging only, never real users, no crash).
+- Verification: compile --warnings-as-errors clean; plain `mix test` **284/91** (281 + 3): echo→debug_code present; none/default→absent; log→logged not in response.
+- Next: USER local run — Option B backend up (SMS off + OTP_DELIVERY_MODE=echo) + frontend start, complete a login via the echoed code.
+
 ## [2026-06-24] Slice: Deploy 3b — self-hosted host config + runbook (no code blockers left)
 - Status: ✅ green; compose config + runbook only (no app code). Stack is deploy-ready on the user's own Linux server.
 - Files: `docker-compose.prod.yml` (x-secrets: `PHX_HOST: ${PHX_HOST:-localhost}` + `WEB_ORIGIN: ${WEB_ORIGIN:-}` now env-driven; auth container: +6 SMS envs `OTP_SMS_DELIVERY_ENABLED`/`SMS_GATEWAY_HUB_API_KEY`/`SMS_GATEWAY_HUB_SENDER_ID`/`SMS_GATEWAY_HUB_ROUTE`/`SMS_ENTITY_ID`/`SMS_TEMPLATE_LOGIN_ID`, all from .env, default OFF); `docs/09-devops/DEPLOYMENT.md` (self-hosted deploy runbook). DECISION_LOG, ROADMAP.
