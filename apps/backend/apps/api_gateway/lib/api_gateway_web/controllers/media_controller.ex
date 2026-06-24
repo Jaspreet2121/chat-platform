@@ -39,6 +39,7 @@ defmodule ApiGatewayWeb.MediaController do
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :media_unavailable} -> service_unavailable(conn)
+      {:error, :media_too_large} -> too_large(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -77,6 +78,7 @@ defmodule ApiGatewayWeb.MediaController do
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :media_unavailable} -> service_unavailable(conn)
+      {:error, :media_too_large} -> too_large(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -115,11 +117,20 @@ defmodule ApiGatewayWeb.MediaController do
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :media_unavailable} -> service_unavailable(conn)
+      {:error, :media_too_large} -> too_large(conn)
       _ -> invalid_request(conn)
     end
   end
 
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "media.invalid_request")
+
+  defp too_large(conn),
+    do:
+      ErrorResponse.payload_too_large(
+        conn,
+        "media.too_large",
+        "File is too large to upload."
+      )
 
   defp service_unavailable(conn), do: ErrorResponse.service_unavailable(conn, "media.unavailable")
 

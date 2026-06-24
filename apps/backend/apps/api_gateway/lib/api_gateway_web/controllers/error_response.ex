@@ -46,6 +46,19 @@ defmodule ApiGatewayWeb.ErrorResponse do
     })
   end
 
+  # 413 for an upload whose declared size exceeds the server cap (MEDIA_MAX_SIZE_BYTES).
+  def payload_too_large(conn, code, message) do
+    conn
+    |> put_status(:request_entity_too_large)
+    |> json(%{
+      error: %{
+        code: code,
+        message: message,
+        correlation_id: correlation_id(conn)
+      }
+    })
+  end
+
   def rate_limited(conn, code) do
     conn
     |> put_status(:too_many_requests)

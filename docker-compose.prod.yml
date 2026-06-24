@@ -156,6 +156,9 @@ services:
       MEDIA_HTTP_API_ENABLED: "true"
       MEDIA_HTTP_PORT: "4105"
       MEDIA_DB_BACKED: "true"
+      # Max upload size (bytes), runtime-read by MediaService.Media. Default 100 MB; oversized uploads
+      # are rejected with 413 media.too_large so a large video can't fill MinIO unbounded.
+      MEDIA_MAX_SIZE_BYTES: ${MEDIA_MAX_SIZE_BYTES:-104857600}
       # Object storage via MinIO: the adapter generates presigned URLs against this endpoint/bucket.
       MEDIA_STORAGE_ADAPTER: minio
       # Internal endpoint for server-side ops; the browser cannot resolve "minio".

@@ -38,6 +38,7 @@ import {
   StatusBanner
 } from "@/components/chat";
 import { cn } from "@/lib/cn";
+import imageCompression from "browser-image-compression";
 
 // Kept in sync with the backend allow-list (MediaService.Media @allowed_content_types). The file
 // picker's accept attribute is intentionally broader (image/*,video/*,…) so valid files aren't greyed
@@ -54,6 +55,13 @@ const allowedMediaTypes = new Set([
   "video/webm",
   "video/x-matroska"
 ]);
+
+// Mirrors the server cap (MEDIA_MAX_SIZE_BYTES default, 100 MB). Pre-checked client-side for a
+// friendly message before any upload attempt; the server enforces authoritatively (413 too_large).
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+const MAX_UPLOAD_MB = Math.floor(MAX_UPLOAD_BYTES / (1024 * 1024));
+// Only raster images are compressed client-side before upload; everything else uploads as-is.
+const compressibleImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 export default function ChatPage() {
   const router = useRouter();
@@ -450,19 +458,38 @@ export default function ChatPage() {
       throw new Error(`${file.type || "This file type"} is not supported yet.`);
     }
 
+    // Compress raster images before upload (downscale ~1920px, ~1MB target) to cut upload size and
+    // bandwidth. Non-images upload as-is. Any compression failure falls back to the original file.
+    let uploadFile = file;
+    if (compressibleImageTypes.has(file.type)) {
+      setMediaStatus("Compressing image...");
+      try {
+        uploadFile = await imageCompression(file, {
+          maxSizeMB: 1,
+          maxWidthOrHeight: 1920,
+          initialQuality: 0.8,
+          useWebWorker: true
+        });
+      } catch {
+        uploadFile = file;
+      }
+    }
+
+    const contentType = uploadFile.type || file.type || "application/octet-stream";
+
     setMediaStatus("Preparing upload...");
     const upload = await createMediaUpload({
       filename: file.name,
-      content_type: file.type || "application/octet-stream",
-      size_bytes: file.size
+      content_type: contentType,
+      size_bytes: uploadFile.size
     });
 
     setMediaStatus("Uploading...");
     const uploadResponse = await fetch(upload.upload_url, {
       method: "PUT",
-      body: file,
+      body: uploadFile,
       headers: {
-        "Content-Type": file.type || "application/octet-stream"
+        "Content-Type": contentType
       }
     });
 
@@ -477,8 +504,8 @@ export default function ChatPage() {
     const mediaMetadata = {
       object_key: upload.object_key,
       filename: file.name,
-      content_type: file.type || "application/octet-stream",
-      size_bytes: file.size
+      content_type: contentType,
+      size_bytes: uploadFile.size
     };
 
     const message = await sendCreate({
@@ -520,6 +547,17 @@ export default function ChatPage() {
     if (file && !allowedMediaTypes.has(file.type)) {
       setSelectedFile(null);
       setMediaStatus(`${file.type || "This file type"} is not supported yet.`);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      return;
+    }
+
+    // Friendly pre-check so an oversized file is rejected before any upload work. Images are
+    // compressed before upload, so this only blocks truly enormous originals (e.g. a huge video).
+    if (file && file.size > MAX_UPLOAD_BYTES) {
+      setSelectedFile(null);
+      setMediaStatus(`File too large — max ${MAX_UPLOAD_MB} MB.`);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }

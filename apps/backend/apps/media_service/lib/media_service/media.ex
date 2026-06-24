@@ -161,17 +161,38 @@ defmodule MediaService.Media do
   end
 
   defp required_size(attrs) do
-    case get_attr(attrs, "size_bytes") do
-      value when is_integer(value) and value > 0 -> {:ok, value}
-      value when is_binary(value) -> parse_size(value)
-      _ -> {:error, :media_invalid}
+    with {:ok, size} <- parse_required_size(get_attr(attrs, "size_bytes")) do
+      # Single overall cap so a large video can't fill object storage unbounded. Read at RUNTIME via
+      # System.get_env (point-of-use, never config.exs-baked) — MEDIA_MAX_SIZE_BYTES overrides the
+      # default. Images are additionally compressed client-side, so they're well under this.
+      if size > max_size_bytes(), do: {:error, :media_too_large}, else: {:ok, size}
     end
   end
+
+  defp parse_required_size(value) when is_integer(value) and value > 0, do: {:ok, value}
+  defp parse_required_size(value) when is_binary(value), do: parse_size(value)
+  defp parse_required_size(_), do: {:error, :media_invalid}
 
   defp parse_size(value) do
     case Integer.parse(value) do
       {size, ""} when size > 0 -> {:ok, size}
       _ -> {:error, :media_invalid}
+    end
+  end
+
+  # Default 100 MB. Override with MEDIA_MAX_SIZE_BYTES (bytes).
+  @default_max_size_bytes 100 * 1024 * 1024
+
+  defp max_size_bytes do
+    case System.get_env("MEDIA_MAX_SIZE_BYTES") do
+      value when is_binary(value) and value != "" ->
+        case Integer.parse(value) do
+          {bytes, _rest} when bytes > 0 -> bytes
+          _ -> @default_max_size_bytes
+        end
+
+      _ ->
+        @default_max_size_bytes
     end
   end
 
