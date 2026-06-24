@@ -10,7 +10,9 @@ defmodule RealtimeGateway.MessageUnavailableStub do
         :edit_message,
         :delete_message,
         :mark_read,
-        :mark_delivered
+        :mark_delivered,
+        :analytics_overview,
+        :analytics_timeseries
       ] do
     @impl true
     def unquote(fun)(_attrs), do: {:error, :message_unavailable}

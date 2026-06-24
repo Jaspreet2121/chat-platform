@@ -78,5 +78,8 @@ defmodule ApiGatewayWeb.Router do
 
     get "/ping", AdminController, :ping
     get "/me", AdminController, :me
+
+    get "/analytics/overview", AdminAnalyticsController, :overview
+    get "/analytics/timeseries", AdminAnalyticsController, :timeseries
   end
 end

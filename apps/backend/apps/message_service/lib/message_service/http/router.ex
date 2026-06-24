@@ -56,6 +56,16 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Receipts.mark_delivered(body(conn)))
   end
 
+  # Read-only admin analytics (gated upstream by the gateway's RequireAdmin + the internal TokenPlug).
+  post "/internal/analytics/overview" do
+    send_result(conn, {:ok, MessageService.Analytics.overview()})
+  end
+
+  post "/internal/analytics/timeseries" do
+    days = MessageService.Analytics.normalize_days(Map.get(body(conn), "days"))
+    send_result(conn, {:ok, MessageService.Analytics.timeseries(days)})
+  end
+
   match _ do
     send_resp(conn, 404, Jason.encode!(%{"error" => "not_found"}))
   end

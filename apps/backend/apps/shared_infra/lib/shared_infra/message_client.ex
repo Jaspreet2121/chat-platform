@@ -27,6 +27,8 @@ defmodule SharedInfra.MessageClient do
   @callback delete_message(attrs()) :: result()
   @callback mark_read(attrs()) :: result()
   @callback mark_delivered(attrs()) :: result()
+  @callback analytics_overview(attrs()) :: result()
+  @callback analytics_timeseries(attrs()) :: result()
 
   def create_message(attrs), do: adapter().create_message(attrs)
   def send_message(attrs), do: adapter().send_message(attrs)
@@ -37,6 +39,8 @@ defmodule SharedInfra.MessageClient do
   def delete_message(attrs), do: adapter().delete_message(attrs)
   def mark_read(attrs), do: adapter().mark_read(attrs)
   def mark_delivered(attrs), do: adapter().mark_delivered(attrs)
+  def analytics_overview(attrs), do: adapter().analytics_overview(attrs)
+  def analytics_timeseries(attrs), do: adapter().analytics_timeseries(attrs)
 
   @doc "The configured Message client adapter (default `MessageService.MessageClientInProcess`)."
   def adapter do

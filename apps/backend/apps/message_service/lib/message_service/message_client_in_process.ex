@@ -8,6 +8,7 @@ defmodule MessageService.MessageClientInProcess do
 
   @behaviour SharedInfra.MessageClient
 
+  alias MessageService.Analytics
   alias MessageService.Messages
   alias MessageService.Receipts
   alias MessageService.Timeline
@@ -38,4 +39,11 @@ defmodule MessageService.MessageClientInProcess do
 
   @impl true
   def mark_delivered(attrs), do: Receipts.mark_delivered(attrs)
+
+  @impl true
+  def analytics_overview(_attrs), do: {:ok, Analytics.overview()}
+
+  @impl true
+  def analytics_timeseries(attrs),
+    do: {:ok, Analytics.timeseries(Analytics.normalize_days(Map.get(attrs, "days")))}
 end

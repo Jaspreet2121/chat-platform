@@ -222,6 +222,45 @@ export function getMe() {
   return request<UserProfile>("/api/v1/users/me");
 }
 
+// --- Admin analytics (read-only; behind RequireAdmin) -------------------------------------------
+export type AnalyticsOverview = {
+  totals: {
+    users: number;
+    conversations: number;
+    messages: number;
+    media: number;
+    storage_bytes: number;
+  };
+  activity: {
+    messages_24h: number;
+    messages_7d: number;
+    active_conversations_7d: number;
+  };
+  auth: {
+    login_success_7d: number;
+    login_failure_7d: number;
+  };
+};
+
+export type DailyPoint = { date: string; count: number };
+
+export type AnalyticsTimeseries = {
+  days: number;
+  signups: DailyPoint[];
+  messages: DailyPoint[];
+  conversations: DailyPoint[];
+};
+
+export function getAdminAnalyticsOverview() {
+  return request<AnalyticsOverview>("/api/v1/admin/analytics/overview");
+}
+
+export function getAdminAnalyticsTimeseries(days = 30) {
+  return request<AnalyticsTimeseries>(
+    `/api/v1/admin/analytics/timeseries?days=${encodeURIComponent(days)}`
+  );
+}
+
 export function getPublicProfile(userId: string) {
   return request<UserProfile>(`/api/v1/users/${encodeURIComponent(userId)}/profile`);
 }

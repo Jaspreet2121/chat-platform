@@ -45,6 +45,12 @@ defmodule SharedInfra.MessageClientHttp do
   @impl true
   def mark_delivered(attrs), do: post("/internal/receipts/mark_delivered", attrs)
 
+  @impl true
+  def analytics_overview(attrs), do: post("/internal/analytics/overview", attrs)
+
+  @impl true
+  def analytics_timeseries(attrs), do: post("/internal/analytics/timeseries", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs,
       unavailable: @unavailable,
