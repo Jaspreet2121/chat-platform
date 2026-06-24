@@ -2,7 +2,44 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
-## [2026-06-24] CI Layer 3 — gated compose distributed-failure differential (gateway→auth 401/503/recover)
+## [2026-06-24] Observability — correlation_id end-to-end + prod JSON structured logs
+
+- **Context:** the public error envelope carried a literal `"corr_placeholder"` (audit-flagged) — no real
+  trace. A single id should follow a request gateway → internal HTTP → every service → Kafka events → consumers,
+  with structured logs so it's queryable.
+- **Decision — carrier = Logger metadata (`:correlation_id`) + `x-correlation-id` header across boundaries.**
+  New `SharedInfra.Correlation` (generate via `:crypto`, NOT Ecto — `shared_infra`/`api_gateway` have no ecto
+  dep; `valid?/1` length+blank guard) is the single helper.
+- **Gateway origin:** `ApiGatewayWeb.Plugs.CorrelationId` ([endpoint.ex:9](../../apps/backend/apps/api_gateway/lib/api_gateway_web/endpoint.ex#L9),
+  right after `Plug.RequestId`) honors a sane inbound `x-correlation-id` else mints one; sets Logger metadata +
+  `conn.assigns[:correlation_id]` + echoes the response header. `error_response.ex` emits the real id via
+  `correlation_id(conn)` ([:20 et al.](../../apps/backend/apps/api_gateway/lib/api_gateway_web/controllers/error_response.ex#L20))
+  — **`corr_placeholder` removed; envelope SHAPE byte-identical** (only the value is real).
+- **Internal HTTP:** `SharedInfra.HttpClient.headers/0` appends `x-correlation-id` from Logger metadata when set,
+  OMITS it when absent ([http_client.ex:115](../../apps/backend/apps/shared_infra/lib/shared_infra/http_client.ex#L115));
+  `SharedInfra.InternalApi.CorrelationPlug` reads it back into Logger metadata on **all 5** service routers.
+- **Kafka (the careful part):** producers capture `SharedInfra.Correlation.get_or_generate()` SYNCHRONOUSLY in
+  the caller BEFORE `Task.start` and thread it into the envelope build
+  ([messages.ex:142](../../apps/backend/apps/message_service/lib/message_service/messages.ex#L142),
+  [participant_events.ex:84](../../apps/backend/apps/conversation_service/lib/conversation_service/participant_events.ex#L84))
+  — reading metadata inside the async closure would see the Task's empty metadata and lose the trace. All **4**
+  consumers `SharedInfra.Correlation.put(envelope["correlation_id"])` at decode, so the message.created → fan-out
+  chain shares one id.
+- **Structured logs:** hand-rolled `SharedInfra.Logging.JsonFormatter` (no new dep — uses Jason; defensive, never
+  raises), wired PROD-ONLY ([prod.exs:12](../../apps/backend/config/prod.exs#L12)); dev/test keep the plain console
+  format; `:correlation_id` added to the metadata whitelist in all envs ([config.exs:38](../../apps/backend/config/config.exs#L38)).
+- **Adversarial review (`wf_13d7d1a9-bb6`, 6 dimensions):** 5/6 returned ZERO findings (completeness,
+  async-capture, public-contract, security, config-logging). The only findings were test-coverage gaps; the two
+  verified ones were FIXED (gateway blank-header now asserts resp-header + metadata; added an oversized-inbound
+  `>200`-byte test).
+- **DEFERRED (recorded so it's not lost):** Kafka consumer correlation→metadata regression guards (review
+  findings 1 & 2) — asserting the consumer's per-process metadata needs echoing it through the consumers'
+  test-notification (~5 edits across the 4 consumers + their `kafka_integration` tests, only runnable with a live
+  broker). Deferred to the Kafka/MinIO staged-re-enable + notification_service-container slice. The extraction
+  itself is the unit-tested `Correlation.put/1`.
+- **Status:** Implemented + verified. `mix compile --warnings-as-errors` clean; plain `mix test` **273/91**
+  (Docker-free; +18 plain tests vs the prior 255, existing intact); `--include postgres_integration --include
+  http_integration` **359/0**; ZERO `corr_placeholder` in production source (`.ex`). No new dependency.
 
 - **Context:** Layers 1-2 (fast Docker-free `mix test`; pg + http_integration against a Postgres service) guard
   the in-process + adapter paths, but nothing in CI exercised the REAL multi-container network path or the

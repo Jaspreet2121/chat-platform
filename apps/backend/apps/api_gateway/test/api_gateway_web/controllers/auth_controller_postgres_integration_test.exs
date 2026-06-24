@@ -682,32 +682,27 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
   end
 
   defp assert_otp_invalid(conn) do
-    assert Jason.decode!(conn.resp_body) == %{
-             "error" => %{
-               "code" => "auth.otp_invalid",
-               "message" => "OTP is wrong or expired",
-               "correlation_id" => "corr_placeholder"
-             }
-           }
+    assert_error_envelope(conn, "auth.otp_invalid", "OTP is wrong or expired")
   end
 
   defp assert_refresh_invalid(conn) do
-    assert Jason.decode!(conn.resp_body) == %{
-             "error" => %{
-               "code" => "auth.refresh_invalid",
-               "message" => "Refresh token is invalid",
-               "correlation_id" => "corr_placeholder"
-             }
-           }
+    assert_error_envelope(conn, "auth.refresh_invalid", "Refresh token is invalid")
   end
 
   defp assert_session_invalid(conn) do
-    assert Jason.decode!(conn.resp_body) == %{
+    assert_error_envelope(conn, "auth.session_invalid", "Session token is invalid")
+  end
+
+  defp assert_error_envelope(conn, code, message) do
+    assert %{
              "error" => %{
-               "code" => "auth.session_invalid",
-               "message" => "Session token is invalid",
-               "correlation_id" => "corr_placeholder"
+               "code" => ^code,
+               "message" => ^message,
+               "correlation_id" => correlation_id
              }
-           }
+           } = Jason.decode!(conn.resp_body)
+
+    assert is_binary(correlation_id) and correlation_id != "" and
+             correlation_id != "corr_placeholder"
   end
 end

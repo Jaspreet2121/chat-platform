@@ -79,14 +79,17 @@ defmodule ConversationService.ParticipantEvents do
   # default producer adapter is the non-connecting NoopProducer, so nothing connects.
   defp publish(event_type, conversation_id, payload) do
     if publish_enabled?() do
-      Task.start(fn -> do_publish(event_type, conversation_id, payload) end)
+      # Capture the correlation id SYNCHRONOUSLY in the caller process before the Task — Logger
+      # metadata is per-process, so reading it inside the Task would lose the trace.
+      correlation_id = SharedInfra.Correlation.get_or_generate()
+      Task.start(fn -> do_publish(event_type, conversation_id, payload, correlation_id) end)
     end
 
     :ok
   end
 
-  defp do_publish(event_type, conversation_id, payload) do
-    case build_envelope(event_type, payload) do
+  defp do_publish(event_type, conversation_id, payload, correlation_id) do
+    case build_envelope(event_type, payload, correlation_id) do
       {:ok, envelope} ->
         Producer.produce(@topic, conversation_id, envelope, client: @client)
 
@@ -99,14 +102,14 @@ defmodule ConversationService.ParticipantEvents do
     kind, value -> Logger.warning("#{event_type} publish #{kind}, ignored: #{inspect(value)}")
   end
 
-  defp build_envelope(event_type, payload) do
+  defp build_envelope(event_type, payload, correlation_id) do
     Envelope.build(%{
       event_id: Ecto.UUID.generate(),
       event_type: event_type,
       event_version: 1,
       producer: "conversation-service",
       occurred_at: DateTime.to_iso8601(DateTime.utc_now()),
-      correlation_id: Ecto.UUID.generate(),
+      correlation_id: correlation_id,
       payload: payload
     })
   end

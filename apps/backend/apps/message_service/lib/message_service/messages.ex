@@ -136,18 +136,23 @@ defmodule MessageService.Messages do
   # adapter is the non-connecting NoopProducer, so nothing connects.
   defp publish_message_created(response) do
     if kafka_publish_enabled?() do
+      # Capture the correlation id SYNCHRONOUSLY in THIS (caller) process — Logger metadata is
+      # per-process, so reading it inside the Task below would see the Task's empty metadata and
+      # lose the trace. Threaded into the closure instead.
+      correlation_id = SharedInfra.Correlation.get_or_generate()
+
       # Task.start (unlinked) so the create path NEVER blocks on a broker — not even on a
       # lazy producer-start / metadata fetch — and a crash in the publish can't reach the
       # caller. Combined with async produce in the adapter, fire-and-forget holds for BOTH
       # correctness and latency.
-      Task.start(fn -> do_publish_message_created(response) end)
+      Task.start(fn -> do_publish_message_created(response, correlation_id) end)
     end
 
     :ok
   end
 
-  defp do_publish_message_created(response) do
-    case build_message_created_envelope(response) do
+  defp do_publish_message_created(response, correlation_id) do
+    case build_message_created_envelope(response, correlation_id) do
       {:ok, envelope} ->
         Producer.produce(@message_topic, response.conversation_id, envelope)
 
@@ -160,14 +165,14 @@ defmodule MessageService.Messages do
     kind, value -> Logger.warning("message.created publish #{kind}, ignored: #{inspect(value)}")
   end
 
-  defp build_message_created_envelope(response) do
+  defp build_message_created_envelope(response, correlation_id) do
     Envelope.build(%{
       event_id: Ecto.UUID.generate(),
       event_type: "message.created.v1",
       event_version: 1,
       producer: "message-service",
       occurred_at: response.created_at,
-      correlation_id: Ecto.UUID.generate(),
+      correlation_id: correlation_id,
       actor_user_id: response.sender_user_id,
       payload: %{
         "conversation_id" => response.conversation_id,

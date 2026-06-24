@@ -135,13 +135,16 @@ defmodule ApiGatewayWeb.MediaControllerTest do
   end
 
   defp assert_invalid_error(conn, code) do
-    assert Jason.decode!(conn.resp_body) == %{
+    assert %{
              "error" => %{
-               "code" => code,
+               "code" => ^code,
                "message" => "Request body is invalid",
-               "correlation_id" => "corr_placeholder"
+               "correlation_id" => correlation_id
              }
-           }
+           } = Jason.decode!(conn.resp_body)
+
+    assert is_binary(correlation_id) and correlation_id != "" and
+             correlation_id != "corr_placeholder"
   end
 
   defp start_in_memory_storage! do

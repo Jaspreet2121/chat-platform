@@ -1,5 +1,15 @@
 # Session Log
 
+## [2026-06-24] Slice: Observability — correlation_id end-to-end + prod JSON structured logs
+- Status: ✅ green; adversarial-review-clean. One id traces gateway → internal HTTP → 5 services → Kafka envelope → consumers.
+- New: `SharedInfra.Correlation` (`:crypto` gen, no ecto; valid?/get/put/get_or_generate), `SharedInfra.InternalApi.CorrelationPlug`, `SharedInfra.Logging.JsonFormatter` (hand-rolled, no dep), `ApiGatewayWeb.Plugs.CorrelationId`. + 4 new test files.
+- Wiring: endpoint.ex (plug after Plug.RequestId); error_response.ex (real id via `correlation_id(conn)`, `corr_placeholder` GONE, envelope shape identical); http_client.ex headers/0 (`x-correlation-id` when set, omitted when absent); CorrelationPlug on ALL 5 routers; messages.ex + participant_events.ex (sync-capture `Correlation.get_or_generate()` BEFORE Task.start → threaded into envelope); 4 consumers (`Correlation.put(envelope["correlation_id"])` at decode); config.exs (`:correlation_id` whitelisted, plain dev/test); prod.exs (JsonFormatter, prod-only).
+- Carrier = per-process Logger metadata; CRITICAL fix = capture correlation id in the caller process before the async Kafka Task (reading metadata inside the closure would lose it across the process boundary).
+- Adversarial review wf_13d7d1a9-bb6 (6 dims): 5/6 ZERO findings (completeness/async-capture/public-contract/security/config-logging); test-adequacy raised coverage gaps → fixed the 2 verified ones (gateway blank-header asserts resp-header+metadata; added oversized >200-byte test).
+- DEFERRED (don't lose): consumer correlation→metadata regression guards (findings 1&2) → folded into the Kafka/MinIO staged-re-enable + notification_service-container slice (~5 edits across 4 consumers + kafka_integration tests; needs a live broker). Extraction is the unit-tested Correlation.put/1.
+- Verification: format + compile --warnings-as-errors clean; plain `mix test` **273/91** (Docker-free, +18 vs 255); `--include postgres_integration --include http_integration` **359/0**; zero `corr_placeholder` in production source; no new dep.
+- Next: commit + push → confirm green on main. Pending elsewhere: notification_service per-service release + container (Kafka-staged); re-enable Kafka/MinIO; deploy 3b.
+
 ## [2026-06-24] Slice: CI Layer 3 — gated compose distributed-failure differential (gateway→auth 401/503/recover)
 - Status: ✅ verified locally end-to-end; gated job proven on CI via manual workflow_dispatch.
 - Files: NEW `scripts/ci/compose_differential.sh` (committed, `set -euo pipefail`, +x); `.github/workflows/backend-ci.yml` (+`workflow_dispatch`/`schedule` triggers; NEW `compose-integration` job, gated + `timeout-minutes: 30`). DECISION_LOG, ROADMAP.

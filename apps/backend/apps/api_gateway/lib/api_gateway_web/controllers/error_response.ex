@@ -1,6 +1,10 @@
 defmodule ApiGatewayWeb.ErrorResponse do
   @moduledoc """
   Shared JSON error response helpers for API Gateway skeleton controllers.
+
+  Every error envelope carries the request's real `correlation_id` (set by
+  `ApiGatewayWeb.Plugs.CorrelationId`), so a client/operator can trace the failure end-to-end.
+  The envelope SHAPE is unchanged — only the id is now real instead of a literal placeholder.
   """
 
   import Plug.Conn
@@ -13,7 +17,7 @@ defmodule ApiGatewayWeb.ErrorResponse do
       error: %{
         code: code,
         message: "Request body is invalid",
-        correlation_id: "corr_placeholder"
+        correlation_id: correlation_id(conn)
       }
     })
   end
@@ -25,7 +29,7 @@ defmodule ApiGatewayWeb.ErrorResponse do
       error: %{
         code: code,
         message: message,
-        correlation_id: "corr_placeholder"
+        correlation_id: correlation_id(conn)
       }
     })
   end
@@ -37,7 +41,7 @@ defmodule ApiGatewayWeb.ErrorResponse do
       error: %{
         code: code,
         message: message,
-        correlation_id: "corr_placeholder"
+        correlation_id: correlation_id(conn)
       }
     })
   end
@@ -49,7 +53,7 @@ defmodule ApiGatewayWeb.ErrorResponse do
       error: %{
         code: code,
         message: "Too many requests. Please try again later.",
-        correlation_id: "corr_placeholder"
+        correlation_id: correlation_id(conn)
       }
     })
   end
@@ -63,8 +67,14 @@ defmodule ApiGatewayWeb.ErrorResponse do
       error: %{
         code: code,
         message: "Service temporarily unavailable. Please try again.",
-        correlation_id: "corr_placeholder"
+        correlation_id: correlation_id(conn)
       }
     })
+  end
+
+  # The real correlation id: the plug-assigned value, falling back to Logger metadata, and finally
+  # a freshly generated id so the field is never blank even on an unexpected path.
+  defp correlation_id(conn) do
+    conn.assigns[:correlation_id] || SharedInfra.Correlation.get_or_generate()
   end
 end

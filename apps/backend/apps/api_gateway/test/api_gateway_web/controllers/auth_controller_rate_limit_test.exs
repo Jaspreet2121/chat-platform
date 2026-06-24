@@ -46,13 +46,16 @@ defmodule ApiGatewayWeb.AuthControllerRateLimitTest do
     assert conn.status == 429
     assert get_resp_header(conn, "retry-after") == ["60"]
 
-    assert Jason.decode!(conn.resp_body) == %{
+    assert %{
              "error" => %{
                "code" => "rate_limit.exceeded",
                "message" => "Too many requests. Please try again later.",
-               "correlation_id" => "corr_placeholder"
+               "correlation_id" => correlation_id
              }
-           }
+           } = Jason.decode!(conn.resp_body)
+
+    assert is_binary(correlation_id) and correlation_id != "" and
+             correlation_id != "corr_placeholder"
   end
 
   defp otp_request(params) do

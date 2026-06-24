@@ -7,7 +7,11 @@
       "Bash(echo \"full=$\\(mix test 2>&1)",
       "Bash(npm run *)",
       "Bash(echo \"passed_sum=$\\(mix test 2>&1)",
-      "Bash(echo \"pg_passed_sum=$\\(mix test --include postgres_integration 2>&1)"
+      "Bash(echo \"pg_passed_sum=$\\(mix test --include postgres_integration 2>&1)",
+      "Bash(python3)",
+      "Bash(cd /Users/jaspreetsinghthind/projects/chat-platform/apps/backend *)",
+      "Read(//Users/jaspreetsinghthind/projects/chat-platform/config/**)",
+      "Bash(git commit -m 'feat\\(observability\\): correlation_id end-to-end + prod JSON structured logs *)"
     ]
   }
 }

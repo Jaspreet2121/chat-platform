@@ -40,6 +40,9 @@ defmodule MessageService.Events.MessageCreatedLogConsumer do
   defp handle(key, value, offset) do
     case Jason.decode(value) do
       {:ok, %{"event_type" => event_type} = envelope} ->
+        # Carry the originating request's id so this consumer's logs join the same trace.
+        SharedInfra.Correlation.put(envelope["correlation_id"])
+
         Logger.info(
           "kafka consume #{event_type} key=#{inspect(key)} offset=#{offset} " <>
             "event_id=#{inspect(envelope["event_id"])}"

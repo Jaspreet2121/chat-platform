@@ -45,6 +45,8 @@ defmodule NotificationService.Events.ConversationParticipantsConsumer do
   defp decode_and_apply(value, offset) do
     case Jason.decode(value) do
       {:ok, envelope} when is_map(envelope) ->
+        # Carry the originating request's id so this consumer's logs join the same trace.
+        SharedInfra.Correlation.put(envelope["correlation_id"])
         result = apply_event(envelope)
         notify_test(envelope, result)
         commit_decision(result, offset)

@@ -6,6 +6,7 @@ defmodule ApiGatewayWeb.Endpoint do
     longpoll: false
 
   plug Plug.RequestId
+  plug ApiGatewayWeb.Plugs.CorrelationId
   plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
 
   plug Plug.Parsers,

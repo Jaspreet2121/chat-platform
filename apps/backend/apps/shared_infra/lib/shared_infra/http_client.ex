@@ -100,8 +100,21 @@ defmodule SharedInfra.HttpClient do
   end
 
   defp headers do
+    token_header() ++ correlation_header()
+  end
+
+  defp token_header do
     case SharedInfra.InternalApi.internal_token() do
       token when is_binary(token) and token != "" -> [{"x-internal-token", token}]
+      _ -> []
+    end
+  end
+
+  # Propagate the caller's correlation id over the internal call (when one is set in this process's
+  # Logger metadata). Omitted entirely when absent — keeps prior behavior for non-traced callers.
+  defp correlation_header do
+    case SharedInfra.Correlation.get() do
+      id when is_binary(id) and id != "" -> [{SharedInfra.Correlation.header(), id}]
       _ -> []
     end
   end

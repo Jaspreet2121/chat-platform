@@ -12,6 +12,7 @@ defmodule MediaService.HTTP.Router do
   use Plug.Router
 
   plug(SharedInfra.InternalApi.TokenPlug)
+  plug(SharedInfra.InternalApi.CorrelationPlug)
   plug(:match)
   plug(Plug.Parsers, parsers: [:json], pass: ["application/json"], json_decoder: Jason)
   plug(:dispatch)

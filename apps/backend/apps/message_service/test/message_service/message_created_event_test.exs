@@ -132,6 +132,35 @@ defmodule MessageService.MessageCreatedEventTest do
     refute_received {:kafka_published, _topic, ^conversation_id, _value}
   end
 
+  test "message.created envelope carries the caller's correlation_id (captured synchronously across the Task)" do
+    Application.put_env(:message_service, :kafka_publish_enabled, true)
+
+    Application.put_env(
+      :shared_infra,
+      :kafka_producer_adapter,
+      MessageService.CaptureKafkaProducer
+    )
+
+    # Correlation id lives in THIS (caller) process's Logger metadata. publish_message_created must
+    # capture it BEFORE Task.start, so the envelope (built in the Task, a different process) still
+    # carries it — proving the trace survives the process boundary (not a fresh random uuid).
+    Logger.metadata(correlation_id: "test-corr-abc")
+    on_exit(fn -> Logger.metadata(correlation_id: nil) end)
+
+    conversation_id = unique_conversation_id()
+
+    assert {:ok, _created} =
+             Messages.create_message(%{
+               "conversation_id" => conversation_id,
+               "sender_user_id" => @sender_user_id,
+               "message_type" => "text",
+               "body" => "Traced"
+             })
+
+    assert_receive {:kafka_published, "message.events.v1", ^conversation_id, envelope}, 1_000
+    assert envelope.correlation_id == "test-corr-abc"
+  end
+
   test "create SUCCEEDS even when the producer raises (fire-and-forget)" do
     Application.put_env(:message_service, :kafka_publish_enabled, true)
 

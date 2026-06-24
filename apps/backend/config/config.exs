@@ -35,7 +35,7 @@ config :shared_infra, :redis,
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
-  metadata: [:request_id]
+  metadata: [:request_id, :correlation_id]
 
 config :auth_service, ecto_repos: [AuthService.Repo]
 
