@@ -1,20 +1,31 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ArrowLeft, ArrowRight, MessagesSquare, Phone, RotateCcw, ShieldCheck } from "lucide-react";
 import { requestOtp, verifyOtp } from "@/lib/api";
 import { hasAccessToken, setSessionTokens } from "@/lib/session";
+import { Button, Card, Input } from "@/components";
+
+type Step = "phone" | "code";
 
 export default function LoginPage() {
   const router = useRouter();
+  const [step, setStep] = useState<Step>("phone");
   const [destination, setDestination] = useState("");
+  // Captured silently from the requestOtp response and passed to verifyOtp — never a visible field.
   const [otpRequestId, setOtpRequestId] = useState("");
   const [otpCode, setOtpCode] = useState("");
-  const [status, setStatus] = useState("Enter your phone number or email to start.");
+  const [deliveryMethod, setDeliveryMethod] = useState("");
+  const [error, setError] = useState("");
+  const [expiresIn, setExpiresIn] = useState(0);
+  const [resendIn, setResendIn] = useState(0);
+  const [debugCode, setDebugCode] = useState("");
   const [isRequesting, setIsRequesting] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
 
   const deviceId = useMemo(() => "web-browser", []);
+  const codeInputRef = useRef<HTMLInputElement | null>(null);
   // One-shot guard: redirect to /chat at most once per mount (defense in depth against any cycle).
   const hasRedirectedRef = useRef(false);
 
@@ -25,49 +36,75 @@ export default function LoginPage() {
     }
   }, [router]);
 
-  async function handleRequestOtp(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const normalizedDestination = destination.trim();
+  // Focus the code field as soon as we reach step two.
+  useEffect(() => {
+    if (step === "code") {
+      codeInputRef.current?.focus();
+    }
+  }, [step]);
 
+  // Tick down the expiry + resend cooldown once per second.
+  useEffect(() => {
+    if (expiresIn <= 0 && resendIn <= 0) return;
+    const timer = setInterval(() => {
+      setExpiresIn((value) => (value > 0 ? value - 1 : 0));
+      setResendIn((value) => (value > 0 ? value - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [expiresIn, resendIn]);
+
+  const sendOtp = useCallback(async () => {
+    const normalizedDestination = destination.trim();
     if (!normalizedDestination) {
-      setStatus("Enter a phone number or email first.");
+      setError("Enter a phone number or email first.");
       return;
     }
 
+    setError("");
     setIsRequesting(true);
-    setStatus("Requesting OTP...");
 
     try {
       const response = await requestOtp({ destination: normalizedDestination, deviceId });
       setOtpRequestId(response.otp_request_id);
-      setStatus(
-        `OTP requested by ${response.delivery_method}. It expires in ${response.expires_in_seconds} seconds.`
-      );
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "OTP request failed.");
+      setDeliveryMethod(response.delivery_method);
+      setExpiresIn(response.expires_in_seconds);
+      setResendIn(response.retry_after_seconds);
+
+      // Dev convenience: echo mode returns the plaintext code — auto-fill it so local testing is one click.
+      const echo = (response as { debug_code?: string }).debug_code;
+      if (echo) {
+        setDebugCode(echo);
+        setOtpCode(echo);
+      }
+
+      setStep("code");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not send the code. Try again.");
     } finally {
       setIsRequesting(false);
     }
+  }, [destination, deviceId]);
+
+  async function handleRequestOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await sendOtp();
   }
 
   async function handleVerifyOtp(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const normalizedDestination = destination.trim();
-    const normalizedOtpRequestId = otpRequestId.trim();
     const normalizedOtpCode = otpCode.trim();
-
-    if (!normalizedDestination || !normalizedOtpRequestId || !normalizedOtpCode) {
-      setStatus("Enter destination, OTP request ID, and OTP code.");
+    if (!otpRequestId.trim() || !normalizedOtpCode) {
+      setError("Enter the code we sent you.");
       return;
     }
 
+    setError("");
     setIsVerifying(true);
-    setStatus("Verifying OTP...");
 
     try {
       const response = await verifyOtp({
-        destination: normalizedDestination,
-        otpRequestId: normalizedOtpRequestId,
+        destination: destination.trim(),
+        otpRequestId: otpRequestId.trim(),
         otpCode: normalizedOtpCode,
         deviceId
       });
@@ -76,82 +113,137 @@ export default function LoginPage() {
         accessToken: response.access_token,
         refreshToken: response.refresh_token
       });
-      setStatus("Signed in. Opening chat...");
       router.replace("/chat");
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "OTP verification failed.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "That code didn't work. Try again.");
     } finally {
       setIsVerifying(false);
     }
   }
 
+  function changeNumber() {
+    setStep("phone");
+    setOtpCode("");
+    setOtpRequestId("");
+    setDebugCode("");
+    setError("");
+    setExpiresIn(0);
+    setResendIn(0);
+  }
+
   return (
     <main className="flex min-h-screen items-center justify-center px-4 py-10">
-      <section className="w-full max-w-md rounded-lg border border-line bg-white p-6 shadow-sm">
-        <div className="mb-6">
-          <p className="text-sm font-medium text-mint">Chat Platform</p>
-          <h1 className="mt-2 text-2xl font-semibold text-ink">Sign in with OTP</h1>
+      <div className="w-full max-w-md animate-scale-in">
+        {/* Brand mark */}
+        <div className="mb-8 flex flex-col items-center text-center">
+          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand shadow-glow">
+            <MessagesSquare className="h-6 w-6 text-white" aria-hidden />
+          </div>
+          <h1 className="text-2xl font-semibold tracking-tight text-fg">Chat Platform</h1>
+          <p className="mt-1 text-sm text-muted">
+            {step === "phone" ? "Sign in to continue" : "Enter your verification code"}
+          </p>
         </div>
 
-        <form className="space-y-4" onSubmit={handleRequestOtp}>
-          <label className="block">
-            <span className="text-sm font-medium text-ink">Phone or email</span>
-            <input
-              className="mt-2 w-full rounded-md border border-line px-3 py-2 outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-              inputMode="email"
-              placeholder="+919999999999"
-              value={destination}
-              onChange={(event) => setDestination(event.target.value)}
-              required
-            />
-          </label>
+        <Card className="p-6 sm:p-7">
+          {step === "phone" ? (
+            <form className="space-y-5" onSubmit={handleRequestOtp}>
+              <Input
+                label="Phone number"
+                leftIcon={<Phone className="h-4 w-4" aria-hidden />}
+                inputMode="tel"
+                autoComplete="tel"
+                placeholder="+91 99999 99999"
+                value={destination}
+                onChange={(event) => setDestination(event.target.value)}
+                autoFocus
+                required
+              />
 
-          <button
-            className="w-full rounded-md bg-brand px-4 py-2 font-medium text-white disabled:cursor-not-allowed disabled:bg-slate-400"
-            disabled={isRequesting || destination.trim() === ""}
-            type="submit"
-          >
-            {isRequesting ? "Requesting..." : "Request OTP"}
-          </button>
-        </form>
+              {error && <p className="text-sm text-danger">{error}</p>}
 
-        <form className="mt-6 space-y-4" onSubmit={handleVerifyOtp}>
-          <label className="block">
-            <span className="text-sm font-medium text-ink">OTP request ID</span>
-            <input
-              className="mt-2 w-full rounded-md border border-line px-3 py-2 outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-              value={otpRequestId}
-              onChange={(event) => setOtpRequestId(event.target.value)}
-              required
-            />
-          </label>
+              <Button
+                type="submit"
+                fullWidth
+                isLoading={isRequesting}
+                disabled={destination.trim() === ""}
+              >
+                {!isRequesting && <ArrowRight className="h-4 w-4" aria-hidden />}
+                Send code
+              </Button>
+            </form>
+          ) : (
+            <form className="space-y-5" onSubmit={handleVerifyOtp}>
+              <button
+                type="button"
+                onClick={changeNumber}
+                className="inline-flex items-center gap-1.5 text-sm text-muted transition-colors hover:text-fg"
+              >
+                <ArrowLeft className="h-4 w-4" aria-hidden />
+                Change number
+              </button>
 
-          <label className="block">
-            <span className="text-sm font-medium text-ink">OTP code</span>
-            <input
-              className="mt-2 w-full rounded-md border border-line px-3 py-2 outline-none focus:border-brand focus:ring-2 focus:ring-brand/20"
-              inputMode="numeric"
-              maxLength={8}
-              placeholder="123456"
-              value={otpCode}
-              onChange={(event) => setOtpCode(event.target.value)}
-              required
-            />
-          </label>
+              <p className="text-sm text-muted">
+                We sent a code via {deliveryMethod || "SMS"} to{" "}
+                <span className="font-medium text-fg">{destination.trim()}</span>.
+              </p>
 
-          <button
-            className="w-full rounded-md border border-brand px-4 py-2 font-medium text-brand disabled:cursor-not-allowed disabled:border-slate-300 disabled:text-slate-400"
-            disabled={isVerifying || otpRequestId.trim() === "" || otpCode.trim() === ""}
-            type="submit"
-          >
-            {isVerifying ? "Verifying..." : "Verify OTP"}
-          </button>
-        </form>
+              <Input
+                ref={codeInputRef}
+                label="Verification code"
+                leftIcon={<ShieldCheck className="h-4 w-4" aria-hidden />}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={8}
+                placeholder="123456"
+                className="tracking-[0.4em]"
+                value={otpCode}
+                onChange={(event) => setOtpCode(event.target.value)}
+                hint={
+                  expiresIn > 0
+                    ? `Code expires in ${expiresIn}s`
+                    : "Your code has expired — resend a new one."
+                }
+                required
+              />
 
-        <p className="mt-5 min-h-10 rounded-md bg-paper px-3 py-2 text-sm text-slate-700">
-          {status}
+              {debugCode && (
+                <p className="rounded-lg border border-border bg-elevated px-3 py-2 text-xs text-faint">
+                  <span className="font-medium text-muted">dev</span> · echo code{" "}
+                  <span className="font-mono text-fg">{debugCode}</span> (auto-filled)
+                </p>
+              )}
+
+              {error && <p className="text-sm text-danger">{error}</p>}
+
+              <Button
+                type="submit"
+                fullWidth
+                isLoading={isVerifying}
+                disabled={otpCode.trim() === ""}
+              >
+                Verify &amp; continue
+              </Button>
+
+              <Button
+                type="button"
+                variant="ghost"
+                fullWidth
+                onClick={sendOtp}
+                isLoading={isRequesting}
+                disabled={resendIn > 0}
+                leftIcon={<RotateCcw className="h-4 w-4" aria-hidden />}
+              >
+                {resendIn > 0 ? `Resend code in ${resendIn}s` : "Resend code"}
+              </Button>
+            </form>
+          )}
+        </Card>
+
+        <p className="mt-6 text-center text-xs text-faint">
+          Protected by one-time passcode authentication.
         </p>
-      </section>
+      </div>
     </main>
   );
 }

@@ -3,26 +3,57 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
-  background: #f7f9fb;
-  color: #17202a;
+  color-scheme: dark;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
 body {
   margin: 0;
   min-height: 100vh;
+}
+
+/* Dark-mode-first base. Subtle radial glow up top for depth (Linear-esque). */
+body {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(247, 249, 251, 0.94)),
-    #f7f9fb;
-  color: #17202a;
+    radial-gradient(1200px 600px at 50% -10%, rgba(99, 102, 241, 0.08), transparent 70%),
+    #0a0c10;
+  color: #e7e9ee;
 }
 
 button,
 input,
 textarea {
   font: inherit;
+}
+
+/* Crisp, slim scrollbars that match the dark surface. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #333a47 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: #2b323f;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: #3a4250;
+}
+
+/* Brand-tinted text selection. */
+::selection {
+  background: rgba(99, 102, 241, 0.35);
+  color: #fff;
 }

@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "lucide-react": "^1.21.0",
     "next": "16.2.9",
     "phoenix": "1.7.21",
     "react": "18.3.1",
