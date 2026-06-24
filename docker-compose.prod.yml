@@ -297,6 +297,9 @@ services:
     environment:
       <<: *secrets
       PORT: "4000"
+      # Allowed browser CORS origin(s), comma-separated. Read at runtime by the gateway endpoint
+      # (cors_origins/0). Defaults to the local frontend dev server; override via .env for a real host.
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       # Trustworthy realtime socket identity (verifies the bearer via auth over HTTP). Runtime-read
       # by realtime_gateway.UserSocket; matches fly.toml.
       REALTIME_AUTH_DB_BACKED: "true"

@@ -29,6 +29,7 @@ defmodule ApiGateway.MixProject do
       {:phoenix, "~> 1.7"},
       {:phoenix_pubsub, "~> 2.1"},
       {:plug_cowboy, "~> 2.7"},
+      {:cors_plug, "~> 3.0"},
       {:jason, "~> 1.4"}
     ]
   end
