@@ -83,6 +83,10 @@ export type Message = {
   created_at: string;
   edited_at?: string | null;
   deleted_at?: string | null;
+  // Read-receipt aggregates surfaced on load (others who have read / received this message). Drive the
+  // sent/delivered/read ticks on own messages; survive reload because they come from the timeline.
+  read_by_count?: number;
+  delivered_by_count?: number;
 };
 
 export type MediaUpload = {

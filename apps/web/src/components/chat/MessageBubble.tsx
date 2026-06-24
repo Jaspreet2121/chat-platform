@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Download, FileText, Pencil, Trash2, X } from "lucide-react";
+import { Check, CheckCheck, Download, FileText, Pencil, Trash2, X } from "lucide-react";
 import type { Message } from "@/lib/api";
 import { getMediaDownloadUrl } from "@/lib/api";
 import { Avatar } from "@/components";
@@ -124,6 +124,8 @@ export function MessageBubble({ message, isOwn, onEdit, onDelete }: MessageBubbl
             {isEdited && !isDeleted ? " · edited" : ""}
           </span>
 
+          {isOwn && !isDeleted ? <ReadTicks message={message} /> : null}
+
           {!isEditing && (canEdit || canDelete) && (
             <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
               {canEdit && (
@@ -155,6 +157,34 @@ export function MessageBubble({ message, isOwn, onEdit, onDelete }: MessageBubbl
         </div>
       </div>
     </div>
+  );
+}
+
+// Read-receipt ticks for own messages: single check = sent, double = delivered, blue double = read.
+// Counts come from the timeline projection (durable across reloads) + live receipt_updated events.
+// 1:1 exact; in groups "read" means at least one other participant has read it.
+function ReadTicks({ message }: { message: Message }) {
+  const read = (message.read_by_count ?? 0) > 0;
+  const delivered = (message.delivered_by_count ?? 0) > 0;
+
+  if (read) {
+    return (
+      <span title="Read" aria-label="Read">
+        <CheckCheck className="h-3.5 w-3.5 text-sky-400" aria-hidden />
+      </span>
+    );
+  }
+  if (delivered) {
+    return (
+      <span title="Delivered" aria-label="Delivered">
+        <CheckCheck className="h-3.5 w-3.5 text-faint" aria-hidden />
+      </span>
+    );
+  }
+  return (
+    <span title="Sent" aria-label="Sent">
+      <Check className="h-3.5 w-3.5 text-faint" aria-hidden />
+    </span>
   );
 }
 

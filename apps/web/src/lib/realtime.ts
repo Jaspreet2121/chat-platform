@@ -17,6 +17,9 @@ export type ConversationChannel = {
   deleteMessage: (messageId: string) => Promise<unknown>;
   startTyping: () => Promise<unknown>;
   stopTyping: () => Promise<unknown>;
+  /** Mark a message read (durable: the server persists the receipt, then broadcasts receipt_updated). */
+  markRead: (messageId: string) => Promise<unknown>;
+  markDelivered: (messageId: string) => Promise<unknown>;
   onMessageCreated: (callback: (message: Message) => void) => () => void;
   onMessageUpdated: (callback: (message: Message) => void) => () => void;
   onMessageDeleted: (callback: (message: Message) => void) => () => void;
@@ -28,6 +31,8 @@ export type ConversationChannel = {
    * immediately with the current state, then on every join/leave. Returns an unsubscribe fn.
    */
   onPresence: (callback: (onlineUserIds: string[]) => void) => () => void;
+  /** Live receipt updates broadcast when another participant marks a message read/delivered. */
+  onReceipt: (callback: (payload: ReceiptPayload) => void) => () => void;
   leave: () => void;
 };
 
@@ -35,6 +40,13 @@ export type TypingPayload = {
   conversation_id?: string;
   user_id?: string;
   occurred_at?: string;
+};
+
+export type ReceiptPayload = {
+  receipt_type?: "read" | "delivered";
+  user_id?: string;
+  conversation_id?: string;
+  payload?: { message_id?: string };
 };
 
 function realtimeUrl() {
@@ -87,6 +99,9 @@ export function joinConversationChannel(
             push(channel, "message:delete", { message_id: messageId }),
           startTyping: () => push(channel, "typing:start", {}),
           stopTyping: () => push(channel, "typing:stop", {}),
+          markRead: (messageId) => push(channel, "message_read", { message_id: messageId }),
+          markDelivered: (messageId) =>
+            push(channel, "message_delivered", { message_id: messageId }),
           onMessageCreated: (callback) => subscribe(channel, "message_created", callback),
           onMessageUpdated: (callback) => subscribe(channel, "message_updated", callback),
           onMessageDeleted: (callback) => subscribe(channel, "message_deleted", callback),
@@ -98,6 +113,7 @@ export function joinConversationChannel(
             callback(onlineUserIds()); // fire once with the current state
             return () => presence.onSync(() => {});
           },
+          onReceipt: (callback) => subscribe(channel, "receipt_updated", callback),
           leave: () => channel.leave()
         });
       })

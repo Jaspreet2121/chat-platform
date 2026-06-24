@@ -278,15 +278,32 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
     bucket_date = Map.fetch!(attrs, "bucket_date")
     limit = Map.get(attrs, "limit", 50)
 
+    {all_messages, receipts} = Agent.get(@name, fn state -> {state.messages, state.receipts} end)
+
     messages =
-      @name
-      |> Agent.get(& &1.messages)
+      all_messages
       |> Enum.filter(&(&1.conversation_id == conversation_id and &1.bucket_date == bucket_date))
       |> Enum.sort_by(& &1.created_at, {:desc, DateTime})
       |> Enum.take(limit)
-      |> Enum.map(&Map.drop(&1, [:bucket_date]))
+      |> Enum.map(fn message ->
+        message
+        |> Map.drop([:bucket_date])
+        |> Map.merge(receipt_counts(receipts, message.message_id))
+      end)
 
     {:ok, %{conversation_id: conversation_id, messages: messages, next_cursor: nil}}
+  end
+
+  # Per-message read/delivered aggregate (others who have read/received it). Each receipt row is a
+  # distinct user (conversation+message+user is unique), so a simple count over non-nil timestamps
+  # gives the per-message totals the timeline surfaces to the client.
+  defp receipt_counts(receipts, message_id) do
+    for_message = Enum.filter(receipts, &(&1.message_id == message_id))
+
+    %{
+      read_by_count: Enum.count(for_message, &(&1[:read_at] != nil)),
+      delivered_by_count: Enum.count(for_message, &(&1[:delivered_at] != nil))
+    }
   end
 
   @impl true
@@ -520,17 +537,43 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     conversation_id = attr(attrs, "conversation_id")
     limit = attr(attrs, "limit") || 50
 
-    messages =
+    rows =
       Message
       |> where([m], m.conversation_id == ^conversation_id)
       |> order_by([m], desc: m.created_at)
       |> limit(^limit)
       |> Repo.all()
-      |> Enum.map(&message_response/1)
+
+    counts = receipt_counts(conversation_id, Enum.map(rows, & &1.message_id))
+
+    messages =
+      Enum.map(rows, fn message ->
+        message
+        |> message_response()
+        |> Map.merge(
+          Map.get(counts, message.message_id, %{read_by_count: 0, delivered_by_count: 0})
+        )
+      end)
 
     {:ok, %{conversation_id: conversation_id, messages: messages, next_cursor: nil}}
   rescue
     Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  # Batched read/delivered aggregate for the listed messages in ONE query (no N+1). COUNT(column)
+  # ignores NULLs, and each (conversation, message, user) receipt row is a distinct user, so the count
+  # is the number of other users who have read / received each message.
+  defp receipt_counts(_conversation_id, []), do: %{}
+
+  defp receipt_counts(conversation_id, message_ids) do
+    MessageReceipt
+    |> where([r], r.conversation_id == ^conversation_id and r.message_id in ^message_ids)
+    |> group_by([r], r.message_id)
+    |> select([r], {r.message_id, count(r.read_at), count(r.delivered_at)})
+    |> Repo.all()
+    |> Map.new(fn {message_id, read_by, delivered_by} ->
+      {message_id, %{read_by_count: read_by, delivered_by_count: delivered_by}}
+    end)
   end
 
   @impl true

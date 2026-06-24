@@ -59,6 +59,9 @@ defmodule RealtimeGateway.ConversationChannel do
 
   def handle_in("message_read", payload, socket) do
     reply = conversation_reply("message_read", payload, socket)
+    # Persist FIRST so the receipt survives a reload, THEN broadcast for the live tick. One path:
+    # the socket mark is the durable mark (no separate REST call needed from the client).
+    persist_receipt(:read, payload, socket)
     broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "read"))
 
     {:reply, {:ok, reply}, socket}
@@ -66,6 +69,7 @@ defmodule RealtimeGateway.ConversationChannel do
 
   def handle_in("message_delivered", payload, socket) do
     reply = conversation_reply("message_delivered", payload, socket)
+    persist_receipt(:delivered, payload, socket)
     broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "delivered"))
 
     {:reply, {:ok, reply}, socket}
@@ -202,6 +206,28 @@ defmodule RealtimeGateway.ConversationChannel do
       payload: payload,
       status: "accepted"
     }
+  end
+
+  # Durably record a read/delivered receipt for the marking user via the message client (in-process or
+  # HTTP). Best-effort: persistence is gated by MESSAGE_DB_BACKED on the message side, so plain
+  # `mix test` (persistence off) takes the placeholder path with no DB. Never blocks the live broadcast.
+  defp persist_receipt(status, payload, socket) do
+    with {:ok, user_id} <- current_user_id(socket),
+         message_id when is_binary(message_id) and message_id != "" <-
+           Map.get(payload, "message_id") do
+      attrs = %{
+        "conversation_id" => socket.assigns.conversation_id,
+        "message_id" => message_id,
+        "user_id" => user_id
+      }
+
+      case status do
+        :read -> SharedInfra.MessageClient.mark_read(attrs)
+        :delivered -> SharedInfra.MessageClient.mark_delivered(attrs)
+      end
+    end
+
+    :ok
   end
 
   defp validate_message_payload(%{"message_type" => "text", "body" => body})

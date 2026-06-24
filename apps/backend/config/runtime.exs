@@ -158,12 +158,14 @@ if config_env() == :prod do
       public_endpoint: System.get_env("MINIO_PUBLIC_ENDPOINT"),
       bucket: System.get_env("MINIO_BUCKET") || "chat-media",
       access_key_id:
-        System.get_env("MINIO_ACCESS_KEY") || System.get_env("MINIO_ACCESS_KEY_ID") || "minioadmin",
+        System.get_env("MINIO_ACCESS_KEY") || System.get_env("MINIO_ACCESS_KEY_ID") ||
+          "minioadmin",
       secret_access_key:
         System.get_env("MINIO_SECRET_KEY") || System.get_env("MINIO_SECRET_ACCESS_KEY") ||
           "minioadmin",
       region: System.get_env("MINIO_REGION") || "us-east-1",
-      url_expires_seconds: String.to_integer(System.get_env("MINIO_URL_EXPIRES_SECONDS") || "900"),
+      url_expires_seconds:
+        String.to_integer(System.get_env("MINIO_URL_EXPIRES_SECONDS") || "900"),
       path_style: System.get_env("MINIO_PATH_STYLE", "true") in ["true", "1", "yes"]
   end
 

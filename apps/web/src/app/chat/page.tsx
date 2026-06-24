@@ -71,6 +71,8 @@ export default function ChatPage() {
   // One-shot guard: a redirect to /login fires at most once per mount, so no re-trigger can hammer
   // history.replaceState into the browser's "more than 100 times per 10 seconds" SecurityError.
   const hasRedirectedRef = useRef(false);
+  // message_ids already marked read this conversation (dedupes the mark-on-view socket pushes).
+  const markedReadRef = useRef<Set<string>>(new Set());
 
   const [session, setSession] = useState<Session | null>(null);
   const [currentProfile, setCurrentProfile] = useState<UserProfile | null>(null);
@@ -226,6 +228,25 @@ export default function ChatPage() {
           }),
           joinedChannel.onPresence((ids) => {
             if (isActive) setOnlineUserIds(ids);
+          }),
+          joinedChannel.onReceipt((data) => {
+            const messageId = data?.payload?.message_id;
+            if (!messageId) return;
+            setMessages((current) =>
+              current.map((item) => {
+                if (item.message_id !== messageId) return item;
+                // A read implies delivered, so bump both; delivered bumps only delivered. We track a
+                // count (≥1 = at least one other has read/received) — exact for 1:1.
+                const delivered = Math.max(item.delivered_by_count ?? 0, 1);
+                return data.receipt_type === "read"
+                  ? {
+                      ...item,
+                      read_by_count: Math.max(item.read_by_count ?? 0, 1),
+                      delivered_by_count: delivered
+                    }
+                  : { ...item, delivered_by_count: delivered };
+              })
+            );
           })
         ];
 
@@ -248,6 +269,29 @@ export default function ChatPage() {
       setOnlineUserIds([]);
     };
   }, [selectedConversationId, session?.user_id]);
+
+  // Reset the per-conversation "already marked read" set when switching conversations.
+  useEffect(() => {
+    markedReadRef.current = new Set();
+  }, [selectedConversationId]);
+
+  // Mark OTHERS' messages as read once, while the conversation is open (channel connected). Ref-guarded
+  // so it's idempotent — steady state pushes nothing; only newly-arrived messages trigger a mark. The
+  // server persists each receipt and broadcasts receipt_updated, flipping the sender's tick to blue.
+  useEffect(() => {
+    if (!channel || !session?.user_id) return;
+    for (const message of messages) {
+      if (
+        message.sender_user_id !== session.user_id &&
+        !markedReadRef.current.has(message.message_id)
+      ) {
+        markedReadRef.current.add(message.message_id);
+        void channel.markRead(message.message_id).catch(() => {
+          markedReadRef.current.delete(message.message_id); // allow a retry on failure
+        });
+      }
+    }
+  }, [channel, messages, session?.user_id]);
 
   useEffect(() => {
     return () => {
