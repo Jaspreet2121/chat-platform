@@ -22,7 +22,12 @@ x-secrets: &secrets
   MIX_ENV: prod
   DATABASE_URL: postgres://chat_user:chat_password@postgres:5432/chat_platform
   DATABASE_SSL: "false"
-  PHX_HOST: localhost
+  # Public host for URL generation. Set PHX_HOST=<server-ip-or-domain> in .env for a real server
+  # (defaults to localhost for a local smoke test).
+  PHX_HOST: ${PHX_HOST:-localhost}
+  # Websocket origin allow-list. Empty (default) DISABLES the check_origin check — fine for a LAN/IP
+  # test; set WEB_ORIGIN=https://<web-host> in .env to lock the socket down behind a proxy.
+  WEB_ORIGIN: ${WEB_ORIGIN:-}
   SECRET_KEY_BASE: ${SECRET_KEY_BASE:?set SECRET_KEY_BASE in .env}
   TOKEN_SECRET: ${TOKEN_SECRET:?set TOKEN_SECRET in .env}
   OTP_SECRET: ${OTP_SECRET:?set OTP_SECRET in .env}
@@ -69,6 +74,15 @@ services:
       AUTH_HTTP_API_ENABLED: "true"
       AUTH_HTTP_PORT: "4101"
       AUTH_SESSION_DB_BACKED: "true"
+      # OTP SMS delivery (SMSGatewayHub/DLT) runs HERE — auth_service owns the OTP request path; the
+      # gateway proxies to auth over HTTP, so these belong on the auth container only. All from .env;
+      # DEFAULT OFF (set OTP_SMS_DELIVERY_ENABLED=true + the secrets to enable real sends).
+      OTP_SMS_DELIVERY_ENABLED: ${OTP_SMS_DELIVERY_ENABLED:-false}
+      SMS_GATEWAY_HUB_API_KEY: ${SMS_GATEWAY_HUB_API_KEY:-}
+      SMS_GATEWAY_HUB_SENDER_ID: ${SMS_GATEWAY_HUB_SENDER_ID:-ISOOBC}
+      SMS_GATEWAY_HUB_ROUTE: ${SMS_GATEWAY_HUB_ROUTE:-}
+      SMS_ENTITY_ID: ${SMS_ENTITY_ID:-}
+      SMS_TEMPLATE_LOGIN_ID: ${SMS_TEMPLATE_LOGIN_ID:-}
     expose: ["4101"]
 
   conversation:

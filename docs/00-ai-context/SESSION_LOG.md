@@ -1,5 +1,13 @@
 # Session Log
 
+## [2026-06-24] Slice: Deploy 3b — self-hosted host config + runbook (no code blockers left)
+- Status: ✅ green; compose config + runbook only (no app code). Stack is deploy-ready on the user's own Linux server.
+- Files: `docker-compose.prod.yml` (x-secrets: `PHX_HOST: ${PHX_HOST:-localhost}` + `WEB_ORIGIN: ${WEB_ORIGIN:-}` now env-driven; auth container: +6 SMS envs `OTP_SMS_DELIVERY_ENABLED`/`SMS_GATEWAY_HUB_API_KEY`/`SMS_GATEWAY_HUB_SENDER_ID`/`SMS_GATEWAY_HUB_ROUTE`/`SMS_ENTITY_ID`/`SMS_TEMPLATE_LOGIN_ID`, all from .env, default OFF); `docs/09-devops/DEPLOYMENT.md` (self-hosted deploy runbook). DECISION_LOG, ROADMAP.
+- SMS envs on the **auth** container only — auth_service owns the OTP path; the gateway proxies over HTTP (gateway release doesn't include auth_service, so it can't read :auth_service config). Verified: rendered config shows PHX_HOST interpolated across all 8 services, SMS envs on auth, NOT on gateway.
+- Runbook: server prereqs (≥4GB RAM, Docker+Compose v2, port 4000), .env template (4 required secrets via openssl + PHX_HOST + SMS block), `up -d --build`, verify (10 running + 2 exited init, /health 200, 36 tables auto-loaded), frontend NEXT_PUBLIC_* URLs, first-login smoke test, TLS-proxy note for prod, pre-flight DLT 6-digit + key-rotation warning.
+- Verification: compile --warnings-as-errors clean; plain `mix test` **281/91** unchanged; `docker compose config` renders with a sample .env (PHX_HOST + SMS interpolate). Schema auto-loads via initdb mount (load_schema moot here).
+- Next: the USER provisions a server, fills .env, runs `up -d`, does the first real login. Optional: email OTP channel, JsonFormatter charlist cosmetic.
+
 ## [2026-06-24] Slice: OTP delivery via SMSGatewayHub (DLT) — last login blocker closed
 - Status: ✅ green; flag-gated default-OFF; real provider NEVER called in tests/CI. Closes deploy-3b blocker #1.
 - STEP 0 finding: app generates **6-digit** OTPs (`@default_code_digits 6`); DLT `{#var#}` normally accepts any length but confirm the registered LOGIN template accepts 6 (else ErrorCode 024). NOT changed (product decision).

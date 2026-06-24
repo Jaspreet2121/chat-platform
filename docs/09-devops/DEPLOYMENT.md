@@ -223,6 +223,63 @@ in the client-adapter slices paying off.
 - **Port 4000 already in use** → something else holds the host port. *Fix:* stop it, or change the gateway's
   published port mapping in the compose file.
 
+## Self-hosted deploy runbook — your own Linux server (deploy 3b, 2026-06-24)
+
+Run the full `docker-compose.prod.yml` stack on your own box. **No code blockers remain** — schema auto-loads
+(the postgres `docker-entrypoint-initdb.d` mount → 36 tables on a fresh volume; `load_schema` is the Fly/managed-PG
+path, moot here) and OTP SMS delivery is wired. All host config is `.env`; the compose file needs no edits.
+
+**Server prereqs:** Linux, **≥ 4 GB RAM** (8 GB recommended — Kafka's JVM is the dominant cost ~1 GB), Docker +
+Compose v2, port **4000** open (+ 80/443 if you front it with a TLS proxy).
+
+**1. `.env`** (in the repo root, next to `docker-compose.prod.yml` — compose auto-loads it; gitignored):
+```sh
+SECRET_KEY_BASE=$(openssl rand -hex 64)
+TOKEN_SECRET=$(openssl rand -hex 32)
+OTP_SECRET=$(openssl rand -hex 32)
+INTERNAL_API_TOKEN=$(openssl rand -hex 32)
+PHX_HOST=<server-ip-or-domain>          # e.g. 203.0.113.10  (defaults to localhost if unset)
+# OTP SMS (SMSGatewayHub/DLT) — enable + provide secrets to send real OTPs:
+OTP_SMS_DELIVERY_ENABLED=true
+SMS_GATEWAY_HUB_API_KEY=<your rotated API key>
+SMS_GATEWAY_HUB_SENDER_ID=ISOOBC
+SMS_GATEWAY_HUB_ROUTE=<route id>
+SMS_ENTITY_ID=<DLT entity/PE id>
+SMS_TEMPLATE_LOGIN_ID=<DLT LOGIN template id>
+# WEB_ORIGIN=https://<web-host>          # optional — set once the web URL is known to lock the socket
+```
+Only `SECRET_KEY_BASE`/`TOKEN_SECRET`/`OTP_SECRET`/`INTERNAL_API_TOKEN` are *required* (compose errors if unset).
+The SMS vars + `PHX_HOST`/`WEB_ORIGIN` are env-driven on the **auth** + shared containers — never hardcoded.
+
+> ⚠️ **PRE-FLIGHT before enabling SMS:** the app generates **6-digit** OTPs — confirm your DLT LOGIN template's
+> `{#var#}` accepts 6 digits (else SMSGatewayHub returns ErrorCode 024). And **rotate** the API key if it was ever
+> shared in plaintext.
+
+**2. Bring up:**
+```sh
+docker compose -f docker-compose.prod.yml up -d --build
+```
+**3. Verify:**
+```sh
+docker compose -f docker-compose.prod.yml ps        # 10 running + kafka-init/minio-init Exited(0)
+curl -s http://<server>:4000/health                 # → {"status":"ok","service":"api_gateway"}
+docker compose -f docker-compose.prod.yml exec postgres \
+  psql -U chat_user -d chat_platform -c "\dt" | tail -3   # 36 tables (auto-loaded on first volume init)
+```
+**4. Frontend** (deploys separately — not in this compose):
+```
+NEXT_PUBLIC_API_BASE_URL=http://<server>:4000
+NEXT_PUBLIC_REALTIME_URL=ws://<server>:4000/socket
+```
+**5. First-login smoke test:** request OTP (`POST /api/v1/auth/otp/request` with the phone) → **receive the SMS**
+→ verify (`/api/v1/auth/otp/verify`) → create a conversation → send a message. The OTP send happens in the
+**auth** container (SMSGatewayHub); `docker compose logs auth` shows the result (`ErrorCode 000` = sent).
+
+**Going past a LAN/IP test (production):** put **Caddy/nginx** in front terminating HTTPS → `gateway:4000`, set
+`PHX_HOST=<domain>` + `WEB_ORIGIN=https://<web-host>` in `.env`, and point the frontend at `https://<domain>` +
+`wss://<domain>/socket`. Change the MinIO root creds from `minioadmin` (they're compose defaults) for anything
+beyond a private test.
+
 ## Hosting plan (recommended)
 
 - **Backend:** Fly.io running the umbrella release (`MIX_ENV=prod mix release chat_platform`), websockets supported.

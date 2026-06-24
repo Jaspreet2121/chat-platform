@@ -2,6 +2,23 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-06-24] Deploy 3b — self-hosted host config (.env-driven) + runbook
+
+- **Context:** with both code blockers closed (schema-load + OTP delivery), the only gaps to a self-hosted run
+  were host-specific values hardcoded in the compose (`PHX_HOST: localhost`) and the SMS envs not wired.
+- **Decision — make host config `.env`-driven, no compose edits per deploy:** `PHX_HOST: ${PHX_HOST:-localhost}`
+  + `WEB_ORIGIN: ${WEB_ORIGIN:-}` in the `x-secrets` anchor ([docker-compose.prod.yml:21](../../docker-compose.prod.yml#L21));
+  the 6 SMS envs (`OTP_SMS_DELIVERY_ENABLED` default false + `SMS_GATEWAY_HUB_*`/`SMS_ENTITY_ID`/`SMS_TEMPLATE_LOGIN_ID`)
+  added to the **auth** container only — auth_service owns the OTP request path; the gateway proxies over HTTP and
+  its release doesn't even include auth_service, so SMS config there would be dead. All from `.env`, nothing
+  hardcoded.
+- **Decision — self-hosted runbook in DEPLOYMENT.md** (server prereqs, `.env` template, `up -d --build`, verify,
+  frontend URLs, first-login smoke test, TLS-proxy note, DLT-6-digit + key-rotation pre-flight). Schema auto-loads
+  via the postgres initdb mount (load_schema is the Fly/managed-PG path, moot for compose).
+- **Status:** Compose config valid with a sample `.env` (PHX_HOST interpolates across all 8 services; SMS envs on
+  auth, NOT gateway — verified). `mix compile --warnings-as-errors` clean; plain `mix test` **281/91** unchanged
+  (config + docs only). Stack is deploy-ready; the operator provisions a box, fills `.env`, `up -d`, logs in.
+
 ## [2026-06-24] OTP delivery via SMSGatewayHub (DLT) — last login blocker closed
 
 - **Context:** the readiness check flagged TWO deploy-3b blockers — schema-load (closed prior) and **OTP
