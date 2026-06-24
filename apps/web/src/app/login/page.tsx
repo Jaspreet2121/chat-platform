@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { requestOtp, verifyOtp } from "@/lib/api";
 import { hasAccessToken, setSessionTokens } from "@/lib/session";
@@ -15,9 +15,12 @@ export default function LoginPage() {
   const [isVerifying, setIsVerifying] = useState(false);
 
   const deviceId = useMemo(() => "web-browser", []);
+  // One-shot guard: redirect to /chat at most once per mount (defense in depth against any cycle).
+  const hasRedirectedRef = useRef(false);
 
   useEffect(() => {
-    if (hasAccessToken()) {
+    if (hasAccessToken() && !hasRedirectedRef.current) {
+      hasRedirectedRef.current = true;
       router.replace("/chat");
     }
   }, [router]);

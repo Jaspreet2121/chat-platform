@@ -46,6 +46,9 @@ export default function ChatPage() {
   const socketRef = useRef<Socket | null>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // One-shot guard: a redirect to /login fires at most once per mount, so no re-trigger can hammer
+  // history.replaceState into the browser's "more than 100 times per 10 seconds" SecurityError.
+  const hasRedirectedRef = useRef(false);
 
   const [session, setSession] = useState<Session | null>(null);
   const [currentProfile, setCurrentProfile] = useState<UserProfile | null>(null);
@@ -91,7 +94,16 @@ export default function ChatPage() {
         setSelectedConversationId(loadedConversations[0]?.conversation_id ?? "");
       } catch (error) {
         setStatus(error instanceof Error ? error.message : "Open /login first.");
-        router.replace("/login");
+        // Clear the (likely stale/expired) token BEFORE redirecting so the /login presence-guard
+        // won't bounce us straight back here — that ping-pong was the replaceState loop. The clear is
+        // unconditional: request() throws a plain Error without the HTTP status, so we can't cheaply
+        // tell a 401 from a transient network/500 blip. A blip just lands the user on /login
+        // (recoverable); a real auth failure is handled correctly. (Gating on 401 would need api.ts.)
+        clearSessionTokens();
+        if (!hasRedirectedRef.current) {
+          hasRedirectedRef.current = true;
+          router.replace("/login");
+        }
       } finally {
         setIsLoading(false);
       }
