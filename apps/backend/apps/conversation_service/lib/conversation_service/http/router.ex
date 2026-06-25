@@ -38,6 +38,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Participants.remove_participant(body(conn)))
   end
 
+  get "/internal/health" do
+    send_result(conn, {:ok, %{service: "conversation", status: "ok", deps: %{}}})
+  end
+
   match _ do
     send_resp(conn, 404, Jason.encode!(%{"error" => "not_found"}))
   end

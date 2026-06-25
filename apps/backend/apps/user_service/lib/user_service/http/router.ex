@@ -29,6 +29,10 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Profiles.update_current_profile(body(conn)))
   end
 
+  get "/internal/health" do
+    send_result(conn, {:ok, %{service: "user", status: "ok", deps: %{}}})
+  end
+
   match _ do
     send_resp(conn, 404, Jason.encode!(%{"error" => "not_found"}))
   end

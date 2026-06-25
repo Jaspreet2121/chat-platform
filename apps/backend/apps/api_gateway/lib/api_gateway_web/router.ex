@@ -93,5 +93,7 @@ defmodule ApiGatewayWeb.Router do
     post "/reports/:id/status", AdminModerationController, :update_report
 
     get "/audit", AdminModerationController, :list_audit
+
+    get "/health", AdminHealthController, :show
   end
 end

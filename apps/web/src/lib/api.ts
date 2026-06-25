@@ -356,6 +356,20 @@ export function getAdminAudit(page = 1) {
   return request<AuditPage>(`/api/v1/admin/audit?page=${page}`);
 }
 
+// --- Admin health (read-only; behind RequireAdmin) ---------------------------------------------
+export type DepHealth = { status: string; latency_ms?: number | null; error?: string | null };
+export type ServiceHealth = { name: string; status: string };
+export type SystemHealth = {
+  status: "healthy" | "degraded" | "down" | string;
+  checked_at: string;
+  dependencies: { postgres: DepHealth; kafka: DepHealth; minio: DepHealth };
+  services: ServiceHealth[];
+};
+
+export function getAdminHealth() {
+  return request<SystemHealth>("/api/v1/admin/health");
+}
+
 export function getPublicProfile(userId: string) {
   return request<UserProfile>(`/api/v1/users/${encodeURIComponent(userId)}/profile`);
 }

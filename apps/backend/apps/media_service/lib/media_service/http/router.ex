@@ -29,6 +29,17 @@ defmodule MediaService.HTTP.Router do
     send_result(conn, MediaService.Media.get_download_url(body(conn)))
   end
 
+  # Service health: own liveness + the dependency this service owns (MinIO object storage).
+  get "/internal/health" do
+    endpoint =
+      Application.get_env(:media_service, :minio, [])
+      |> Keyword.get(:endpoint, "http://minio:9000")
+
+    deps = %{minio: SharedInfra.Health.http_ok(endpoint <> "/minio/health/ready")}
+
+    send_result(conn, {:ok, %{service: "media", status: "ok", deps: deps}})
+  end
+
   match _ do
     send_resp(conn, 404, Jason.encode!(%{"error" => "not_found"}))
   end

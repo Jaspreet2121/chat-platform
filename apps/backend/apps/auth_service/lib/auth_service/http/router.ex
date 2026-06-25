@@ -75,6 +75,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Moderation.list_audit(body(conn)))
   end
 
+  get "/internal/health" do
+    send_result(conn, {:ok, %{service: "auth", status: "ok", deps: %{}}})
+  end
+
   match _ do
     send_resp(conn, 404, Jason.encode!(%{"error" => "not_found"}))
   end

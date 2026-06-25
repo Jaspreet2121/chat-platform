@@ -70,6 +70,16 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, {:ok, MessageService.Analytics.timeseries(days)})
   end
 
+  # Service health: own liveness + the dependencies this service owns (Postgres store + Kafka).
+  get "/internal/health" do
+    deps = %{
+      postgres: SharedInfra.Health.postgres(MessageService.Repo),
+      kafka: SharedInfra.Health.kafka(System.get_env("KAFKA_BROKERS") || "localhost:9092")
+    }
+
+    send_result(conn, {:ok, %{service: "message", status: "ok", deps: deps}})
+  end
+
   match _ do
     send_resp(conn, 404, Jason.encode!(%{"error" => "not_found"}))
   end
