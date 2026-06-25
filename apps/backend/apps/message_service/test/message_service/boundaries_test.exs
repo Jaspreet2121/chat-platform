@@ -63,8 +63,17 @@ defmodule MessageService.BoundariesTest do
   end
 
   test "Reactions and Permissions boundaries return placeholders" do
-    assert {:ok, reaction} = MessageService.Reactions.add_reaction(%{"reaction" => "heart"})
-    assert reaction.reaction == "heart"
+    # Persistence off (default): add_reaction echoes the message's aggregate shape with no rows.
+    assert {:ok, reaction} =
+             MessageService.Reactions.add_reaction(%{
+               "conversation_id" => "conv_123",
+               "message_id" => "msg_123",
+               "user_id" => "user_123",
+               "emoji" => "❤️"
+             })
+
+    assert reaction.message_id == "msg_123"
+    assert reaction.reactions == []
 
     assert {:ok, permission} = MessageService.Permissions.authorize(%{})
     assert permission.authorized == true

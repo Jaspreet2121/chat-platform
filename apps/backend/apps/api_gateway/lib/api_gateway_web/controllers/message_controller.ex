@@ -72,7 +72,10 @@ defmodule ApiGatewayWeb.MessageController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          :ok <- authorize_membership(conversation_id, session.user_id),
-         {:ok, response} <- SharedInfra.MessageClient.list_messages(params) do
+         {:ok, response} <-
+           params
+           |> Map.put("viewer_user_id", session.user_id)
+           |> SharedInfra.MessageClient.list_messages() do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
@@ -81,6 +84,60 @@ defmodule ApiGatewayWeb.MessageController do
       {:error, :conversation_unavailable} -> service_unavailable(conn)
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
+    end
+  end
+
+  # Set/change the caller's reaction on a message (WhatsApp one-per-user). Members only.
+  def react(conn, %{"conversation_id" => conversation_id, "message_id" => message_id} = params) do
+    with {:ok, emoji} <- require_emoji(params),
+         {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- authorize_membership(conversation_id, session.user_id),
+         {:ok, response} <-
+           SharedInfra.MessageClient.add_reaction(%{
+             "conversation_id" => conversation_id,
+             "message_id" => message_id,
+             "user_id" => session.user_id,
+             "emoji" => emoji
+           }) do
+      json(conn, response)
+    else
+      {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_membership_forbidden} -> forbidden(conn)
+      _ -> invalid_request(conn)
+    end
+  end
+
+  # Remove the caller's reaction from a message.
+  def unreact(conn, %{"conversation_id" => conversation_id, "message_id" => message_id}) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- authorize_membership(conversation_id, session.user_id),
+         {:ok, response} <-
+           SharedInfra.MessageClient.remove_reaction(%{
+             "message_id" => message_id,
+             "user_id" => session.user_id
+           }) do
+      json(conn, response)
+    else
+      {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_membership_forbidden} -> forbidden(conn)
+      _ -> invalid_request(conn)
+    end
+  end
+
+  defp require_emoji(params) do
+    case Map.get(params, "emoji") do
+      emoji when is_binary(emoji) and emoji != "" -> {:ok, emoji}
+      _ -> {:error, :invalid_request}
     end
   end
 

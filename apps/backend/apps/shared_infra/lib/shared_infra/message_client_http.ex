@@ -54,6 +54,12 @@ defmodule SharedInfra.MessageClientHttp do
   @impl true
   def admin_delete_message(attrs), do: post("/internal/messages/admin_delete", attrs)
 
+  @impl true
+  def add_reaction(attrs), do: post("/internal/reactions/add", attrs)
+
+  @impl true
+  def remove_reaction(attrs), do: post("/internal/reactions/remove", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs,
       unavailable: @unavailable,

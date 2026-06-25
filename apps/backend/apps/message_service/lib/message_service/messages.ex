@@ -358,7 +358,10 @@ defmodule MessageService.Messages do
       # Read-receipt aggregate surfaced on load so ticks survive reload (defaults to 0 on the
       # placeholder / non-persisted paths that don't carry receipts).
       read_by_count: Map.get(message, :read_by_count, 0),
-      delivered_by_count: Map.get(message, :delivered_by_count, 0)
+      delivered_by_count: Map.get(message, :delivered_by_count, 0),
+      # Reaction aggregate (emoji → count) + the viewer's own reaction, surfaced on load like receipts.
+      reactions: Map.get(message, :reactions, []),
+      my_reaction: Map.get(message, :my_reaction)
     }
   end
 

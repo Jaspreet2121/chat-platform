@@ -90,6 +90,15 @@ export type Message = {
   // sent/delivered/read ticks on own messages; survive reload because they come from the timeline.
   read_by_count?: number;
   delivered_by_count?: number;
+  // Reaction aggregate surfaced on load (WhatsApp model): per-emoji counts + the viewer's own reaction
+  // (one per user, changeable). Patched live via the realtime `reaction_updated` event.
+  reactions?: ReactionCount[];
+  my_reaction?: string | null;
+};
+
+export type ReactionCount = {
+  emoji: string;
+  count: number;
 };
 
 export type MediaUpload = {
@@ -521,6 +530,31 @@ export function deleteMessage(conversationId: string, messageId: string) {
     `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(
       messageId
     )}`,
+    {
+      method: "DELETE"
+    }
+  );
+}
+
+// REST fallback for reactions when the realtime channel is down (the socket push is the primary path).
+// Both return the message's new aggregate so the caller can patch the bubble.
+export function reactToMessage(conversationId: string, messageId: string, emoji: string) {
+  return request<{ message_id: string; reactions: ReactionCount[] }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(
+      messageId
+    )}/reactions`,
+    {
+      method: "POST",
+      body: JSON.stringify({ emoji })
+    }
+  );
+}
+
+export function removeReaction(conversationId: string, messageId: string) {
+  return request<{ message_id: string; reactions: ReactionCount[] }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(
+      messageId
+    )}/reactions`,
     {
       method: "DELETE"
     }

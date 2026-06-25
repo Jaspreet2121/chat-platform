@@ -417,6 +417,73 @@ defmodule RealtimeGateway.ChannelsTest do
     assert broadcast.status == "deleted"
   end
 
+  test "reaction:set persists and broadcasts reaction_updated to other clients" do
+    Application.put_env(:message_service, :message_persistence, true)
+    Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
+    start_in_memory_store!()
+    MessageStore.InMemoryAdapter.reset()
+
+    {:ok, _join_reply, socket} =
+      RealtimeGateway.UserSocket
+      |> socket("user_socket:user_123", %{current_user_id: "user_123", device_id: "dev_123"})
+      |> subscribe_and_join(RealtimeGateway.ConversationChannel, "conversation:conv_123", %{})
+
+    create_ref = push(socket, "message:create", %{"message_type" => "text", "body" => "React me"})
+    assert_reply create_ref, :ok, created
+
+    set_ref =
+      push(socket, "reaction:set", %{"message_id" => created.message_id, "emoji" => "👍"})
+
+    assert_reply set_ref, :ok, reply
+    assert reply.message_id == created.message_id
+    assert reply.reactions == [%{emoji: "👍", count: 1}]
+
+    assert_broadcast "reaction_updated", broadcast
+    assert broadcast.message_id == created.message_id
+    assert broadcast.reactions == [%{emoji: "👍", count: 1}]
+  end
+
+  test "reaction:remove broadcasts the cleared aggregate" do
+    Application.put_env(:message_service, :message_persistence, true)
+    Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
+    start_in_memory_store!()
+    MessageStore.InMemoryAdapter.reset()
+
+    {:ok, _join_reply, socket} =
+      RealtimeGateway.UserSocket
+      |> socket("user_socket:user_123", %{current_user_id: "user_123", device_id: "dev_123"})
+      |> subscribe_and_join(RealtimeGateway.ConversationChannel, "conversation:conv_123", %{})
+
+    create_ref = push(socket, "message:create", %{"message_type" => "text", "body" => "React me"})
+    assert_reply create_ref, :ok, created
+
+    set_ref =
+      push(socket, "reaction:set", %{"message_id" => created.message_id, "emoji" => "❤️"})
+
+    assert_reply set_ref, :ok, _set
+    assert_broadcast "reaction_updated", _first
+
+    remove_ref = push(socket, "reaction:remove", %{"message_id" => created.message_id})
+    assert_reply remove_ref, :ok, reply
+    assert reply.reactions == []
+
+    assert_broadcast "reaction_updated", broadcast
+    assert broadcast.message_id == created.message_id
+    assert broadcast.reactions == []
+  end
+
+  test "rejects invalid reaction:set event without emoji" do
+    {:ok, _join_reply, socket} =
+      RealtimeGateway.UserSocket
+      |> socket("user_socket:user_123", %{current_user_id: "user_123", device_id: "dev_123"})
+      |> subscribe_and_join(RealtimeGateway.ConversationChannel, "conversation:conv_123", %{})
+
+    ref = push(socket, "reaction:set", %{"message_id" => "msg_123"})
+
+    assert_reply ref, :error, reply
+    assert reply.code == "realtime.invalid_event"
+  end
+
   test "rejects invalid message:update event without body" do
     {:ok, _join_reply, socket} =
       RealtimeGateway.UserSocket

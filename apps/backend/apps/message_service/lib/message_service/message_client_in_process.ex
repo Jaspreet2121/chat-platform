@@ -10,6 +10,7 @@ defmodule MessageService.MessageClientInProcess do
 
   alias MessageService.Analytics
   alias MessageService.Messages
+  alias MessageService.Reactions
   alias MessageService.Receipts
   alias MessageService.Timeline
 
@@ -49,4 +50,10 @@ defmodule MessageService.MessageClientInProcess do
 
   @impl true
   def admin_delete_message(attrs), do: Messages.admin_delete_message(attrs)
+
+  @impl true
+  def add_reaction(attrs), do: Reactions.add_reaction(attrs)
+
+  @impl true
+  def remove_reaction(attrs), do: Reactions.remove_reaction(attrs)
 end

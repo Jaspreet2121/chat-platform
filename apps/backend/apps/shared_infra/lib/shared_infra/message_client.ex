@@ -30,6 +30,8 @@ defmodule SharedInfra.MessageClient do
   @callback analytics_overview(attrs()) :: result()
   @callback analytics_timeseries(attrs()) :: result()
   @callback admin_delete_message(attrs()) :: result()
+  @callback add_reaction(attrs()) :: result()
+  @callback remove_reaction(attrs()) :: result()
 
   def create_message(attrs), do: adapter().create_message(attrs)
   def send_message(attrs), do: adapter().send_message(attrs)
@@ -43,6 +45,8 @@ defmodule SharedInfra.MessageClient do
   def analytics_overview(attrs), do: adapter().analytics_overview(attrs)
   def analytics_timeseries(attrs), do: adapter().analytics_timeseries(attrs)
   def admin_delete_message(attrs), do: adapter().admin_delete_message(attrs)
+  def add_reaction(attrs), do: adapter().add_reaction(attrs)
+  def remove_reaction(attrs), do: adapter().remove_reaction(attrs)
 
   @doc "The configured Message client adapter (default `MessageService.MessageClientInProcess`)."
   def adapter do

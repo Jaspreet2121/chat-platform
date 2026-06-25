@@ -19,6 +19,8 @@ defmodule MessageService.MessageStore do
   @callback delete_message(message_attrs()) :: message_result()
   @callback mark_delivered(message_attrs()) :: message_result()
   @callback mark_read(message_attrs()) :: message_result()
+  @callback upsert_reaction(message_attrs()) :: message_result()
+  @callback remove_reaction(message_attrs()) :: message_result()
 
   def put_message(attrs), do: adapter().put_message(attrs)
   def get_message(attrs), do: adapter().get_message(attrs)
@@ -27,6 +29,8 @@ defmodule MessageService.MessageStore do
   def delete_message(attrs), do: adapter().delete_message(attrs)
   def mark_delivered(attrs), do: adapter().mark_delivered(attrs)
   def mark_read(attrs), do: adapter().mark_read(attrs)
+  def upsert_reaction(attrs), do: adapter().upsert_reaction(attrs)
+  def remove_reaction(attrs), do: adapter().remove_reaction(attrs)
 
   defp adapter do
     Application.get_env(
@@ -67,6 +71,12 @@ defmodule MessageService.MessageStore.QueryPlanAdapter do
 
   @impl true
   def mark_read(_attrs), do: {:error, :message_store_unavailable}
+
+  @impl true
+  def upsert_reaction(_attrs), do: {:error, :message_store_unavailable}
+
+  @impl true
+  def remove_reaction(_attrs), do: {:error, :message_store_unavailable}
 end
 
 defmodule MessageService.MessageStore.ScyllaAdapter do
@@ -162,6 +172,13 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   def mark_read(attrs) do
     put_receipt(Map.merge(attrs, %{"status" => "read"}))
   end
+
+  # Reactions aren't implemented for the Scylla store yet — Postgres is the durable backend.
+  @impl true
+  def upsert_reaction(_attrs), do: {:error, :message_store_unavailable}
+
+  @impl true
+  def remove_reaction(_attrs), do: {:error, :message_store_unavailable}
 
   defp put_receipt(attrs) do
     plan = MessageReceipts.upsert_receipt_plan(attrs)
@@ -277,8 +294,10 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
     conversation_id = Map.fetch!(attrs, "conversation_id")
     bucket_date = Map.fetch!(attrs, "bucket_date")
     limit = Map.get(attrs, "limit", 50)
+    viewer = Map.get(attrs, "viewer_user_id")
 
-    {all_messages, receipts} = Agent.get(@name, fn state -> {state.messages, state.receipts} end)
+    {all_messages, receipts, reactions} =
+      Agent.get(@name, fn state -> {state.messages, state.receipts, state.reactions} end)
 
     messages =
       all_messages
@@ -289,9 +308,26 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
         message
         |> Map.drop([:bucket_date])
         |> Map.merge(receipt_counts(receipts, message.message_id))
+        |> Map.merge(reaction_summary(reactions, message.message_id, viewer))
       end)
 
     {:ok, %{conversation_id: conversation_id, messages: messages, next_cursor: nil}}
+  end
+
+  # Per-message reaction aggregate: emoji → count (desc), plus the viewer's own emoji (or nil).
+  defp reaction_summary(reactions, message_id, viewer) do
+    for_message = Enum.filter(reactions, &(&1.message_id == message_id))
+
+    summary =
+      for_message
+      |> Enum.frequencies_by(& &1.emoji)
+      |> Enum.map(fn {emoji, count} -> %{emoji: emoji, count: count} end)
+      |> Enum.sort_by(fn %{count: c, emoji: e} -> {-c, e} end)
+
+    my =
+      Enum.find_value(for_message, nil, fn r -> if r.user_id == viewer, do: r.emoji end)
+
+    %{reactions: summary, my_reaction: my}
   end
 
   # Per-message read/delivered aggregate (others who have read/received it). Each receipt row is a
@@ -346,6 +382,55 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
     ensure_started()
     receipt = upsert_receipt(attrs, "read", attrs["updated_at"])
     {:ok, receipt}
+  end
+
+  @impl true
+  def upsert_reaction(attrs) do
+    ensure_started()
+    message_id = attrs["message_id"]
+    user_id = attrs["user_id"]
+
+    Agent.update(@name, fn state ->
+      others =
+        Enum.reject(state.reactions, &(&1.message_id == message_id and &1.user_id == user_id))
+
+      reaction = %{
+        conversation_id: attrs["conversation_id"],
+        message_id: message_id,
+        user_id: user_id,
+        emoji: attrs["emoji"]
+      }
+
+      %{state | reactions: [reaction | others]}
+    end)
+
+    {:ok, %{message_id: message_id, reactions: reactions_for(message_id)}}
+  end
+
+  @impl true
+  def remove_reaction(attrs) do
+    ensure_started()
+    message_id = attrs["message_id"]
+    user_id = attrs["user_id"]
+
+    Agent.update(@name, fn state ->
+      %{
+        state
+        | reactions:
+            Enum.reject(state.reactions, &(&1.message_id == message_id and &1.user_id == user_id))
+      }
+    end)
+
+    {:ok, %{message_id: message_id, reactions: reactions_for(message_id)}}
+  end
+
+  defp reactions_for(message_id) do
+    @name
+    |> Agent.get(& &1.reactions)
+    |> Enum.filter(&(&1.message_id == message_id))
+    |> Enum.frequencies_by(& &1.emoji)
+    |> Enum.map(fn {emoji, count} -> %{emoji: emoji, count: count} end)
+    |> Enum.sort_by(fn %{count: c, emoji: e} -> {-c, e} end)
   end
 
   @impl true
@@ -480,7 +565,7 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
     |> Map.put(:updated_at, timestamp)
   end
 
-  defp initial_state, do: %{messages: [], receipts: []}
+  defp initial_state, do: %{messages: [], receipts: [], reactions: []}
 
   defp ensure_started do
     case Process.whereis(@name) do
@@ -511,6 +596,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
 
   alias MessageService.Repo
   alias MessageService.Schemas.Message
+  alias MessageService.Schemas.MessageReaction
   alias MessageService.Schemas.MessageReceipt
 
   @impl true
@@ -536,6 +622,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   def list_messages(attrs) do
     conversation_id = attr(attrs, "conversation_id")
     limit = attr(attrs, "limit") || 50
+    viewer = attr(attrs, "viewer_user_id")
 
     rows =
       Message
@@ -544,7 +631,9 @@ defmodule MessageService.MessageStore.PostgresAdapter do
       |> limit(^limit)
       |> Repo.all()
 
-    counts = receipt_counts(conversation_id, Enum.map(rows, & &1.message_id))
+    message_ids = Enum.map(rows, & &1.message_id)
+    counts = receipt_counts(conversation_id, message_ids)
+    reactions = reaction_summaries(message_ids, viewer)
 
     messages =
       Enum.map(rows, fn message ->
@@ -553,11 +642,44 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         |> Map.merge(
           Map.get(counts, message.message_id, %{read_by_count: 0, delivered_by_count: 0})
         )
+        |> Map.merge(Map.get(reactions, message.message_id, %{reactions: [], my_reaction: nil}))
       end)
 
     {:ok, %{conversation_id: conversation_id, messages: messages, next_cursor: nil}}
   rescue
     Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  # Batched reaction aggregate for the listed messages: emoji → count per message (one query) + the
+  # viewer's own reaction per message (one query). No N+1.
+  defp reaction_summaries([], _viewer), do: %{}
+
+  defp reaction_summaries(message_ids, viewer) do
+    counts =
+      MessageReaction
+      |> where([r], r.message_id in ^message_ids)
+      |> group_by([r], [r.message_id, r.emoji])
+      |> select([r], {r.message_id, r.emoji, count(r.user_id)})
+      |> Repo.all()
+      |> Enum.group_by(fn {mid, _e, _c} -> mid end, fn {_mid, e, c} -> %{emoji: e, count: c} end)
+      |> Map.new(fn {mid, list} ->
+        {mid, Enum.sort_by(list, fn %{count: c, emoji: e} -> {-c, e} end)}
+      end)
+
+    mine =
+      if viewer do
+        MessageReaction
+        |> where([r], r.message_id in ^message_ids and r.user_id == ^viewer)
+        |> select([r], {r.message_id, r.emoji})
+        |> Repo.all()
+        |> Map.new()
+      else
+        %{}
+      end
+
+    Map.new(message_ids, fn mid ->
+      {mid, %{reactions: Map.get(counts, mid, []), my_reaction: Map.get(mine, mid)}}
+    end)
   end
 
   # Batched read/delivered aggregate for the listed messages in ONE query (no N+1). COUNT(column)
@@ -622,6 +744,57 @@ defmodule MessageService.MessageStore.PostgresAdapter do
 
   @impl true
   def mark_read(attrs), do: upsert_receipt(attrs, "read")
+
+  @impl true
+  def upsert_reaction(attrs) do
+    now = DateTime.utc_now()
+    message_id = attr(attrs, "message_id")
+    emoji = attr(attrs, "emoji")
+
+    %MessageReaction{}
+    |> MessageReaction.changeset(%{
+      "conversation_id" => attr(attrs, "conversation_id"),
+      "message_id" => message_id,
+      "user_id" => attr(attrs, "user_id"),
+      "emoji" => emoji,
+      "created_at" => now,
+      "updated_at" => now
+    })
+    |> Repo.insert(
+      on_conflict: [set: [emoji: emoji, updated_at: now]],
+      conflict_target: [:message_id, :user_id]
+    )
+    |> case do
+      {:ok, _reaction} -> {:ok, %{message_id: message_id, reactions: reactions_for(message_id)}}
+      {:error, _changeset} -> {:error, :message_invalid}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  @impl true
+  def remove_reaction(attrs) do
+    message_id = attr(attrs, "message_id")
+    user_id = attr(attrs, "user_id")
+
+    MessageReaction
+    |> where([r], r.message_id == ^message_id and r.user_id == ^user_id)
+    |> Repo.delete_all()
+
+    {:ok, %{message_id: message_id, reactions: reactions_for(message_id)}}
+  rescue
+    Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  defp reactions_for(message_id) do
+    MessageReaction
+    |> where([r], r.message_id == ^message_id)
+    |> group_by([r], r.emoji)
+    |> select([r], {r.emoji, count(r.user_id)})
+    |> Repo.all()
+    |> Enum.map(fn {emoji, count} -> %{emoji: emoji, count: count} end)
+    |> Enum.sort_by(fn %{count: c, emoji: e} -> {-c, e} end)
+  end
 
   defp fetch(attrs) do
     Repo.get(Message, attr(attrs, "message_id"))

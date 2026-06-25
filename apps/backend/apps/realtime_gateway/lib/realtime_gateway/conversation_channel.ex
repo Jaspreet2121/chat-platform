@@ -91,6 +91,60 @@ defmodule RealtimeGateway.ConversationChannel do
     delete_message(payload, socket)
   end
 
+  def handle_in("reaction:set", payload, socket) do
+    set_reaction(payload, socket)
+  end
+
+  def handle_in("reaction:remove", payload, socket) do
+    remove_reaction(payload, socket)
+  end
+
+  defp set_reaction(payload, socket) do
+    with :ok <- validate_reaction_set_payload(payload),
+         {:ok, user_id} <- current_user_id(socket),
+         {:ok, response} <-
+           SharedInfra.MessageClient.add_reaction(%{
+             "conversation_id" => socket.assigns.conversation_id,
+             "message_id" => payload["message_id"],
+             "user_id" => user_id,
+             "emoji" => payload["emoji"]
+           }) do
+      broadcast_reaction(socket, response)
+      {:reply, {:ok, response}, socket}
+    else
+      {:error, :missing_user} -> unauthorized_reply(socket)
+      {:error, :message_unavailable} -> unavailable_reply(socket)
+      _ -> invalid_event_reply(socket)
+    end
+  end
+
+  defp remove_reaction(payload, socket) do
+    with :ok <- validate_reaction_remove_payload(payload),
+         {:ok, user_id} <- current_user_id(socket),
+         {:ok, response} <-
+           SharedInfra.MessageClient.remove_reaction(%{
+             "conversation_id" => socket.assigns.conversation_id,
+             "message_id" => payload["message_id"],
+             "user_id" => user_id
+           }) do
+      broadcast_reaction(socket, response)
+      {:reply, {:ok, response}, socket}
+    else
+      {:error, :missing_user} -> unauthorized_reply(socket)
+      {:error, :message_unavailable} -> unavailable_reply(socket)
+      _ -> invalid_event_reply(socket)
+    end
+  end
+
+  # Broadcast the authoritative per-message aggregate to the OTHER tabs. The acting client patches
+  # itself from the {:ok, response} reply, so broadcast_from (sender-excluded) avoids a double-apply.
+  defp broadcast_reaction(socket, response) do
+    broadcast_from(socket, "reaction_updated", %{
+      message_id: Map.get(response, :message_id) || Map.get(response, "message_id"),
+      reactions: Map.get(response, :reactions) || Map.get(response, "reactions") || []
+    })
+  end
+
   defp create_message(payload, socket) do
     with :ok <- validate_message_payload(payload),
          {:ok, sender_user_id} <- current_user_id(socket),
@@ -264,6 +318,20 @@ defmodule RealtimeGateway.ConversationChannel do
   end
 
   defp validate_delete_payload(_payload), do: {:error, :invalid_event}
+
+  defp validate_reaction_set_payload(%{"message_id" => message_id, "emoji" => emoji})
+       when is_binary(message_id) and message_id != "" and is_binary(emoji) and emoji != "" do
+    :ok
+  end
+
+  defp validate_reaction_set_payload(_payload), do: {:error, :invalid_event}
+
+  defp validate_reaction_remove_payload(%{"message_id" => message_id})
+       when is_binary(message_id) and message_id != "" do
+    :ok
+  end
+
+  defp validate_reaction_remove_payload(_payload), do: {:error, :invalid_event}
 
   defp current_user_id(socket) do
     user_id = Map.get(socket.assigns, :user_id) || Map.get(socket.assigns, :current_user_id)

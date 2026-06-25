@@ -61,6 +61,8 @@ defmodule ApiGatewayWeb.Router do
     delete "/:message_id", MessageController, :delete
     post "/:message_id/read", MessageController, :read
     post "/:message_id/delivered", MessageController, :delivered
+    post "/:message_id/reactions", MessageController, :react
+    delete "/:message_id/reactions", MessageController, :unreact
   end
 
   scope "/api/v1/media", ApiGatewayWeb do

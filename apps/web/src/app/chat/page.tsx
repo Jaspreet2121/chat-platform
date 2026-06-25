@@ -7,6 +7,7 @@ import {
   ConversationListItem,
   CreateMessageInput,
   Message,
+  ReactionCount,
   Session,
   UserProfile,
   completeMediaUpload,
@@ -20,7 +21,9 @@ import {
   getMe,
   getPublicProfile,
   listConversations,
-  listMessages
+  listMessages,
+  reactToMessage,
+  removeReaction
 } from "@/lib/api";
 import { clearSessionTokens } from "@/lib/session";
 import {
@@ -250,6 +253,18 @@ export default function ChatPage() {
                     }
                   : { ...item, delivered_by_count: delivered };
               })
+            );
+          }),
+          joinedChannel.onReactionUpdated((data) => {
+            if (!data?.message_id) return;
+            // Remote update: patch the per-emoji counts only. my_reaction reflects THIS viewer's own
+            // reaction, which a broadcast from another user never changes.
+            setMessages((current) =>
+              current.map((item) =>
+                item.message_id === data.message_id
+                  ? { ...item, reactions: data.reactions ?? [] }
+                  : item
+              )
             );
           })
         ];
@@ -521,6 +536,72 @@ export default function ChatPage() {
     }
   }
 
+  // Set/change my reaction (one per user). Optimistic: highlight + adjust counts instantly, then patch
+  // with the authoritative aggregate from the channel reply (or REST fallback). Revert on failure.
+  async function handleReact(messageId: string, emoji: string) {
+    const previous = messages.find((item) => item.message_id === messageId);
+    setMessages((current) =>
+      current.map((item) =>
+        item.message_id === messageId ? applyMyReaction(item, emoji) : item
+      )
+    );
+    try {
+      const result = (
+        channel
+          ? await channel.reactToMessage(messageId, emoji)
+          : await reactToMessage(selectedConversationId, messageId, emoji)
+      ) as { message_id?: string; reactions?: ReactionCount[] };
+      if (result?.reactions) {
+        setMessages((current) =>
+          current.map((item) =>
+            item.message_id === messageId
+              ? { ...item, reactions: result.reactions ?? [], my_reaction: emoji }
+              : item
+          )
+        );
+      }
+    } catch (error) {
+      if (previous) {
+        setMessages((current) =>
+          current.map((item) => (item.message_id === messageId ? previous : item))
+        );
+      }
+      setStatus(error instanceof Error ? error.message : "Reaction failed.");
+    }
+  }
+
+  async function handleRemoveReaction(messageId: string) {
+    const previous = messages.find((item) => item.message_id === messageId);
+    setMessages((current) =>
+      current.map((item) =>
+        item.message_id === messageId ? applyMyReaction(item, null) : item
+      )
+    );
+    try {
+      const result = (
+        channel
+          ? await channel.removeReaction(messageId)
+          : await removeReaction(selectedConversationId, messageId)
+      ) as { message_id?: string; reactions?: ReactionCount[] };
+      if (result?.reactions) {
+        setMessages((current) =>
+          current.map((item) =>
+            item.message_id === messageId
+              ? { ...item, reactions: result.reactions ?? [], my_reaction: null }
+              : item
+          )
+        );
+      }
+    } catch (error) {
+      if (previous) {
+        setMessages((current) =>
+          current.map((item) => (item.message_id === messageId ? previous : item))
+        );
+      }
+      setStatus(error instanceof Error ? error.message : "Reaction failed.");
+    }
+  }
+
   // Route message creation over the realtime channel when connected so other
   // clients receive `message_created` live (broadcast_from excludes the sender,
   // which inserts from this reply). Falls back to HTTP create when no socket.
@@ -749,6 +830,8 @@ export default function ChatPage() {
           onDelete={handleDeleteMessage}
           onReply={(m) => setReplyingTo(m)}
           onForward={(m) => setForwardingMessage(m)}
+          onReact={handleReact}
+          onRemoveReaction={handleRemoveReaction}
         />
 
         <Composer
@@ -820,4 +903,24 @@ function patchMessage(messages: Message[], patch: Message) {
   return messages.map((item) =>
     item.message_id === patch.message_id ? { ...item, ...patch } : item
   );
+}
+
+// Optimistic local recompute of a message's reaction aggregate for the acting user (one per user):
+// decrement my previous emoji, increment the new one (or none, for removal), drop zero counts, and
+// re-sort by count desc then emoji. Mirrors the server aggregate so there's no flicker on confirm.
+function applyMyReaction(message: Message, emoji: string | null): Message {
+  const previous = message.my_reaction ?? null;
+  if (previous === emoji) return message;
+
+  const counts = new Map<string, number>();
+  for (const reaction of message.reactions ?? []) counts.set(reaction.emoji, reaction.count);
+  if (previous) counts.set(previous, (counts.get(previous) ?? 1) - 1);
+  if (emoji) counts.set(emoji, (counts.get(emoji) ?? 0) + 1);
+
+  const reactions: ReactionCount[] = [...counts.entries()]
+    .filter(([, count]) => count > 0)
+    .map(([emojiKey, count]) => ({ emoji: emojiKey, count }))
+    .sort((a, b) => b.count - a.count || (a.emoji < b.emoji ? -1 : 1));
+
+  return { ...message, reactions, my_reaction: emoji };
 }

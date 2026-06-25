@@ -53,7 +53,9 @@ defmodule ApiGatewayWeb.MessageUnavailableMappingTest.MsgUnavailableStub do
         :mark_delivered,
         :analytics_overview,
         :analytics_timeseries,
-        :admin_delete_message
+        :admin_delete_message,
+        :add_reaction,
+        :remove_reaction
       ] do
     @impl true
     def unquote(fun)(_attrs), do: {:error, :message_unavailable}

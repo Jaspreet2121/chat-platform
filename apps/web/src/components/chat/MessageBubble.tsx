@@ -17,6 +17,9 @@ import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { formatTime, metadataString } from "./format";
 
+// WhatsApp-style quick reactions, shown as a bar at the top of the ⋯ menu.
+const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
+
 export type MessageBubbleProps = {
   message: Message;
   isOwn: boolean;
@@ -27,6 +30,10 @@ export type MessageBubbleProps = {
   onDelete: (messageId: string) => Promise<void>;
   onReply?: (message: Message) => void;
   onForward?: (message: Message) => void;
+  /** Set/change the caller's reaction (one per user). Available on own AND others' messages. */
+  onReact?: (messageId: string, emoji: string) => void;
+  /** Remove the caller's reaction. */
+  onRemoveReaction?: (messageId: string) => void;
 };
 
 export function MessageBubble({
@@ -37,7 +44,9 @@ export function MessageBubble({
   onEdit,
   onDelete,
   onReply,
-  onForward
+  onForward,
+  onReact,
+  onRemoveReaction
 }: MessageBubbleProps) {
   const isMedia = Boolean(message.media_id);
   const isDeleted = message.status === "deleted";
@@ -46,7 +55,20 @@ export function MessageBubble({
   const canDelete = isOwn && !isDeleted;
   const canReply = !isDeleted && Boolean(onReply);
   const canForward = !isDeleted && Boolean(onForward);
+  const canReact = !isDeleted && Boolean(onReact);
   const isForwarded = Boolean(message.metadata?.forwarded_from);
+
+  const reactions = message.reactions ?? [];
+  const myReaction = message.my_reaction ?? null;
+
+  // One reaction per user: tapping your current emoji removes it; tapping another sets/changes it.
+  function toggleReaction(emoji: string) {
+    if (myReaction === emoji) {
+      onRemoveReaction?.(message.message_id);
+    } else {
+      onReact?.(message.message_id, emoji);
+    }
+  }
 
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.body ?? "");
@@ -54,8 +76,9 @@ export function MessageBubble({
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
-  // Reply/forward are available on any non-deleted message; edit (own text) / delete (own) too.
-  const hasActions = !isEditing && (canReply || canForward || canEdit || canDelete);
+  // React/reply/forward are available on any non-deleted message; edit (own text) / delete (own) too.
+  const hasActions =
+    !isEditing && (canReact || canReply || canForward || canEdit || canDelete);
 
   // Close the actions popover on click-outside / Esc. Listeners attach only while open, AFTER the
   // opening click has fired, so opening the menu never immediately closes it.
@@ -208,6 +231,33 @@ export function MessageBubble({
           )}
         </div>
 
+        {reactions.length > 0 && (
+          <div className={cn("flex flex-wrap gap-1", isOwn ? "justify-end" : "justify-start")}>
+            {reactions.map((reaction) => {
+              const mine = myReaction === reaction.emoji;
+              return (
+                <button
+                  key={reaction.emoji}
+                  type="button"
+                  onClick={() => toggleReaction(reaction.emoji)}
+                  disabled={!canReact}
+                  aria-pressed={mine}
+                  aria-label={`${reaction.emoji} ${reaction.count}${mine ? ", your reaction — tap to remove" : ""}`}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors disabled:cursor-default",
+                    mine
+                      ? "border-brand bg-brand/15 text-fg"
+                      : "border-border bg-elevated text-muted enabled:hover:bg-border"
+                  )}
+                >
+                  <span className="text-sm leading-none">{reaction.emoji}</span>
+                  <span className="tabular-nums">{reaction.count}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         <div className={cn("flex items-center gap-2 px-1", isOwn ? "flex-row-reverse" : "flex-row")}>
           <span className="text-[11px] text-faint">
             {time}
@@ -232,8 +282,34 @@ export function MessageBubble({
               {menuOpen && (
                 <div
                   role="menu"
-                  className="absolute right-0 top-full z-30 mt-1 w-36 overflow-hidden rounded-lg border border-border bg-surface shadow-elevated animate-scale-in"
+                  className="absolute right-0 top-full z-30 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-surface shadow-elevated animate-scale-in"
                 >
+                  {canReact && (
+                    <div className="flex items-center justify-between gap-0.5 border-b border-border px-1.5 py-1.5">
+                      {QUICK_EMOJIS.map((emoji) => (
+                        <button
+                          key={emoji}
+                          role="menuitem"
+                          type="button"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            toggleReaction(emoji);
+                          }}
+                          aria-label={
+                            myReaction === emoji
+                              ? `Remove ${emoji} reaction`
+                              : `React ${emoji}`
+                          }
+                          className={cn(
+                            "rounded-md px-1.5 py-1 text-base leading-none transition-transform hover:scale-125",
+                            myReaction === emoji && "bg-brand/15"
+                          )}
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {canReply && (
                     <button
                       role="menuitem"

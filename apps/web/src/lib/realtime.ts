@@ -1,5 +1,5 @@
 import { Channel, Presence, Socket } from "phoenix";
-import type { Message } from "./api";
+import type { Message, ReactionCount } from "./api";
 import { getAccessToken } from "./session";
 
 const defaultRealtimeUrl = "ws://localhost:4000/socket";
@@ -21,6 +21,10 @@ export type ConversationChannel = {
   /** Mark a message read (durable: the server persists the receipt, then broadcasts receipt_updated). */
   markRead: (messageId: string) => Promise<unknown>;
   markDelivered: (messageId: string) => Promise<unknown>;
+  /** Set/change the caller's reaction on a message (server persists, then broadcasts reaction_updated). */
+  reactToMessage: (messageId: string, emoji: string) => Promise<unknown>;
+  /** Remove the caller's reaction from a message. */
+  removeReaction: (messageId: string) => Promise<unknown>;
   onMessageCreated: (callback: (message: Message) => void) => () => void;
   onMessageUpdated: (callback: (message: Message) => void) => () => void;
   onMessageDeleted: (callback: (message: Message) => void) => () => void;
@@ -34,7 +38,14 @@ export type ConversationChannel = {
   onPresence: (callback: (onlineUserIds: string[]) => void) => () => void;
   /** Live receipt updates broadcast when another participant marks a message read/delivered. */
   onReceipt: (callback: (payload: ReceiptPayload) => void) => () => void;
+  /** Live reaction aggregate updates broadcast when another participant reacts/unreacts. */
+  onReactionUpdated: (callback: (payload: ReactionUpdatedPayload) => void) => () => void;
   leave: () => void;
+};
+
+export type ReactionUpdatedPayload = {
+  message_id: string;
+  reactions: ReactionCount[];
 };
 
 export type TypingPayload = {
@@ -103,6 +114,10 @@ export function joinConversationChannel(
           markRead: (messageId) => push(channel, "message_read", { message_id: messageId }),
           markDelivered: (messageId) =>
             push(channel, "message_delivered", { message_id: messageId }),
+          reactToMessage: (messageId, emoji) =>
+            push(channel, "reaction:set", { message_id: messageId, emoji }),
+          removeReaction: (messageId) =>
+            push(channel, "reaction:remove", { message_id: messageId }),
           onMessageCreated: (callback) => subscribe(channel, "message_created", callback),
           onMessageUpdated: (callback) => subscribe(channel, "message_updated", callback),
           onMessageDeleted: (callback) => subscribe(channel, "message_deleted", callback),
@@ -115,6 +130,8 @@ export function joinConversationChannel(
             return () => presence.onSync(() => {});
           },
           onReceipt: (callback) => subscribe(channel, "receipt_updated", callback),
+          onReactionUpdated: (callback) =>
+            subscribe(channel, "reaction_updated", callback),
           leave: () => channel.leave()
         });
       })
