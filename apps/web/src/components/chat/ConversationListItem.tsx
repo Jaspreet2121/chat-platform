@@ -13,8 +13,13 @@ export function ConversationListItem({
   isSelected,
   onSelect
 }: ConversationListItemProps) {
-  const title = conversation.title || conversation.conversation_id;
-  const subtitle = conversation.last_message_preview || conversation.type;
+  const isDirect = conversation.type === "direct";
+  // Direct chats are stored with the peer's name as the title (no participant data on list items, so
+  // this is the best available label — the header derives the live peer from the loaded detail).
+  const title =
+    conversation.title || (isDirect ? "Direct message" : conversation.conversation_id);
+  const subtitle =
+    conversation.last_message_preview || (isDirect ? "Direct message" : "Group chat");
 
   return (
     <button

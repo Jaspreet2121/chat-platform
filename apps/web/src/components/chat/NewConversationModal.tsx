@@ -1,9 +1,12 @@
 "use client";
 
 import { FormEvent, useEffect, useRef } from "react";
-import { Search, UserPlus, X } from "lucide-react";
+import { Search, User, UserPlus, Users, X } from "lucide-react";
 import type { UserProfile } from "@/lib/api";
 import { Avatar, Button, Card, Input } from "@/components";
+import { cn } from "@/lib/cn";
+
+type ConversationMode = "direct" | "group";
 
 export type NewConversationModalProps = {
   isOpen: boolean;
@@ -12,6 +15,9 @@ export type NewConversationModalProps = {
   // The exact same new-conversation state + handlers the sidebar used inline — just relocated here.
   newTitle: string;
   onNewTitleChange: (value: string) => void;
+  /** "direct" = 1:1 (one participant, no title); "group" = titled multi-party. */
+  mode: ConversationMode;
+  onModeChange: (mode: ConversationMode) => void;
   onCreateConversation: (event: FormEvent<HTMLFormElement>) => void;
   isCreatingConversation: boolean;
   lookupUserId: string;
@@ -24,6 +30,11 @@ export type NewConversationModalProps = {
   selectedParticipants: UserProfile[];
   onRemoveParticipant: (userId: string) => void;
 };
+
+const MODES: { key: ConversationMode; label: string; icon: typeof User }[] = [
+  { key: "direct", label: "Direct message", icon: User },
+  { key: "group", label: "Group", icon: Users }
+];
 
 function shortId(id: string): string {
   return `#${id.slice(0, 8)}`;
@@ -48,15 +59,19 @@ function ProfileSummary({ profile }: { profile: UserProfile }) {
   );
 }
 
-// "New conversation" modal — the create/lookup form relocated from the sidebar body, with the SAME
-// state + handlers (passed through). The create flow is unchanged; this just self-closes on success
-// (the page clears selectedParticipants on a successful create) while keeping the Create button's
-// loading state visible during the request. On failure the modal stays open (error shows in the banner).
+// "New conversation" modal with an explicit Direct vs Group choice:
+//  - Direct → pick ONE participant, no title → a 1:1 (type:"direct"). The lookup hides once one
+//    person is chosen (remove to swap), so a direct chat is always exactly two people.
+//  - Group → a title + one or more participants (type:"group").
+// State + handlers still come from the page (passed through); this just shapes the form per mode and
+// self-closes on success (the page clears selectedParticipants only on a successful create).
 export function NewConversationModal({
   isOpen,
   onClose,
   newTitle,
   onNewTitleChange,
+  mode,
+  onModeChange,
   onCreateConversation,
   isCreatingConversation,
   lookupUserId,
@@ -92,10 +107,12 @@ export function NewConversationModal({
 
   if (!isOpen) return null;
 
-  // Exactly one participant → a 1:1 direct chat (no title needed); two or more → a group (title required).
-  const isDirect = selectedParticipants.length === 1;
-  const canCreate =
-    selectedParticipants.length > 0 && (isDirect || newTitle.trim().length > 0);
+  const isDirect = mode === "direct";
+  // Direct chats are exactly two people: only offer the lookup until one peer is chosen.
+  const showLookup = !isDirect || selectedParticipants.length === 0;
+  const canCreate = isDirect
+    ? selectedParticipants.length === 1
+    : selectedParticipants.length > 0 && newTitle.trim().length > 0;
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-fade-in">
@@ -115,50 +132,82 @@ export function NewConversationModal({
         </header>
 
         <form className="flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onCreateConversation}>
-          <Input
-            label={isDirect ? "Title (optional)" : "Group title"}
-            placeholder={isDirect ? "Optional for a 1:1 chat" : "e.g. Launch Team"}
-            value={newTitle}
-            onChange={(event) => onNewTitleChange(event.target.value)}
-            autoFocus
-          />
+          {/* Direct vs Group — the explicit choice that decides type:"direct" vs type:"group". */}
+          <div role="tablist" aria-label="Conversation type" className="flex gap-1 rounded-xl border border-border bg-elevated p-1">
+            {MODES.map((option) => {
+              const Icon = option.icon;
+              const active = mode === option.key;
+              return (
+                <button
+                  key={option.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => onModeChange(option.key)}
+                  className={cn(
+                    "flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition-all duration-150",
+                    "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring",
+                    active
+                      ? "bg-brand-subtle text-brand-hover shadow-subtle ring-1 ring-inset ring-brand/20"
+                      : "text-muted hover:text-fg"
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5" aria-hidden />
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
 
-          <div className="space-y-2 rounded-xl border border-border bg-elevated p-2.5">
-            <div className="flex gap-2">
-              <Input
-                leftIcon={<Search className="h-4 w-4" aria-hidden />}
-                placeholder="Participant user ID"
-                value={lookupUserId}
-                onChange={(event) => onLookupUserIdChange(event.target.value)}
-                className="bg-surface"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={onLookup}
-                isLoading={isLookingUpProfile}
-                className="shrink-0 border border-border"
-              >
-                Lookup
-              </Button>
-            </div>
+          {/* Title — groups only (a direct chat is named after the other person). */}
+          {!isDirect ? (
+            <Input
+              label="Group title"
+              placeholder="e.g. Launch Team"
+              value={newTitle}
+              onChange={(event) => onNewTitleChange(event.target.value)}
+              autoFocus
+            />
+          ) : null}
 
-            {lookupStatus ? <p className="text-xs text-muted">{lookupStatus}</p> : null}
-
-            {lookupProfile ? (
-              <div className="flex items-center justify-between gap-2 rounded-lg bg-surface p-2">
-                <ProfileSummary profile={lookupProfile} />
+          {showLookup ? (
+            <div className="space-y-2 rounded-xl border border-border bg-elevated p-2.5">
+              <div className="flex gap-2">
+                <Input
+                  leftIcon={<Search className="h-4 w-4" aria-hidden />}
+                  placeholder={isDirect ? "Find a person by user ID" : "Participant user ID"}
+                  value={lookupUserId}
+                  onChange={(event) => onLookupUserIdChange(event.target.value)}
+                  className="bg-surface"
+                />
                 <Button
                   type="button"
-                  size="sm"
-                  onClick={onAddParticipant}
-                  leftIcon={<UserPlus className="h-4 w-4" aria-hidden />}
+                  variant="ghost"
+                  onClick={onLookup}
+                  isLoading={isLookingUpProfile}
+                  className="shrink-0 border border-border"
                 >
-                  Add
+                  Lookup
                 </Button>
               </div>
-            ) : null}
-          </div>
+
+              {lookupStatus ? <p className="text-xs text-muted">{lookupStatus}</p> : null}
+
+              {lookupProfile ? (
+                <div className="flex items-center justify-between gap-2 rounded-lg bg-surface p-2">
+                  <ProfileSummary profile={lookupProfile} />
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={onAddParticipant}
+                    leftIcon={<UserPlus className="h-4 w-4" aria-hidden />}
+                  >
+                    Add
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           {selectedParticipants.length > 0 ? (
             <div className="space-y-2">
@@ -182,19 +231,14 @@ export function NewConversationModal({
           ) : null}
 
           <p className="px-0.5 text-xs text-faint">
-            {selectedParticipants.length === 0
-              ? "Add one person for a direct 1:1 chat, or more for a group."
-              : isDirect
-                ? "Direct 1:1 chat — named after the other person."
-                : "Group chat — add a title above."}
+            {isDirect
+              ? selectedParticipants.length === 0
+                ? "Pick one person for a private 1:1 chat."
+                : "Direct 1:1 chat — named after the other person."
+              : "Add a title and one or more people for a group chat."}
           </p>
 
-          <Button
-            type="submit"
-            fullWidth
-            isLoading={isCreatingConversation}
-            disabled={!canCreate}
-          >
+          <Button type="submit" fullWidth isLoading={isCreatingConversation} disabled={!canCreate}>
             {isDirect ? "Start direct chat" : "Create group"}
           </Button>
         </form>

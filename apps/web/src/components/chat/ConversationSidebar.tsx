@@ -31,6 +31,8 @@ export type ConversationSidebarProps = {
 
   newTitle: string;
   onNewTitleChange: (value: string) => void;
+  conversationMode: "direct" | "group";
+  onConversationModeChange: (mode: "direct" | "group") => void;
   onCreateConversation: (event: FormEvent<HTMLFormElement>) => void;
   isCreatingConversation: boolean;
 
@@ -66,6 +68,8 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     onOpenProfile,
     newTitle,
     onNewTitleChange,
+    conversationMode,
+    onConversationModeChange,
     onCreateConversation,
     isCreatingConversation,
     lookupUserId,
@@ -218,6 +222,8 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         onClose={() => setIsNewConvOpen(false)}
         newTitle={newTitle}
         onNewTitleChange={onNewTitleChange}
+        mode={conversationMode}
+        onModeChange={onConversationModeChange}
         onCreateConversation={onCreateConversation}
         isCreatingConversation={isCreatingConversation}
         lookupUserId={lookupUserId}

@@ -44,7 +44,7 @@ import {
   StarredPanel,
   StatusBanner
 } from "@/components/chat";
-import { primeUserProfile } from "@/components/chat/useUserProfile";
+import { primeUserProfile, useUserProfile } from "@/components/chat/useUserProfile";
 import { cn } from "@/lib/cn";
 import imageCompression from "browser-image-compression";
 import { ForwardPicker } from "./ForwardPicker";
@@ -103,6 +103,9 @@ export default function ChatPage() {
   const [lookupProfile, setLookupProfile] = useState<UserProfile | null>(null);
   const [lookupStatus, setLookupStatus] = useState("");
   const [selectedParticipants, setSelectedParticipants] = useState<UserProfile[]>([]);
+  // New-conversation mode: "direct" = 1:1 (no title, one participant), "group" = titled multi-party.
+  // Direct is the default since 1:1 chats are the common case. Drives the create branch + the modal UI.
+  const [conversationMode, setConversationMode] = useState<"direct" | "group">("direct");
   const [status, setStatus] = useState("Loading session...");
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -349,6 +352,17 @@ export default function ChatPage() {
     );
   }
 
+  // Switching Direct/Group resets the transient new-conversation state so each mode starts clean
+  // (a direct chat keeps one participant + no title; a group keeps a title + many).
+  function handleConversationModeChange(mode: "direct" | "group") {
+    setConversationMode(mode);
+    setSelectedParticipants([]);
+    setNewTitle("");
+    setLookupUserId("");
+    setLookupProfile(null);
+    setLookupStatus("");
+  }
+
   async function handleCreateConversation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const title = newTitle.trim();
@@ -359,9 +373,13 @@ export default function ChatPage() {
       return;
     }
 
-    // Exactly one participant → a 1:1 DIRECT chat (no title needed; auto-named after the other person).
-    // Two or more → a GROUP (title required). The backend accepts type:"direct" end-to-end.
-    const isDirect = participantUserIds.length === 1;
+    // The branch is the explicit mode (not the participant count): a 1:1 DIRECT chat (type:"direct",
+    // exactly one participant, no title required — auto-named after the other person) vs. a titled GROUP.
+    const isDirect = conversationMode === "direct";
+    if (isDirect && participantUserIds.length !== 1) {
+      setStatus("A direct chat needs exactly one participant.");
+      return;
+    }
     if (!isDirect && !title) {
       setStatus("Add a title for a group conversation.");
       return;
@@ -370,17 +388,19 @@ export default function ChatPage() {
     setIsCreatingConversation(true);
 
     try {
+      // Direct: no title required from the user — auto-fill the peer's name so it reads nicely in lists.
       const directTitle = selectedParticipants[0]?.display_name?.trim() || "Direct chat";
-      const conversation = await createConversation({
-        title: isDirect ? title || directTitle : title,
-        participantUserIds,
-        type: isDirect ? "direct" : "group"
-      });
+      const conversation = await createConversation(
+        isDirect
+          ? { title: directTitle, participantUserIds: [participantUserIds[0]], type: "direct" }
+          : { title, participantUserIds, type: "group" }
+      );
       setNewTitle("");
       setLookupUserId("");
       setLookupProfile(null);
       setLookupStatus("");
       setSelectedParticipants([]);
+      setConversationMode("direct");
       await refreshConversationList(conversation.conversation_id);
       setStatus(isDirect ? "Direct chat created." : "Conversation created.");
     } catch (error) {
@@ -843,6 +863,26 @@ export default function ChatPage() {
     participantCount > 0
       ? `${participantCount} participant${participantCount === 1 ? "" : "s"}`
       : selectedConversation?.type;
+
+  // A direct (1:1) chat has no meaningful title — show the OTHER participant. Derive the peer from the
+  // loaded conversation detail (participants minus me) and resolve their public profile for a real name
+  // + avatar. Falls back to the stored title, then "Member", until the profile resolves.
+  const selectedIsDirect = selectedConversation?.type === "direct";
+  const directPeerId = useMemo(() => {
+    if (!selectedIsDirect) return null;
+    const peer = selectedConversation?.participants?.find(
+      (participant) => participant.user_id !== session?.user_id
+    );
+    return peer?.user_id ?? null;
+  }, [selectedIsDirect, selectedConversation?.participants, session?.user_id]);
+  const directPeerProfile = useUserProfile(directPeerId);
+  const headerTitle = selectedIsDirect
+    ? directPeerProfile?.display_name?.trim() || selectedConversation?.title?.trim() || "Member"
+    : selectedTitle;
+  const headerAvatarId = selectedIsDirect
+    ? directPeerId ?? selectedConversationId
+    : selectedConversationId;
+  const headerAvatarUrl = selectedIsDirect ? directPeerProfile?.avatar_url ?? null : null;
   // The signed-in identity now lives in the sidebar; the "Opened …" line is implicit in the header.
   // Surface only transient, actionable status (sends, errors) as a subtle banner.
   const showBanner = Boolean(
@@ -869,6 +909,8 @@ export default function ChatPage() {
           onOpenProfile={() => setIsProfileOpen(true)}
           newTitle={newTitle}
           onNewTitleChange={setNewTitle}
+          conversationMode={conversationMode}
+          onConversationModeChange={handleConversationModeChange}
           onCreateConversation={handleCreateConversation}
           isCreatingConversation={isCreatingConversation}
           lookupUserId={lookupUserId}
@@ -899,7 +941,9 @@ export default function ChatPage() {
 
         <ChatHeader
           conversationId={selectedConversationId}
-          title={selectedTitle}
+          title={headerTitle}
+          avatarId={headerAvatarId}
+          avatarUrl={headerAvatarUrl}
           subtitle={headerSubtitle ?? undefined}
           typingUser={typingUser}
           online={othersOnline}

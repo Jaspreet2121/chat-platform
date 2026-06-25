@@ -4,6 +4,10 @@ import { Avatar, IconButton } from "@/components";
 export type ChatHeaderProps = {
   conversationId: string;
   title: string;
+  /** Avatar color seed — defaults to the conversation id; set to the peer's id for a direct chat. */
+  avatarId?: string;
+  /** Avatar image (the peer's photo for a direct chat); falls back to initials when absent. */
+  avatarUrl?: string | null;
   subtitle?: string;
   typingUser?: string | null;
   /** Mobile-only "back to list" affordance (deselects the conversation). */
@@ -17,6 +21,8 @@ export type ChatHeaderProps = {
 export function ChatHeader({
   conversationId,
   title,
+  avatarId,
+  avatarUrl,
   subtitle,
   typingUser,
   onBack,
@@ -39,7 +45,14 @@ export function ChatHeader({
         className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1 py-0.5 text-left transition-colors enabled:hover:bg-elevated disabled:cursor-default"
         title={onOpenDetails && conversationId ? "View conversation details" : undefined}
       >
-        {conversationId && <Avatar id={conversationId} name={title} online={online} />}
+        {conversationId && (
+          <Avatar
+            id={avatarId || conversationId}
+            name={title}
+            imageUrl={avatarUrl ?? undefined}
+            online={online}
+          />
+        )}
         <div className="min-w-0">
           <h2 className="truncate text-sm font-semibold text-fg">{title}</h2>
           {typingUser ? (
