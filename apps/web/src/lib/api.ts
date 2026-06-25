@@ -261,6 +261,101 @@ export function getAdminAnalyticsTimeseries(days = 30) {
   );
 }
 
+// --- Admin moderation (mutating; behind RequireAdmin) -------------------------------------------
+export type AdminUser = {
+  user_id: string;
+  phone_number?: string | null;
+  email?: string | null;
+  status: string;
+  is_admin: boolean;
+  created_at?: string | null;
+};
+
+export type AdminUsersPage = { page: number; page_size: number; users: AdminUser[] };
+
+export type AdminReport = {
+  id: string;
+  reporter_user_id?: string | null;
+  reported_user_id?: string | null;
+  conversation_id?: string | null;
+  reported_message_id?: string | null;
+  reason: string;
+  details?: string | null;
+  status: string;
+  created_at?: string | null;
+};
+
+export type AdminReportsPage = { page: number; page_size: number; reports: AdminReport[] };
+
+export type AuditEntry = {
+  actor_user_id?: string | null;
+  action: string;
+  target_type: string;
+  target_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+  created_at?: string | null;
+};
+
+export type AuditPage = { page: number; page_size: number; entries: AuditEntry[] };
+
+export function getAdminUsers(opts: { status?: string; q?: string; page?: number } = {}) {
+  const params = new URLSearchParams();
+  if (opts.status) params.set("status", opts.status);
+  if (opts.q) params.set("q", opts.q);
+  if (opts.page) params.set("page", String(opts.page));
+  const qs = params.toString();
+  return request<AdminUsersPage>(`/api/v1/admin/users${qs ? `?${qs}` : ""}`);
+}
+
+export function suspendUser(userId: string, reason: string) {
+  return request<AdminUser>(`/api/v1/admin/users/${encodeURIComponent(userId)}/suspend`, {
+    method: "POST",
+    body: JSON.stringify({ reason })
+  });
+}
+
+export function reactivateUser(userId: string) {
+  return request<AdminUser>(`/api/v1/admin/users/${encodeURIComponent(userId)}/reactivate`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
+export function banUser(userId: string, reason: string) {
+  return request<AdminUser>(`/api/v1/admin/users/${encodeURIComponent(userId)}/ban`, {
+    method: "POST",
+    body: JSON.stringify({ reason })
+  });
+}
+
+export function adminDeleteMessage(messageId: string) {
+  return request<{ status?: string }>(`/api/v1/admin/messages/${encodeURIComponent(messageId)}`, {
+    method: "DELETE"
+  });
+}
+
+export function getAdminReports(opts: { status?: string; page?: number } = {}) {
+  const params = new URLSearchParams();
+  if (opts.status) params.set("status", opts.status);
+  if (opts.page) params.set("page", String(opts.page));
+  const qs = params.toString();
+  return request<AdminReportsPage>(`/api/v1/admin/reports${qs ? `?${qs}` : ""}`);
+}
+
+export function updateReportStatus(reportId: string, status: string, resolution?: string) {
+  return request<{ id: string; status: string }>(
+    `/api/v1/admin/reports/${encodeURIComponent(reportId)}/status`,
+    {
+      method: "POST",
+      body: JSON.stringify({ status, resolution })
+    }
+  );
+}
+
+export function getAdminAudit(page = 1) {
+  return request<AuditPage>(`/api/v1/admin/audit?page=${page}`);
+}
+
 export function getPublicProfile(userId: string) {
   return request<UserProfile>(`/api/v1/users/${encodeURIComponent(userId)}/profile`);
 }

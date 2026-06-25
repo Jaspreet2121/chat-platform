@@ -16,6 +16,20 @@ defmodule ApiGatewayWeb.AuthUnavailableStub do
   def refresh(_attrs), do: {:error, :auth_unavailable}
   @impl true
   def revoke(_attrs), do: {:error, :auth_unavailable}
+
+  for fun <- [
+        :list_users,
+        :suspend_user,
+        :reactivate_user,
+        :ban_user,
+        :list_reports,
+        :update_report,
+        :write_audit,
+        :list_audit
+      ] do
+    @impl true
+    def unquote(fun)(_attrs), do: {:error, :auth_unavailable}
+  end
 end
 
 defmodule ApiGatewayWeb.AuthUnavailableMappingTest do

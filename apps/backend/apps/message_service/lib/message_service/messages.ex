@@ -65,6 +65,38 @@ defmodule MessageService.Messages do
     end
   end
 
+  @doc """
+  Admin soft-delete of ANY message — bypasses the sender-only `authorize_author` check (the caller is
+  a verified platform admin, gated upstream by the gateway's RequireAdmin). Still a soft-delete
+  (status='deleted'), never a hard row delete. Looks the message up by id to resolve its conversation.
+  """
+  def admin_delete_message(attrs) do
+    if message_persistence_enabled?() do
+      with {:ok, message_id} <- required_attr(attrs, "message_id"),
+           {:ok, message} <-
+             MessageStore.get_message(%{
+               "message_id" => message_id,
+               "conversation_id" => get_attr(attrs, "conversation_id"),
+               "bucket_date" => get_attr(attrs, "bucket_date")
+             }) do
+        deleted_at = now()
+
+        case MessageStore.delete_message(%{
+               "conversation_id" => message.conversation_id,
+               "bucket_date" => get_attr(attrs, "bucket_date") || bucket_date(deleted_at),
+               "message_id" => message_id,
+               "status" => "deleted",
+               "deleted_at" => deleted_at
+             }) do
+          {:ok, deleted} -> {:ok, deleted_message_response(deleted)}
+          {:error, reason} -> {:error, reason}
+        end
+      end
+    else
+      {:error, :message_store_unavailable}
+    end
+  end
+
   def message_persistence_enabled? do
     Application.get_env(:message_service, :message_persistence, false) ||
       System.get_env("MESSAGE_DB_BACKED") in ["true", "1", "yes"]

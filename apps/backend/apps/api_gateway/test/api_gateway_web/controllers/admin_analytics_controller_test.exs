@@ -14,6 +14,20 @@ defmodule ApiGatewayWeb.AdminAnalyticsControllerTest.AdminSessionStub do
   def refresh(_attrs), do: {:ok, %{}}
   @impl true
   def revoke(_attrs), do: {:ok, %{}}
+
+  for fun <- [
+        :list_users,
+        :suspend_user,
+        :reactivate_user,
+        :ban_user,
+        :list_reports,
+        :update_report,
+        :write_audit,
+        :list_audit
+      ] do
+    @impl true
+    def unquote(fun)(_attrs), do: {:ok, %{}}
+  end
 end
 
 defmodule ApiGatewayWeb.AdminAnalyticsControllerTest.NonAdminSessionStub do
@@ -32,6 +46,20 @@ defmodule ApiGatewayWeb.AdminAnalyticsControllerTest.NonAdminSessionStub do
   def refresh(_attrs), do: {:ok, %{}}
   @impl true
   def revoke(_attrs), do: {:ok, %{}}
+
+  for fun <- [
+        :list_users,
+        :suspend_user,
+        :reactivate_user,
+        :ban_user,
+        :list_reports,
+        :update_report,
+        :write_audit,
+        :list_audit
+      ] do
+    @impl true
+    def unquote(fun)(_attrs), do: {:ok, %{}}
+  end
 end
 
 defmodule ApiGatewayWeb.AdminAnalyticsControllerTest.AnalyticsStub do
@@ -64,7 +92,8 @@ defmodule ApiGatewayWeb.AdminAnalyticsControllerTest.AnalyticsStub do
         :edit_message,
         :delete_message,
         :mark_read,
-        :mark_delivered
+        :mark_delivered,
+        :admin_delete_message
       ] do
     @impl true
     def unquote(fun)(_attrs), do: {:error, :message_unavailable}

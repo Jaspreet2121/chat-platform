@@ -33,6 +33,30 @@ defmodule SharedInfra.AuthClientHttp do
   def revoke(attrs), do: post("/internal/tokens/revoke", attrs)
 
   @impl true
+  def list_users(attrs), do: post("/internal/admin/users/list", attrs)
+
+  @impl true
+  def suspend_user(attrs), do: post("/internal/admin/users/suspend", attrs)
+
+  @impl true
+  def reactivate_user(attrs), do: post("/internal/admin/users/reactivate", attrs)
+
+  @impl true
+  def ban_user(attrs), do: post("/internal/admin/users/ban", attrs)
+
+  @impl true
+  def list_reports(attrs), do: post("/internal/admin/reports/list", attrs)
+
+  @impl true
+  def update_report(attrs), do: post("/internal/admin/reports/update", attrs)
+
+  @impl true
+  def write_audit(attrs), do: post("/internal/admin/audit/write", attrs)
+
+  @impl true
+  def list_audit(attrs), do: post("/internal/admin/audit/list", attrs)
+
+  @impl true
   def persistence_enabled? do
     # Bare boolean over the wire; on transport failure FAIL CLOSED (false = not trustworthy →
     # realtime socket rejects), never a truthy error tuple.

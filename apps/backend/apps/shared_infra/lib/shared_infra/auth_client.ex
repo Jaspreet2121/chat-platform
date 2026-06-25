@@ -25,6 +25,14 @@ defmodule SharedInfra.AuthClient do
   @callback verify_otp(attrs()) :: result()
   @callback refresh(attrs()) :: result()
   @callback revoke(attrs()) :: result()
+  @callback list_users(attrs()) :: result()
+  @callback suspend_user(attrs()) :: result()
+  @callback reactivate_user(attrs()) :: result()
+  @callback ban_user(attrs()) :: result()
+  @callback list_reports(attrs()) :: result()
+  @callback update_report(attrs()) :: result()
+  @callback write_audit(attrs()) :: result()
+  @callback list_audit(attrs()) :: result()
 
   def current_session(attrs), do: adapter().current_session(attrs)
   def persistence_enabled?, do: adapter().persistence_enabled?()
@@ -32,6 +40,14 @@ defmodule SharedInfra.AuthClient do
   def verify_otp(attrs), do: adapter().verify_otp(attrs)
   def refresh(attrs), do: adapter().refresh(attrs)
   def revoke(attrs), do: adapter().revoke(attrs)
+  def list_users(attrs), do: adapter().list_users(attrs)
+  def suspend_user(attrs), do: adapter().suspend_user(attrs)
+  def reactivate_user(attrs), do: adapter().reactivate_user(attrs)
+  def ban_user(attrs), do: adapter().ban_user(attrs)
+  def list_reports(attrs), do: adapter().list_reports(attrs)
+  def update_report(attrs), do: adapter().update_report(attrs)
+  def write_audit(attrs), do: adapter().write_audit(attrs)
+  def list_audit(attrs), do: adapter().list_audit(attrs)
 
   @doc "The configured Auth client adapter (default `AuthService.AuthClientInProcess`)."
   def adapter do

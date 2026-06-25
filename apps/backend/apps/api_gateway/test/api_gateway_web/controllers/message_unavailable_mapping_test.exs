@@ -21,6 +21,20 @@ defmodule ApiGatewayWeb.MessageUnavailableMappingTest.SessionOkStub do
   def refresh(_attrs), do: {:ok, %{}}
   @impl true
   def revoke(_attrs), do: {:ok, %{}}
+
+  for fun <- [
+        :list_users,
+        :suspend_user,
+        :reactivate_user,
+        :ban_user,
+        :list_reports,
+        :update_report,
+        :write_audit,
+        :list_audit
+      ] do
+    @impl true
+    def unquote(fun)(_attrs), do: {:ok, %{}}
+  end
 end
 
 defmodule ApiGatewayWeb.MessageUnavailableMappingTest.MsgUnavailableStub do
@@ -37,7 +51,8 @@ defmodule ApiGatewayWeb.MessageUnavailableMappingTest.MsgUnavailableStub do
         :mark_read,
         :mark_delivered,
         :analytics_overview,
-        :analytics_timeseries
+        :analytics_timeseries,
+        :admin_delete_message
       ] do
     @impl true
     def unquote(fun)(_attrs), do: {:error, :message_unavailable}

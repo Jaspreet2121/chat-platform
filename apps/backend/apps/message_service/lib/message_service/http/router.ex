@@ -43,6 +43,10 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Messages.delete_message(body(conn)))
   end
 
+  post "/internal/messages/admin_delete" do
+    send_result(conn, MessageService.Messages.admin_delete_message(body(conn)))
+  end
+
   # list_timeline → Timeline.list_messages (distinct from Messages.list_messages above).
   post "/internal/timeline/list" do
     send_result(conn, MessageService.Timeline.list_messages(body(conn)))

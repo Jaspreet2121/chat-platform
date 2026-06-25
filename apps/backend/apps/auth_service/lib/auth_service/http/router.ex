@@ -42,6 +42,39 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Tokens.revoke(body(conn)))
   end
 
+  # --- Admin moderation (gated upstream by the gateway's RequireAdmin + this internal TokenPlug) ---
+  post "/internal/admin/users/list" do
+    send_result(conn, {:ok, AuthService.Accounts.list_users(body(conn))})
+  end
+
+  post "/internal/admin/users/suspend" do
+    send_result(conn, AuthService.Moderation.suspend_user(body(conn)))
+  end
+
+  post "/internal/admin/users/reactivate" do
+    send_result(conn, AuthService.Moderation.reactivate_user(body(conn)))
+  end
+
+  post "/internal/admin/users/ban" do
+    send_result(conn, AuthService.Moderation.ban_user(body(conn)))
+  end
+
+  post "/internal/admin/reports/list" do
+    send_result(conn, AuthService.Moderation.list_reports(body(conn)))
+  end
+
+  post "/internal/admin/reports/update" do
+    send_result(conn, AuthService.Moderation.update_report(body(conn)))
+  end
+
+  post "/internal/admin/audit/write" do
+    send_result(conn, AuthService.Moderation.write_audit(body(conn)))
+  end
+
+  post "/internal/admin/audit/list" do
+    send_result(conn, AuthService.Moderation.list_audit(body(conn)))
+  end
+
   match _ do
     send_resp(conn, 404, Jason.encode!(%{"error" => "not_found"}))
   end

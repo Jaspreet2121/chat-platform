@@ -46,4 +46,7 @@ defmodule MessageService.MessageClientInProcess do
   @impl true
   def analytics_timeseries(attrs),
     do: {:ok, Analytics.timeseries(Analytics.normalize_days(Map.get(attrs, "days")))}
+
+  @impl true
+  def admin_delete_message(attrs), do: Messages.admin_delete_message(attrs)
 end

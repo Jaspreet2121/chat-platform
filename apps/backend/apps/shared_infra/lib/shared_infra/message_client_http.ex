@@ -51,6 +51,9 @@ defmodule SharedInfra.MessageClientHttp do
   @impl true
   def analytics_timeseries(attrs), do: post("/internal/analytics/timeseries", attrs)
 
+  @impl true
+  def admin_delete_message(attrs), do: post("/internal/messages/admin_delete", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs,
       unavailable: @unavailable,

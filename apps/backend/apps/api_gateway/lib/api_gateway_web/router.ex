@@ -81,5 +81,17 @@ defmodule ApiGatewayWeb.Router do
 
     get "/analytics/overview", AdminAnalyticsController, :overview
     get "/analytics/timeseries", AdminAnalyticsController, :timeseries
+
+    get "/users", AdminModerationController, :list_users
+    post "/users/:id/suspend", AdminModerationController, :suspend_user
+    post "/users/:id/reactivate", AdminModerationController, :reactivate_user
+    post "/users/:id/ban", AdminModerationController, :ban_user
+
+    delete "/messages/:id", AdminModerationController, :delete_message
+
+    get "/reports", AdminModerationController, :list_reports
+    post "/reports/:id/status", AdminModerationController, :update_report
+
+    get "/audit", AdminModerationController, :list_audit
   end
 end
