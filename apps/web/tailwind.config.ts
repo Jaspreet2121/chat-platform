@@ -6,25 +6,30 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // --- Dark-mode-first design tokens (Linear/Telegram-inspired) ---
-        bg: "#0a0c10", // app background (deepest)
-        surface: "#12151c", // cards, panels
-        elevated: "#191d26", // raised surfaces, inputs, hover
-        border: "#262b36", // hairline separators
-        "border-strong": "#333a47", // emphasized borders
-        fg: "#e7e9ee", // primary text
-        muted: "#9aa3b2", // secondary text
-        faint: "#5b6472", // tertiary / placeholder
+        // --- Theme-aware design tokens (Linear/Telegram-inspired) ---
+        // Values come from CSS variables (RGB channel triples) defined per theme in globals.css
+        // (.dark / :root,.light). The `<alpha-value>` placeholder lets Tailwind opacity modifiers
+        // (e.g. bg-brand-subtle/60, border-border/40) keep working. The SAME token names resolve to dark
+        // or light values, so components never change. Brand indigo, focus ring, and success/danger stay
+        // fixed across themes for a consistent identity.
+        bg: "rgb(var(--color-bg) / <alpha-value>)", // app background
+        surface: "rgb(var(--color-surface) / <alpha-value>)", // cards, panels
+        elevated: "rgb(var(--color-elevated) / <alpha-value>)", // raised surfaces, inputs, hover
+        border: "rgb(var(--color-border) / <alpha-value>)", // hairline separators
+        "border-strong": "rgb(var(--color-border-strong) / <alpha-value>)", // emphasized borders
+        fg: "rgb(var(--color-fg) / <alpha-value>)", // primary text
+        muted: "rgb(var(--color-muted) / <alpha-value>)", // secondary text
+        faint: "rgb(var(--color-faint) / <alpha-value>)", // tertiary / placeholder
         brand: {
-          DEFAULT: "#6366f1", // indigo
-          hover: "#818cf8",
-          subtle: "#1e1b4b",
+          DEFAULT: "#6366f1", // indigo — same in both themes (brand identity)
+          hover: "rgb(var(--color-brand-hover) / <alpha-value>)", // accent text/hover (lighter on dark, darker on light)
+          subtle: "rgb(var(--color-brand-subtle) / <alpha-value>)", // tint surface (deep indigo on dark, pale indigo on light)
           ring: "rgba(99, 102, 241, 0.35)"
         },
         success: "#22c55e",
         danger: "#ef4444",
 
-        // --- Legacy tokens (kept so the not-yet-redesigned chat page still renders; Slice 2) ---
+        // --- Legacy tokens (unused by the redesigned chat; kept harmless + theme-invariant) ---
         ink: "#17202a",
         paper: "#f7f9fb",
         line: "#d8dee6",

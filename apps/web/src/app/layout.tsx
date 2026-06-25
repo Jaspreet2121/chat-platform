@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { Inter } from "next/font/google";
+import { ThemeProvider } from "@/components/ThemeProvider";
 import "./globals.css";
 
 const inter = Inter({
@@ -20,8 +21,12 @@ export default function RootLayout({
   children: ReactNode;
 }>) {
   return (
-    <html lang="en" className={`dark ${inter.variable}`}>
-      <body className="min-h-screen bg-bg font-sans text-fg antialiased">{children}</body>
+    // suppressHydrationWarning: next-themes sets the theme class on <html> before paint, so the class
+    // legitimately differs between the server-rendered and client markup.
+    <html lang="en" className={inter.variable} suppressHydrationWarning>
+      <body className="min-h-screen bg-bg font-sans text-fg antialiased">
+        <ThemeProvider>{children}</ThemeProvider>
+      </body>
     </html>
   );
 }

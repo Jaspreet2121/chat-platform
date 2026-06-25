@@ -5,7 +5,7 @@ import type {
   Session,
   UserProfile
 } from "@/lib/api";
-import { Avatar, Button, IconButton, Input } from "@/components";
+import { Avatar, Button, IconButton, Input, ThemeToggle } from "@/components";
 import { ConversationListItem } from "./ConversationListItem";
 import { EmptyState } from "./EmptyState";
 import { MessageSearch } from "./MessageSearch";
@@ -100,6 +100,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
             <span className="text-sm font-semibold text-fg">Chat Platform</span>
           </div>
           <div className="flex items-center gap-1">
+            <ThemeToggle />
             <IconButton label="Starred messages" onClick={onOpenStarred} type="button">
               <Star className="h-5 w-5" aria-hidden />
             </IconButton>

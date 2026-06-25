@@ -10,5 +10,7 @@ export { IconButton } from "./IconButton";
 export type { IconButtonProps } from "./IconButton";
 export { CountryCodeSelect } from "./CountryCodeSelect";
 export type { CountryCodeSelectProps } from "./CountryCodeSelect";
+export { ThemeProvider } from "./ThemeProvider";
+export { ThemeToggle } from "./ThemeToggle";
 export { LoginIdentityFields } from "./LoginIdentityFields";
 export type { LoginIdentityFieldsProps } from "./LoginIdentityFields";

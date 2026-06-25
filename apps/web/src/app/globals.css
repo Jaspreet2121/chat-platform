@@ -2,8 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/*
+ * Theme tokens. The Tailwind color tokens (bg, surface, fg, …) point at these CSS variables via
+ * rgb(var(--x) / <alpha-value>), so the SAME utility classes (bg-bg, text-fg, bg-brand-subtle/60, …)
+ * resolve to dark or light values — and keep supporting opacity modifiers — depending on the theme
+ * class on <html> (managed by next-themes: "dark" or "light"). Default is dark.
+ *
+ * Color tokens are stored as space-separated RGB CHANNELS (required for the /<alpha-value> trick). The
+ * --app-bg gradient and --scroll-* values are consumed directly in raw CSS, so they stay full values.
+ *
+ * Light is the :root fallback; .dark re-asserts the dark palette. next-themes applies the class via a
+ * blocking script before first paint, so there's no flash.
+ */
+:root,
+.light {
+  color-scheme: light;
+
+  --color-bg: 246 247 249; /* #f6f7f9 soft off-white page */
+  --color-surface: 255 255 255; /* #ffffff cards, panels */
+  --color-elevated: 238 240 243; /* #eef0f3 inputs, raised, hover */
+  --color-border: 227 230 234; /* #e3e6ea hairline separators */
+  --color-border-strong: 205 210 218; /* #cdd2da emphasized borders */
+  --color-fg: 26 29 35; /* #1a1d23 primary text */
+  --color-muted: 91 100 114; /* #5b6472 secondary text */
+  --color-faint: 152 161 176; /* #98a1b0 tertiary / placeholder */
+  --color-brand-hover: 79 70 229; /* #4f46e5 darker indigo → readable accent text on light */
+  --color-brand-subtle: 224 231 255; /* #e0e7ff light indigo tint for chips/surfaces */
+
+  --app-bg:
+    radial-gradient(1200px 600px at 50% -10%, rgba(99, 102, 241, 0.06), transparent 70%), #f6f7f9;
+  --scroll-thumb: #cbd0d8;
+  --scroll-thumb-hover: #b3bac4;
+}
+
+.dark {
   color-scheme: dark;
+
+  --color-bg: 10 12 16; /* #0a0c10 */
+  --color-surface: 18 21 28; /* #12151c */
+  --color-elevated: 25 29 38; /* #191d26 */
+  --color-border: 38 43 54; /* #262b36 */
+  --color-border-strong: 51 58 71; /* #333a47 */
+  --color-fg: 231 233 238; /* #e7e9ee */
+  --color-muted: 154 163 178; /* #9aa3b2 */
+  --color-faint: 91 100 114; /* #5b6472 */
+  --color-brand-hover: 129 140 248; /* #818cf8 lighter indigo → pops on dark */
+  --color-brand-subtle: 30 27 75; /* #1e1b4b deep indigo tint */
+
+  --app-bg:
+    radial-gradient(1200px 600px at 50% -10%, rgba(99, 102, 241, 0.08), transparent 70%), #0a0c10;
+  --scroll-thumb: #2b323f;
+  --scroll-thumb-hover: #3a4250;
 }
 
 * {
@@ -16,12 +65,10 @@ body {
   min-height: 100vh;
 }
 
-/* Dark-mode-first base. Subtle radial glow up top for depth (Linear-esque). */
+/* Subtle radial brand glow up top for depth (Linear-esque), theme-aware. */
 body {
-  background:
-    radial-gradient(1200px 600px at 50% -10%, rgba(99, 102, 241, 0.08), transparent 70%),
-    #0a0c10;
-  color: #e7e9ee;
+  background: var(--app-bg);
+  color: var(--color-fg);
 }
 
 button,
@@ -30,10 +77,10 @@ textarea {
   font: inherit;
 }
 
-/* Crisp, slim scrollbars that match the dark surface. */
+/* Crisp, slim scrollbars that match the active theme. */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #333a47 transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -42,17 +89,17 @@ textarea {
 }
 
 *::-webkit-scrollbar-thumb {
-  background-color: #2b323f;
+  background-color: var(--scroll-thumb);
   border-radius: 9999px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background-color: #3a4250;
+  background-color: var(--scroll-thumb-hover);
 }
 
-/* Brand-tinted text selection. */
+/* Brand-tinted text selection (same in both themes). */
 ::selection {
   background: rgba(99, 102, 241, 0.35);
   color: #fff;
