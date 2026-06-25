@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, Loader2, Lock, RotateCcw, ShieldCheck } from "lucide-react";
 import { getCurrentSession, requestOtp, verifyOtp } from "@/lib/api";
 import { clearSessionTokens, hasAccessToken, setSessionTokens } from "@/lib/session";
-import { Button, Card, Input } from "@/components";
+import { Button, Card, Input, LoginIdentityFields } from "@/components";
 
 type Step = "phone" | "code";
 
@@ -215,17 +215,7 @@ function AdminLoginForm() {
 
           {step === "phone" ? (
             <form className="space-y-5" onSubmit={handleRequestOtp}>
-              <Input
-                label="Admin phone number"
-                leftIcon={<ShieldCheck className="h-4 w-4" aria-hidden />}
-                inputMode="tel"
-                autoComplete="tel"
-                placeholder="+91 99999 99999"
-                value={destination}
-                onChange={(e) => setDestination(e.target.value)}
-                autoFocus
-                required
-              />
+              <LoginIdentityFields onChange={setDestination} phoneLabel="Admin phone number" autoFocus />
               {error ? <p className="text-sm text-danger">{error}</p> : null}
               <Button type="submit" fullWidth isLoading={isRequesting} disabled={destination.trim() === ""}>
                 {!isRequesting && <ArrowRight className="h-4 w-4" aria-hidden />}

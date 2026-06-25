@@ -8,3 +8,7 @@ export { Avatar } from "./Avatar";
 export type { AvatarProps } from "./Avatar";
 export { IconButton } from "./IconButton";
 export type { IconButtonProps } from "./IconButton";
+export { CountryCodeSelect } from "./CountryCodeSelect";
+export type { CountryCodeSelectProps } from "./CountryCodeSelect";
+export { LoginIdentityFields } from "./LoginIdentityFields";
+export type { LoginIdentityFieldsProps } from "./LoginIdentityFields";

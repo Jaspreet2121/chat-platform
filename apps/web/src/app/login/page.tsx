@@ -2,10 +2,10 @@
 
 import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ArrowRight, MessagesSquare, Phone, RotateCcw, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, MessagesSquare, RotateCcw, ShieldCheck } from "lucide-react";
 import { requestOtp, verifyOtp } from "@/lib/api";
 import { hasAccessToken, setSessionTokens } from "@/lib/session";
-import { Button, Card, Input } from "@/components";
+import { Button, Card, Input, LoginIdentityFields } from "@/components";
 
 type Step = "phone" | "code";
 
@@ -167,17 +167,7 @@ function LoginForm() {
         <Card className="p-6 sm:p-7">
           {step === "phone" ? (
             <form className="space-y-5" onSubmit={handleRequestOtp}>
-              <Input
-                label="Phone number"
-                leftIcon={<Phone className="h-4 w-4" aria-hidden />}
-                inputMode="tel"
-                autoComplete="tel"
-                placeholder="+91 99999 99999"
-                value={destination}
-                onChange={(event) => setDestination(event.target.value)}
-                autoFocus
-                required
-              />
+              <LoginIdentityFields onChange={setDestination} autoFocus />
 
               {error && <p className="text-sm text-danger">{error}</p>}
 
