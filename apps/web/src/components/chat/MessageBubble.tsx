@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, CheckCheck, Download, FileText, Pencil, Trash2, X } from "lucide-react";
+import {
+  Check,
+  CheckCheck,
+  Download,
+  FileText,
+  MoreHorizontal,
+  Pencil,
+  Trash2,
+  X
+} from "lucide-react";
 import type { Message } from "@/lib/api";
 import { getMediaDownloadUrl } from "@/lib/api";
 import { Avatar } from "@/components";
@@ -23,6 +32,29 @@ export function MessageBubble({ message, isOwn, onEdit, onDelete }: MessageBubbl
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.body ?? "");
   const [isBusy, setIsBusy] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  // Actions are available only on own, non-deleted messages (edit is text-only; delete always).
+  const hasActions = !isEditing && (canEdit || canDelete);
+
+  // Close the actions popover on click-outside / Esc. Listeners attach only while open, AFTER the
+  // opening click has fired, so opening the menu never immediately closes it.
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onDown(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setMenuOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
 
   function startEdit() {
     setEditDraft(message.body ?? "");
@@ -114,7 +146,15 @@ export function MessageBubble({ message, isOwn, onEdit, onDelete }: MessageBubbl
           ) : isMedia ? (
             <MediaMessageContent message={message} isOwn={isOwn} />
           ) : (
-            <p className="whitespace-pre-wrap break-words">{message.body || message.message_type}</p>
+            <p
+              className={cn(
+                "whitespace-pre-wrap break-words",
+                hasActions && "cursor-pointer"
+              )}
+              onClick={hasActions ? () => setMenuOpen((open) => !open) : undefined}
+            >
+              {message.body || message.message_type}
+            </p>
           )}
         </div>
 
@@ -126,31 +166,53 @@ export function MessageBubble({ message, isOwn, onEdit, onDelete }: MessageBubbl
 
           {isOwn && !isDeleted ? <ReadTicks message={message} /> : null}
 
-          {!isEditing && (canEdit || canDelete) && (
-            <div className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-              {canEdit && (
-                <button
-                  className="text-faint transition-colors hover:text-fg disabled:opacity-50"
-                  disabled={isBusy}
-                  onClick={startEdit}
-                  type="button"
-                  aria-label="Edit message"
-                  title="Edit"
+          {hasActions && (
+            <div className="relative" ref={menuRef}>
+              <button
+                type="button"
+                onClick={() => setMenuOpen((open) => !open)}
+                aria-label="Message actions"
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                className="rounded p-0.5 text-faint transition-colors hover:text-fg"
+              >
+                <MoreHorizontal className="h-4 w-4" aria-hidden />
+              </button>
+
+              {menuOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full z-30 mt-1 w-32 overflow-hidden rounded-lg border border-border bg-surface shadow-elevated animate-scale-in"
                 >
-                  <Pencil className="h-3.5 w-3.5" aria-hidden />
-                </button>
-              )}
-              {canDelete && (
-                <button
-                  className="text-faint transition-colors hover:text-danger disabled:opacity-50"
-                  disabled={isBusy}
-                  onClick={removeMessage}
-                  type="button"
-                  aria-label="Delete message"
-                  title="Delete"
-                >
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden />
-                </button>
+                  {canEdit && (
+                    <button
+                      role="menuitem"
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        startEdit();
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated disabled:opacity-50"
+                    >
+                      <Pencil className="h-4 w-4" aria-hidden /> Edit
+                    </button>
+                  )}
+                  {canDelete && (
+                    <button
+                      role="menuitem"
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        void removeMessage();
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-danger transition-colors hover:bg-danger/10 disabled:opacity-50"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden /> Delete
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )}
