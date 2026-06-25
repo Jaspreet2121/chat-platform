@@ -1,8 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Mail } from "lucide-react";
-import { Country, DEFAULT_COUNTRY, toE164 } from "@/lib/countries";
+import {
+  AsYouType,
+  type CountryCode,
+  getExampleNumber,
+  parsePhoneNumber
+} from "libphonenumber-js";
+import examples from "libphonenumber-js/examples.mobile.json";
+import { Country, DEFAULT_COUNTRY } from "@/lib/countries";
 import { CountryCodeSelect } from "./CountryCodeSelect";
 import { Input } from "./Input";
 
@@ -14,9 +21,41 @@ export type LoginIdentityFieldsProps = {
   autoFocus?: boolean;
 };
 
-// Phone-first login identity entry: a country-code selector + local-number field that combine into an
-// E.164 destination, with a toggle to "Use email instead" (preserves email login). Self-contained — it
-// emits the final `destination` string via onChange; the parent keeps treating that as before.
+// Per-country phone metadata from libphonenumber-js: an example placeholder (formatted national) and the
+// max national digit count for that country (used to cap input). The example's national length is the
+// canonical mobile length (India 10, UAE 9, …) — a strict, intuitive cap; the button still gates on full
+// per-country validity below.
+function phoneMeta(iso: CountryCode): { maxDigits: number; placeholder: string } {
+  const example = getExampleNumber(iso, examples);
+  if (!example) return { maxDigits: 15, placeholder: "phone number" };
+  return {
+    maxDigits: example.nationalNumber.length,
+    placeholder: new AsYouType(iso).input(example.nationalNumber)
+  };
+}
+
+// Format the typed digits per country (AsYouType) after capping to the country's max length.
+function formatLocal(iso: CountryCode, raw: string, maxDigits: number): string {
+  const digits = raw.replace(/\D/g, "").slice(0, maxDigits);
+  return new AsYouType(iso).input(digits);
+}
+
+// Valid national number → E.164 ("+91…"); otherwise "" (so the submit button stays disabled). This is
+// the SAME E.164 requestOtp already accepts — backend/lib unchanged.
+function toE164(iso: CountryCode, formatted: string): string {
+  const digits = formatted.replace(/\D/g, "");
+  if (!digits) return "";
+  try {
+    const parsed = parsePhoneNumber(digits, iso);
+    return parsed && parsed.isValid() ? parsed.number : "";
+  } catch {
+    return "";
+  }
+}
+
+// Phone-first login identity entry: a country-code selector + per-country-validated national number that
+// combine into an E.164 destination, with a toggle to "Use email instead" (preserves email login).
+// Self-contained — it emits the final `destination` via onChange; the parent treats that as before.
 export function LoginIdentityFields({
   onChange,
   phoneLabel = "Phone number",
@@ -27,14 +66,28 @@ export function LoginIdentityFields({
   const [localNumber, setLocalNumber] = useState("");
   const [email, setEmail] = useState("");
 
+  const meta = useMemo(() => phoneMeta(country.iso2 as CountryCode), [country]);
+
+  // The number is complete/valid for the country exactly when toE164 yields a value.
+  const e164 = toE164(country.iso2 as CountryCode, localNumber);
+  const hasDigits = localNumber.replace(/\D/g, "").length > 0;
+  const showIncompleteHint = mode === "phone" && hasDigits && e164 === "";
+
   function handleCountry(next: Country) {
     setCountry(next);
-    onChange(toE164(next.dialCode, localNumber));
+    const iso = next.iso2 as CountryCode;
+    const { maxDigits } = phoneMeta(iso);
+    // Re-format + re-validate the existing digits against the newly selected country.
+    const reformatted = formatLocal(iso, localNumber, maxDigits);
+    setLocalNumber(reformatted);
+    onChange(toE164(iso, reformatted));
   }
 
-  function handleLocal(value: string) {
-    setLocalNumber(value);
-    onChange(toE164(country.dialCode, value));
+  function handleLocal(raw: string) {
+    const iso = country.iso2 as CountryCode;
+    const formatted = formatLocal(iso, raw, meta.maxDigits);
+    setLocalNumber(formatted);
+    onChange(toE164(iso, formatted));
   }
 
   function handleEmail(value: string) {
@@ -49,7 +102,7 @@ export function LoginIdentityFields({
 
   function switchToPhone() {
     setMode("phone");
-    onChange(toE164(country.dialCode, localNumber));
+    onChange(toE164(country.iso2 as CountryCode, localNumber));
   }
 
   if (mode === "email") {
@@ -86,7 +139,7 @@ export function LoginIdentityFields({
           <input
             inputMode="tel"
             autoComplete="tel-national"
-            placeholder="99999 99999"
+            placeholder={meta.placeholder}
             value={localNumber}
             onChange={(event) => handleLocal(event.target.value)}
             autoFocus={autoFocus}
@@ -94,6 +147,11 @@ export function LoginIdentityFields({
             className="h-11 min-w-0 flex-1 rounded-xl border border-border bg-elevated px-4 text-fg placeholder:text-faint outline-none transition-colors focus:border-brand focus:ring-2 focus:ring-brand-ring"
           />
         </div>
+        {showIncompleteHint ? (
+          <p className="mt-1 text-xs text-faint">
+            Enter a valid {country.name} number ({meta.maxDigits} digits).
+          </p>
+        ) : null}
       </div>
       <button
         type="button"

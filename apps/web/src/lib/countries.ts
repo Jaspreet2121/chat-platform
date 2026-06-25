@@ -215,9 +215,10 @@ export const COUNTRIES: Country[] = [
   { name: "Zimbabwe", iso2: "ZW", dialCode: "+263" }
 ];
 
-// India is the default selection (matches current usage). No locale auto-detect so SSR stays deterministic.
+// India is the default selection (intended default). Explicit literal fallback so it can never resolve
+// to another country. No locale auto-detect, so SSR stays deterministic.
 export const DEFAULT_COUNTRY: Country =
-  COUNTRIES.find((country) => country.iso2 === "IN") ?? COUNTRIES[0];
+  COUNTRIES.find((country) => country.iso2 === "IN") ?? { name: "India", iso2: "IN", dialCode: "+91" };
 
 // Derive the flag emoji from the ISO2 code via regional-indicator symbols (🇮 + 🇳 = 🇮🇳). Avoids
 // bundling 240 emoji and stays correct for every entry.
@@ -229,13 +230,4 @@ export function flagEmoji(iso2: string): string {
     base + (code.charCodeAt(0) - 65),
     base + (code.charCodeAt(1) - 65)
   );
-}
-
-// Combine a dial code + a locally-typed national number into an E.164 string (e.g. "+91" + "09041 70 5621"
-// → "+919041705621"). Strips spaces/dashes/parens and leading zeros (national trunk prefix). Returns ""
-// when no digits are entered, so callers can keep the submit button disabled. The output is the SAME
-// E.164 format requestOtp already accepts — no backend/lib change.
-export function toE164(dialCode: string, localNumber: string): string {
-  const digits = localNumber.replace(/\D/g, "").replace(/^0+/, "");
-  return digits ? `${dialCode}${digits}` : "";
 }
