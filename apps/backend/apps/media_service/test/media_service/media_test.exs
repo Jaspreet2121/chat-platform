@@ -56,6 +56,19 @@ defmodule MediaService.MediaTest do
              })
   end
 
+  test "create_upload accepts recorded voice audio (audio/webm)" do
+    assert {:ok, upload} =
+             Media.create_upload(%{
+               "owner_user_id" => @owner_user_id,
+               "filename" => "voice-message-123.webm",
+               "content_type" => "audio/webm",
+               "size_bytes" => 4096
+             })
+
+    assert is_binary(upload.upload_url)
+    assert String.ends_with?(upload.object_key, "/voice-message-123.webm")
+  end
+
   test "create_upload succeeds through safe adapter" do
     assert {:ok, upload} =
              Media.create_upload(%{

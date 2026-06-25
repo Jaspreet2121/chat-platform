@@ -10,6 +10,8 @@ defmodule MediaService.Media do
 
   # Kept in sync with the frontend allowedMediaTypes set (apps/web chat page). video/quicktime (.mov)
   # is what Mac screen recordings / iPhone clips use; video/webm + video/x-matroska (.mkv) are common too.
+  # audio/webm + audio/ogg are the typical MediaRecorder voice-message outputs (Chrome/Firefox); Safari
+  # records audio/mp4 (already allowed above).
   @allowed_content_types MapSet.new([
                            "image/jpeg",
                            "image/png",
@@ -17,6 +19,8 @@ defmodule MediaService.Media do
                            "application/pdf",
                            "audio/mpeg",
                            "audio/mp4",
+                           "audio/webm",
+                           "audio/ogg",
                            "video/mp4",
                            "video/quicktime",
                            "video/webm",

@@ -57,6 +57,8 @@ const allowedMediaTypes = new Set([
   "application/pdf",
   "audio/mpeg",
   "audio/mp4",
+  "audio/webm",
+  "audio/ogg",
   "video/mp4",
   "video/quicktime",
   "video/webm",
@@ -455,6 +457,28 @@ export default function ChatPage() {
       void channel?.stopTyping().catch(() => undefined);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Message send failed.");
+    } finally {
+      setIsSending(false);
+    }
+  }
+
+  // Send a recorded voice message: feed the blob (as a File) through the existing media upload+send flow
+  // (no compression — audio uploads as-is) so it renders via the inline <audio> player like any media.
+  // Rethrows on failure so the Composer keeps the recording preview for a retry.
+  async function handleSendVoice(file: File) {
+    if (!selectedConversationId) return;
+    setIsSending(true);
+    const replyToId = replyingTo?.message_id;
+    try {
+      const message = await uploadAndSendMediaMessage(file, "", replyToId);
+      setMessages((current) => mergeMessage(current, message));
+      setReplyingTo(null);
+      setMediaStatus("");
+      setStatus("Voice message sent.");
+      void channel?.stopTyping().catch(() => undefined);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Voice message send failed.");
+      throw error;
     } finally {
       setIsSending(false);
     }
@@ -887,6 +911,7 @@ export default function ChatPage() {
               : null
           }
           onCancelReply={() => setReplyingTo(null)}
+          onSendVoice={handleSendVoice}
         />
 
         <ConversationDetailsPanel
