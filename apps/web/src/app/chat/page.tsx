@@ -733,6 +733,7 @@ export default function ChatPage() {
           isOpen={isDetailsOpen && Boolean(selectedConversationId)}
           onClose={() => setIsDetailsOpen(false)}
           onlineUserIds={onlineUserIds}
+          currentUserId={session?.user_id}
         />
       </section>
     </main>

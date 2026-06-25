@@ -1,7 +1,9 @@
+import { useEffect, useState } from "react";
 import { Users, X } from "lucide-react";
 import type { ConversationDetail } from "@/lib/api";
 import { Avatar, IconButton } from "@/components";
 import { cn } from "@/lib/cn";
+import { PublicProfileCard } from "./PublicProfileCard";
 
 export type ConversationDetailsPanelProps = {
   conversation: ConversationDetail | null;
@@ -11,6 +13,8 @@ export type ConversationDetailsPanelProps = {
   onClose: () => void;
   /** user_ids currently present in this conversation (have it open). */
   onlineUserIds?: string[];
+  /** The viewer's own user id (to mark "You" in a profile). */
+  currentUserId?: string;
 };
 
 function shortId(id: string): string {
@@ -23,14 +27,24 @@ export function ConversationDetailsPanel({
   title,
   isOpen,
   onClose,
-  onlineUserIds = []
+  onlineUserIds = [],
+  currentUserId
 }: ConversationDetailsPanelProps) {
+  const [profileUserId, setProfileUserId] = useState<string | null>(null);
+
+  // Reset any open profile when the details panel itself closes.
+  useEffect(() => {
+    if (!isOpen) setProfileUserId(null);
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   const type = conversation?.type ?? "conversation";
   const participants = conversation?.participants ?? [];
   const createdBy = conversation?.created_by;
   const online = new Set(onlineUserIds);
+  const selectedRole =
+    participants.find((p) => p.user_id === profileUserId)?.role;
 
   return (
     <div className="fixed inset-0 z-30 flex justify-end">
@@ -77,29 +91,33 @@ export function ConversationDetailsPanel({
                 {participants.map((participant) => {
                   const isOnline = online.has(participant.user_id);
                   return (
-                    <li
-                      key={participant.user_id}
-                      className="flex items-center gap-3 rounded-xl px-2.5 py-2 transition-colors hover:bg-elevated"
-                    >
-                      <Avatar id={participant.user_id} size="sm" online={isOnline} />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-fg">
-                          {shortId(participant.user_id)}
-                        </p>
-                        <p
-                          className={cn(
-                            "truncate text-xs capitalize",
-                            isOnline ? "text-success" : "text-faint"
-                          )}
-                        >
-                          {isOnline ? "online" : participant.role}
-                        </p>
-                      </div>
-                      {createdBy && participant.user_id === createdBy ? (
-                        <span className="rounded-full bg-brand-subtle/60 px-2 py-0.5 text-[11px] font-medium text-brand-hover">
-                          owner
-                        </span>
-                      ) : null}
+                    <li key={participant.user_id}>
+                      <button
+                        type="button"
+                        onClick={() => setProfileUserId(participant.user_id)}
+                        title="View profile"
+                        className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-elevated"
+                      >
+                        <Avatar id={participant.user_id} size="sm" online={isOnline} />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-fg">
+                            {shortId(participant.user_id)}
+                          </p>
+                          <p
+                            className={cn(
+                              "truncate text-xs capitalize",
+                              isOnline ? "text-success" : "text-faint"
+                            )}
+                          >
+                            {isOnline ? "online" : participant.role}
+                          </p>
+                        </div>
+                        {createdBy && participant.user_id === createdBy ? (
+                          <span className="rounded-full bg-brand-subtle/60 px-2 py-0.5 text-[11px] font-medium text-brand-hover">
+                            owner
+                          </span>
+                        ) : null}
+                      </button>
                     </li>
                   );
                 })}
@@ -112,6 +130,16 @@ export function ConversationDetailsPanel({
           </div>
         </div>
       </aside>
+
+      {profileUserId ? (
+        <PublicProfileCard
+          userId={profileUserId}
+          role={selectedRole}
+          online={online.has(profileUserId)}
+          isSelf={profileUserId === currentUserId}
+          onClose={() => setProfileUserId(null)}
+        />
+      ) : null}
     </div>
   );
 }
