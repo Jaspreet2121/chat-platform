@@ -170,7 +170,9 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
                 className={cn(
                   "flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-all duration-150",
                   "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring",
-                  active ? "bg-surface text-fg shadow-subtle" : "text-muted hover:text-fg"
+                  active
+                    ? "bg-brand-subtle text-brand-hover shadow-subtle ring-1 ring-inset ring-brand/20"
+                    : "text-muted hover:text-fg"
                 )}
               >
                 {option.label}

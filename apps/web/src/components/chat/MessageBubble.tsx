@@ -180,49 +180,35 @@ export function MessageBubble({
       <div className={cn("flex max-w-[78%] flex-col gap-1", isOwn ? "items-end" : "items-start")}>
         <div
           className={cn(
-            "rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed transition-shadow",
+            // Single clean surface (no nested ring/glow). Colors are theme-aware tokens: own = green,
+            // others = blue on light; tinted glass on dark. Hover darkens bg + border smoothly.
+            "rounded-2xl border px-3.5 py-2.5 text-sm leading-relaxed shadow-pop transition-colors dark:backdrop-blur-md",
             isOwn
-              ? // Signature own bubble: brand indigo gradient + soft lift + a faint top inner-light.
-                // Pops on both themes (brand-hover is darker indigo on light, lighter on dark).
-                "rounded-br-md bg-gradient-to-br from-brand to-brand-hover text-white shadow-glow-sm ring-1 ring-inset ring-white/10"
-              : // Others: a DEFINED opaque surface + crisp border + soft drop-shadow on light; on dark,
-                // keep the frosted-glass look (translucent surface + blur) that reads well there.
-                "rounded-bl-md border border-border bg-surface text-fg shadow-pop dark:border-border/70 dark:bg-surface/70 dark:shadow-subtle dark:backdrop-blur-md"
+              ? "rounded-br-md bg-[var(--bubble-own-bg)] text-[var(--bubble-own-fg)] border-[var(--bubble-own-border)] hover:bg-[var(--bubble-own-bg-hover)] hover:border-[var(--bubble-own-border-hover)]"
+              : "rounded-bl-md bg-[var(--bubble-other-bg)] text-[var(--bubble-other-fg)] border-[var(--bubble-other-border)] hover:bg-[var(--bubble-other-bg-hover)] hover:border-[var(--bubble-other-border-hover)]"
           )}
         >
           {!isDeleted && !isEditing && isForwarded ? (
-            <p
-              className={cn(
-                "mb-1 flex items-center gap-1 text-[11px] italic",
-                isOwn ? "text-white/60" : "text-faint"
-              )}
-            >
+            <p className="mb-1 flex items-center gap-1 text-[11px] italic opacity-70">
               <Forward className="h-3 w-3" aria-hidden /> Forwarded
             </p>
           ) : null}
 
           {!isDeleted && !isEditing && message.reply_to_message_id ? (
-            <div
-              className={cn(
-                "mb-1.5 rounded-md border-l-2 px-2 py-1 text-xs",
-                isOwn ? "border-white/50 bg-white/10" : "border-brand bg-elevated/70"
-              )}
-            >
-              <p className={cn("font-medium", isOwn ? "text-white/90" : "text-brand-hover")}>
+            <div className="mb-1.5 rounded-md border-l-2 border-black/20 bg-black/[0.05] px-2 py-1 text-xs dark:border-white/25 dark:bg-white/[0.06]">
+              <p className="font-medium opacity-90">
                 {quoted
                   ? quoted.sender_user_id === currentUserId
                     ? "You"
                     : `#${quoted.sender_user_id.slice(0, 8)}`
                   : "Original message"}
               </p>
-              <p className={cn("truncate", isOwn ? "text-white/70" : "text-muted")}>
-                {quoted ? messageSnippet(quoted) : "…"}
-              </p>
+              <p className="truncate opacity-70">{quoted ? messageSnippet(quoted) : "…"}</p>
             </div>
           ) : null}
 
           {isDeleted ? (
-            <p className={cn("italic", isOwn ? "text-white/70" : "text-faint")}>Message deleted</p>
+            <p className="italic opacity-70">Message deleted</p>
           ) : isEditing ? (
             <div className="space-y-2">
               <input
@@ -241,7 +227,7 @@ export function MessageBubble({
               />
               <div className="flex gap-1.5">
                 <button
-                  className="inline-flex items-center gap-1 rounded-md bg-white/15 px-2 py-1 text-xs font-medium disabled:opacity-50"
+                  className="inline-flex items-center gap-1 rounded-md bg-black/10 px-2 py-1 text-xs font-medium disabled:opacity-50 dark:bg-white/15"
                   disabled={isBusy || !editDraft.trim()}
                   onClick={saveEdit}
                   type="button"
@@ -249,7 +235,7 @@ export function MessageBubble({
                   <Check className="h-3.5 w-3.5" aria-hidden /> Save
                 </button>
                 <button
-                  className="inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-xs font-medium disabled:opacity-50"
+                  className="inline-flex items-center gap-1 rounded-md bg-black/[0.06] px-2 py-1 text-xs font-medium disabled:opacity-50 dark:bg-white/10"
                   disabled={isBusy}
                   onClick={() => setIsEditing(false)}
                   type="button"

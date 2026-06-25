@@ -31,6 +31,19 @@
   --color-brand-hover: 79 70 229; /* #4f46e5 darker indigo → readable accent text on light */
   --color-brand-subtle: 224 231 255; /* #e0e7ff light indigo tint for chips/surfaces */
 
+  /* Message bubbles — full color values (so they can hold rgba on dark). Own = soft green, others =
+     soft blue; clearly distinct, dark on-bubble text, with a slightly darker hover. */
+  --bubble-own-bg: #d6f5e0;
+  --bubble-own-bg-hover: #bfeecd;
+  --bubble-own-border: #a8e4ba;
+  --bubble-own-border-hover: #8fdca6;
+  --bubble-own-fg: #173404;
+  --bubble-other-bg: #d8ecfb;
+  --bubble-other-bg-hover: #c3e1f8;
+  --bubble-other-border: #aed3f2;
+  --bubble-other-border-hover: #93c4ee;
+  --bubble-other-fg: #042c53;
+
   /* Soft NEUTRAL drop-shadows (read as depth on light, unlike glows). */
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 1px rgba(16, 24, 40, 0.04);
   --shadow-md: 0 2px 8px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.05);
@@ -57,6 +70,19 @@
   --color-faint: 91 100 114; /* #5b6472 */
   --color-brand-hover: 129 140 248; /* #818cf8 lighter indigo → pops on dark */
   --color-brand-subtle: 30 27 75; /* #1e1b4b deep indigo tint */
+
+  /* Dark bubbles keep the frosted-glass feel, but tinted with the same green/blue identity (translucent
+     so backdrop-blur shows the depth); light foreground text for readability. */
+  --bubble-own-bg: rgba(34, 197, 94, 0.14);
+  --bubble-own-bg-hover: rgba(34, 197, 94, 0.2);
+  --bubble-own-border: rgba(34, 197, 94, 0.3);
+  --bubble-own-border-hover: rgba(34, 197, 94, 0.45);
+  --bubble-own-fg: #e7e9ee;
+  --bubble-other-bg: rgba(59, 130, 246, 0.14);
+  --bubble-other-bg-hover: rgba(59, 130, 246, 0.2);
+  --bubble-other-border: rgba(59, 130, 246, 0.3);
+  --bubble-other-border-hover: rgba(59, 130, 246, 0.45);
+  --bubble-other-fg: #e7e9ee;
 
   /* Dark depth: deeper black shadows (paired with the indigo glows used on accents). */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);

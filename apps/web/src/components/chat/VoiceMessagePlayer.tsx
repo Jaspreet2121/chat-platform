@@ -16,10 +16,11 @@ export type VoiceMessagePlayerProps = {
   onError: () => void;
 };
 
-// A custom, futuristic voice-message player: play/pause, a synthetic waveform that fills with playback
-// progress (accent-colored played bars + a gentle equalizer pulse while playing), duration/elapsed, and
-// click/drag-to-seek. Uses a hidden <audio> ref (not the native controls) and the HTML5 Audio API.
-export function VoiceMessagePlayer({ url, isOwn, seed, onError }: VoiceMessagePlayerProps) {
+// A custom voice-message player: play/pause, a synthetic waveform that fills with playback progress, a
+// gentle equalizer pulse while playing, duration/elapsed, and click/drag-to-seek. Uses a hidden <audio>
+// ref (not native controls). Colors inherit the parent bubble's text color (currentColor), so it reads
+// on any bubble (green/blue on light, tinted glass on dark) — `isOwn` is no longer needed for styling.
+export function VoiceMessagePlayer({ url, seed, onError }: VoiceMessagePlayerProps) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const waveRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -169,11 +170,10 @@ export function VoiceMessagePlayer({ url, isOwn, seed, onError }: VoiceMessagePl
         disabled={isLoading}
         aria-label={isPlaying ? "Pause voice message" : "Play voice message"}
         className={cn(
-          "grid h-10 w-10 shrink-0 place-items-center rounded-full transition-all duration-200 disabled:opacity-60",
-          isOwn
-            ? "bg-white text-brand hover:bg-white/90"
-            : "bg-gradient-to-br from-brand to-brand-hover text-white hover:brightness-110",
-          isPlaying && (isOwn ? "shadow-[0_0_14px_rgba(255,255,255,0.45)]" : "shadow-glow")
+          // Inherits the bubble's text color; a subtle wash circle that works on any bubble surface.
+          "grid h-10 w-10 shrink-0 place-items-center rounded-full bg-black/10 text-current",
+          "transition-colors duration-200 hover:bg-black/15 disabled:opacity-60",
+          "dark:bg-white/15 dark:hover:bg-white/20"
         )}
       >
         {isLoading ? (
@@ -208,14 +208,9 @@ export function VoiceMessagePlayer({ url, isOwn, seed, onError }: VoiceMessagePl
                   animationDelay: `${(index % 8) * 90}ms`
                 }}
                 className={cn(
-                  "min-w-0 flex-1 rounded-full transition-colors duration-150",
-                  played
-                    ? isOwn
-                      ? "bg-white"
-                      : "bg-brand"
-                    : isOwn
-                      ? "bg-white/30"
-                      : "bg-border-strong",
+                  // Inherits the bubble's text color: played bars solid, unplayed dimmed.
+                  "min-w-0 flex-1 rounded-full bg-current transition-opacity duration-150",
+                  played ? "opacity-100" : "opacity-30",
                   isPlaying && "animate-voice-bar"
                 )}
               />
@@ -223,12 +218,7 @@ export function VoiceMessagePlayer({ url, isOwn, seed, onError }: VoiceMessagePl
           })}
         </div>
 
-        <div
-          className={cn(
-            "flex items-center gap-1 text-[11px]",
-            isOwn ? "text-white/70" : "text-faint"
-          )}
-        >
+        <div className="flex items-center gap-1 text-[11px] text-current opacity-70">
           <Mic className="h-3 w-3 shrink-0" aria-hidden />
           <span className="tabular-nums">{formatClock(displaySeconds)}</span>
         </div>
