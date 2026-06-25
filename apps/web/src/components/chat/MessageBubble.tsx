@@ -158,7 +158,7 @@ export function MessageBubble({
     <div
       id={`msg-${message.message_id}`}
       className={cn(
-        "group flex items-end gap-2 animate-slide-up rounded-2xl transition-colors duration-700",
+        "group flex items-end gap-2 animate-bubble-in rounded-2xl transition-colors duration-700",
         isOwn ? "flex-row-reverse" : "flex-row",
         // Brief flash when jumped-to from a search/starred result (fades via the transition above).
         isHighlighted && "bg-brand/15"
@@ -177,10 +177,12 @@ export function MessageBubble({
       <div className={cn("flex max-w-[78%] flex-col gap-1", isOwn ? "items-end" : "items-start")}>
         <div
           className={cn(
-            "rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed shadow-subtle",
+            "rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed transition-shadow",
             isOwn
-              ? "rounded-br-md bg-brand text-white"
-              : "rounded-bl-md border border-border bg-elevated text-fg"
+              ? // Signature own bubble: brand gradient + soft indigo glow + a faint top inner-light.
+                "rounded-br-md bg-gradient-to-br from-brand to-brand-hover text-white shadow-glow-sm ring-1 ring-inset ring-white/10"
+              : // Others: clean frosted-glass surface that floats over the ambient backdrop.
+                "rounded-bl-md border border-border/70 bg-surface/70 text-fg shadow-subtle backdrop-blur-md"
           )}
         >
           {!isDeleted && !isEditing && isForwarded ? (
@@ -198,7 +200,7 @@ export function MessageBubble({
             <div
               className={cn(
                 "mb-1.5 rounded-md border-l-2 px-2 py-1 text-xs",
-                isOwn ? "border-white/50 bg-white/10" : "border-brand bg-bg"
+                isOwn ? "border-white/50 bg-white/10" : "border-brand bg-elevated/70"
               )}
             >
               <p className={cn("font-medium", isOwn ? "text-white/90" : "text-brand-hover")}>
@@ -279,10 +281,10 @@ export function MessageBubble({
                   aria-pressed={mine}
                   aria-label={`${reaction.emoji} ${reaction.count}${mine ? ", your reaction — tap to remove" : ""}`}
                   className={cn(
-                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs transition-colors disabled:cursor-default",
+                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs backdrop-blur-sm transition-all disabled:cursor-default enabled:hover:scale-105",
                     mine
-                      ? "border-brand bg-brand/15 text-fg"
-                      : "border-border bg-elevated text-muted enabled:hover:bg-border"
+                      ? "border-brand/60 bg-brand/15 text-fg shadow-glow-sm"
+                      : "border-border/70 bg-surface/70 text-muted enabled:hover:bg-elevated"
                   )}
                 >
                   <span className="text-sm leading-none">{reaction.emoji}</span>
@@ -315,7 +317,7 @@ export function MessageBubble({
                 aria-label="Message actions"
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
-                className="rounded p-0.5 text-faint transition-colors hover:text-fg"
+                className="rounded-md p-1 text-faint transition-colors hover:bg-elevated hover:text-fg"
               >
                 <MoreHorizontal className="h-4 w-4" aria-hidden />
               </button>
@@ -324,7 +326,7 @@ export function MessageBubble({
                 <div
                   role="menu"
                   className={cn(
-                    "absolute top-full z-30 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-surface shadow-elevated animate-scale-in",
+                    "absolute top-full z-30 mt-1 w-48 overflow-hidden rounded-xl border border-border/70 bg-surface/90 shadow-elevated backdrop-blur-xl animate-scale-in",
                     // Open toward the screen interior so the menu never clips the edge: own messages sit
                     // on the right (anchor right, extend left); others sit on the left (anchor left,
                     // extend right).

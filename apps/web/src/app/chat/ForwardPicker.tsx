@@ -23,7 +23,7 @@ export function ForwardPicker({
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-fade-in">
       <button type="button" aria-label="Close" onClick={onClose} className="absolute inset-0" />
 
       <Card className="relative flex max-h-[70vh] w-full max-w-sm flex-col p-0 animate-scale-in">

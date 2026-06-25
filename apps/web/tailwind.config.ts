@@ -46,7 +46,9 @@ const config: Config = {
       boxShadow: {
         subtle: "0 1px 2px rgba(0, 0, 0, 0.25)",
         elevated: "0 8px 30px rgba(0, 0, 0, 0.45)",
-        glow: "0 0 0 1px rgba(99, 102, 241, 0.2), 0 8px 30px rgba(99, 102, 241, 0.12)"
+        glow: "0 0 0 1px rgba(99, 102, 241, 0.2), 0 8px 30px rgba(99, 102, 241, 0.12)",
+        // Soft directional glow under own-message bubbles (the signature lift). Indigo, both themes.
+        "glow-sm": "0 6px 22px -8px rgba(99, 102, 241, 0.55)"
       },
       keyframes: {
         "fade-in": {
@@ -70,6 +72,11 @@ const config: Config = {
         "voice-bar": {
           "0%, 100%": { transform: "scaleY(0.75)" },
           "50%": { transform: "scaleY(1)" }
+        },
+        // Signature message-bubble entrance: a refined rise + settle (opacity + slight lift/scale).
+        "bubble-in": {
+          from: { opacity: "0", transform: "translateY(6px) scale(0.985)" },
+          to: { opacity: "1", transform: "translateY(0) scale(1)" }
         }
       },
       animation: {
@@ -77,7 +84,8 @@ const config: Config = {
         "slide-up": "slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1)",
         "scale-in": "scale-in 0.25s cubic-bezier(0.16, 1, 0.3, 1)",
         "slide-in-right": "slide-in-right 0.28s cubic-bezier(0.16, 1, 0.3, 1)",
-        "voice-bar": "voice-bar 0.9s ease-in-out infinite"
+        "voice-bar": "voice-bar 0.9s ease-in-out infinite",
+        "bubble-in": "bubble-in 0.32s cubic-bezier(0.16, 1, 0.3, 1)"
       }
     }
   },

@@ -24,7 +24,7 @@ export function ChatHeader({
   online
 }: ChatHeaderProps) {
   return (
-    <header className="flex items-center gap-2 border-b border-border bg-surface/60 px-3 py-3 backdrop-blur sm:px-6">
+    <header className="flex items-center gap-2 border-b border-border/70 bg-surface/55 px-3 py-3 backdrop-blur-xl sm:px-6">
       {onBack && (
         <div className="md:hidden">
           <IconButton label="Back to conversations" variant="ghost" onClick={onBack} type="button">

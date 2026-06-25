@@ -101,7 +101,7 @@ export function MessageList({
 
   if (!hasConversation) {
     return (
-      <div className="flex-1">
+      <div className="chat-ambient flex-1">
         <EmptyState
           icon={<MessagesSquare className="h-6 w-6" aria-hidden />}
           title="Select or create a conversation"
@@ -113,7 +113,7 @@ export function MessageList({
 
   if (isLoading) {
     return (
-      <div className="flex flex-1 items-center justify-center text-faint">
+      <div className="chat-ambient flex flex-1 items-center justify-center text-faint">
         <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
       </div>
     );
@@ -121,7 +121,7 @@ export function MessageList({
 
   if (messages.length === 0) {
     return (
-      <div className="flex-1">
+      <div className="chat-ambient flex-1">
         <EmptyState
           icon={<MessageSquare className="h-6 w-6" aria-hidden />}
           title="No messages yet"
@@ -132,7 +132,7 @@ export function MessageList({
   }
 
   return (
-    <div className="flex-1 space-y-3 overflow-y-auto px-4 py-5 sm:px-6">
+    <div className="chat-ambient flex-1 space-y-3 overflow-y-auto px-4 py-5 sm:px-6">
       {ordered.map((message) => (
         <MessageBubble
           key={message.message_id}

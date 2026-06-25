@@ -104,3 +104,26 @@ textarea {
   background: rgba(99, 102, 241, 0.35);
   color: #fff;
 }
+
+/*
+ * Ambient backdrop behind the message area — soft brand glows for depth (richer-feeling on the dark
+ * base, airy on the light base). Brand indigo is the same in both themes; the surrounding surface
+ * differs, so it reads as intended in each.
+ */
+.chat-ambient {
+  background:
+    radial-gradient(820px 460px at 12% 0%, rgba(99, 102, 241, 0.08), transparent 60%),
+    radial-gradient(680px 520px at 100% 100%, rgba(99, 102, 241, 0.06), transparent 55%);
+}
+
+/* Reduced-motion: collapse all animations/transitions to near-instant (honors the OS preference). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

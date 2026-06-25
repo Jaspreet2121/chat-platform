@@ -21,8 +21,13 @@ export function ConversationListItem({
       type="button"
       onClick={() => onSelect(conversation.conversation_id)}
       className={cn(
-        "flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-left transition-colors",
-        isSelected ? "bg-brand-subtle/60 ring-1 ring-brand/40" : "hover:bg-elevated"
+        // Tasteful left accent bar on the selected row (via ::before, no layout shift) + a soft
+        // brand-tinted surface; others get a quiet hover.
+        "relative flex w-full items-center gap-3 rounded-xl px-2.5 py-2.5 text-left transition-all duration-150",
+        "before:absolute before:left-0 before:top-1/2 before:h-7 before:-translate-y-1/2 before:rounded-r-full before:bg-brand before:transition-all before:content-['']",
+        isSelected
+          ? "bg-brand-subtle/50 ring-1 ring-inset ring-brand/30 before:w-1 before:opacity-100"
+          : "before:w-0 before:opacity-0 hover:bg-elevated"
       )}
     >
       <Avatar id={conversation.conversation_id} name={conversation.title ?? undefined} />

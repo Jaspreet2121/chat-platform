@@ -54,11 +54,11 @@ export function ConversationDetailsPanel({
         type="button"
         aria-label="Close details"
         onClick={onClose}
-        className="absolute inset-0 bg-black/50 animate-fade-in"
+        className="absolute inset-0 bg-black/50 backdrop-blur-sm animate-fade-in"
       />
 
-      {/* Drawer — full-screen on mobile, fixed-width panel on desktop */}
-      <aside className="relative flex h-full w-full flex-col border-l border-border bg-surface shadow-elevated animate-slide-in-right sm:w-96">
+      {/* Drawer — full-screen on mobile, fixed-width glass panel on desktop */}
+      <aside className="relative flex h-full w-full flex-col border-l border-border/70 bg-surface/80 shadow-elevated backdrop-blur-xl animate-slide-in-right sm:w-96">
         <header className="flex items-center justify-between border-b border-border px-4 py-3">
           <h3 className="text-sm font-semibold text-fg">Conversation details</h3>
           <IconButton label="Close details" variant="ghost" onClick={onClose} type="button">

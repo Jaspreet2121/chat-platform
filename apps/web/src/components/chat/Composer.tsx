@@ -63,7 +63,7 @@ export function Composer({
   }
 
   return (
-    <form className="border-t border-border bg-surface/60 p-3 backdrop-blur sm:p-4" onSubmit={onSubmit}>
+    <form className="border-t border-border/70 bg-surface/55 p-3 backdrop-blur-xl sm:p-4" onSubmit={onSubmit}>
       {replyPreview ? (
         <div className="mb-2 flex items-center gap-2 rounded-lg border-l-2 border-brand bg-elevated px-3 py-2">
           <CornerUpLeft className="h-4 w-4 shrink-0 text-brand-hover" aria-hidden />

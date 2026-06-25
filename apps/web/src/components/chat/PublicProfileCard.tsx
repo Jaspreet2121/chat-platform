@@ -48,7 +48,7 @@ export function PublicProfileCard({ userId, role, online, isSelf, onClose }: Pub
   const name = profile?.display_name?.trim() || `User ${shortId(userId)}`;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 animate-fade-in">
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-fade-in">
       <button type="button" aria-label="Close" onClick={onClose} className="absolute inset-0" />
 
       <Card className="relative w-full max-w-xs p-6 text-center animate-scale-in">

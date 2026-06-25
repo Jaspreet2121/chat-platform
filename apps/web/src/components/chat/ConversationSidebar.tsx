@@ -89,7 +89,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
   } = props;
 
   return (
-    <aside className="flex h-full flex-col border-r border-border bg-surface">
+    <aside className="flex h-full flex-col border-r border-border bg-surface/60 backdrop-blur-xl">
       {/* Brand + signed-in identity + logout */}
       <div className="border-b border-border p-4">
         <div className="flex items-center justify-between">
