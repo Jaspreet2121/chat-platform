@@ -22,41 +22,34 @@ const nav = [
   { href: "/admin/health", label: "Health", icon: Activity, exact: false }
 ];
 
-type GateState = "checking" | "ok";
+// Explicit gate state machine. We only ever leave "loading" AFTER getCurrentSession resolves, so a
+// not-yet-loaded session is never treated as "not admin". Redirects happen only in the terminal
+// non-authorized states.
+type GateStatus = "loading" | "authorized" | "forbidden" | "unauthenticated";
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [state, setState] = useState<GateState>("checking");
+  const [status, setStatus] = useState<GateStatus>("loading");
   // One-shot redirect guard (the /chat<->/login ping-pong lesson): never replaceState in a loop.
   const redirectedRef = useRef(false);
 
+  // Resolve the session, THEN decide. Never redirects — only sets the terminal status.
   useEffect(() => {
     let active = true;
 
-    function redirect(to: string) {
-      if (!redirectedRef.current) {
-        redirectedRef.current = true;
-        router.replace(to);
-      }
-    }
-
     async function check() {
       if (!hasAccessToken()) {
-        redirect("/login");
+        if (active) setStatus("unauthenticated");
         return;
       }
       try {
         const session = await getCurrentSession();
         if (!active) return;
-        if (session.is_admin) {
-          setState("ok");
-        } else {
-          // Authenticated but not an admin — send them back to the app.
-          redirect("/chat");
-        }
+        setStatus(session.is_admin === true ? "authorized" : "forbidden");
       } catch {
-        if (active) redirect("/login");
+        // Missing/expired/invalid session → bounce to login (not /chat).
+        if (active) setStatus("unauthenticated");
       }
     }
 
@@ -64,13 +57,21 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, [router]);
+  }, []);
 
-  if (state !== "ok") {
+  // Redirect ONLY once a terminal, non-authorized status is reached — never while still loading.
+  useEffect(() => {
+    if (status === "loading" || status === "authorized") return;
+    if (redirectedRef.current) return;
+    redirectedRef.current = true;
+    router.replace(status === "forbidden" ? "/chat" : "/login");
+  }, [status, router]);
+
+  if (status !== "authorized") {
     return (
       <div className="flex min-h-screen items-center justify-center text-muted">
         <Loader2 className="mr-2 h-5 w-5 animate-spin" aria-hidden />
-        Checking admin access…
+        {status === "loading" ? "Checking admin access…" : "Redirecting…"}
       </div>
     );
   }
