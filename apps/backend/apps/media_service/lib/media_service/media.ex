@@ -157,11 +157,22 @@ defmodule MediaService.Media do
 
   defp required_content_type(attrs) do
     with {:ok, content_type} <- required_attr(attrs, "content_type"),
-         true <- MapSet.member?(@allowed_content_types, content_type) do
-      {:ok, content_type}
+         base_type = base_content_type(content_type),
+         true <- MapSet.member?(@allowed_content_types, base_type) do
+      {:ok, base_type}
     else
       _ -> {:error, :media_invalid}
     end
+  end
+
+  # MediaRecorder sends parameterized types like "audio/webm; codecs=opus"; the allow-list holds base
+  # types, so normalize to the base (everything before the first ";", trimmed) before the check — and
+  # store that base type (defense in depth even though the frontend already strips it).
+  defp base_content_type(content_type) do
+    content_type
+    |> String.split(";", parts: 2)
+    |> hd()
+    |> String.trim()
   end
 
   defp required_size(attrs) do

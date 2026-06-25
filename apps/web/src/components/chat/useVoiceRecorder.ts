@@ -107,7 +107,11 @@ export function useVoiceRecorder(): VoiceRecorder {
           return;
         }
 
-        const type = recorder.mimeType || mimeType || "audio/webm";
+        // MediaRecorder reports the full type with a codecs parameter (e.g. "audio/webm; codecs=opus").
+        // Normalize to the base type for the allow-list + upload — the recorded container is unchanged,
+        // so the base label is correct and the inline <audio> still plays it.
+        const rawType = recorder.mimeType || mimeType || "audio/webm";
+        const type = rawType.split(";")[0].trim();
         const blob = new Blob(chunksRef.current, { type });
         const name = `voice-message-${Date.now()}.${extensionFor(type)}`;
         setFile(new File([blob], name, { type }));

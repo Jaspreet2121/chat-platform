@@ -69,6 +69,20 @@ defmodule MediaService.MediaTest do
     assert String.ends_with?(upload.object_key, "/voice-message-123.webm")
   end
 
+  test "create_upload accepts a codec-parameterized type (audio/webm; codecs=opus)" do
+    # MediaRecorder's full type; the codecs parameter is stripped to the base before the allow-list
+    # check, so this now succeeds (it was rejected as :media_invalid before the fix).
+    assert {:ok, upload} =
+             Media.create_upload(%{
+               "owner_user_id" => @owner_user_id,
+               "filename" => "voice-message-123.webm",
+               "content_type" => "audio/webm; codecs=opus",
+               "size_bytes" => 4096
+             })
+
+    assert is_binary(upload.upload_url)
+  end
+
   test "create_upload succeeds through safe adapter" do
     assert {:ok, upload} =
              Media.create_upload(%{
