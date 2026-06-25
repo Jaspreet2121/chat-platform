@@ -307,6 +307,47 @@ export function getAdminUsers(opts: { status?: string; q?: string; page?: number
   return request<AdminUsersPage>(`/api/v1/admin/users${qs ? `?${qs}` : ""}`);
 }
 
+export type EnforcementEntry = {
+  action_type: string;
+  reason?: string | null;
+  action_by?: string | null;
+  starts_at?: string | null;
+  ends_at?: string | null;
+  created_at?: string | null;
+};
+
+export type AdminUserDetail = {
+  auth: {
+    user_id: string;
+    phone_number?: string | null;
+    email?: string | null;
+    status: string;
+    is_admin: boolean;
+    created_at?: string | null;
+    updated_at?: string | null;
+  };
+  profile: {
+    display_name?: string | null;
+    avatar_media_id?: string | null;
+    bio?: string | null;
+    created_at?: string | null;
+    updated_at?: string | null;
+  } | null;
+  stats: {
+    conversations: number;
+    messages_sent: number;
+    media: number;
+    storage_bytes: number;
+    last_active_at?: string | null;
+  };
+  enforcement: EnforcementEntry[];
+  reports: { against: AdminReport[]; by: AdminReport[] };
+};
+
+export function getAdminUser(userId: string) {
+  return request<AdminUserDetail>(`/api/v1/admin/users/${encodeURIComponent(userId)}`);
+}
+
 export function suspendUser(userId: string, reason: string) {
   return request<AdminUser>(`/api/v1/admin/users/${encodeURIComponent(userId)}/suspend`, {
     method: "POST",

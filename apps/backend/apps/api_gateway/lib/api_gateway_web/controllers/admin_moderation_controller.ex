@@ -15,6 +15,10 @@ defmodule ApiGatewayWeb.AdminModerationController do
     forward(conn, SharedInfra.AuthClient.list_users(take_paging(params)))
   end
 
+  def get_user(conn, %{"id" => user_id}) do
+    forward(conn, SharedInfra.AuthClient.get_user_detail(%{"user_id" => user_id}))
+  end
+
   def suspend_user(conn, %{"id" => user_id} = params) do
     forward(
       conn,

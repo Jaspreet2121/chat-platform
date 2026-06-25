@@ -16,6 +16,7 @@ import {
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
 import { cn } from "@/lib/cn";
+import { UserDetailDrawer } from "./UserDetailDrawer";
 
 type Tab = "users" | "reports" | "audit";
 
@@ -148,6 +149,7 @@ function UsersTab({ flash }: { flash: Flash }) {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
   const [confirm, setConfirm] = useState<{ user: AdminUser } | null>(null);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -228,18 +230,25 @@ function UsersTab({ flash }: { flash: Flash }) {
         <Card className="divide-y divide-border">
           {users.map((u) => (
             <div key={u.user_id} className="flex items-center gap-3 p-3">
-              <Avatar id={u.user_id} name={u.phone_number ?? u.email ?? undefined} size="sm" />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium text-fg">
-                  {u.phone_number || u.email || shortId(u.user_id)}
-                  {u.is_admin ? (
-                    <span className="ml-2 rounded-full bg-brand-subtle/60 px-1.5 py-0.5 text-[10px] font-medium text-brand-hover">
-                      admin
-                    </span>
-                  ) : null}
-                </p>
-                <p className="truncate text-xs text-faint">{shortId(u.user_id)}</p>
-              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedUserId(u.user_id)}
+                className="flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left transition-colors hover:opacity-80"
+                title="View profile"
+              >
+                <Avatar id={u.user_id} name={u.phone_number ?? u.email ?? undefined} size="sm" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-fg">
+                    {u.phone_number || u.email || shortId(u.user_id)}
+                    {u.is_admin ? (
+                      <span className="ml-2 rounded-full bg-brand-subtle/60 px-1.5 py-0.5 text-[10px] font-medium text-brand-hover">
+                        admin
+                      </span>
+                    ) : null}
+                  </p>
+                  <p className="truncate text-xs text-faint">{shortId(u.user_id)}</p>
+                </div>
+              </button>
               <StatusBadge status={u.status} />
               <div className="flex gap-1">
                 {u.status === "active" ? (
@@ -287,6 +296,15 @@ function UsersTab({ flash }: { flash: Flash }) {
         onCancel={() => setConfirm(null)}
         busy={Boolean(confirm) && busyId === confirm?.user.user_id}
       />
+
+      {selectedUserId ? (
+        <UserDetailDrawer
+          userId={selectedUserId}
+          onClose={() => setSelectedUserId(null)}
+          onChanged={load}
+          flash={flash}
+        />
+      ) : null}
     </div>
   );
 }

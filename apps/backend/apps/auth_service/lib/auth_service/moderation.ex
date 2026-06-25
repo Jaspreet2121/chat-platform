@@ -173,6 +173,160 @@ defmodule AuthService.Moderation do
      }}
   end
 
+  # --- Rich user detail ---------------------------------------------------------------------------
+
+  @ts "'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'"
+
+  @doc """
+  Aggregates a full admin view of one user across the shared Postgres (auth + profile + per-user stats
+  + enforcement + report history). Admin-only surface — no privacy gating. Reads several domains'
+  tables directly since they all live in one DB (same approach as analytics/moderation).
+  """
+  def user_detail(attrs) do
+    with {:ok, user_id} <- require_attr(attrs, "user_id"),
+         {:ok, auth} <- fetch_auth(user_id) do
+      {:ok,
+       %{
+         auth: auth,
+         profile: fetch_profile(user_id),
+         stats: fetch_stats(user_id),
+         enforcement: fetch_enforcement(user_id),
+         reports: %{
+           against: fetch_reports(user_id, "reported_user_id"),
+           by: fetch_reports(user_id, "reporter_user_id")
+         }
+       }}
+    end
+  rescue
+    Postgrex.Error -> {:error, :user_not_found}
+    Ecto.Query.CastError -> {:error, :user_not_found}
+  end
+
+  defp fetch_auth(user_id) do
+    case Repo.query!(
+           "SELECT id::text, phone_number, email, status, is_admin, " <>
+             "to_char(created_at, #{@ts}) AS created_at, to_char(updated_at, #{@ts}) AS updated_at " <>
+             "FROM users_auth WHERE id = $1",
+           [uuid_param(user_id)]
+         ) do
+      %Postgrex.Result{rows: [[id, phone, email, status, is_admin, created_at, updated_at]]} ->
+        {:ok,
+         %{
+           user_id: id,
+           phone_number: phone,
+           email: email,
+           status: status,
+           is_admin: is_admin,
+           created_at: created_at,
+           updated_at: updated_at
+         }}
+
+      _ ->
+        {:error, :user_not_found}
+    end
+  end
+
+  defp fetch_profile(user_id) do
+    case Repo.query!(
+           "SELECT display_name, avatar_media_id::text, bio, " <>
+             "to_char(created_at, #{@ts}) AS created_at, to_char(updated_at, #{@ts}) AS updated_at " <>
+             "FROM user_profiles WHERE user_id = $1",
+           [uuid_param(user_id)]
+         ) do
+      %Postgrex.Result{rows: [[display_name, avatar, bio, created_at, updated_at]]} ->
+        %{
+          display_name: display_name,
+          avatar_media_id: avatar,
+          bio: bio,
+          created_at: created_at,
+          updated_at: updated_at
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp fetch_stats(user_id) do
+    p = [uuid_param(user_id)]
+
+    [[media_count, storage_bytes]] =
+      Repo.query!(
+        "SELECT count(*), COALESCE(SUM(size_bytes), 0)::bigint FROM media_assets WHERE owner_user_id = $1",
+        p
+      ).rows
+
+    %{
+      conversations:
+        scalar("SELECT count(*) FROM conversation_participants WHERE user_id = $1", p),
+      # NOTE: no index on messages.sender_user_id — fine at this scale; add one if message volume grows.
+      messages_sent: scalar("SELECT count(*) FROM messages WHERE sender_user_id = $1", p),
+      media: media_count,
+      storage_bytes: storage_bytes,
+      last_active_at: last_active(user_id)
+    }
+  end
+
+  defp last_active(user_id) do
+    %Postgrex.Result{rows: [[value]]} =
+      Repo.query!(
+        "SELECT to_char(GREATEST(m.last_msg, d.last_seen), #{@ts}) FROM " <>
+          "(SELECT max(created_at) AS last_msg FROM messages WHERE sender_user_id = $1) m, " <>
+          "(SELECT max(last_seen_at) AS last_seen FROM device_sessions WHERE user_id = $1) d",
+        [uuid_param(user_id)]
+      )
+
+    value
+  end
+
+  defp fetch_enforcement(user_id) do
+    %Postgrex.Result{rows: rows} =
+      Repo.query!(
+        "SELECT action_type, reason, action_by::text, " <>
+          "to_char(starts_at, #{@ts}), to_char(ends_at, #{@ts}), to_char(created_at, #{@ts}) " <>
+          "FROM enforcement_actions WHERE target_user_id = $1 ORDER BY created_at DESC LIMIT 50",
+        [uuid_param(user_id)]
+      )
+
+    Enum.map(rows, fn [action_type, reason, action_by, starts_at, ends_at, created_at] ->
+      %{
+        action_type: action_type,
+        reason: reason,
+        action_by: action_by,
+        starts_at: starts_at,
+        ends_at: ends_at,
+        created_at: created_at
+      }
+    end)
+  end
+
+  # `column` is a hard-coded constant ("reported_user_id" | "reporter_user_id") — never user input.
+  defp fetch_reports(user_id, column) do
+    %Postgrex.Result{rows: rows} =
+      Repo.query!(
+        "SELECT id::text, reporter_user_id::text, reported_user_id::text, reason, status, " <>
+          "to_char(created_at, #{@ts}) " <>
+          "FROM user_reports WHERE #{column} = $1 ORDER BY created_at DESC LIMIT 50",
+        [uuid_param(user_id)]
+      )
+
+    Enum.map(rows, fn [id, reporter, reported, reason, status, created_at] ->
+      %{
+        id: id,
+        reporter_user_id: reporter,
+        reported_user_id: reported,
+        reason: reason,
+        status: status,
+        created_at: created_at
+      }
+    end)
+  end
+
+  defp scalar(sql, params) do
+    %Postgrex.Result{rows: [[value]]} = Repo.query!(sql, params)
+    value || 0
+  end
+
   # --- internals ----------------------------------------------------------------------------------
 
   defp audit(actor_user_id, action, target_type, target_id, metadata) do

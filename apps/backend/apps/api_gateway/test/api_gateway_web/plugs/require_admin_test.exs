@@ -25,6 +25,7 @@ defmodule ApiGatewayWeb.RequireAdminTest.AdminSessionStub do
 
   for fun <- [
         :list_users,
+        :get_user_detail,
         :suspend_user,
         :reactivate_user,
         :ban_user,
@@ -65,6 +66,7 @@ defmodule ApiGatewayWeb.RequireAdminTest.NonAdminSessionStub do
 
   for fun <- [
         :list_users,
+        :get_user_detail,
         :suspend_user,
         :reactivate_user,
         :ban_user,

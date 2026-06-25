@@ -19,6 +19,7 @@ defmodule ApiGatewayWeb.AuthUnavailableStub do
 
   for fun <- [
         :list_users,
+        :get_user_detail,
         :suspend_user,
         :reactivate_user,
         :ban_user,

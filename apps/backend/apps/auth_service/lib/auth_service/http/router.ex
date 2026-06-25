@@ -47,6 +47,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, {:ok, AuthService.Accounts.list_users(body(conn))})
   end
 
+  post "/internal/admin/users/get" do
+    send_result(conn, AuthService.Moderation.user_detail(body(conn)))
+  end
+
   post "/internal/admin/users/suspend" do
     send_result(conn, AuthService.Moderation.suspend_user(body(conn)))
   end

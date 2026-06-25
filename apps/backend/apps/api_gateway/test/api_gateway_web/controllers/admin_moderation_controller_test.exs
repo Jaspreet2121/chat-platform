@@ -10,6 +10,18 @@ defmodule ApiGatewayWeb.AdminModerationControllerTest.AdminAuthStub do
     do: {:ok, %{page: 1, page_size: 25, users: [%{user_id: "u1", status: "active"}]}}
 
   @impl true
+  def get_user_detail(attrs),
+    do:
+      {:ok,
+       %{
+         auth: %{user_id: attrs["user_id"], status: "active", is_admin: false},
+         profile: %{display_name: "Test"},
+         stats: %{conversations: 1, messages_sent: 2, media: 0, storage_bytes: 0},
+         enforcement: [],
+         reports: %{against: [], by: []}
+       }}
+
+  @impl true
   def suspend_user(attrs), do: {:ok, %{user_id: attrs["user_id"], status: "suspended"}}
   @impl true
   def reactivate_user(attrs), do: {:ok, %{user_id: attrs["user_id"], status: "active"}}
@@ -45,6 +57,7 @@ defmodule ApiGatewayWeb.AdminModerationControllerTest.NonAdminAuthStub do
 
   for fun <- [
         :list_users,
+        :get_user_detail,
         :suspend_user,
         :reactivate_user,
         :ban_user,
@@ -108,6 +121,18 @@ defmodule ApiGatewayWeb.AdminModerationControllerTest do
 
     assert conn.status == 200
     assert %{"users" => [%{"user_id" => "u1"}]} = Jason.decode!(conn.resp_body)
+  end
+
+  test "admin gets a user detail (200, aggregated shape)" do
+    Application.put_env(:shared_infra, :auth_client_adapter, AdminAuthStub)
+    conn = call(:get, "/api/v1/admin/users/u1")
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+    assert body["auth"]["user_id"] == "u1"
+    assert is_map(body["stats"])
+    assert is_list(body["enforcement"])
+    assert is_map(body["reports"])
   end
 
   test "admin suspends a user (200, suspended)" do
