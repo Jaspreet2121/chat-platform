@@ -3,11 +3,20 @@
 import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, MessagesSquare, RotateCcw, ShieldCheck } from "lucide-react";
-import { requestOtp, verifyOtp } from "@/lib/api";
+import { getMe, requestOtp, verifyOtp } from "@/lib/api";
 import { hasAccessToken, setSessionTokens } from "@/lib/session";
-import { Button, Card, Input, LoginIdentityFields } from "@/components";
+import { AuthLayout, Button, Card, Input, LoginIdentityFields } from "@/components";
+import { cn } from "@/lib/cn";
+import { OnboardingStep } from "./OnboardingStep";
 
-type Step = "phone" | "code";
+type Step = "phone" | "code" | "onboarding";
+type Mode = "signin" | "signup";
+
+const HIGHLIGHTS = [
+  "Secure one-time-passcode sign-in",
+  "Real-time chat, presence & receipts",
+  "Voice messages, reactions & media"
+];
 
 // Only honor SAME-ORIGIN, absolute internal paths ("/admin"). Reject protocol-relative ("//evil"),
 // absolute URLs, and anything not starting with "/" → guards against open redirects. Defaults to /chat.
@@ -30,12 +39,14 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = safeRedirect(searchParams.get("redirect"));
+  const [mode, setMode] = useState<Mode>("signin");
   const [step, setStep] = useState<Step>("phone");
   const [destination, setDestination] = useState("");
   // Captured silently from the requestOtp response and passed to verifyOtp — never a visible field.
   const [otpRequestId, setOtpRequestId] = useState("");
   const [otpCode, setOtpCode] = useState("");
   const [deliveryMethod, setDeliveryMethod] = useState("");
+  const [userId, setUserId] = useState("");
   const [error, setError] = useState("");
   const [expiresIn, setExpiresIn] = useState(0);
   const [resendIn, setResendIn] = useState(0);
@@ -45,8 +56,14 @@ function LoginForm() {
 
   const deviceId = useMemo(() => "web-browser", []);
   const codeInputRef = useRef<HTMLInputElement | null>(null);
-  // One-shot guard: redirect to /chat at most once per mount (defense in depth against any cycle).
+  // One-shot guard: redirect at most once per mount (defense in depth against any cycle).
   const hasRedirectedRef = useRef(false);
+
+  const goToApp = useCallback(() => {
+    if (hasRedirectedRef.current) return;
+    hasRedirectedRef.current = true;
+    router.replace(redirectTo);
+  }, [router, redirectTo]);
 
   useEffect(() => {
     if (hasAccessToken() && !hasRedirectedRef.current) {
@@ -55,7 +72,7 @@ function LoginForm() {
     }
   }, [router, redirectTo]);
 
-  // Focus the code field as soon as we reach step two.
+  // Focus the code field as soon as we reach the verification step.
   useEffect(() => {
     if (step === "code") {
       codeInputRef.current?.focus();
@@ -128,11 +145,26 @@ function LoginForm() {
         deviceId
       });
 
+      // OTP mechanics unchanged: store the tokens exactly as before.
       setSessionTokens({
         accessToken: response.access_token,
         refreshToken: response.refresh_token
       });
-      router.replace(redirectTo);
+      setUserId(response.user_id);
+
+      // New/un-onboarded users (no display_name) go to onboarding; everyone else straight to chat.
+      // A /me failure must NOT block login — fall through to chat (the sidebar still nudges onboarding).
+      try {
+        const me = await getMe();
+        if (!me.display_name || me.display_name.trim() === "") {
+          setStep("onboarding");
+          return;
+        }
+      } catch {
+        // ignore — proceed to chat
+      }
+
+      goToApp();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "That code didn't work. Try again.");
     } finally {
@@ -151,108 +183,144 @@ function LoginForm() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4 py-10">
-      <div className="w-full max-w-md animate-scale-in">
-        {/* Brand mark */}
-        <div className="mb-8 flex flex-col items-center text-center">
-          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-brand shadow-glow">
-            <MessagesSquare className="h-6 w-6 text-white" aria-hidden />
-          </div>
-          <h1 className="text-2xl font-semibold tracking-tight text-fg">Chat Platform</h1>
-          <p className="mt-1 text-sm text-muted">
-            {step === "phone" ? "Sign in to continue" : "Enter your verification code"}
-          </p>
-        </div>
-
+    <AuthLayout
+      icon={<MessagesSquare className="h-6 w-6" aria-hidden />}
+      title="Chat Platform"
+      tagline="Messaging that feels effortless."
+      highlights={HIGHLIGHTS}
+      footnote="Protected by one-time passcode authentication."
+    >
+      {step === "onboarding" ? (
+        <OnboardingStep userId={userId} onDone={goToApp} onSkip={goToApp} />
+      ) : step === "code" ? (
         <Card className="p-6 sm:p-7">
-          {step === "phone" ? (
-            <form className="space-y-5" onSubmit={handleRequestOtp}>
-              <LoginIdentityFields onChange={setDestination} autoFocus />
+          <form className="space-y-5" onSubmit={handleVerifyOtp}>
+            <button
+              type="button"
+              onClick={changeNumber}
+              className="inline-flex items-center gap-1.5 text-sm text-muted transition-colors hover:text-fg"
+            >
+              <ArrowLeft className="h-4 w-4" aria-hidden />
+              Change number
+            </button>
 
-              {error && <p className="text-sm text-danger">{error}</p>}
-
-              <Button
-                type="submit"
-                fullWidth
-                isLoading={isRequesting}
-                disabled={destination.trim() === ""}
-              >
-                {!isRequesting && <ArrowRight className="h-4 w-4" aria-hidden />}
-                Send code
-              </Button>
-            </form>
-          ) : (
-            <form className="space-y-5" onSubmit={handleVerifyOtp}>
-              <button
-                type="button"
-                onClick={changeNumber}
-                className="inline-flex items-center gap-1.5 text-sm text-muted transition-colors hover:text-fg"
-              >
-                <ArrowLeft className="h-4 w-4" aria-hidden />
-                Change number
-              </button>
-
-              <p className="text-sm text-muted">
+            <div>
+              <h1 className="text-xl font-semibold tracking-tight text-fg">Enter your code</h1>
+              <p className="mt-1 text-sm text-muted">
                 We sent a code via {deliveryMethod || "SMS"} to{" "}
                 <span className="font-medium text-fg">{destination.trim()}</span>.
               </p>
+            </div>
 
-              <Input
-                ref={codeInputRef}
-                label="Verification code"
-                leftIcon={<ShieldCheck className="h-4 w-4" aria-hidden />}
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                maxLength={8}
-                placeholder="123456"
-                className="tracking-[0.4em]"
-                value={otpCode}
-                onChange={(event) => setOtpCode(event.target.value)}
-                hint={
-                  expiresIn > 0
-                    ? `Code expires in ${expiresIn}s`
-                    : "Your code has expired — resend a new one."
-                }
-                required
-              />
+            <Input
+              ref={codeInputRef}
+              label="Verification code"
+              leftIcon={<ShieldCheck className="h-4 w-4" aria-hidden />}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={8}
+              placeholder="123456"
+              className="tracking-[0.4em]"
+              value={otpCode}
+              onChange={(event) => setOtpCode(event.target.value)}
+              hint={
+                expiresIn > 0
+                  ? `Code expires in ${expiresIn}s`
+                  : "Your code has expired — resend a new one."
+              }
+              required
+            />
 
-              {debugCode && (
-                <p className="rounded-lg border border-border bg-elevated px-3 py-2 text-xs text-faint">
-                  <span className="font-medium text-muted">dev</span> · echo code{" "}
-                  <span className="font-mono text-fg">{debugCode}</span> (auto-filled)
-                </p>
-              )}
+            {debugCode && (
+              <p className="rounded-lg border border-border bg-elevated px-3 py-2 text-xs text-faint">
+                <span className="font-medium text-muted">dev</span> · echo code{" "}
+                <span className="font-mono text-fg">{debugCode}</span> (auto-filled)
+              </p>
+            )}
 
-              {error && <p className="text-sm text-danger">{error}</p>}
+            {error && <p className="text-sm text-danger">{error}</p>}
 
-              <Button
-                type="submit"
-                fullWidth
-                isLoading={isVerifying}
-                disabled={otpCode.trim() === ""}
-              >
-                Verify &amp; continue
-              </Button>
+            <Button type="submit" fullWidth isLoading={isVerifying} disabled={otpCode.trim() === ""}>
+              Verify &amp; continue
+            </Button>
 
-              <Button
-                type="button"
-                variant="ghost"
-                fullWidth
-                onClick={sendOtp}
-                isLoading={isRequesting}
-                disabled={resendIn > 0}
-                leftIcon={<RotateCcw className="h-4 w-4" aria-hidden />}
-              >
-                {resendIn > 0 ? `Resend code in ${resendIn}s` : "Resend code"}
-              </Button>
-            </form>
-          )}
+            <Button
+              type="button"
+              variant="ghost"
+              fullWidth
+              onClick={sendOtp}
+              isLoading={isRequesting}
+              disabled={resendIn > 0}
+              leftIcon={<RotateCcw className="h-4 w-4" aria-hidden />}
+            >
+              {resendIn > 0 ? `Resend code in ${resendIn}s` : "Resend code"}
+            </Button>
+          </form>
         </Card>
+      ) : (
+        <Card className="p-6 sm:p-7">
+          {/* Sign in / Sign up — same OTP path (auto-register); the choice sets the copy/expectation. */}
+          <div
+            role="tablist"
+            aria-label="Sign in or sign up"
+            className="mb-5 flex gap-1 rounded-xl border border-border bg-elevated p-1"
+          >
+            {(["signin", "signup"] as Mode[]).map((option) => (
+              <button
+                key={option}
+                type="button"
+                role="tab"
+                aria-selected={mode === option}
+                onClick={() => setMode(option)}
+                className={cn(
+                  "flex-1 rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-brand-ring",
+                  mode === option ? "bg-surface text-fg shadow-subtle" : "text-muted hover:text-fg"
+                )}
+              >
+                {option === "signin" ? "Sign in" : "Sign up"}
+              </button>
+            ))}
+          </div>
 
-        <p className="mt-6 text-center text-xs text-faint">
-          Protected by one-time passcode authentication.
-        </p>
-      </div>
-    </main>
+          <div className="mb-5">
+            <h1 className="text-xl font-semibold tracking-tight text-fg">
+              {mode === "signup" ? "Create your account" : "Welcome back"}
+            </h1>
+            <p className="mt-1 text-sm text-muted">
+              {mode === "signup"
+                ? "Enter your phone or email — we'll send a code to get you started."
+                : "Enter your phone or email — we'll send a code to sign you in."}
+            </p>
+          </div>
+
+          <form className="space-y-5" onSubmit={handleRequestOtp}>
+            <LoginIdentityFields onChange={setDestination} autoFocus />
+
+            {error && <p className="text-sm text-danger">{error}</p>}
+
+            <Button
+              type="submit"
+              fullWidth
+              isLoading={isRequesting}
+              disabled={destination.trim() === ""}
+            >
+              {!isRequesting && <ArrowRight className="h-4 w-4" aria-hidden />}
+              Send code
+            </Button>
+          </form>
+
+          <p className="mt-5 text-center text-xs text-faint">
+            {mode === "signup" ? "Already have an account? " : "New to Chat Platform? "}
+            <button
+              type="button"
+              onClick={() => setMode(mode === "signup" ? "signin" : "signup")}
+              className="font-medium text-brand-hover transition-colors hover:text-brand"
+            >
+              {mode === "signup" ? "Sign in" : "Create an account"}
+            </button>
+          </p>
+        </Card>
+      )}
+    </AuthLayout>
   );
 }

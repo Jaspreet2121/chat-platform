@@ -12,5 +12,7 @@ export { CountryCodeSelect } from "./CountryCodeSelect";
 export type { CountryCodeSelectProps } from "./CountryCodeSelect";
 export { ThemeProvider } from "./ThemeProvider";
 export { ThemeToggle } from "./ThemeToggle";
+export { AuthLayout } from "./AuthLayout";
+export type { AuthLayoutProps } from "./AuthLayout";
 export { LoginIdentityFields } from "./LoginIdentityFields";
 export type { LoginIdentityFieldsProps } from "./LoginIdentityFields";
