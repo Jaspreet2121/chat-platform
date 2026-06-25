@@ -5,7 +5,7 @@ import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { EmptyState } from "./EmptyState";
 import { MessageBubble } from "./MessageBubble";
-import { formatTime } from "./format";
+import { formatTime, senderDisplayName } from "./format";
 import { useUserProfile } from "./useUserProfile";
 
 // Consecutive messages from the same sender within this window collapse into one group (one
@@ -208,7 +208,7 @@ function MessageGroup({
   const first = group[0];
   const isOwn = first.sender_user_id === currentUserId;
   const profile = useUserProfile(isOwn ? null : first.sender_user_id);
-  const name = profile?.display_name?.trim() || `#${first.sender_user_id.slice(0, 8)}`;
+  const name = senderDisplayName(profile?.display_name);
 
   return (
     <div className={cn("flex flex-col", isOwn ? "items-end" : "items-start")}>

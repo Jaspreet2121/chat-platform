@@ -354,17 +354,27 @@ export default function ChatPage() {
     const title = newTitle.trim();
     const participantUserIds = selectedParticipants.map((profile) => profile.user_id);
 
-    if (!title || participantUserIds.length === 0) {
-      setStatus("Enter a title and add at least one participant.");
+    if (participantUserIds.length === 0) {
+      setStatus("Add at least one participant.");
+      return;
+    }
+
+    // Exactly one participant → a 1:1 DIRECT chat (no title needed; auto-named after the other person).
+    // Two or more → a GROUP (title required). The backend accepts type:"direct" end-to-end.
+    const isDirect = participantUserIds.length === 1;
+    if (!isDirect && !title) {
+      setStatus("Add a title for a group conversation.");
       return;
     }
 
     setIsCreatingConversation(true);
 
     try {
+      const directTitle = selectedParticipants[0]?.display_name?.trim() || "Direct chat";
       const conversation = await createConversation({
-        title,
-        participantUserIds
+        title: isDirect ? title || directTitle : title,
+        participantUserIds,
+        type: isDirect ? "direct" : "group"
       });
       setNewTitle("");
       setLookupUserId("");
@@ -372,7 +382,7 @@ export default function ChatPage() {
       setLookupStatus("");
       setSelectedParticipants([]);
       await refreshConversationList(conversation.conversation_id);
-      setStatus("Conversation created.");
+      setStatus(isDirect ? "Direct chat created." : "Conversation created.");
     } catch (error) {
       setStatus(
         error instanceof Error ? error.message : "Conversation creation failed."

@@ -20,3 +20,13 @@ export function metadataString(metadata: Message["metadata"], key: string): stri
   if (!metadata || typeof metadata[key] !== "string") return null;
   return metadata[key] as string;
 }
+
+/**
+ * A clean sender label: the profile's display_name if set, otherwise a friendly generic ("Member") —
+ * never a raw user-id hash. Real names appear once users set a profile. Shared by message group headers
+ * and reply-quotes so the fallback is consistent.
+ */
+export function senderDisplayName(displayName?: string | null): string {
+  const name = displayName?.trim();
+  return name && name.length > 0 ? name : "Member";
+}

@@ -16,7 +16,7 @@ import type { Message } from "@/lib/api";
 import { getMediaDownloadUrl } from "@/lib/api";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
-import { formatTime, metadataString } from "./format";
+import { formatTime, metadataString, senderDisplayName } from "./format";
 import { VoiceMessagePlayer } from "./VoiceMessagePlayer";
 import { useUserProfile } from "./useUserProfile";
 
@@ -67,6 +67,11 @@ export function MessageBubble({
   const senderProfile = useUserProfile(isOwn ? null : message.sender_user_id);
   const isMedia = Boolean(message.media_id);
   const isDeleted = message.status === "deleted";
+  // Photo/video render seamlessly (no surrounding bubble) — only the media's own rounded surface shows.
+  // Voice + files keep the bubble. A deleted media message falls back to the text "deleted" bubble.
+  const mediaContentType = metadataString(message.metadata, "content_type") ?? "";
+  const isImageOrVideo = isMedia && /^(image|video)\//.test(mediaContentType);
+  const seamlessMedia = isImageOrVideo && !isDeleted;
   const isEdited = Boolean(message.edited_at);
   const canEdit = isOwn && !isDeleted && !isMedia;
   const canDelete = isOwn && !isDeleted;
@@ -180,12 +185,18 @@ export function MessageBubble({
       <div className={cn("flex max-w-[78%] flex-col gap-1", isOwn ? "items-end" : "items-start")}>
         <div
           className={cn(
-            // Single clean surface (no nested ring/glow). Colors are theme-aware tokens: own = green,
-            // others = blue on light; tinted glass on dark. Hover darkens bg + border smoothly.
-            "rounded-2xl border px-3.5 py-2.5 text-sm leading-relaxed shadow-pop transition-colors dark:backdrop-blur-md",
-            isOwn
-              ? "rounded-br-md bg-[var(--bubble-own-bg)] text-[var(--bubble-own-fg)] border-[var(--bubble-own-border)] hover:bg-[var(--bubble-own-bg-hover)] hover:border-[var(--bubble-own-border-hover)]"
-              : "rounded-bl-md bg-[var(--bubble-other-bg)] text-[var(--bubble-other-fg)] border-[var(--bubble-other-border)] hover:bg-[var(--bubble-other-bg-hover)] hover:border-[var(--bubble-other-border-hover)]"
+            "text-sm leading-relaxed",
+            seamlessMedia
+              ? // Seamless photo/video: no bubble surface — only the media's own rounded box shows.
+                "max-w-full text-fg"
+              : cn(
+                  // Single clean surface (no nested ring/glow). Theme-aware tokens: own = green, others =
+                  // blue on light; tinted glass on dark. Hover darkens bg + border smoothly.
+                  "rounded-2xl border px-3.5 py-2.5 shadow-pop transition-colors dark:backdrop-blur-md",
+                  isOwn
+                    ? "rounded-br-md bg-[var(--bubble-own-bg)] text-[var(--bubble-own-fg)] border-[var(--bubble-own-border)] hover:bg-[var(--bubble-own-bg-hover)] hover:border-[var(--bubble-own-border-hover)]"
+                    : "rounded-bl-md bg-[var(--bubble-other-bg)] text-[var(--bubble-other-fg)] border-[var(--bubble-other-border)] hover:bg-[var(--bubble-other-bg-hover)] hover:border-[var(--bubble-other-border-hover)]"
+                )
           )}
         >
           {!isDeleted && !isEditing && isForwarded ? (
@@ -200,7 +211,7 @@ export function MessageBubble({
                 {quoted
                   ? quoted.sender_user_id === currentUserId
                     ? "You"
-                    : `#${quoted.sender_user_id.slice(0, 8)}`
+                    : senderDisplayName(null)
                   : "Original message"}
               </p>
               <p className="truncate opacity-70">{quoted ? messageSnippet(quoted) : "…"}</p>
@@ -553,7 +564,7 @@ function MediaMessageContent({ message, isOwn }: { message: Message; isOwn: bool
         <button
           type="button"
           onClick={() => setLightboxOpen(true)}
-          className="group block w-full overflow-hidden rounded-lg"
+          className="group block w-full overflow-hidden rounded-2xl"
           aria-label="Open image"
         >
           {/* Presigned URLs are dynamic/remote; next/image would need remotePatterns config, so a
@@ -561,7 +572,7 @@ function MediaMessageContent({ message, isOwn }: { message: Message; isOwn: bool
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             alt={caption || "Image attachment"}
-            className="max-h-64 w-full cursor-pointer rounded-lg object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+            className="max-h-64 w-full cursor-pointer rounded-2xl object-cover transition-transform duration-200 group-hover:scale-[1.03]"
             loading="lazy"
             onError={handleMediaError}
             src={url}
@@ -575,7 +586,7 @@ function MediaMessageContent({ message, isOwn }: { message: Message; isOwn: bool
           controls
           src={url}
           onError={handleMediaError}
-          className="max-h-72 w-full rounded-lg bg-black"
+          className="max-h-72 w-full rounded-2xl bg-black"
         />
       ) : null}
 
@@ -597,10 +608,7 @@ function MediaMessageContent({ message, isOwn }: { message: Message; isOwn: bool
           type="button"
           onClick={openInNewTab}
           disabled={isOpening}
-          className={cn(
-            "flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors disabled:opacity-50",
-            isOwn ? "bg-white/15 hover:bg-white/25" : "bg-bg hover:bg-border"
-          )}
+          className="flex w-full items-center gap-3 rounded-lg bg-black/10 px-3 py-2.5 text-left transition-colors hover:bg-black/15 disabled:opacity-50 dark:bg-white/10 dark:hover:bg-white/20"
         >
           <FileText className="h-5 w-5 shrink-0" aria-hidden />
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{filename}</span>
@@ -608,9 +616,7 @@ function MediaMessageContent({ message, isOwn }: { message: Message; isOwn: bool
         </button>
       ) : null}
 
-      {caption ? (
-        <p className={cn("text-sm", isOwn ? "text-white/90" : "text-muted")}>{caption}</p>
-      ) : null}
+      {caption ? <p className="text-sm text-muted">{caption}</p> : null}
 
       {openError ? <p className="text-xs text-danger">{openError}</p> : null}
 

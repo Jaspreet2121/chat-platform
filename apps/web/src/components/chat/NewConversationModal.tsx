@@ -92,6 +92,11 @@ export function NewConversationModal({
 
   if (!isOpen) return null;
 
+  // Exactly one participant → a 1:1 direct chat (no title needed); two or more → a group (title required).
+  const isDirect = selectedParticipants.length === 1;
+  const canCreate =
+    selectedParticipants.length > 0 && (isDirect || newTitle.trim().length > 0);
+
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-fade-in">
       <button type="button" aria-label="Close" onClick={onClose} className="absolute inset-0" />
@@ -111,8 +116,8 @@ export function NewConversationModal({
 
         <form className="flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onCreateConversation}>
           <Input
-            label="Conversation title"
-            placeholder="e.g. Launch Team"
+            label={isDirect ? "Title (optional)" : "Group title"}
+            placeholder={isDirect ? "Optional for a 1:1 chat" : "e.g. Launch Team"}
             value={newTitle}
             onChange={(event) => onNewTitleChange(event.target.value)}
             autoFocus
@@ -176,13 +181,21 @@ export function NewConversationModal({
             </div>
           ) : null}
 
+          <p className="px-0.5 text-xs text-faint">
+            {selectedParticipants.length === 0
+              ? "Add one person for a direct 1:1 chat, or more for a group."
+              : isDirect
+                ? "Direct 1:1 chat — named after the other person."
+                : "Group chat — add a title above."}
+          </p>
+
           <Button
             type="submit"
             fullWidth
             isLoading={isCreatingConversation}
-            disabled={selectedParticipants.length === 0}
+            disabled={!canCreate}
           >
-            Create conversation
+            {isDirect ? "Start direct chat" : "Create group"}
           </Button>
         </form>
       </Card>
