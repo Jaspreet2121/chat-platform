@@ -39,6 +39,7 @@ import {
 } from "@/components/chat";
 import { cn } from "@/lib/cn";
 import imageCompression from "browser-image-compression";
+import { ForwardPicker } from "./ForwardPicker";
 
 // Kept in sync with the backend allow-list (MediaService.Media @allowed_content_types). The file
 // picker's accept attribute is intentionally broader (image/*,video/*,…) so valid files aren't greyed
@@ -84,6 +85,9 @@ export default function ChatPage() {
   const [channel, setChannel] = useState<ConversationChannel | null>(null);
   const [draft, setDraft] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  // The message currently being replied to (quoted), and the one being forwarded (picker target).
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const [lookupUserId, setLookupUserId] = useState("");
   const [lookupProfile, setLookupProfile] = useState<UserProfile | null>(null);
@@ -408,19 +412,22 @@ export default function ChatPage() {
     }
 
     setIsSending(true);
+    const replyToId = replyingTo?.message_id;
 
     try {
       const message = selectedFile
-        ? await uploadAndSendMediaMessage(selectedFile, body)
+        ? await uploadAndSendMediaMessage(selectedFile, body, replyToId)
         : await sendCreate({
             conversationId: selectedConversationId,
             messageType: "text",
-            body
+            body,
+            replyToMessageId: replyToId
           });
 
       setMessages((current) => mergeMessage(current, message));
       setDraft("");
       setSelectedFile(null);
+      setReplyingTo(null);
       setMediaStatus("");
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
@@ -431,6 +438,35 @@ export default function ChatPage() {
       setStatus(error instanceof Error ? error.message : "Message send failed.");
     } finally {
       setIsSending(false);
+    }
+  }
+
+  // Forward the chosen message to a target conversation: re-send its content with a forwarded marker.
+  // Same conversation → over the socket (live + merge); another conversation → REST (shows on open).
+  async function handleForward(target: ConversationListItem) {
+    const source = forwardingMessage;
+    if (!source) return;
+    setForwardingMessage(null);
+
+    const input: CreateMessageInput = {
+      conversationId: target.conversation_id,
+      messageType: source.media_id ? "media" : "text",
+      body: source.body ?? undefined,
+      mediaId: source.media_id ?? undefined,
+      caption: source.caption ?? undefined,
+      metadata: { ...(source.metadata ?? {}), forwarded_from: source.sender_user_id }
+    };
+
+    try {
+      if (target.conversation_id === selectedConversationId) {
+        const message = await sendCreate(input);
+        setMessages((current) => mergeMessage(current, message));
+      } else {
+        await createMessage(input);
+      }
+      setStatus(`Forwarded to ${target.title || target.conversation_id}.`);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Forward failed.");
     }
   }
 
@@ -495,7 +531,8 @@ export default function ChatPage() {
         body: input.body,
         media_id: input.mediaId,
         caption: input.caption,
-        metadata: input.metadata
+        metadata: input.metadata,
+        reply_to_message_id: input.replyToMessageId
       });
 
       return reply as Message;
@@ -504,7 +541,7 @@ export default function ChatPage() {
     return createMessage(input);
   }
 
-  async function uploadAndSendMediaMessage(file: File, caption: string) {
+  async function uploadAndSendMediaMessage(file: File, caption: string, replyToMessageId?: string) {
     if (!allowedMediaTypes.has(file.type)) {
       throw new Error(`${file.type || "This file type"} is not supported yet.`);
     }
@@ -564,7 +601,8 @@ export default function ChatPage() {
       messageType: "media",
       mediaId: upload.media_id,
       caption,
-      metadata: mediaMetadata
+      metadata: mediaMetadata,
+      replyToMessageId
     });
 
     return {
@@ -709,6 +747,8 @@ export default function ChatPage() {
           hasConversation={Boolean(selectedConversationId)}
           onEdit={handleEditMessage}
           onDelete={handleDeleteMessage}
+          onReply={(m) => setReplyingTo(m)}
+          onForward={(m) => setForwardingMessage(m)}
         />
 
         <Composer
@@ -724,6 +764,18 @@ export default function ChatPage() {
           mediaStatus={mediaStatus}
           fileInputRef={fileInputRef}
           acceptTypes="image/*,video/*,audio/*,application/pdf"
+          replyPreview={
+            replyingTo
+              ? {
+                  name:
+                    replyingTo.sender_user_id === session?.user_id
+                      ? "You"
+                      : `#${replyingTo.sender_user_id.slice(0, 8)}`,
+                  snippet: replyingTo.media_id ? "Media" : replyingTo.body || "Message"
+                }
+              : null
+          }
+          onCancelReply={() => setReplyingTo(null)}
         />
 
         <ConversationDetailsPanel
@@ -735,6 +787,14 @@ export default function ChatPage() {
           onlineUserIds={onlineUserIds}
           currentUserId={session?.user_id}
         />
+
+        {forwardingMessage ? (
+          <ForwardPicker
+            conversations={conversations}
+            onPick={handleForward}
+            onClose={() => setForwardingMessage(null)}
+          />
+        ) : null}
       </section>
     </main>
   );

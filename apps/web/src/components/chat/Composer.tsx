@@ -1,5 +1,5 @@
 import { FormEvent, RefObject } from "react";
-import { Paperclip, Send, X } from "lucide-react";
+import { CornerUpLeft, Paperclip, Send, X } from "lucide-react";
 import { Button, IconButton } from "@/components";
 import { formatFileSize } from "./format";
 
@@ -16,6 +16,9 @@ export type ComposerProps = {
   mediaStatus: string;
   fileInputRef: RefObject<HTMLInputElement>;
   acceptTypes: string;
+  /** When replying, a quoted preview shown above the input. */
+  replyPreview?: { name: string; snippet: string } | null;
+  onCancelReply?: () => void;
 };
 
 export function Composer({
@@ -30,12 +33,32 @@ export function Composer({
   onClearFile,
   mediaStatus,
   fileInputRef,
-  acceptTypes
+  acceptTypes,
+  replyPreview,
+  onCancelReply
 }: ComposerProps) {
   const canSend = hasConversation && (Boolean(draft.trim()) || Boolean(selectedFile)) && !isSending;
 
   return (
     <form className="border-t border-border bg-surface/60 p-3 backdrop-blur sm:p-4" onSubmit={onSubmit}>
+      {replyPreview ? (
+        <div className="mb-2 flex items-center gap-2 rounded-lg border-l-2 border-brand bg-elevated px-3 py-2">
+          <CornerUpLeft className="h-4 w-4 shrink-0 text-brand-hover" aria-hidden />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-medium text-brand-hover">Replying to {replyPreview.name}</p>
+            <p className="truncate text-xs text-muted">{replyPreview.snippet}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onCancelReply}
+            aria-label="Cancel reply"
+            className="shrink-0 rounded-md p-1 text-faint transition-colors hover:text-fg"
+          >
+            <X className="h-4 w-4" aria-hidden />
+          </button>
+        </div>
+      ) : null}
+
       {selectedFile ? (
         <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-border bg-elevated px-3 py-2 text-sm">
           <span className="min-w-0 truncate text-muted">

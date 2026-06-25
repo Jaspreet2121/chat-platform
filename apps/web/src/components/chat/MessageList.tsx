@@ -25,6 +25,8 @@ export type MessageListProps = {
   hasConversation: boolean;
   onEdit: (messageId: string, body: string) => Promise<void>;
   onDelete: (messageId: string) => Promise<void>;
+  onReply?: (message: Message) => void;
+  onForward?: (message: Message) => void;
 };
 
 export function MessageList({
@@ -33,10 +35,18 @@ export function MessageList({
   isLoading,
   hasConversation,
   onEdit,
-  onDelete
+  onDelete,
+  onReply,
+  onForward
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const ordered = useMemo(() => sortChronologically(messages), [messages]);
+  // Lookup for resolving reply_to_message_id → the quoted message (when it's loaded).
+  const byId = useMemo(() => {
+    const map = new Map<string, Message>();
+    for (const m of messages) map.set(m.message_id, m);
+    return map;
+  }, [messages]);
 
   // Keep the newest message in view as messages arrive (send + realtime).
   useEffect(() => {
@@ -82,8 +92,14 @@ export function MessageList({
           key={message.message_id}
           message={message}
           isOwn={message.sender_user_id === currentUserId}
+          currentUserId={currentUserId}
+          quoted={
+            message.reply_to_message_id ? byId.get(message.reply_to_message_id) ?? null : null
+          }
           onEdit={onEdit}
           onDelete={onDelete}
+          onReply={onReply}
+          onForward={onForward}
         />
       ))}
       <div ref={bottomRef} />

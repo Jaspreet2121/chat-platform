@@ -12,6 +12,7 @@ export type ConversationChannel = {
     media_id?: string;
     caption?: string;
     metadata?: Record<string, unknown>;
+    reply_to_message_id?: string;
   }) => Promise<unknown>;
   editMessage: (messageId: string, body: string) => Promise<unknown>;
   deleteMessage: (messageId: string) => Promise<unknown>;

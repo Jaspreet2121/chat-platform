@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import {
   Check,
   CheckCheck,
+  CornerUpLeft,
   Download,
   FileText,
+  Forward,
   MoreHorizontal,
   Pencil,
   Trash2,
@@ -18,16 +20,33 @@ import { formatTime, metadataString } from "./format";
 export type MessageBubbleProps = {
   message: Message;
   isOwn: boolean;
+  /** The message this one replies to (resolved from the loaded list), or null if unknown/none. */
+  quoted?: Message | null;
+  currentUserId?: string;
   onEdit: (messageId: string, body: string) => Promise<void>;
   onDelete: (messageId: string) => Promise<void>;
+  onReply?: (message: Message) => void;
+  onForward?: (message: Message) => void;
 };
 
-export function MessageBubble({ message, isOwn, onEdit, onDelete }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  isOwn,
+  quoted,
+  currentUserId,
+  onEdit,
+  onDelete,
+  onReply,
+  onForward
+}: MessageBubbleProps) {
   const isMedia = Boolean(message.media_id);
   const isDeleted = message.status === "deleted";
   const isEdited = Boolean(message.edited_at);
   const canEdit = isOwn && !isDeleted && !isMedia;
   const canDelete = isOwn && !isDeleted;
+  const canReply = !isDeleted && Boolean(onReply);
+  const canForward = !isDeleted && Boolean(onForward);
+  const isForwarded = Boolean(message.metadata?.forwarded_from);
 
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.body ?? "");
@@ -35,8 +54,8 @@ export function MessageBubble({ message, isOwn, onEdit, onDelete }: MessageBubbl
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
-  // Actions are available only on own, non-deleted messages (edit is text-only; delete always).
-  const hasActions = !isEditing && (canEdit || canDelete);
+  // Reply/forward are available on any non-deleted message; edit (own text) / delete (own) too.
+  const hasActions = !isEditing && (canReply || canForward || canEdit || canDelete);
 
   // Close the actions popover on click-outside / Esc. Listeners attach only while open, AFTER the
   // opening click has fired, so opening the menu never immediately closes it.
@@ -106,6 +125,37 @@ export function MessageBubble({ message, isOwn, onEdit, onDelete }: MessageBubbl
               : "rounded-bl-md border border-border bg-elevated text-fg"
           )}
         >
+          {!isDeleted && !isEditing && isForwarded ? (
+            <p
+              className={cn(
+                "mb-1 flex items-center gap-1 text-[11px] italic",
+                isOwn ? "text-white/60" : "text-faint"
+              )}
+            >
+              <Forward className="h-3 w-3" aria-hidden /> Forwarded
+            </p>
+          ) : null}
+
+          {!isDeleted && !isEditing && message.reply_to_message_id ? (
+            <div
+              className={cn(
+                "mb-1.5 rounded-md border-l-2 px-2 py-1 text-xs",
+                isOwn ? "border-white/50 bg-white/10" : "border-brand bg-bg"
+              )}
+            >
+              <p className={cn("font-medium", isOwn ? "text-white/90" : "text-brand-hover")}>
+                {quoted
+                  ? quoted.sender_user_id === currentUserId
+                    ? "You"
+                    : `#${quoted.sender_user_id.slice(0, 8)}`
+                  : "Original message"}
+              </p>
+              <p className={cn("truncate", isOwn ? "text-white/70" : "text-muted")}>
+                {quoted ? messageSnippet(quoted) : "…"}
+              </p>
+            </div>
+          ) : null}
+
           {isDeleted ? (
             <p className={cn("italic", isOwn ? "text-white/70" : "text-faint")}>Message deleted</p>
           ) : isEditing ? (
@@ -182,8 +232,34 @@ export function MessageBubble({ message, isOwn, onEdit, onDelete }: MessageBubbl
               {menuOpen && (
                 <div
                   role="menu"
-                  className="absolute right-0 top-full z-30 mt-1 w-32 overflow-hidden rounded-lg border border-border bg-surface shadow-elevated animate-scale-in"
+                  className="absolute right-0 top-full z-30 mt-1 w-36 overflow-hidden rounded-lg border border-border bg-surface shadow-elevated animate-scale-in"
                 >
+                  {canReply && (
+                    <button
+                      role="menuitem"
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onReply?.(message);
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
+                    >
+                      <CornerUpLeft className="h-4 w-4" aria-hidden /> Reply
+                    </button>
+                  )}
+                  {canForward && (
+                    <button
+                      role="menuitem"
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onForward?.(message);
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
+                    >
+                      <Forward className="h-4 w-4" aria-hidden /> Forward
+                    </button>
+                  )}
                   {canEdit && (
                     <button
                       role="menuitem"
@@ -220,6 +296,19 @@ export function MessageBubble({ message, isOwn, onEdit, onDelete }: MessageBubbl
       </div>
     </div>
   );
+}
+
+// A one-line preview of a message for the reply quote block (text body, or a media-type label).
+function messageSnippet(m: Message): string {
+  if (m.status === "deleted") return "Message deleted";
+  if (m.media_id) {
+    const contentType = (m.metadata?.content_type as string) || "";
+    if (contentType.startsWith("image/")) return "📷 Photo";
+    if (contentType.startsWith("video/")) return "🎬 Video";
+    if (contentType.startsWith("audio/")) return "🎤 Audio";
+    return "📎 Attachment";
+  }
+  return m.body || "Message";
 }
 
 // Read-receipt ticks for own messages: single check = sent, double = delivered, blue double = read.

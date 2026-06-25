@@ -24,6 +24,7 @@ export type CreateMessageInput = {
   mediaId?: string;
   caption?: string;
   metadata?: Record<string, unknown>;
+  replyToMessageId?: string;
 };
 
 export type CreateMediaUploadInput = {
@@ -80,6 +81,7 @@ export type Message = {
   media_id?: string | null;
   caption?: string | null;
   metadata?: Record<string, unknown> | null;
+  reply_to_message_id?: string | null;
   status: string;
   created_at: string;
   edited_at?: string | null;
@@ -489,7 +491,8 @@ export function createMessage(input: CreateMessageInput) {
         body: input.body,
         media_id: input.mediaId,
         caption: input.caption,
-        metadata: input.metadata
+        metadata: input.metadata,
+        reply_to_message_id: input.replyToMessageId
       })
     }
   );
