@@ -144,15 +144,10 @@ export function VoiceMessagePlayer({ url, isOwn, seed, onError }: VoiceMessagePl
   const isLoading = !url;
 
   return (
-    <div
-      className={cn(
-        "flex min-w-[210px] max-w-[280px] items-center gap-3 rounded-2xl px-3 py-2.5 ring-1 backdrop-blur transition-shadow",
-        isOwn
-          ? "bg-white/10 ring-white/15"
-          : "bg-gradient-to-r from-brand/10 to-brand-subtle/20 ring-brand/20",
-        isPlaying && !isOwn && "shadow-glow"
-      )}
-    >
+    // No own surface here — the parent message bubble IS the surface. We render the player directly on
+    // it (single clean box), capped to a compact width so short clips aren't oversized.
+    <div className="flex w-[240px] max-w-full items-center gap-3">
+
       <audio
         ref={audioRef}
         src={url ?? undefined}
@@ -213,7 +208,7 @@ export function VoiceMessagePlayer({ url, isOwn, seed, onError }: VoiceMessagePl
                   animationDelay: `${(index % 8) * 90}ms`
                 }}
                 className={cn(
-                  "w-[3px] shrink-0 rounded-full transition-colors duration-150",
+                  "min-w-0 flex-1 rounded-full transition-colors duration-150",
                   played
                     ? isOwn
                       ? "bg-white"
