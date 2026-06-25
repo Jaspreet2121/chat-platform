@@ -1,6 +1,5 @@
 import { FormEvent } from "react";
-import Link from "next/link";
-import { LogOut, MessagesSquare, Plus, Search, ShieldAlert, UserPlus, X } from "lucide-react";
+import { LogOut, MessagesSquare, Plus, Search, UserPlus, X } from "lucide-react";
 import type {
   ConversationListItem as ConversationListItemData,
   Session,
@@ -90,21 +89,9 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
             </div>
             <span className="text-sm font-semibold text-fg">Chat Platform</span>
           </div>
-          <div className="flex items-center gap-1">
-            {session?.is_admin ? (
-              <Link
-                href="/admin"
-                title="Admin console"
-                aria-label="Admin console"
-                className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-muted transition-colors hover:bg-elevated hover:text-fg"
-              >
-                <ShieldAlert className="h-5 w-5" aria-hidden />
-              </Link>
-            ) : null}
-            <IconButton label="Log out" variant="danger" onClick={onLogout} type="button">
-              <LogOut className="h-5 w-5" aria-hidden />
-            </IconButton>
-          </div>
+          <IconButton label="Log out" variant="danger" onClick={onLogout} type="button">
+            <LogOut className="h-5 w-5" aria-hidden />
+          </IconButton>
         </div>
 
         {session ? (
