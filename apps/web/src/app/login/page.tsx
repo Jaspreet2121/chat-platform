@@ -1,7 +1,7 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, MessagesSquare, Phone, RotateCcw, ShieldCheck } from "lucide-react";
 import { requestOtp, verifyOtp } from "@/lib/api";
 import { hasAccessToken, setSessionTokens } from "@/lib/session";
@@ -9,8 +9,27 @@ import { Button, Card, Input } from "@/components";
 
 type Step = "phone" | "code";
 
+// Only honor SAME-ORIGIN, absolute internal paths ("/admin"). Reject protocol-relative ("//evil"),
+// absolute URLs, and anything not starting with "/" → guards against open redirects. Defaults to /chat.
+function safeRedirect(value: string | null): string {
+  if (!value) return "/chat";
+  if (!value.startsWith("/") || value.startsWith("//")) return "/chat";
+  return value;
+}
+
 export default function LoginPage() {
+  // useSearchParams must sit under a Suspense boundary for static prerendering.
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const redirectTo = safeRedirect(searchParams.get("redirect"));
   const [step, setStep] = useState<Step>("phone");
   const [destination, setDestination] = useState("");
   // Captured silently from the requestOtp response and passed to verifyOtp — never a visible field.
@@ -32,9 +51,9 @@ export default function LoginPage() {
   useEffect(() => {
     if (hasAccessToken() && !hasRedirectedRef.current) {
       hasRedirectedRef.current = true;
-      router.replace("/chat");
+      router.replace(redirectTo);
     }
-  }, [router]);
+  }, [router, redirectTo]);
 
   // Focus the code field as soon as we reach step two.
   useEffect(() => {
@@ -113,7 +132,7 @@ export default function LoginPage() {
         accessToken: response.access_token,
         refreshToken: response.refresh_token
       });
-      router.replace("/chat");
+      router.replace(redirectTo);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "That code didn't work. Try again.");
     } finally {

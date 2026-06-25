@@ -64,8 +64,14 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     if (status === "loading" || status === "authorized") return;
     if (redirectedRef.current) return;
     redirectedRef.current = true;
-    router.replace(status === "forbidden" ? "/chat" : "/login");
-  }, [status, router]);
+
+    if (status === "forbidden") {
+      router.replace("/chat");
+    } else {
+      // Unauthenticated → login, but remember where they were headed so login can return them here.
+      router.replace(`/login?redirect=${encodeURIComponent(pathname)}`);
+    }
+  }, [status, router, pathname]);
 
   if (status !== "authorized") {
     return (
