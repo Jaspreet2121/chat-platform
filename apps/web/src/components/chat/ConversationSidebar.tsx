@@ -38,6 +38,8 @@ export type ConversationSidebarProps = {
   conversations: ConversationListItemData[];
   selectedConversationId: string;
   onSelectConversation: (conversationId: string) => void;
+  /** Open a conversation AND scroll to a specific message (used by search results). */
+  onJumpToMessage: (conversationId: string, messageId: string) => void;
   isLoading: boolean;
 };
 
@@ -82,6 +84,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     conversations,
     selectedConversationId,
     onSelectConversation,
+    onJumpToMessage,
     isLoading
   } = props;
 
@@ -218,7 +221,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
       <MessageSearch
         conversations={conversations}
         currentUserId={session?.user_id}
-        onJump={onSelectConversation}
+        onJump={onJumpToMessage}
       />
 
       {/* Conversation list */}

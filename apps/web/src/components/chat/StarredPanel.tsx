@@ -13,7 +13,7 @@ export type StarredPanelProps = {
   conversations: ConversationListItem[];
   currentUserId?: string;
   /** Open the conversation a starred message belongs to (then close the panel). */
-  onJump: (conversationId: string) => void;
+  onJump: (conversationId: string, messageId: string) => void;
 };
 
 // Modal listing the caller's starred messages across all conversations (newest-starred first).
@@ -71,8 +71,8 @@ export function StarredPanel({
     );
   }
 
-  function jump(conversationId: string) {
-    onJump(conversationId);
+  function jump(conversationId: string, messageId: string) {
+    onJump(conversationId, messageId);
     onClose();
   }
 
@@ -115,7 +115,7 @@ export function StarredPanel({
                 <li key={message.message_id}>
                   <button
                     type="button"
-                    onClick={() => jump(message.conversation_id)}
+                    onClick={() => jump(message.conversation_id, message.message_id)}
                     className="w-full rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-elevated"
                   >
                     <div className="flex items-baseline justify-between gap-2">

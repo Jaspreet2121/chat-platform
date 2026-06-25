@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, MessageSquare, MessagesSquare } from "lucide-react";
 import type { Message } from "@/lib/api";
 import { EmptyState } from "./EmptyState";
@@ -31,6 +31,8 @@ export type MessageListProps = {
   onRemoveReaction?: (messageId: string) => void;
   onStar?: (messageId: string) => void;
   onUnstar?: (messageId: string) => void;
+  /** A message to scroll to + highlight (from a search / starred result). The nonce re-triggers. */
+  scrollTarget?: { id: string; n: number } | null;
 };
 
 export function MessageList({
@@ -45,9 +47,14 @@ export function MessageList({
   onReact,
   onRemoveReaction,
   onStar,
-  onUnstar
+  onUnstar,
+  scrollTarget
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  // The last scroll-target nonce we've acted on, so an incoming message doesn't re-trigger the jump.
+  const handledNonceRef = useRef<number | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ordered = useMemo(() => sortChronologically(messages), [messages]);
   // Lookup for resolving reply_to_message_id → the quoted message (when it's loaded).
   const byId = useMemo(() => {
@@ -56,10 +63,41 @@ export function MessageList({
     return map;
   }, [messages]);
 
-  // Keep the newest message in view as messages arrive (send + realtime).
+  // Keep the newest message in view as messages arrive (send + realtime) — UNLESS a jump-to-message is
+  // pending, in which case we let the scroll effect below land on the target instead of the bottom.
+  // (Reading the ref here is fine — it's inside an effect, not render.)
   useEffect(() => {
+    if (scrollTarget && handledNonceRef.current !== scrollTarget.n) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length]);
+  }, [messages.length, scrollTarget]);
+
+  // Scroll to + briefly highlight a search/starred target once it's loaded. Nonce-guarded so it fires
+  // once per jump (not on every subsequent message). If the target isn't in the loaded page (an older
+  // message beyond the fetched window), we do nothing — "load around a message" is out of scope here.
+  useEffect(() => {
+    if (!scrollTarget) return;
+    if (handledNonceRef.current === scrollTarget.n) return;
+    if (!messages.some((message) => message.message_id === scrollTarget.id)) return;
+
+    handledNonceRef.current = scrollTarget.n;
+    // Defer to the next frame so the target node is laid out; also keeps setState out of the effect body.
+    const raf = requestAnimationFrame(() => {
+      const node = document.getElementById(`msg-${scrollTarget.id}`);
+      if (!node) return;
+      node.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightedId(scrollTarget.id);
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+      highlightTimerRef.current = setTimeout(() => setHighlightedId(null), 2200);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [scrollTarget, messages]);
+
+  // Clear the highlight timer on unmount (the timer lives in a ref so it survives effect re-runs).
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
+  }, []);
 
   if (!hasConversation) {
     return (
@@ -100,6 +138,7 @@ export function MessageList({
           key={message.message_id}
           message={message}
           isOwn={message.sender_user_id === currentUserId}
+          isHighlighted={highlightedId === message.message_id}
           currentUserId={currentUserId}
           quoted={
             message.reply_to_message_id ? byId.get(message.reply_to_message_id) ?? null : null

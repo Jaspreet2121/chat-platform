@@ -113,6 +113,9 @@ export default function ChatPage() {
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [isStarredOpen, setIsStarredOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+  // Target message to scroll to + highlight (from a search / starred result). The nonce makes
+  // re-jumping to the SAME message (or re-clicking the same result) re-trigger the scroll.
+  const [scrollTarget, setScrollTarget] = useState<{ id: string; n: number } | null>(null);
   // user_ids present in the CURRENT conversation channel (Phoenix.Presence). Per-conversation: it
   // reflects who has THIS conversation open, not global online state. Reset on conversation switch.
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
@@ -809,6 +812,13 @@ export default function ChatPage() {
     setStatus("Profile updated.");
   }
 
+  // Open the conversation a search/starred result belongs to, then ask MessageList to scroll to +
+  // highlight that message once it's loaded (the bumped nonce re-triggers even for the same target).
+  function handleJumpToMessage(conversationId: string, messageId: string) {
+    setSelectedConversationId(conversationId);
+    setScrollTarget((prev) => ({ id: messageId, n: (prev?.n ?? 0) + 1 }));
+  }
+
   function handleLogout() {
     clearSessionTokens();
     socketRef.current?.disconnect();
@@ -863,6 +873,7 @@ export default function ChatPage() {
           conversations={conversations}
           selectedConversationId={selectedConversationId}
           onSelectConversation={setSelectedConversationId}
+          onJumpToMessage={handleJumpToMessage}
           isLoading={isLoading}
         />
       </div>
@@ -891,6 +902,7 @@ export default function ChatPage() {
           currentUserId={session?.user_id}
           isLoading={isLoading}
           hasConversation={Boolean(selectedConversationId)}
+          scrollTarget={scrollTarget}
           onEdit={handleEditMessage}
           onDelete={handleDeleteMessage}
           onReply={(m) => setReplyingTo(m)}
@@ -953,7 +965,7 @@ export default function ChatPage() {
         onClose={() => setIsStarredOpen(false)}
         conversations={conversations}
         currentUserId={session?.user_id}
-        onJump={(conversationId) => setSelectedConversationId(conversationId)}
+        onJump={handleJumpToMessage}
       />
 
       {isProfileOpen && session ? (

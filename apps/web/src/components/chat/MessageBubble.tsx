@@ -26,6 +26,8 @@ const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 export type MessageBubbleProps = {
   message: Message;
   isOwn: boolean;
+  /** Briefly flash this message (e.g. after jumping to it from a search/starred result). */
+  isHighlighted?: boolean;
   /** The message this one replies to (resolved from the loaded list), or null if unknown/none. */
   quoted?: Message | null;
   currentUserId?: string;
@@ -46,6 +48,7 @@ export type MessageBubbleProps = {
 export function MessageBubble({
   message,
   isOwn,
+  isHighlighted,
   quoted,
   currentUserId,
   onEdit,
@@ -153,9 +156,12 @@ export function MessageBubble({
 
   return (
     <div
+      id={`msg-${message.message_id}`}
       className={cn(
-        "group flex items-end gap-2 animate-slide-up",
-        isOwn ? "flex-row-reverse" : "flex-row"
+        "group flex items-end gap-2 animate-slide-up rounded-2xl transition-colors duration-700",
+        isOwn ? "flex-row-reverse" : "flex-row",
+        // Brief flash when jumped-to from a search/starred result (fades via the transition above).
+        isHighlighted && "bg-brand/15"
       )}
     >
       {!isOwn && (
@@ -317,7 +323,13 @@ export function MessageBubble({
               {menuOpen && (
                 <div
                   role="menu"
-                  className="absolute right-0 top-full z-30 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-surface shadow-elevated animate-scale-in"
+                  className={cn(
+                    "absolute top-full z-30 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-surface shadow-elevated animate-scale-in",
+                    // Open toward the screen interior so the menu never clips the edge: own messages sit
+                    // on the right (anchor right, extend left); others sit on the left (anchor left,
+                    // extend right).
+                    isOwn ? "right-0" : "left-0"
+                  )}
                 >
                   {canReact && (
                     <div className="flex items-center justify-between gap-0.5 border-b border-border px-1.5 py-1.5">

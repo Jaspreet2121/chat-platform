@@ -13,8 +13,8 @@ const DEBOUNCE_MS = 300;
 export type MessageSearchProps = {
   conversations: ConversationListItem[];
   currentUserId?: string;
-  /** Open the conversation a result belongs to. */
-  onJump: (conversationId: string) => void;
+  /** Open the conversation a result belongs to and scroll to the matched message. */
+  onJump: (conversationId: string, messageId: string) => void;
 };
 
 // In-sidebar message search: debounced, ≥2 chars, scoped server-side to the caller's conversations.
@@ -76,8 +76,8 @@ export function MessageSearch({ conversations, currentUserId, onJump }: MessageS
     );
   }
 
-  function jump(conversationId: string) {
-    onJump(conversationId);
+  function jump(conversationId: string, messageId: string) {
+    onJump(conversationId, messageId);
     setQuery("");
   }
 
@@ -118,7 +118,7 @@ export function MessageSearch({ conversations, currentUserId, onJump }: MessageS
                 <li key={message.message_id}>
                   <button
                     type="button"
-                    onClick={() => jump(message.conversation_id)}
+                    onClick={() => jump(message.conversation_id, message.message_id)}
                     className="w-full rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-elevated"
                   >
                     <div className="flex items-baseline justify-between gap-2">
