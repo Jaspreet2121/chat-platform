@@ -1,4 +1,4 @@
-import { FormEvent } from "react";
+import { FormEvent, useState } from "react";
 import { LogOut, MessagesSquare, Plus, Search, Star, UserPlus, X } from "lucide-react";
 import type {
   ConversationListItem as ConversationListItemData,
@@ -6,9 +6,18 @@ import type {
   UserProfile
 } from "@/lib/api";
 import { Avatar, Button, IconButton, Input, ThemeToggle } from "@/components";
+import { cn } from "@/lib/cn";
 import { ConversationListItem } from "./ConversationListItem";
 import { EmptyState } from "./EmptyState";
 import { MessageSearch } from "./MessageSearch";
+
+type ConversationFilter = "all" | "personal" | "groups";
+
+const FILTERS: { key: ConversationFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "personal", label: "Personal" },
+  { key: "groups", label: "Groups" }
+];
 
 export type ConversationSidebarProps = {
   session: Session | null;
@@ -87,6 +96,14 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     onJumpToMessage,
     isLoading
   } = props;
+
+  // Client-side filter by conversation type (purely a UI view of the existing list — no fetch/handler).
+  const [filter, setFilter] = useState<ConversationFilter>("all");
+  const filteredConversations = conversations.filter((conversation) => {
+    if (filter === "personal") return conversation.type === "direct";
+    if (filter === "groups") return conversation.type !== "direct";
+    return true;
+  });
 
   return (
     <aside className="flex h-full flex-col border-r border-border bg-surface/60 backdrop-blur-xl">
@@ -225,6 +242,31 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         onJump={onJumpToMessage}
       />
 
+      {/* Filter tabs — segmented control over the existing list, by conversation type. */}
+      <div className="px-3 pt-3" role="tablist" aria-label="Filter conversations">
+        <div className="flex gap-1 rounded-xl border border-border bg-elevated p-1">
+          {FILTERS.map((option) => {
+            const active = filter === option.key;
+            return (
+              <button
+                key={option.key}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setFilter(option.key)}
+                className={cn(
+                  "flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-all duration-150",
+                  "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring",
+                  active ? "bg-surface text-fg shadow-subtle" : "text-muted hover:text-fg"
+                )}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Conversation list */}
       <div className="flex-1 overflow-y-auto p-2">
         {isLoading ? (
@@ -235,9 +277,15 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
             title="No conversations yet"
             hint="Create one above to begin."
           />
+        ) : filteredConversations.length === 0 ? (
+          <EmptyState
+            icon={<MessagesSquare className="h-6 w-6" aria-hidden />}
+            title="No conversations here"
+            hint={filter === "personal" ? "No 1:1 chats yet." : "No group chats yet."}
+          />
         ) : (
           <div className="space-y-1">
-            {conversations.map((conversation) => (
+            {filteredConversations.map((conversation) => (
               <ConversationListItem
                 key={conversation.conversation_id}
                 conversation={conversation}

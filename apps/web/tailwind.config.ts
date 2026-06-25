@@ -44,10 +44,13 @@ const config: Config = {
         "2xl": "1.125rem"
       },
       boxShadow: {
-        subtle: "0 1px 2px rgba(0, 0, 0, 0.25)",
-        elevated: "0 8px 30px rgba(0, 0, 0, 0.45)",
+        // Surface depth shadows are theme-aware (soft neutral on light, deep black on dark) via vars
+        // defined per theme in globals.css — so cards/bubbles/menus read correctly in both.
+        subtle: "var(--shadow-sm)",
+        pop: "var(--shadow-md)",
+        elevated: "var(--shadow-lg)",
+        // Indigo glows stay fixed (used on own bubbles + brand accents) — read in both themes.
         glow: "0 0 0 1px rgba(99, 102, 241, 0.2), 0 8px 30px rgba(99, 102, 241, 0.12)",
-        // Soft directional glow under own-message bubbles (the signature lift). Indigo, both themes.
         "glow-sm": "0 6px 22px -8px rgba(99, 102, 241, 0.55)"
       },
       keyframes: {

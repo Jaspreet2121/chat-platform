@@ -18,21 +18,30 @@
 .light {
   color-scheme: light;
 
-  --color-bg: 246 247 249; /* #f6f7f9 soft off-white page */
-  --color-surface: 255 255 255; /* #ffffff cards, panels */
-  --color-elevated: 238 240 243; /* #eef0f3 inputs, raised, hover */
-  --color-border: 227 230 234; /* #e3e6ea hairline separators */
-  --color-border-strong: 205 210 218; /* #cdd2da emphasized borders */
+  /* Clear surface hierarchy: a clearly GRAY page so white cards/bubbles pop, a light-gray elevated
+     between them, and visible borders. Depth on light comes from soft neutral drop-shadows below. */
+  --color-bg: 236 238 242; /* #ecedf2 gray page */
+  --color-surface: 255 255 255; /* #ffffff cards, bubbles, panels — now pops on the gray page */
+  --color-elevated: 243 245 248; /* #f3f5f8 inputs/hover — light gray, between page and surface */
+  --color-border: 214 218 225; /* #d6dae1 visible hairline separators */
+  --color-border-strong: 188 195 205; /* #bcc3cd emphasized borders */
   --color-fg: 26 29 35; /* #1a1d23 primary text */
   --color-muted: 91 100 114; /* #5b6472 secondary text */
-  --color-faint: 152 161 176; /* #98a1b0 tertiary / placeholder */
+  --color-faint: 138 147 162; /* #8a93a2 tertiary / placeholder */
   --color-brand-hover: 79 70 229; /* #4f46e5 darker indigo → readable accent text on light */
   --color-brand-subtle: 224 231 255; /* #e0e7ff light indigo tint for chips/surfaces */
 
+  /* Soft NEUTRAL drop-shadows (read as depth on light, unlike glows). */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 1px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 2px 8px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-lg: 0 14px 36px rgba(16, 24, 40, 0.16), 0 4px 10px rgba(16, 24, 40, 0.08);
+
+  --pattern-dot: rgba(31, 41, 66, 0.045); /* faint dark dots on the light page */
+
   --app-bg:
-    radial-gradient(1200px 600px at 50% -10%, rgba(99, 102, 241, 0.06), transparent 70%), #f6f7f9;
-  --scroll-thumb: #cbd0d8;
-  --scroll-thumb-hover: #b3bac4;
+    radial-gradient(1200px 600px at 50% -10%, rgba(99, 102, 241, 0.05), transparent 70%), #ecedf2;
+  --scroll-thumb: #c4cad4;
+  --scroll-thumb-hover: #aab2c0;
 }
 
 .dark {
@@ -48,6 +57,13 @@
   --color-faint: 91 100 114; /* #5b6472 */
   --color-brand-hover: 129 140 248; /* #818cf8 lighter indigo → pops on dark */
   --color-brand-subtle: 30 27 75; /* #1e1b4b deep indigo tint */
+
+  /* Dark depth: deeper black shadows (paired with the indigo glows used on accents). */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 14px 36px rgba(0, 0, 0, 0.55);
+
+  --pattern-dot: rgba(255, 255, 255, 0.025); /* faint light dots on the dark page */
 
   --app-bg:
     radial-gradient(1200px 600px at 50% -10%, rgba(99, 102, 241, 0.08), transparent 70%), #0a0c10;
@@ -111,9 +127,15 @@ textarea {
  * differs, so it reads as intended in each.
  */
 .chat-ambient {
-  background:
+  background-image:
     radial-gradient(820px 460px at 12% 0%, rgba(99, 102, 241, 0.08), transparent 60%),
-    radial-gradient(680px 520px at 100% 100%, rgba(99, 102, 241, 0.06), transparent 55%);
+    radial-gradient(680px 520px at 100% 100%, rgba(99, 102, 241, 0.06), transparent 55%),
+    radial-gradient(var(--pattern-dot) 1px, transparent 1.5px);
+  /* glows auto-sized in-gradient; the dot motif tiles at 22px (barely-there texture, per theme). */
+  background-size:
+    auto,
+    auto,
+    22px 22px;
 }
 
 /* Reduced-motion: collapse all animations/transitions to near-instant (honors the OS preference). */

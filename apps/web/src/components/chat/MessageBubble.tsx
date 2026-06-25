@@ -28,6 +28,8 @@ export type MessageBubbleProps = {
   isOwn: boolean;
   /** Briefly flash this message (e.g. after jumping to it from a search/starred result). */
   isHighlighted?: boolean;
+  /** In a grouped run, the avatar is shown once in the group header — hide the per-bubble avatar. */
+  hideAvatar?: boolean;
   /** The message this one replies to (resolved from the loaded list), or null if unknown/none. */
   quoted?: Message | null;
   currentUserId?: string;
@@ -49,6 +51,7 @@ export function MessageBubble({
   message,
   isOwn,
   isHighlighted,
+  hideAvatar,
   quoted,
   currentUserId,
   onEdit,
@@ -164,7 +167,7 @@ export function MessageBubble({
         isHighlighted && "bg-brand/15"
       )}
     >
-      {!isOwn && (
+      {!isOwn && !hideAvatar && (
         <Avatar
           id={message.sender_user_id}
           name={senderProfile?.display_name ?? undefined}
@@ -179,10 +182,12 @@ export function MessageBubble({
           className={cn(
             "rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed transition-shadow",
             isOwn
-              ? // Signature own bubble: brand gradient + soft indigo glow + a faint top inner-light.
+              ? // Signature own bubble: brand indigo gradient + soft lift + a faint top inner-light.
+                // Pops on both themes (brand-hover is darker indigo on light, lighter on dark).
                 "rounded-br-md bg-gradient-to-br from-brand to-brand-hover text-white shadow-glow-sm ring-1 ring-inset ring-white/10"
-              : // Others: clean frosted-glass surface that floats over the ambient backdrop.
-                "rounded-bl-md border border-border/70 bg-surface/70 text-fg shadow-subtle backdrop-blur-md"
+              : // Others: a DEFINED opaque surface + crisp border + soft drop-shadow on light; on dark,
+                // keep the frosted-glass look (translucent surface + blur) that reads well there.
+                "rounded-bl-md border border-border bg-surface text-fg shadow-pop dark:border-border/70 dark:bg-surface/70 dark:shadow-subtle dark:backdrop-blur-md"
           )}
         >
           {!isDeleted && !isEditing && isForwarded ? (

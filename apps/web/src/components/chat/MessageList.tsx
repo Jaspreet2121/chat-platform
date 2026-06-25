@@ -1,8 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, MessageSquare, MessagesSquare } from "lucide-react";
 import type { Message } from "@/lib/api";
+import { Avatar } from "@/components";
+import { cn } from "@/lib/cn";
 import { EmptyState } from "./EmptyState";
 import { MessageBubble } from "./MessageBubble";
+import { formatTime } from "./format";
+import { useUserProfile } from "./useUserProfile";
+
+// Consecutive messages from the same sender within this window collapse into one group (one
+// avatar+name header + a tight stack), like Telegram. Beyond it, a new group starts.
+const GROUP_WINDOW_MS = 5 * 60 * 1000;
 
 // Chronological order (oldest → newest) so the newest message sits just above the composer and
 // auto-scroll lands on it. Sorting at render time covers BOTH history load and live socket
@@ -16,6 +24,21 @@ function sortChronologically(messages: Message[]): Message[] {
     if (aTime !== bTime) return aTime - bTime;
     return a.message_id < b.message_id ? -1 : a.message_id > b.message_id ? 1 : 0;
   });
+}
+
+// Split an ordered message list into runs of consecutive same-sender messages (within GROUP_WINDOW_MS).
+function buildGroups(messages: Message[]): Message[][] {
+  const groups: Message[][] = [];
+  for (const message of messages) {
+    const current = groups[groups.length - 1];
+    const prev = current?.[current.length - 1];
+    const sameSender = prev?.sender_user_id === message.sender_user_id;
+    const closeInTime =
+      prev && Math.abs(Date.parse(message.created_at) - Date.parse(prev.created_at)) < GROUP_WINDOW_MS;
+    if (current && sameSender && closeInTime) current.push(message);
+    else groups.push([message]);
+  }
+  return groups;
 }
 
 export type MessageListProps = {
@@ -56,6 +79,7 @@ export function MessageList({
   const handledNonceRef = useRef<number | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const ordered = useMemo(() => sortChronologically(messages), [messages]);
+  const groups = useMemo(() => buildGroups(ordered), [ordered]);
   // Lookup for resolving reply_to_message_id → the quoted message (when it's loaded).
   const byId = useMemo(() => {
     const map = new Map<string, Message>();
@@ -132,17 +156,14 @@ export function MessageList({
   }
 
   return (
-    <div className="chat-ambient flex-1 space-y-3 overflow-y-auto px-4 py-5 sm:px-6">
-      {ordered.map((message) => (
-        <MessageBubble
-          key={message.message_id}
-          message={message}
-          isOwn={message.sender_user_id === currentUserId}
-          isHighlighted={highlightedId === message.message_id}
+    <div className="chat-ambient flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
+      {groups.map((group) => (
+        <MessageGroup
+          key={group[0].message_id}
+          group={group}
           currentUserId={currentUserId}
-          quoted={
-            message.reply_to_message_id ? byId.get(message.reply_to_message_id) ?? null : null
-          }
+          highlightedId={highlightedId}
+          byId={byId}
           onEdit={onEdit}
           onDelete={onDelete}
           onReply={onReply}
@@ -154,6 +175,79 @@ export function MessageList({
         />
       ))}
       <div ref={bottomRef} />
+    </div>
+  );
+}
+
+type MessageGroupProps = {
+  group: Message[];
+  currentUserId?: string;
+  highlightedId: string | null;
+  byId: Map<string, Message>;
+} & Pick<
+  MessageListProps,
+  "onEdit" | "onDelete" | "onReply" | "onForward" | "onReact" | "onRemoveReaction" | "onStar" | "onUnstar"
+>;
+
+// One run of consecutive same-sender messages: for others, a single avatar + name + time header, then a
+// tight stack of that sender's bubbles (avatars hidden on the bubbles); own groups are just the stack.
+function MessageGroup({
+  group,
+  currentUserId,
+  highlightedId,
+  byId,
+  onEdit,
+  onDelete,
+  onReply,
+  onForward,
+  onReact,
+  onRemoveReaction,
+  onStar,
+  onUnstar
+}: MessageGroupProps) {
+  const first = group[0];
+  const isOwn = first.sender_user_id === currentUserId;
+  const profile = useUserProfile(isOwn ? null : first.sender_user_id);
+  const name = profile?.display_name?.trim() || `#${first.sender_user_id.slice(0, 8)}`;
+
+  return (
+    <div className={cn("flex flex-col", isOwn ? "items-end" : "items-start")}>
+      {!isOwn ? (
+        <div className="mb-1 flex items-center gap-2 pl-1">
+          <Avatar
+            id={first.sender_user_id}
+            name={profile?.display_name ?? undefined}
+            imageUrl={profile?.avatar_url}
+            size="sm"
+          />
+          <span className="text-xs font-semibold text-fg">{name}</span>
+          <span className="text-[11px] text-faint">{formatTime(first.created_at)}</span>
+        </div>
+      ) : null}
+
+      <div className={cn("flex w-full flex-col gap-0.5", isOwn ? "items-end" : "items-start pl-10")}>
+        {group.map((message) => (
+          <MessageBubble
+            key={message.message_id}
+            message={message}
+            isOwn={isOwn}
+            hideAvatar
+            isHighlighted={highlightedId === message.message_id}
+            currentUserId={currentUserId}
+            quoted={
+              message.reply_to_message_id ? byId.get(message.reply_to_message_id) ?? null : null
+            }
+            onEdit={onEdit}
+            onDelete={onDelete}
+            onReply={onReply}
+            onForward={onForward}
+            onReact={onReact}
+            onRemoveReaction={onRemoveReaction}
+            onStar={onStar}
+            onUnstar={onUnstar}
+          />
+        ))}
+      </div>
     </div>
   );
 }

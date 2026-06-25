@@ -7,9 +7,9 @@ export function Card({ className, ...props }: CardProps) {
   return (
     <div
       className={cn(
-        // Frosted-glass card: translucent surface + blur so it floats over the ambient backdrop.
-        // Cohesive across all overlays (profile, starred, forward, public profile) and auth cards.
-        "rounded-2xl border border-border/70 bg-surface/80 shadow-elevated backdrop-blur-xl",
+        // Crisp opaque white card + soft drop-shadow on light (pops on the gray page); frosted glass on
+        // dark. Cohesive across all overlays (profile, starred, forward, public profile) + auth cards.
+        "rounded-2xl border border-border bg-surface shadow-elevated dark:border-border/70 dark:bg-surface/80 dark:backdrop-blur-xl",
         className
       )}
       {...props}
