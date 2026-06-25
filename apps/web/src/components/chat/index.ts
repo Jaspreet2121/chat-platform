@@ -16,6 +16,8 @@ export { StarredPanel } from "./StarredPanel";
 export type { StarredPanelProps } from "./StarredPanel";
 export { MyProfileModal } from "./MyProfileModal";
 export type { MyProfileModalProps } from "./MyProfileModal";
+export { NewConversationModal } from "./NewConversationModal";
+export type { NewConversationModalProps } from "./NewConversationModal";
 export { Composer } from "./Composer";
 export type { ComposerProps } from "./Composer";
 export { EmptyState } from "./EmptyState";

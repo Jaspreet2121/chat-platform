@@ -1,15 +1,16 @@
 import { FormEvent, useState } from "react";
-import { LogOut, MessagesSquare, Plus, Search, Star, UserPlus, X } from "lucide-react";
+import { LogOut, MessagesSquare, Plus, Star } from "lucide-react";
 import type {
   ConversationListItem as ConversationListItemData,
   Session,
   UserProfile
 } from "@/lib/api";
-import { Avatar, Button, IconButton, Input, ThemeToggle } from "@/components";
+import { Avatar, IconButton, ThemeToggle } from "@/components";
 import { cn } from "@/lib/cn";
 import { ConversationListItem } from "./ConversationListItem";
 import { EmptyState } from "./EmptyState";
 import { MessageSearch } from "./MessageSearch";
+import { NewConversationModal } from "./NewConversationModal";
 
 type ConversationFilter = "all" | "personal" | "groups";
 
@@ -56,20 +57,6 @@ function shortId(id: string): string {
   return `#${id.slice(0, 8)}`;
 }
 
-function ProfileSummary({ profile }: { profile: UserProfile }) {
-  return (
-    <div className="flex min-w-0 items-center gap-2">
-      <Avatar id={profile.user_id} name={profile.display_name ?? undefined} size="sm" />
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-fg">
-          {profile.display_name || "Unnamed profile"}
-        </p>
-        <p className="truncate text-xs text-faint">{shortId(profile.user_id)}</p>
-      </div>
-    </div>
-  );
-}
-
 export function ConversationSidebar(props: ConversationSidebarProps) {
   const {
     session,
@@ -97,6 +84,8 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     isLoading
   } = props;
 
+  // Local UI state: the new-conversation modal (the create/lookup handlers still come from props).
+  const [isNewConvOpen, setIsNewConvOpen] = useState(false);
   // Client-side filter by conversation type (purely a UI view of the existing list — no fetch/handler).
   const [filter, setFilter] = useState<ConversationFilter>("all");
   const filteredConversations = conversations.filter((conversation) => {
@@ -107,16 +96,24 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
 
   return (
     <aside className="flex h-full flex-col border-r border-border bg-surface/60 backdrop-blur-xl">
-      {/* Brand + signed-in identity + logout */}
-      <div className="border-b border-border p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand">
+      {/* Compact header: brand · actions (new conversation, theme, starred, logout) · identity */}
+      <div className="border-b border-border p-3">
+        <div className="flex items-center justify-between gap-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand">
               <MessagesSquare className="h-4 w-4 text-white" aria-hidden />
             </div>
-            <span className="text-sm font-semibold text-fg">Chat Platform</span>
+            <span className="truncate text-sm font-semibold text-fg">Chat Platform</span>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-0.5">
+            <IconButton
+              label="New conversation"
+              variant="primary"
+              onClick={() => setIsNewConvOpen(true)}
+              type="button"
+            >
+              <Plus className="h-5 w-5" aria-hidden />
+            </IconButton>
             <ThemeToggle />
             <IconButton label="Starred messages" onClick={onOpenStarred} type="button">
               <Star className="h-5 w-5" aria-hidden />
@@ -150,90 +147,6 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         ) : null}
       </div>
 
-      {/* New conversation (collapsible to keep the list prominent) */}
-      <details className="group border-b border-border" open>
-        <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-sm font-medium text-muted transition-colors hover:text-fg">
-          <span className="flex items-center gap-2">
-            <Plus className="h-4 w-4" aria-hidden />
-            New conversation
-          </span>
-        </summary>
-
-        <form className="space-y-3 px-4 pb-4" onSubmit={onCreateConversation}>
-          <Input
-            placeholder="Conversation title"
-            value={newTitle}
-            onChange={(event) => onNewTitleChange(event.target.value)}
-          />
-
-          <div className="space-y-2 rounded-xl border border-border bg-elevated p-2.5">
-            <div className="flex gap-2">
-              <Input
-                leftIcon={<Search className="h-4 w-4" aria-hidden />}
-                placeholder="Participant user ID"
-                value={lookupUserId}
-                onChange={(event) => onLookupUserIdChange(event.target.value)}
-                className="bg-bg"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={onLookup}
-                isLoading={isLookingUpProfile}
-                className="shrink-0 border border-border"
-              >
-                Lookup
-              </Button>
-            </div>
-
-            {lookupStatus ? <p className="text-xs text-muted">{lookupStatus}</p> : null}
-
-            {lookupProfile ? (
-              <div className="flex items-center justify-between gap-2 rounded-lg bg-bg p-2">
-                <ProfileSummary profile={lookupProfile} />
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={onAddParticipant}
-                  leftIcon={<UserPlus className="h-4 w-4" aria-hidden />}
-                >
-                  Add
-                </Button>
-              </div>
-            ) : null}
-          </div>
-
-          {selectedParticipants.length > 0 ? (
-            <div className="space-y-2">
-              {selectedParticipants.map((participant) => (
-                <div
-                  key={participant.user_id}
-                  className="flex items-center justify-between gap-2 rounded-lg border border-border bg-elevated p-2"
-                >
-                  <ProfileSummary profile={participant} />
-                  <button
-                    type="button"
-                    onClick={() => onRemoveParticipant(participant.user_id)}
-                    className="shrink-0 rounded-md p-1 text-faint transition-colors hover:text-danger"
-                    aria-label="Remove participant"
-                  >
-                    <X className="h-4 w-4" aria-hidden />
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          <Button
-            type="submit"
-            fullWidth
-            isLoading={isCreatingConversation}
-            disabled={selectedParticipants.length === 0}
-          >
-            Create conversation
-          </Button>
-        </form>
-      </details>
 
       {/* Message search (debounced, scoped to the caller's conversations) */}
       <MessageSearch
@@ -296,6 +209,25 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
           </div>
         )}
       </div>
+
+      {/* New-conversation popup — same fields + handlers, relocated from the sidebar body. */}
+      <NewConversationModal
+        isOpen={isNewConvOpen}
+        onClose={() => setIsNewConvOpen(false)}
+        newTitle={newTitle}
+        onNewTitleChange={onNewTitleChange}
+        onCreateConversation={onCreateConversation}
+        isCreatingConversation={isCreatingConversation}
+        lookupUserId={lookupUserId}
+        onLookupUserIdChange={onLookupUserIdChange}
+        onLookup={onLookup}
+        isLookingUpProfile={isLookingUpProfile}
+        lookupStatus={lookupStatus}
+        lookupProfile={lookupProfile}
+        onAddParticipant={onAddParticipant}
+        selectedParticipants={selectedParticipants}
+        onRemoveParticipant={onRemoveParticipant}
+      />
     </aside>
   );
 }
