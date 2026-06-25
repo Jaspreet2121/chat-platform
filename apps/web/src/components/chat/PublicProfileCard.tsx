@@ -67,7 +67,14 @@ export function PublicProfileCard({ userId, role, online, isSelf, onClose }: Pub
           </div>
         ) : (
           <div className="flex flex-col items-center gap-3">
-            <Avatar id={userId} name={name} size="lg" className="h-20 w-20 text-2xl" online={online} />
+            <Avatar
+              id={userId}
+              name={name}
+              imageUrl={profile?.avatar_url}
+              size="lg"
+              className="h-20 w-20 text-2xl"
+              online={online}
+            />
 
             <div>
               <div className="flex items-center justify-center gap-2">

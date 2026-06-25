@@ -40,9 +40,11 @@ import {
   ConversationDetailsPanel,
   ConversationSidebar,
   MessageList,
+  MyProfileModal,
   StarredPanel,
   StatusBanner
 } from "@/components/chat";
+import { primeUserProfile } from "@/components/chat/useUserProfile";
 import { cn } from "@/lib/cn";
 import imageCompression from "browser-image-compression";
 import { ForwardPicker } from "./ForwardPicker";
@@ -110,6 +112,7 @@ export default function ChatPage() {
   const [mediaStatus, setMediaStatus] = useState("");
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
   const [isStarredOpen, setIsStarredOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
   // user_ids present in the CURRENT conversation channel (Phoenix.Presence). Per-conversation: it
   // reflects who has THIS conversation open, not global online state. Reset on conversation switch.
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
@@ -126,7 +129,10 @@ export default function ChatPage() {
         setStatus(`Signed in as ${currentSession.user_id}`);
 
         getMe()
-          .then((profile) => setCurrentProfile(profile))
+          .then((profile) => {
+            setCurrentProfile(profile);
+            primeUserProfile(profile); // so the user's own avatar is cached for any self-rendered Avatar
+          })
           .catch(() => setCurrentProfile(null));
 
         const response = await listConversations();
@@ -795,6 +801,14 @@ export default function ChatPage() {
     }
   }
 
+  // After saving My Profile: merge the returned profile (incl. fresh avatar_url) into local state and
+  // prime the shared cache so the new avatar/name show immediately wherever the user is rendered.
+  function handleProfileSaved(updated: UserProfile) {
+    setCurrentProfile((current) => ({ ...(current ?? {}), ...updated }));
+    primeUserProfile(updated);
+    setStatus("Profile updated.");
+  }
+
   function handleLogout() {
     clearSessionTokens();
     socketRef.current?.disconnect();
@@ -832,6 +846,7 @@ export default function ChatPage() {
           currentProfile={currentProfile}
           onLogout={handleLogout}
           onOpenStarred={() => setIsStarredOpen(true)}
+          onOpenProfile={() => setIsProfileOpen(true)}
           newTitle={newTitle}
           onNewTitleChange={setNewTitle}
           onCreateConversation={handleCreateConversation}
@@ -940,6 +955,15 @@ export default function ChatPage() {
         currentUserId={session?.user_id}
         onJump={(conversationId) => setSelectedConversationId(conversationId)}
       />
+
+      {isProfileOpen && session ? (
+        <MyProfileModal
+          onClose={() => setIsProfileOpen(false)}
+          profile={currentProfile}
+          userId={session.user_id}
+          onSaved={handleProfileSaved}
+        />
+      ) : null}
     </main>
   );
 }

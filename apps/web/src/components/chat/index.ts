@@ -14,6 +14,8 @@ export { MessageSearch } from "./MessageSearch";
 export type { MessageSearchProps } from "./MessageSearch";
 export { StarredPanel } from "./StarredPanel";
 export type { StarredPanelProps } from "./StarredPanel";
+export { MyProfileModal } from "./MyProfileModal";
+export type { MyProfileModalProps } from "./MyProfileModal";
 export { Composer } from "./Composer";
 export type { ComposerProps } from "./Composer";
 export { EmptyState } from "./EmptyState";

@@ -71,6 +71,7 @@ defmodule UserService.Profiles do
           "user_id" => user_id,
           "display_name" => Map.get(attrs, "display_name", "Placeholder User"),
           "avatar_media_id" => Map.get(attrs, "avatar_media_id"),
+          "avatar_object_key" => Map.get(attrs, "avatar_object_key"),
           "bio" => Map.get(attrs, "bio")
         })
 
@@ -81,7 +82,7 @@ defmodule UserService.Profiles do
 
   defp allowed_profile_update_attrs(attrs) do
     attrs
-    |> Map.take(["display_name", "avatar_media_id", "bio"])
+    |> Map.take(["display_name", "avatar_media_id", "avatar_object_key", "bio"])
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
   end
@@ -91,6 +92,7 @@ defmodule UserService.Profiles do
       user_id: user_id,
       display_name: profile.display_name,
       avatar_media_id: profile.avatar_media_id,
+      avatar_object_key: profile.avatar_object_key,
       bio: profile.bio,
       updated_at: DateTime.to_iso8601(profile.updated_at || DateTime.utc_now())
     }
@@ -120,6 +122,7 @@ defmodule UserService.Profiles do
       user_id: user_id,
       display_name: nil,
       avatar_media_id: nil,
+      avatar_object_key: nil,
       bio: nil
     }
   end
@@ -129,6 +132,7 @@ defmodule UserService.Profiles do
       user_id: user_id,
       display_name: profile.display_name,
       avatar_media_id: profile.avatar_media_id,
+      avatar_object_key: profile.avatar_object_key,
       bio: profile.bio
     }
   end
@@ -145,6 +149,7 @@ defmodule UserService.Profiles do
       user_id: user_id,
       display_name: nil,
       avatar_media_id: nil,
+      avatar_object_key: nil,
       bio: nil,
       settings: UserService.Settings.placeholder_settings(),
       privacy: UserService.Privacy.placeholder_privacy()
@@ -156,6 +161,7 @@ defmodule UserService.Profiles do
       user_id: user_id,
       display_name: profile.display_name,
       avatar_media_id: profile.avatar_media_id,
+      avatar_object_key: profile.avatar_object_key,
       bio: profile.bio,
       settings: UserService.Settings.placeholder_settings(),
       privacy: UserService.Privacy.placeholder_privacy()

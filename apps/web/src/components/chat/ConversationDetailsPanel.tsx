@@ -4,6 +4,7 @@ import type { ConversationDetail } from "@/lib/api";
 import { Avatar, IconButton } from "@/components";
 import { cn } from "@/lib/cn";
 import { PublicProfileCard } from "./PublicProfileCard";
+import { useUserProfile } from "./useUserProfile";
 
 export type ConversationDetailsPanelProps = {
   conversation: ConversationDetail | null;
@@ -98,7 +99,7 @@ export function ConversationDetailsPanel({
                         title="View profile"
                         className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-elevated"
                       >
-                        <Avatar id={participant.user_id} size="sm" online={isOnline} />
+                        <ParticipantAvatar userId={participant.user_id} online={isOnline} />
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-medium text-fg">
                             {shortId(participant.user_id)}
@@ -141,5 +142,20 @@ export function ConversationDetailsPanel({
         />
       ) : null}
     </div>
+  );
+}
+
+// A participant's avatar that resolves their real image (cached) with an initials fallback. A separate
+// component so the cached profile hook can run per participant (hooks can't be called inside a .map).
+function ParticipantAvatar({ userId, online }: { userId: string; online: boolean }) {
+  const profile = useUserProfile(userId);
+  return (
+    <Avatar
+      id={userId}
+      name={profile?.display_name ?? undefined}
+      imageUrl={profile?.avatar_url}
+      size="sm"
+      online={online}
+    />
   );
 }

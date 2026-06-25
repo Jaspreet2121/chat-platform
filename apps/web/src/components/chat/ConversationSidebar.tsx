@@ -16,6 +16,8 @@ export type ConversationSidebarProps = {
   onLogout: () => void;
   /** Open the Starred messages panel. */
   onOpenStarred: () => void;
+  /** Open the "My Profile" editor (from the signed-in identity). */
+  onOpenProfile: () => void;
 
   newTitle: string;
   onNewTitleChange: (value: string) => void;
@@ -63,6 +65,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     currentProfile,
     onLogout,
     onOpenStarred,
+    onOpenProfile,
     newTitle,
     onNewTitleChange,
     onCreateConversation,
@@ -104,15 +107,25 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         </div>
 
         {session ? (
-          <div className="mt-3 flex items-center gap-2.5 rounded-xl bg-elevated px-2.5 py-2">
-            <Avatar id={session.user_id} name={currentProfile?.display_name ?? undefined} size="sm" />
+          <button
+            type="button"
+            onClick={onOpenProfile}
+            aria-label="Edit my profile"
+            className="mt-3 flex w-full items-center gap-2.5 rounded-xl bg-elevated px-2.5 py-2 text-left transition-colors hover:bg-border"
+          >
+            <Avatar
+              id={session.user_id}
+              name={currentProfile?.display_name ?? undefined}
+              imageUrl={currentProfile?.avatar_url}
+              size="sm"
+            />
             <div className="min-w-0">
               <p className="truncate text-sm font-medium text-fg">
-                {currentProfile?.display_name || "Signed in"}
+                {currentProfile?.display_name || "Set up your profile"}
               </p>
               <p className="truncate text-xs text-faint">{shortId(session.user_id)}</p>
             </div>
-          </div>
+          </button>
         ) : null}
       </div>
 

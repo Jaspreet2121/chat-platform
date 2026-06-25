@@ -18,6 +18,7 @@ import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { formatTime, metadataString } from "./format";
 import { VoiceMessagePlayer } from "./VoiceMessagePlayer";
+import { useUserProfile } from "./useUserProfile";
 
 // WhatsApp-style quick reactions, shown as a bar at the top of the ⋯ menu.
 const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
@@ -56,6 +57,8 @@ export function MessageBubble({
   onStar,
   onUnstar
 }: MessageBubbleProps) {
+  // Resolve the sender's profile (cached, deduped) to show their real avatar on others' messages.
+  const senderProfile = useUserProfile(isOwn ? null : message.sender_user_id);
   const isMedia = Boolean(message.media_id);
   const isDeleted = message.status === "deleted";
   const isEdited = Boolean(message.edited_at);
@@ -155,7 +158,15 @@ export function MessageBubble({
         isOwn ? "flex-row-reverse" : "flex-row"
       )}
     >
-      {!isOwn && <Avatar id={message.sender_user_id} size="sm" className="mb-1" />}
+      {!isOwn && (
+        <Avatar
+          id={message.sender_user_id}
+          name={senderProfile?.display_name ?? undefined}
+          imageUrl={senderProfile?.avatar_url}
+          size="sm"
+          className="mb-1"
+        />
+      )}
 
       <div className={cn("flex max-w-[78%] flex-col gap-1", isOwn ? "items-end" : "items-start")}>
         <div

@@ -1,4 +1,6 @@
-import { useMemo } from "react";
+"use client";
+
+import { useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
 
 export type AvatarProps = {
@@ -9,6 +11,8 @@ export type AvatarProps = {
   size?: "sm" | "md" | "lg";
   /** When true, overlays a small green presence dot (bottom-right). */
   online?: boolean;
+  /** Optional avatar image URL. Renders the image; falls back to initials if it errors or is absent. */
+  imageUrl?: string | null;
   className?: string;
 };
 
@@ -51,22 +55,36 @@ function initials(label: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-export function Avatar({ id, name, size = "md", online, className }: AvatarProps) {
+export function Avatar({ id, name, size = "md", online, imageUrl, className }: AvatarProps) {
   const label = name?.trim() || id;
   const palette = useMemo(() => palettes[hash(id) % palettes.length], [id]);
+  // Track the URL that failed (rather than a boolean) so a NEW imageUrl re-attempts without an effect.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const showImage = Boolean(imageUrl) && failedUrl !== imageUrl;
 
   return (
     <div className="relative inline-flex shrink-0">
       <div
         className={cn(
-          "flex items-center justify-center rounded-full bg-gradient-to-br font-semibold text-white",
+          "flex items-center justify-center overflow-hidden rounded-full bg-gradient-to-br font-semibold text-white",
           palette,
           sizes[size],
           className
         )}
         aria-hidden
       >
-        {initials(label)}
+        {showImage ? (
+          // Presigned remote URL; next/image would need remotePatterns config, so a plain <img>.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={imageUrl as string}
+            alt=""
+            className="h-full w-full object-cover"
+            onError={() => setFailedUrl(imageUrl ?? null)}
+          />
+        ) : (
+          initials(label)
+        )}
       </div>
       {online ? (
         <span

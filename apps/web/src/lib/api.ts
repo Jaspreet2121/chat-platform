@@ -125,6 +125,10 @@ export type UserProfile = {
   user_id: string;
   display_name?: string | null;
   avatar_media_id?: string | null;
+  // The avatar's storage object_key (persisted so the backend can presign a cross-user download URL).
+  avatar_object_key?: string | null;
+  // A ready-to-use signed URL for the avatar image, resolved server-side (absent when no avatar set).
+  avatar_url?: string | null;
   bio?: string | null;
   settings?: {
     locale?: string;
@@ -233,6 +237,22 @@ export function getCurrentSession() {
 
 export function getMe() {
   return request<UserProfile>("/api/v1/users/me");
+}
+
+export type UpdateProfileInput = {
+  display_name?: string;
+  bio?: string;
+  avatar_media_id?: string;
+  avatar_object_key?: string;
+};
+
+// Update the signed-in user's profile (PATCH /me). Only send the fields being changed (the gateway
+// allow-lists display_name/bio/avatar_media_id/avatar_object_key and rejects an empty body).
+export function updateMe(input: UpdateProfileInput) {
+  return request<UserProfile>("/api/v1/users/me", {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
 }
 
 // --- Admin analytics (read-only; behind RequireAdmin) -------------------------------------------
