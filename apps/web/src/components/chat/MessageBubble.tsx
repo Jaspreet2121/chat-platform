@@ -17,6 +17,7 @@ import { getMediaDownloadUrl } from "@/lib/api";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { formatTime, metadataString } from "./format";
+import { VoiceMessagePlayer } from "./VoiceMessagePlayer";
 
 // WhatsApp-style quick reactions, shown as a bar at the top of the ⋯ menu.
 const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
@@ -562,9 +563,16 @@ function MediaMessageContent({ message, isOwn }: { message: Message; isOwn: bool
         />
       ) : null}
 
-      {/* AUDIO — plays inline with native controls */}
-      {isAudio && url && !loadFailed ? (
-        <audio controls src={url} onError={handleMediaError} className="w-full" />
+      {/* VOICE / AUDIO — custom futuristic player (waveform + animated playback) instead of the native
+          <audio controls>. Mounts as soon as the media is resolvable so it can show its own loading
+          state while the signed URL resolves; falls back to the file row only after a load failure. */}
+      {isAudio && canResolve && !loadFailed ? (
+        <VoiceMessagePlayer
+          url={url}
+          isOwn={isOwn}
+          seed={message.message_id}
+          onError={handleMediaError}
+        />
       ) : null}
 
       {/* PDF / other / failed-preview — the whole file row is the click target */}

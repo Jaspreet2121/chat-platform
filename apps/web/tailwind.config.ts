@@ -59,13 +59,20 @@ const config: Config = {
         "slide-in-right": {
           from: { opacity: "0", transform: "translateX(16px)" },
           to: { opacity: "1", transform: "translateX(0)" }
+        },
+        // Subtle equalizer pulse for voice-message waveform bars while playing (scaleY around the bar's
+        // own height; transform-only so it stays GPU-cheap across many bars).
+        "voice-bar": {
+          "0%, 100%": { transform: "scaleY(0.75)" },
+          "50%": { transform: "scaleY(1)" }
         }
       },
       animation: {
         "fade-in": "fade-in 0.25s ease-out",
         "slide-up": "slide-up 0.3s cubic-bezier(0.16, 1, 0.3, 1)",
         "scale-in": "scale-in 0.25s cubic-bezier(0.16, 1, 0.3, 1)",
-        "slide-in-right": "slide-in-right 0.28s cubic-bezier(0.16, 1, 0.3, 1)"
+        "slide-in-right": "slide-in-right 0.28s cubic-bezier(0.16, 1, 0.3, 1)",
+        "voice-bar": "voice-bar 0.9s ease-in-out infinite"
       }
     }
   },
