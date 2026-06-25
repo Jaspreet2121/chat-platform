@@ -60,6 +60,18 @@ defmodule SharedInfra.MessageClientHttp do
   @impl true
   def remove_reaction(attrs), do: post("/internal/reactions/remove", attrs)
 
+  @impl true
+  def star_message(attrs), do: post("/internal/stars/add", attrs)
+
+  @impl true
+  def unstar_message(attrs), do: post("/internal/stars/remove", attrs)
+
+  @impl true
+  def list_starred(attrs), do: post("/internal/stars/list", attrs)
+
+  @impl true
+  def search_messages(attrs), do: post("/internal/search/messages", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs,
       unavailable: @unavailable,

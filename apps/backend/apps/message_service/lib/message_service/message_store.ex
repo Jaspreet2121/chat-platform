@@ -21,6 +21,10 @@ defmodule MessageService.MessageStore do
   @callback mark_read(message_attrs()) :: message_result()
   @callback upsert_reaction(message_attrs()) :: message_result()
   @callback remove_reaction(message_attrs()) :: message_result()
+  @callback star_message(message_attrs()) :: message_result()
+  @callback unstar_message(message_attrs()) :: message_result()
+  @callback list_starred(message_attrs()) :: timeline_result()
+  @callback search_messages(message_attrs()) :: timeline_result()
 
   def put_message(attrs), do: adapter().put_message(attrs)
   def get_message(attrs), do: adapter().get_message(attrs)
@@ -31,6 +35,10 @@ defmodule MessageService.MessageStore do
   def mark_read(attrs), do: adapter().mark_read(attrs)
   def upsert_reaction(attrs), do: adapter().upsert_reaction(attrs)
   def remove_reaction(attrs), do: adapter().remove_reaction(attrs)
+  def star_message(attrs), do: adapter().star_message(attrs)
+  def unstar_message(attrs), do: adapter().unstar_message(attrs)
+  def list_starred(attrs), do: adapter().list_starred(attrs)
+  def search_messages(attrs), do: adapter().search_messages(attrs)
 
   defp adapter do
     Application.get_env(
@@ -77,6 +85,18 @@ defmodule MessageService.MessageStore.QueryPlanAdapter do
 
   @impl true
   def remove_reaction(_attrs), do: {:error, :message_store_unavailable}
+
+  @impl true
+  def star_message(_attrs), do: {:error, :message_store_unavailable}
+
+  @impl true
+  def unstar_message(_attrs), do: {:error, :message_store_unavailable}
+
+  @impl true
+  def list_starred(_attrs), do: {:error, :message_store_unavailable}
+
+  @impl true
+  def search_messages(_attrs), do: {:error, :message_store_unavailable}
 end
 
 defmodule MessageService.MessageStore.ScyllaAdapter do
@@ -173,12 +193,24 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     put_receipt(Map.merge(attrs, %{"status" => "read"}))
   end
 
-  # Reactions aren't implemented for the Scylla store yet — Postgres is the durable backend.
+  # Reactions/stars/search aren't implemented for the Scylla store yet — Postgres is the durable backend.
   @impl true
   def upsert_reaction(_attrs), do: {:error, :message_store_unavailable}
 
   @impl true
   def remove_reaction(_attrs), do: {:error, :message_store_unavailable}
+
+  @impl true
+  def star_message(_attrs), do: {:error, :message_store_unavailable}
+
+  @impl true
+  def unstar_message(_attrs), do: {:error, :message_store_unavailable}
+
+  @impl true
+  def list_starred(_attrs), do: {:error, :message_store_unavailable}
+
+  @impl true
+  def search_messages(_attrs), do: {:error, :message_store_unavailable}
 
   defp put_receipt(attrs) do
     plan = MessageReceipts.upsert_receipt_plan(attrs)
@@ -267,6 +299,20 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
     Agent.update(@name, fn _state -> initial_state() end)
   end
 
+  @doc """
+  Test helper: seed conversation membership so `search_messages` scoping (a user only searches their
+  own conversations) is exercisable Docker-free. Postgres scopes via the real `conversation_participants`
+  table; the in-memory store carries its own minimal participant set.
+  """
+  def seed_participant(conversation_id, user_id) do
+    ensure_started()
+
+    Agent.update(@name, fn state ->
+      participant = %{conversation_id: conversation_id, user_id: user_id}
+      %{state | participants: [participant | state.participants]}
+    end)
+  end
+
   @impl true
   def put_message(attrs) do
     ensure_started()
@@ -296,8 +342,10 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
     limit = Map.get(attrs, "limit", 50)
     viewer = Map.get(attrs, "viewer_user_id")
 
-    {all_messages, receipts, reactions} =
-      Agent.get(@name, fn state -> {state.messages, state.receipts, state.reactions} end)
+    {all_messages, receipts, reactions, stars} =
+      Agent.get(@name, fn state ->
+        {state.messages, state.receipts, state.reactions, state.stars}
+      end)
 
     messages =
       all_messages
@@ -309,9 +357,17 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
         |> Map.drop([:bucket_date])
         |> Map.merge(receipt_counts(receipts, message.message_id))
         |> Map.merge(reaction_summary(reactions, message.message_id, viewer))
+        |> Map.put(:is_starred, starred?(stars, message.message_id, viewer))
       end)
 
     {:ok, %{conversation_id: conversation_id, messages: messages, next_cursor: nil}}
+  end
+
+  # Whether `viewer` has starred this message (drives the filled star on load).
+  defp starred?(_stars, _message_id, nil), do: false
+
+  defp starred?(stars, message_id, viewer) do
+    Enum.any?(stars, &(&1.message_id == message_id and &1.user_id == viewer))
   end
 
   # Per-message reaction aggregate: emoji → count (desc), plus the viewer's own emoji (or nil).
@@ -431,6 +487,112 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
     |> Enum.frequencies_by(& &1.emoji)
     |> Enum.map(fn {emoji, count} -> %{emoji: emoji, count: count} end)
     |> Enum.sort_by(fn %{count: c, emoji: e} -> {-c, e} end)
+  end
+
+  @impl true
+  def star_message(attrs) do
+    ensure_started()
+    user_id = attrs["user_id"]
+    message_id = attrs["message_id"]
+
+    Agent.update(@name, fn state ->
+      already = Enum.any?(state.stars, &(&1.message_id == message_id and &1.user_id == user_id))
+
+      if already do
+        state
+      else
+        star = %{
+          user_id: user_id,
+          message_id: message_id,
+          conversation_id: attrs["conversation_id"],
+          created_at: attrs["created_at"] || DateTime.utc_now()
+        }
+
+        %{state | stars: [star | state.stars]}
+      end
+    end)
+
+    {:ok, %{message_id: message_id, is_starred: true}}
+  end
+
+  @impl true
+  def unstar_message(attrs) do
+    ensure_started()
+    user_id = attrs["user_id"]
+    message_id = attrs["message_id"]
+
+    Agent.update(@name, fn state ->
+      %{
+        state
+        | stars:
+            Enum.reject(state.stars, &(&1.message_id == message_id and &1.user_id == user_id))
+      }
+    end)
+
+    {:ok, %{message_id: message_id, is_starred: false}}
+  end
+
+  @impl true
+  def list_starred(attrs) do
+    ensure_started()
+    user_id = attrs["user_id"]
+    {limit, offset} = page_window(attrs)
+
+    {messages, stars} = Agent.get(@name, fn state -> {state.messages, state.stars} end)
+    by_id = Map.new(messages, &{&1.message_id, &1})
+
+    starred =
+      stars
+      |> Enum.filter(&(&1.user_id == user_id))
+      |> Enum.sort_by(& &1.created_at, {:desc, DateTime})
+      |> Enum.drop(offset)
+      |> Enum.take(limit)
+      |> Enum.map(fn star -> by_id[star.message_id] end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(fn message ->
+        message
+        |> Map.drop([:bucket_date])
+        |> Map.put(:is_starred, true)
+      end)
+
+    {:ok, %{messages: starred, next_cursor: nil}}
+  end
+
+  @impl true
+  def search_messages(attrs) do
+    ensure_started()
+    user_id = attrs["user_id"]
+    query = String.downcase(attrs["query"] || "")
+    {limit, offset} = page_window(attrs)
+
+    {messages, participants} =
+      Agent.get(@name, fn state -> {state.messages, state.participants} end)
+
+    my_conversations =
+      participants
+      |> Enum.filter(&(&1.user_id == user_id))
+      |> MapSet.new(& &1.conversation_id)
+
+    matches =
+      messages
+      |> Enum.filter(fn message ->
+        message.status != "deleted" and
+          MapSet.member?(my_conversations, message.conversation_id) and
+          is_binary(message.body) and String.contains?(String.downcase(message.body), query)
+      end)
+      |> Enum.sort_by(& &1.created_at, {:desc, DateTime})
+      |> Enum.drop(offset)
+      |> Enum.take(limit)
+      |> Enum.map(&Map.drop(&1, [:bucket_date]))
+
+    {:ok, %{messages: matches, next_cursor: nil}}
+  end
+
+  # (limit, offset) from a 1-based page param (default page 1, 50/page).
+  defp page_window(attrs) do
+    page = max(attrs["page"] || 1, 1)
+    limit = attrs["limit"] || 50
+    {limit, (page - 1) * limit}
   end
 
   @impl true
@@ -565,7 +727,8 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
     |> Map.put(:updated_at, timestamp)
   end
 
-  defp initial_state, do: %{messages: [], receipts: [], reactions: []}
+  defp initial_state,
+    do: %{messages: [], receipts: [], reactions: [], stars: [], participants: []}
 
   defp ensure_started do
     case Process.whereis(@name) do
@@ -598,6 +761,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   alias MessageService.Schemas.Message
   alias MessageService.Schemas.MessageReaction
   alias MessageService.Schemas.MessageReceipt
+  alias MessageService.Schemas.StarredMessage
 
   @impl true
   def put_message(attrs) do
@@ -634,6 +798,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     message_ids = Enum.map(rows, & &1.message_id)
     counts = receipt_counts(conversation_id, message_ids)
     reactions = reaction_summaries(message_ids, viewer)
+    starred = starred_set(message_ids, viewer)
 
     messages =
       Enum.map(rows, fn message ->
@@ -643,11 +808,24 @@ defmodule MessageService.MessageStore.PostgresAdapter do
           Map.get(counts, message.message_id, %{read_by_count: 0, delivered_by_count: 0})
         )
         |> Map.merge(Map.get(reactions, message.message_id, %{reactions: [], my_reaction: nil}))
+        |> Map.put(:is_starred, MapSet.member?(starred, message.message_id))
       end)
 
     {:ok, %{conversation_id: conversation_id, messages: messages, next_cursor: nil}}
   rescue
     Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  # The subset of the listed message_ids that `viewer` has starred (one query, no N+1).
+  defp starred_set(_message_ids, nil), do: MapSet.new()
+  defp starred_set([], _viewer), do: MapSet.new()
+
+  defp starred_set(message_ids, viewer) do
+    StarredMessage
+    |> where([s], s.user_id == ^viewer and s.message_id in ^message_ids)
+    |> select([s], s.message_id)
+    |> Repo.all()
+    |> MapSet.new()
   end
 
   # Batched reaction aggregate for the listed messages: emoji → count per message (one query) + the
@@ -794,6 +972,109 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     |> Repo.all()
     |> Enum.map(fn {emoji, count} -> %{emoji: emoji, count: count} end)
     |> Enum.sort_by(fn %{count: c, emoji: e} -> {-c, e} end)
+  end
+
+  @impl true
+  def star_message(attrs) do
+    message_id = attr(attrs, "message_id")
+
+    %StarredMessage{}
+    |> StarredMessage.changeset(%{
+      "user_id" => attr(attrs, "user_id"),
+      "message_id" => message_id,
+      "conversation_id" => attr(attrs, "conversation_id"),
+      "created_at" => DateTime.utc_now()
+    })
+    |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :message_id])
+    |> case do
+      {:ok, _star} -> {:ok, %{message_id: message_id, is_starred: true}}
+      {:error, _changeset} -> {:error, :message_invalid}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  @impl true
+  def unstar_message(attrs) do
+    user_id = attr(attrs, "user_id")
+    message_id = attr(attrs, "message_id")
+
+    StarredMessage
+    |> where([s], s.user_id == ^user_id and s.message_id == ^message_id)
+    |> Repo.delete_all()
+
+    {:ok, %{message_id: message_id, is_starred: false}}
+  rescue
+    Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  @impl true
+  def list_starred(attrs) do
+    user_id = attr(attrs, "user_id")
+    {limit, offset} = page_window(attrs)
+
+    rows =
+      StarredMessage
+      |> join(:inner, [s], m in Message, on: m.message_id == s.message_id)
+      |> where([s], s.user_id == ^user_id)
+      |> order_by([s], desc: s.created_at)
+      |> limit(^limit)
+      |> offset(^offset)
+      |> select([_s, m], m)
+      |> Repo.all()
+
+    {:ok,
+     %{
+       messages: Enum.map(rows, &Map.put(message_response(&1), :is_starred, true)),
+       next_cursor: nil
+     }}
+  rescue
+    Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  @impl true
+  def search_messages(attrs) do
+    user_id = attr(attrs, "user_id")
+    pattern = "%" <> escape_like(attr(attrs, "query") || "") <> "%"
+    {limit, offset} = page_window(attrs)
+
+    # Privacy scoping: only messages in conversations the caller still participates in (left_at IS NULL).
+    # NOTE: a leading-% ILIKE can't use a btree index → sequential scan; fine at this scale. The scale
+    # upgrade is a pg_trgm GIN index on messages.body (intentionally NOT added now).
+    rows =
+      Message
+      |> join(:inner, [m], p in "conversation_participants",
+        on: p.conversation_id == m.conversation_id
+      )
+      # `conversation_participants` is a schemaless source here, so Ecto can't infer the column type —
+      # cast the bound user_id to :binary_id explicitly (else Postgrex rejects the raw uuid string).
+      |> where([m, p], p.user_id == type(^user_id, :binary_id) and is_nil(p.left_at))
+      |> where([m], m.status != "deleted")
+      |> where([m], ilike(m.body, ^pattern))
+      |> order_by([m], desc: m.created_at)
+      |> limit(^limit)
+      |> offset(^offset)
+      |> select([m], m)
+      |> Repo.all()
+
+    {:ok, %{messages: Enum.map(rows, &message_response/1), next_cursor: nil}}
+  rescue
+    Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  # Escape LIKE/ILIKE metacharacters so a user's query is matched literally (default backslash escape).
+  defp escape_like(value) do
+    value
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
+  end
+
+  # (limit, offset) from a 1-based page param (default page 1, 50/page).
+  defp page_window(attrs) do
+    page = max(attr(attrs, "page") || 1, 1)
+    limit = attr(attrs, "limit") || 50
+    {limit, (page - 1) * limit}
   end
 
   defp fetch(attrs) do

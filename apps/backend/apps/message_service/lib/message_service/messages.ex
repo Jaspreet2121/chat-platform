@@ -340,7 +340,12 @@ defmodule MessageService.Messages do
      }}
   end
 
-  defp message_response(message) do
+  @doc """
+  Normalizes a store-shaped message map into the public response shape (ISO timestamps + the per-viewer
+  aggregates). Public so the Starred (`MessageService.Stars`) and Search (`MessageService.Search`)
+  list paths reuse the exact same shape as the timeline.
+  """
+  def message_response(message) do
     %{
       conversation_id: message.conversation_id,
       message_id: message.message_id,
@@ -361,7 +366,9 @@ defmodule MessageService.Messages do
       delivered_by_count: Map.get(message, :delivered_by_count, 0),
       # Reaction aggregate (emoji → count) + the viewer's own reaction, surfaced on load like receipts.
       reactions: Map.get(message, :reactions, []),
-      my_reaction: Map.get(message, :my_reaction)
+      my_reaction: Map.get(message, :my_reaction),
+      # Whether the calling viewer has starred this message (drives the filled star on load).
+      is_starred: Map.get(message, :is_starred, false)
     }
   end
 

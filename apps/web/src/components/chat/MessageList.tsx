@@ -29,6 +29,8 @@ export type MessageListProps = {
   onForward?: (message: Message) => void;
   onReact?: (messageId: string, emoji: string) => void;
   onRemoveReaction?: (messageId: string) => void;
+  onStar?: (messageId: string) => void;
+  onUnstar?: (messageId: string) => void;
 };
 
 export function MessageList({
@@ -41,7 +43,9 @@ export function MessageList({
   onReply,
   onForward,
   onReact,
-  onRemoveReaction
+  onRemoveReaction,
+  onStar,
+  onUnstar
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const ordered = useMemo(() => sortChronologically(messages), [messages]);
@@ -106,6 +110,8 @@ export function MessageList({
           onForward={onForward}
           onReact={onReact}
           onRemoveReaction={onRemoveReaction}
+          onStar={onStar}
+          onUnstar={onUnstar}
         />
       ))}
       <div ref={bottomRef} />

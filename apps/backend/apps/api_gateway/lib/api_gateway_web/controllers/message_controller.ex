@@ -141,6 +141,51 @@ defmodule ApiGatewayWeb.MessageController do
     end
   end
 
+  # Star (bookmark) a message for the caller — private, no broadcast. Members only.
+  def star(conn, %{"conversation_id" => conversation_id, "message_id" => message_id}) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- authorize_membership(conversation_id, session.user_id),
+         {:ok, response} <-
+           SharedInfra.MessageClient.star_message(%{
+             "conversation_id" => conversation_id,
+             "message_id" => message_id,
+             "user_id" => session.user_id
+           }) do
+      json(conn, response)
+    else
+      {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_membership_forbidden} -> forbidden(conn)
+      _ -> invalid_request(conn)
+    end
+  end
+
+  # Unstar a message for the caller.
+  def unstar(conn, %{"conversation_id" => conversation_id, "message_id" => message_id}) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- authorize_membership(conversation_id, session.user_id),
+         {:ok, response} <-
+           SharedInfra.MessageClient.unstar_message(%{
+             "message_id" => message_id,
+             "user_id" => session.user_id
+           }) do
+      json(conn, response)
+    else
+      {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_membership_forbidden} -> forbidden(conn)
+      _ -> invalid_request(conn)
+    end
+  end
+
   def update(conn, %{"conversation_id" => conversation_id, "message_id" => message_id} = params) do
     if message_persistence_enabled?() do
       update_message_in_store(conn, conversation_id, message_id, params)

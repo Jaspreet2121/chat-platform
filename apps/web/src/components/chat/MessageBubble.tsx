@@ -8,6 +8,7 @@ import {
   Forward,
   MoreHorizontal,
   Pencil,
+  Star,
   Trash2,
   X
 } from "lucide-react";
@@ -34,6 +35,10 @@ export type MessageBubbleProps = {
   onReact?: (messageId: string, emoji: string) => void;
   /** Remove the caller's reaction. */
   onRemoveReaction?: (messageId: string) => void;
+  /** Star (bookmark) this message for the caller — private. */
+  onStar?: (messageId: string) => void;
+  /** Unstar this message. */
+  onUnstar?: (messageId: string) => void;
 };
 
 export function MessageBubble({
@@ -46,7 +51,9 @@ export function MessageBubble({
   onReply,
   onForward,
   onReact,
-  onRemoveReaction
+  onRemoveReaction,
+  onStar,
+  onUnstar
 }: MessageBubbleProps) {
   const isMedia = Boolean(message.media_id);
   const isDeleted = message.status === "deleted";
@@ -56,6 +63,8 @@ export function MessageBubble({
   const canReply = !isDeleted && Boolean(onReply);
   const canForward = !isDeleted && Boolean(onForward);
   const canReact = !isDeleted && Boolean(onReact);
+  const canStar = !isDeleted && Boolean(onStar) && Boolean(onUnstar);
+  const isStarred = Boolean(message.is_starred);
   const isForwarded = Boolean(message.metadata?.forwarded_from);
 
   const reactions = message.reactions ?? [];
@@ -70,15 +79,23 @@ export function MessageBubble({
     }
   }
 
+  function toggleStar() {
+    if (isStarred) {
+      onUnstar?.(message.message_id);
+    } else {
+      onStar?.(message.message_id);
+    }
+  }
+
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.body ?? "");
   const [isBusy, setIsBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
-  // React/reply/forward are available on any non-deleted message; edit (own text) / delete (own) too.
+  // React/reply/forward/star are available on any non-deleted message; edit (own text) / delete (own) too.
   const hasActions =
-    !isEditing && (canReact || canReply || canForward || canEdit || canDelete);
+    !isEditing && (canReact || canReply || canForward || canStar || canEdit || canDelete);
 
   // Close the actions popover on click-outside / Esc. Listeners attach only while open, AFTER the
   // opening click has fired, so opening the menu never immediately closes it.
@@ -264,6 +281,12 @@ export function MessageBubble({
             {isEdited && !isDeleted ? " · edited" : ""}
           </span>
 
+          {isStarred ? (
+            <span title="Starred" aria-label="Starred">
+              <Star className="h-3 w-3 text-amber-400" fill="currentColor" aria-hidden />
+            </span>
+          ) : null}
+
           {isOwn && !isDeleted ? <ReadTicks message={message} /> : null}
 
           {hasActions && (
@@ -334,6 +357,24 @@ export function MessageBubble({
                       className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
                     >
                       <Forward className="h-4 w-4" aria-hidden /> Forward
+                    </button>
+                  )}
+                  {canStar && (
+                    <button
+                      role="menuitem"
+                      type="button"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        toggleStar();
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
+                    >
+                      <Star
+                        className={cn("h-4 w-4", isStarred && "text-amber-400")}
+                        fill={isStarred ? "currentColor" : "none"}
+                        aria-hidden
+                      />{" "}
+                      {isStarred ? "Unstar" : "Star"}
                     </button>
                   )}
                   {canEdit && (

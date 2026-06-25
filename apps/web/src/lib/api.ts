@@ -94,6 +94,8 @@ export type Message = {
   // (one per user, changeable). Patched live via the realtime `reaction_updated` event.
   reactions?: ReactionCount[];
   my_reaction?: string | null;
+  // Whether the calling viewer has starred (bookmarked) this message. Private per-user; surfaced on load.
+  is_starred?: boolean;
 };
 
 export type ReactionCount = {
@@ -558,5 +560,42 @@ export function removeReaction(conversationId: string, messageId: string) {
     {
       method: "DELETE"
     }
+  );
+}
+
+// Star / unstar a message (private bookmark). Both return {message_id, is_starred}.
+export function starMessage(conversationId: string, messageId: string) {
+  return request<{ message_id: string; is_starred: boolean }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(
+      messageId
+    )}/star`,
+    {
+      method: "POST"
+    }
+  );
+}
+
+export function unstarMessage(conversationId: string, messageId: string) {
+  return request<{ message_id: string; is_starred: boolean }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(
+      messageId
+    )}/star`,
+    {
+      method: "DELETE"
+    }
+  );
+}
+
+// The caller's starred messages across all conversations (newest-starred first).
+export function listStarred(page = 1) {
+  return request<{ messages: Message[]; next_cursor: string | null }>(
+    `/api/v1/starred?page=${encodeURIComponent(page)}`
+  );
+}
+
+// Search the caller's own conversations by message body (ILIKE, min 2 chars, scoped server-side).
+export function searchMessages(query: string, page = 1) {
+  return request<{ messages: Message[]; query: string; next_cursor: string | null }>(
+    `/api/v1/search/messages?q=${encodeURIComponent(query)}&page=${encodeURIComponent(page)}`
   );
 }

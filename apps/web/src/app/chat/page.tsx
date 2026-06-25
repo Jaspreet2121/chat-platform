@@ -23,7 +23,9 @@ import {
   listConversations,
   listMessages,
   reactToMessage,
-  removeReaction
+  removeReaction,
+  starMessage,
+  unstarMessage
 } from "@/lib/api";
 import { clearSessionTokens } from "@/lib/session";
 import {
@@ -38,6 +40,7 @@ import {
   ConversationDetailsPanel,
   ConversationSidebar,
   MessageList,
+  StarredPanel,
   StatusBanner
 } from "@/components/chat";
 import { cn } from "@/lib/cn";
@@ -104,6 +107,7 @@ export default function ChatPage() {
   const [isSending, setIsSending] = useState(false);
   const [mediaStatus, setMediaStatus] = useState("");
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [isStarredOpen, setIsStarredOpen] = useState(false);
   // user_ids present in the CURRENT conversation channel (Phoenix.Presence). Per-conversation: it
   // reflects who has THIS conversation open, not global online state. Reset on conversation switch.
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
@@ -602,6 +606,27 @@ export default function ChatPage() {
     }
   }
 
+  // Star/unstar are private (REST-only, no broadcast). Optimistically flip is_starred, revert on error.
+  async function handleStar(messageId: string) {
+    setMessages((current) => patchStar(current, messageId, true));
+    try {
+      await starMessage(selectedConversationId, messageId);
+    } catch (error) {
+      setMessages((current) => patchStar(current, messageId, false));
+      setStatus(error instanceof Error ? error.message : "Could not star message.");
+    }
+  }
+
+  async function handleUnstar(messageId: string) {
+    setMessages((current) => patchStar(current, messageId, false));
+    try {
+      await unstarMessage(selectedConversationId, messageId);
+    } catch (error) {
+      setMessages((current) => patchStar(current, messageId, true));
+      setStatus(error instanceof Error ? error.message : "Could not unstar message.");
+    }
+  }
+
   // Route message creation over the realtime channel when connected so other
   // clients receive `message_created` live (broadcast_from excludes the sender,
   // which inserts from this reply). Falls back to HTTP create when no socket.
@@ -782,6 +807,7 @@ export default function ChatPage() {
           session={session}
           currentProfile={currentProfile}
           onLogout={handleLogout}
+          onOpenStarred={() => setIsStarredOpen(true)}
           newTitle={newTitle}
           onNewTitleChange={setNewTitle}
           onCreateConversation={handleCreateConversation}
@@ -832,6 +858,8 @@ export default function ChatPage() {
           onForward={(m) => setForwardingMessage(m)}
           onReact={handleReact}
           onRemoveReaction={handleRemoveReaction}
+          onStar={handleStar}
+          onUnstar={handleUnstar}
         />
 
         <Composer
@@ -879,6 +907,14 @@ export default function ChatPage() {
           />
         ) : null}
       </section>
+
+      <StarredPanel
+        isOpen={isStarredOpen}
+        onClose={() => setIsStarredOpen(false)}
+        conversations={conversations}
+        currentUserId={session?.user_id}
+        onJump={(conversationId) => setSelectedConversationId(conversationId)}
+      />
     </main>
   );
 }
@@ -902,6 +938,13 @@ function mergeMessage(messages: Message[], message: Message) {
 function patchMessage(messages: Message[], patch: Message) {
   return messages.map((item) =>
     item.message_id === patch.message_id ? { ...item, ...patch } : item
+  );
+}
+
+// Flip the is_starred flag for one message (optimistic star/unstar).
+function patchStar(messages: Message[], messageId: string, isStarred: boolean) {
+  return messages.map((item) =>
+    item.message_id === messageId ? { ...item, is_starred: isStarred } : item
   );
 }
 

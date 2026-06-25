@@ -32,6 +32,10 @@ defmodule SharedInfra.MessageClient do
   @callback admin_delete_message(attrs()) :: result()
   @callback add_reaction(attrs()) :: result()
   @callback remove_reaction(attrs()) :: result()
+  @callback star_message(attrs()) :: result()
+  @callback unstar_message(attrs()) :: result()
+  @callback list_starred(attrs()) :: result()
+  @callback search_messages(attrs()) :: result()
 
   def create_message(attrs), do: adapter().create_message(attrs)
   def send_message(attrs), do: adapter().send_message(attrs)
@@ -47,6 +51,10 @@ defmodule SharedInfra.MessageClient do
   def admin_delete_message(attrs), do: adapter().admin_delete_message(attrs)
   def add_reaction(attrs), do: adapter().add_reaction(attrs)
   def remove_reaction(attrs), do: adapter().remove_reaction(attrs)
+  def star_message(attrs), do: adapter().star_message(attrs)
+  def unstar_message(attrs), do: adapter().unstar_message(attrs)
+  def list_starred(attrs), do: adapter().list_starred(attrs)
+  def search_messages(attrs), do: adapter().search_messages(attrs)
 
   @doc "The configured Message client adapter (default `MessageService.MessageClientInProcess`)."
   def adapter do

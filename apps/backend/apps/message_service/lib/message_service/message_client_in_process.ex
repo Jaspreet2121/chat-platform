@@ -12,6 +12,8 @@ defmodule MessageService.MessageClientInProcess do
   alias MessageService.Messages
   alias MessageService.Reactions
   alias MessageService.Receipts
+  alias MessageService.Search
+  alias MessageService.Stars
   alias MessageService.Timeline
 
   @impl true
@@ -56,4 +58,16 @@ defmodule MessageService.MessageClientInProcess do
 
   @impl true
   def remove_reaction(attrs), do: Reactions.remove_reaction(attrs)
+
+  @impl true
+  def star_message(attrs), do: Stars.star_message(attrs)
+
+  @impl true
+  def unstar_message(attrs), do: Stars.unstar_message(attrs)
+
+  @impl true
+  def list_starred(attrs), do: Stars.list_starred(attrs)
+
+  @impl true
+  def search_messages(attrs), do: Search.search_messages(attrs)
 end

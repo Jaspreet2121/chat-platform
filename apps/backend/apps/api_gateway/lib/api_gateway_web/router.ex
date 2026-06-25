@@ -63,6 +63,20 @@ defmodule ApiGatewayWeb.Router do
     post "/:message_id/delivered", MessageController, :delivered
     post "/:message_id/reactions", MessageController, :react
     delete "/:message_id/reactions", MessageController, :unreact
+    post "/:message_id/star", MessageController, :star
+    delete "/:message_id/star", MessageController, :unstar
+  end
+
+  scope "/api/v1/starred", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/", StarredController, :index
+  end
+
+  scope "/api/v1/search", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/messages", SearchController, :messages
   end
 
   scope "/api/v1/media", ApiGatewayWeb do

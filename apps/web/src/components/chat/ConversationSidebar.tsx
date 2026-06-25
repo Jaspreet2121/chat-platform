@@ -1,5 +1,5 @@
 import { FormEvent } from "react";
-import { LogOut, MessagesSquare, Plus, Search, UserPlus, X } from "lucide-react";
+import { LogOut, MessagesSquare, Plus, Search, Star, UserPlus, X } from "lucide-react";
 import type {
   ConversationListItem as ConversationListItemData,
   Session,
@@ -8,11 +8,14 @@ import type {
 import { Avatar, Button, IconButton, Input } from "@/components";
 import { ConversationListItem } from "./ConversationListItem";
 import { EmptyState } from "./EmptyState";
+import { MessageSearch } from "./MessageSearch";
 
 export type ConversationSidebarProps = {
   session: Session | null;
   currentProfile: UserProfile | null;
   onLogout: () => void;
+  /** Open the Starred messages panel. */
+  onOpenStarred: () => void;
 
   newTitle: string;
   onNewTitleChange: (value: string) => void;
@@ -59,6 +62,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     session,
     currentProfile,
     onLogout,
+    onOpenStarred,
     newTitle,
     onNewTitleChange,
     onCreateConversation,
@@ -89,9 +93,14 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
             </div>
             <span className="text-sm font-semibold text-fg">Chat Platform</span>
           </div>
-          <IconButton label="Log out" variant="danger" onClick={onLogout} type="button">
-            <LogOut className="h-5 w-5" aria-hidden />
-          </IconButton>
+          <div className="flex items-center gap-1">
+            <IconButton label="Starred messages" onClick={onOpenStarred} type="button">
+              <Star className="h-5 w-5" aria-hidden />
+            </IconButton>
+            <IconButton label="Log out" variant="danger" onClick={onLogout} type="button">
+              <LogOut className="h-5 w-5" aria-hidden />
+            </IconButton>
+          </div>
         </div>
 
         {session ? (
@@ -191,6 +200,13 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
           </Button>
         </form>
       </details>
+
+      {/* Message search (debounced, scoped to the caller's conversations) */}
+      <MessageSearch
+        conversations={conversations}
+        currentUserId={session?.user_id}
+        onJump={onSelectConversation}
+      />
 
       {/* Conversation list */}
       <div className="flex-1 overflow-y-auto p-2">

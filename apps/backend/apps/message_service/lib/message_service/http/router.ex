@@ -55,6 +55,22 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Reactions.remove_reaction(body(conn)))
   end
 
+  post "/internal/stars/add" do
+    send_result(conn, MessageService.Stars.star_message(body(conn)))
+  end
+
+  post "/internal/stars/remove" do
+    send_result(conn, MessageService.Stars.unstar_message(body(conn)))
+  end
+
+  post "/internal/stars/list" do
+    send_result(conn, MessageService.Stars.list_starred(body(conn)))
+  end
+
+  post "/internal/search/messages" do
+    send_result(conn, MessageService.Search.search_messages(body(conn)))
+  end
+
   # list_timeline → Timeline.list_messages (distinct from Messages.list_messages above).
   post "/internal/timeline/list" do
     send_result(conn, MessageService.Timeline.list_messages(body(conn)))
