@@ -46,6 +46,8 @@ export type ConversationSidebarProps = {
 
   selectedParticipants: UserProfile[];
   onRemoveParticipant: (userId: string) => void;
+  /** Direct mode: set the single peer resolved from a phone-number lookup. */
+  onSelectFoundUser: (profile: UserProfile) => void;
 
   conversations: ConversationListItemData[];
   selectedConversationId: string;
@@ -81,6 +83,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     onAddParticipant,
     selectedParticipants,
     onRemoveParticipant,
+    onSelectFoundUser,
     conversations,
     selectedConversationId,
     onSelectConversation,
@@ -235,6 +238,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         onAddParticipant={onAddParticipant}
         selectedParticipants={selectedParticipants}
         onRemoveParticipant={onRemoveParticipant}
+        onSelectFoundUser={onSelectFoundUser}
       />
     </aside>
   );

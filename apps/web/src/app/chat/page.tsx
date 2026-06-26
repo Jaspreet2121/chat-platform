@@ -463,6 +463,11 @@ export default function ChatPage() {
     );
   }
 
+  // Direct mode: a peer resolved by phone number becomes THE single participant (a 1:1 has exactly one).
+  function handleSelectDirectParticipant(profile: UserProfile) {
+    setSelectedParticipants([profile]);
+  }
+
   async function handleSend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const body = draft.trim();
@@ -922,6 +927,7 @@ export default function ChatPage() {
           onAddParticipant={handleAddParticipant}
           selectedParticipants={selectedParticipants}
           onRemoveParticipant={handleRemoveParticipant}
+          onSelectFoundUser={handleSelectDirectParticipant}
           conversations={conversations}
           selectedConversationId={selectedConversationId}
           onSelectConversation={setSelectedConversationId}

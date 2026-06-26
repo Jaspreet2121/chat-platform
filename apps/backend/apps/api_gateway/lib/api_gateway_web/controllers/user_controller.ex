@@ -31,6 +31,44 @@ defmodule ApiGatewayWeb.UserController do
     end
   end
 
+  @doc """
+  Resolve a phone number (E.164) → a public profile, for starting a WhatsApp-style direct chat.
+
+  Unlike `profile/2`, this is SESSION-GATED: only a logged-in caller may probe whether a number is
+  registered (limits enumeration; see the rate-limit follow-up note). It returns the SAME shape as
+  `profile/2` — {user_id, display_name, avatar_url} — so the client reuses its found-participant card.
+  An unknown/inactive number → 404; your own number → 409 (can't DM yourself). A resolved-but-not-yet-
+  onboarded user still succeeds (display_name null), so the chat can start before they set a name.
+  """
+  def by_phone(conn, %{"phone" => phone}) when is_binary(phone) and phone != "" do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, %{user_id: user_id}} <-
+           SharedInfra.AuthClient.lookup_user_by_phone(%{"phone_number" => phone}),
+         :ok <- reject_self(session.user_id, user_id),
+         {:ok, response} <-
+           SharedInfra.UserClient.get_public_profile(%{"user_id" => user_id}) do
+      json(conn, with_avatar_url(response))
+    else
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :user_unavailable} -> service_unavailable(conn)
+      {:error, :not_found} -> phone_not_found(conn)
+      {:error, :self_lookup} -> self_lookup(conn)
+      # The number resolved to a user but their profile row is malformed — treat as not found rather
+      # than leaking a 400 for a lookup whose phone was perfectly valid.
+      {:error, :profile_invalid} -> phone_not_found(conn)
+      _ -> invalid_request(conn)
+    end
+  end
+
+  def by_phone(conn, _params), do: invalid_request(conn)
+
+  defp reject_self(caller_user_id, found_user_id) do
+    if caller_user_id == found_user_id, do: {:error, :self_lookup}, else: :ok
+  end
+
   defp placeholder_current_profile(conn, params) do
     with {:ok, response} <- SharedInfra.UserClient.get_current_profile(params) do
       json(conn, with_avatar_url(response))
@@ -131,6 +169,12 @@ defmodule ApiGatewayWeb.UserController do
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "user.invalid_request")
 
   defp service_unavailable(conn), do: ErrorResponse.service_unavailable(conn, "user.unavailable")
+
+  defp phone_not_found(conn),
+    do: ErrorResponse.not_found(conn, "user.phone_not_found", "No account uses this number")
+
+  defp self_lookup(conn),
+    do: ErrorResponse.conflict(conn, "user.self_lookup", "You can't start a chat with yourself")
 
   defp session_invalid(conn),
     do: ErrorResponse.unauthorized(conn, "auth.session_invalid", "Session token is invalid")

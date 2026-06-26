@@ -18,6 +18,8 @@ export type LoginIdentityFieldsProps = {
   onChange: (destination: string) => void;
   /** Label for the phone field (e.g. "Phone number" / "Admin phone number"). */
   phoneLabel?: string;
+  /** Hide the "Use email instead" toggle (phone-only contexts, e.g. find-a-user-by-phone). */
+  phoneOnly?: boolean;
   autoFocus?: boolean;
 };
 
@@ -59,6 +61,7 @@ function toE164(iso: CountryCode, formatted: string): string {
 export function LoginIdentityFields({
   onChange,
   phoneLabel = "Phone number",
+  phoneOnly = false,
   autoFocus
 }: LoginIdentityFieldsProps) {
   const [mode, setMode] = useState<"phone" | "email">("phone");
@@ -153,13 +156,15 @@ export function LoginIdentityFields({
           </p>
         ) : null}
       </div>
-      <button
-        type="button"
-        onClick={switchToEmail}
-        className="text-xs font-medium text-muted transition-colors hover:text-fg"
-      >
-        Use email instead
-      </button>
+      {!phoneOnly ? (
+        <button
+          type="button"
+          onClick={switchToEmail}
+          className="text-xs font-medium text-muted transition-colors hover:text-fg"
+        >
+          Use email instead
+        </button>
+      ) : null}
     </div>
   );
 }

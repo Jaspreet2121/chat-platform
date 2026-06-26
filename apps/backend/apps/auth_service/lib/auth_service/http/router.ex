@@ -42,6 +42,15 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Tokens.revoke(body(conn)))
   end
 
+  # Phone → user_id resolution for WhatsApp-style direct chat. Active-only; the gateway gates this
+  # behind a valid session before calling (the transport TokenPlug above is service-to-service auth).
+  post "/internal/users/by_phone" do
+    send_result(
+      conn,
+      AuthService.Accounts.lookup_active_by_phone(Map.get(body(conn), "phone_number"))
+    )
+  end
+
   # --- Admin moderation (gated upstream by the gateway's RequireAdmin + this internal TokenPlug) ---
   post "/internal/admin/users/list" do
     send_result(conn, {:ok, AuthService.Accounts.list_users(body(conn))})

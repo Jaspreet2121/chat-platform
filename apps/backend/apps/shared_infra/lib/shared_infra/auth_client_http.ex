@@ -21,6 +21,9 @@ defmodule SharedInfra.AuthClientHttp do
   def current_session(attrs), do: post("/internal/sessions/current", attrs)
 
   @impl true
+  def lookup_user_by_phone(attrs), do: post("/internal/users/by_phone", attrs)
+
+  @impl true
   def request_otp(attrs), do: post("/internal/otp/request", attrs)
 
   @impl true

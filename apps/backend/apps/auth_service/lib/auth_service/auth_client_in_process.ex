@@ -18,6 +18,10 @@ defmodule AuthService.AuthClientInProcess do
   def current_session(attrs), do: Sessions.current_session(attrs)
 
   @impl true
+  def lookup_user_by_phone(attrs),
+    do: Accounts.lookup_active_by_phone(Map.get(attrs, "phone_number"))
+
+  @impl true
   def persistence_enabled?, do: Sessions.persistence_enabled?()
 
   @impl true

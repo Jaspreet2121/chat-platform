@@ -21,6 +21,7 @@ defmodule SharedInfra.AuthClient do
 
   @callback current_session(attrs()) :: result()
   @callback persistence_enabled?() :: boolean()
+  @callback lookup_user_by_phone(attrs()) :: result()
   @callback request_otp(attrs()) :: result()
   @callback verify_otp(attrs()) :: result()
   @callback refresh(attrs()) :: result()
@@ -35,8 +36,13 @@ defmodule SharedInfra.AuthClient do
   @callback write_audit(attrs()) :: result()
   @callback list_audit(attrs()) :: result()
 
+  # Optional so the many test stubs that implement this behaviour don't all need to add it; the real
+  # adapters (in-process + HTTP) both implement it, which is all the dispatcher ever resolves to.
+  @optional_callbacks lookup_user_by_phone: 1
+
   def current_session(attrs), do: adapter().current_session(attrs)
   def persistence_enabled?, do: adapter().persistence_enabled?()
+  def lookup_user_by_phone(attrs), do: adapter().lookup_user_by_phone(attrs)
   def request_otp(attrs), do: adapter().request_otp(attrs)
   def verify_otp(attrs), do: adapter().verify_otp(attrs)
   def refresh(attrs), do: adapter().refresh(attrs)

@@ -22,6 +22,24 @@ defmodule AuthService.Accounts do
     Repo.get_by(UserAuth, phone_number: phone_number)
   end
 
+  @doc """
+  Public-safe phone → user lookup for starting a direct (1:1) chat.
+
+  Returns `{:ok, %{user_id: id}}` for an ACTIVE account whose `phone_number` matches exactly, and
+  `{:error, :not_found}` for an unknown number OR a non-active (suspended/deleted) account — a caller
+  can't distinguish "no such number" from "suspended". The match is exact: the stored phone is the
+  same E.164 the client emits at login (`normalize_destination/1` only trims), so an E.164 lookup
+  matches with no fuzzy logic. Email-registered users (phone_number nil) are simply never found.
+  """
+  def lookup_active_by_phone(phone_number) when is_binary(phone_number) do
+    case get_by_phone_number(String.trim(phone_number)) do
+      %UserAuth{id: id, status: "active"} -> {:ok, %{user_id: id}}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def lookup_active_by_phone(_phone_number), do: {:error, :not_found}
+
   def get_by_email(email) do
     Repo.get_by(UserAuth, email: email)
   end

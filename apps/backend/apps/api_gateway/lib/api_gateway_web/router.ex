@@ -39,6 +39,10 @@ defmodule ApiGatewayWeb.Router do
 
     get "/me", UserController, :me
     patch "/me", UserController, :update_me
+
+    # Phone → profile lookup for direct chat (session-gated in the controller). A literal one-segment
+    # path, so it never collides with the two-segment "/:user_id/profile" below.
+    get "/by-phone", UserController, :by_phone
     get "/:user_id/profile", UserController, :profile
   end
 

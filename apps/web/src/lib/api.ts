@@ -448,6 +448,14 @@ export function getPublicProfile(userId: string) {
   return request<UserProfile>(`/api/v1/users/${encodeURIComponent(userId)}/profile`);
 }
 
+// Resolve a phone number (E.164, e.g. "+919876543210") → a public profile, for starting a direct
+// chat. Session-gated server-side; an unknown number (404) or your own number (409) surface as a
+// thrown Error carrying a friendly message ("No account uses this number" / "You can't start a chat
+// with yourself"). Same shape as getPublicProfile, so the found-participant card is reused.
+export function findUserByPhone(phone: string) {
+  return request<UserProfile>(`/api/v1/users/by-phone?phone=${encodeURIComponent(phone)}`);
+}
+
 export function listConversations() {
   return request<{
     conversations: ConversationListItem[];

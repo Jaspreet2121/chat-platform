@@ -46,6 +46,32 @@ defmodule ApiGatewayWeb.ErrorResponse do
     })
   end
 
+  def not_found(conn, code, message) do
+    conn
+    |> put_status(:not_found)
+    |> json(%{
+      error: %{
+        code: code,
+        message: message,
+        correlation_id: correlation_id(conn)
+      }
+    })
+  end
+
+  # 409 for a request that's well-formed but conflicts with the resource state (e.g. trying to start
+  # a direct chat with yourself).
+  def conflict(conn, code, message) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{
+      error: %{
+        code: code,
+        message: message,
+        correlation_id: correlation_id(conn)
+      }
+    })
+  end
+
   # 413 for an upload whose declared size exceeds the server cap (MEDIA_MAX_SIZE_BYTES).
   def payload_too_large(conn, code, message) do
     conn
