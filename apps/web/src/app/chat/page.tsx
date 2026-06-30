@@ -412,6 +412,22 @@ export default function ChatPage() {
     }
   }
 
+  // Primary header search → "Message": create a 1:1 direct chat with the phone-resolved peer and open
+  // it. Same create path as the modal's direct flow (no find-or-create dedup yet — a known follow-up).
+  async function handleStartDirectChat(profile: UserProfile) {
+    try {
+      const conversation = await createConversation({
+        title: profile.display_name?.trim() || "Direct chat",
+        participantUserIds: [profile.user_id],
+        type: "direct"
+      });
+      await refreshConversationList(conversation.conversation_id);
+      setStatus("Direct chat created.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Couldn't start the chat.");
+    }
+  }
+
   async function handleLookupProfile() {
     const userId = lookupUserId.trim();
 
@@ -928,6 +944,7 @@ export default function ChatPage() {
           selectedParticipants={selectedParticipants}
           onRemoveParticipant={handleRemoveParticipant}
           onSelectFoundUser={handleSelectDirectParticipant}
+          onStartDirectChat={handleStartDirectChat}
           conversations={conversations}
           selectedConversationId={selectedConversationId}
           onSelectConversation={setSelectedConversationId}

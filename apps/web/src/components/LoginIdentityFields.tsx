@@ -2,14 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { Mail } from "lucide-react";
-import {
-  AsYouType,
-  type CountryCode,
-  getExampleNumber,
-  parsePhoneNumber
-} from "libphonenumber-js";
-import examples from "libphonenumber-js/examples.mobile.json";
+import { type CountryCode } from "libphonenumber-js";
 import { Country, DEFAULT_COUNTRY } from "@/lib/countries";
+import { formatLocal, phoneMeta, toE164 } from "@/lib/phone";
 import { CountryCodeSelect } from "./CountryCodeSelect";
 import { Input } from "./Input";
 
@@ -22,38 +17,6 @@ export type LoginIdentityFieldsProps = {
   phoneOnly?: boolean;
   autoFocus?: boolean;
 };
-
-// Per-country phone metadata from libphonenumber-js: an example placeholder (formatted national) and the
-// max national digit count for that country (used to cap input). The example's national length is the
-// canonical mobile length (India 10, UAE 9, …) — a strict, intuitive cap; the button still gates on full
-// per-country validity below.
-function phoneMeta(iso: CountryCode): { maxDigits: number; placeholder: string } {
-  const example = getExampleNumber(iso, examples);
-  if (!example) return { maxDigits: 15, placeholder: "phone number" };
-  return {
-    maxDigits: example.nationalNumber.length,
-    placeholder: new AsYouType(iso).input(example.nationalNumber)
-  };
-}
-
-// Format the typed digits per country (AsYouType) after capping to the country's max length.
-function formatLocal(iso: CountryCode, raw: string, maxDigits: number): string {
-  const digits = raw.replace(/\D/g, "").slice(0, maxDigits);
-  return new AsYouType(iso).input(digits);
-}
-
-// Valid national number → E.164 ("+91…"); otherwise "" (so the submit button stays disabled). This is
-// the SAME E.164 requestOtp already accepts — backend/lib unchanged.
-function toE164(iso: CountryCode, formatted: string): string {
-  const digits = formatted.replace(/\D/g, "");
-  if (!digits) return "";
-  try {
-    const parsed = parsePhoneNumber(digits, iso);
-    return parsed && parsed.isValid() ? parsed.number : "";
-  } catch {
-    return "";
-  }
-}
 
 // Phone-first login identity entry: a country-code selector + per-country-validated national number that
 // combine into an E.164 destination, with a toggle to "Use email instead" (preserves email login).

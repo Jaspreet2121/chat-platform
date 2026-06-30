@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react";
-import { LogOut, MessagesSquare, Plus, Star } from "lucide-react";
+import { LogOut, MessagesSquare, Star } from "lucide-react";
 import type {
   ConversationListItem as ConversationListItemData,
   Session,
@@ -8,9 +8,11 @@ import type {
 import { Avatar, IconButton, ThemeToggle } from "@/components";
 import { cn } from "@/lib/cn";
 import { ConversationListItem } from "./ConversationListItem";
+import { ContactSearch } from "./ContactSearch";
 import { EmptyState } from "./EmptyState";
-import { MessageSearch } from "./MessageSearch";
+import { MessageSearchModal } from "./MessageSearchModal";
 import { NewConversationModal } from "./NewConversationModal";
+import { PlusMenu } from "./PlusMenu";
 
 type ConversationFilter = "all" | "personal" | "groups";
 
@@ -48,6 +50,8 @@ export type ConversationSidebarProps = {
   onRemoveParticipant: (userId: string) => void;
   /** Direct mode: set the single peer resolved from a phone-number lookup. */
   onSelectFoundUser: (profile: UserProfile) => void;
+  /** Primary header search: start a 1:1 direct chat with a peer found by phone number. */
+  onStartDirectChat: (profile: UserProfile) => void | Promise<void>;
 
   conversations: ConversationListItemData[];
   selectedConversationId: string;
@@ -84,6 +88,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     selectedParticipants,
     onRemoveParticipant,
     onSelectFoundUser,
+    onStartDirectChat,
     conversations,
     selectedConversationId,
     onSelectConversation,
@@ -91,8 +96,9 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     isLoading
   } = props;
 
-  // Local UI state: the new-conversation modal (the create/lookup handlers still come from props).
+  // Local UI state: the "+" menu's two entries — new-conversation modal + message-search sheet.
   const [isNewConvOpen, setIsNewConvOpen] = useState(false);
+  const [isMsgSearchOpen, setIsMsgSearchOpen] = useState(false);
   // Client-side filter by conversation type (purely a UI view of the existing list — no fetch/handler).
   const [filter, setFilter] = useState<ConversationFilter>("all");
   const filteredConversations = conversations.filter((conversation) => {
@@ -113,14 +119,10 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
             <span className="truncate text-sm font-semibold text-fg">Chat Platform</span>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
-            <IconButton
-              label="New conversation"
-              variant="primary"
-              onClick={() => setIsNewConvOpen(true)}
-              type="button"
-            >
-              <Plus className="h-5 w-5" aria-hidden />
-            </IconButton>
+            <PlusMenu
+              onNewChat={() => setIsNewConvOpen(true)}
+              onSearchMessages={() => setIsMsgSearchOpen(true)}
+            />
             <ThemeToggle />
             <IconButton label="Starred messages" onClick={onOpenStarred} type="button">
               <Star className="h-5 w-5" aria-hidden />
@@ -155,12 +157,8 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
       </div>
 
 
-      {/* Message search (debounced, scoped to the caller's conversations) */}
-      <MessageSearch
-        conversations={conversations}
-        currentUserId={session?.user_id}
-        onJump={onJumpToMessage}
-      />
+      {/* PRIMARY search: find someone by phone number → start a direct chat (always visible). */}
+      <ContactSearch onStartDirectChat={onStartDirectChat} />
 
       {/* Filter tabs — segmented control over the existing list, by conversation type. */}
       <div className="px-3 pt-3" role="tablist" aria-label="Filter conversations">
@@ -239,6 +237,15 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         selectedParticipants={selectedParticipants}
         onRemoveParticipant={onRemoveParticipant}
         onSelectFoundUser={onSelectFoundUser}
+      />
+
+      {/* "Search messages" sheet — the message search relocated from the header into the "+" menu. */}
+      <MessageSearchModal
+        isOpen={isMsgSearchOpen}
+        onClose={() => setIsMsgSearchOpen(false)}
+        conversations={conversations}
+        currentUserId={session?.user_id}
+        onJump={onJumpToMessage}
       />
     </aside>
   );

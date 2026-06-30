@@ -15,10 +15,21 @@ export type MessageSearchProps = {
   currentUserId?: string;
   /** Open the conversation a result belongs to and scroll to the matched message. */
   onJump: (conversationId: string, messageId: string) => void;
+  /** Focus the input on mount (used when shown in the search sheet). */
+  autoFocus?: boolean;
+  /** Called after a result is opened (lets a host sheet close itself). */
+  onJumped?: () => void;
 };
 
-// In-sidebar message search: debounced, ≥2 chars, scoped server-side to the caller's conversations.
-export function MessageSearch({ conversations, currentUserId, onJump }: MessageSearchProps) {
+// Message search: debounced, ≥2 chars, scoped server-side to the caller's conversations. Rendered
+// inside the "+" → Search messages sheet (chrome is provided by the host).
+export function MessageSearch({
+  conversations,
+  currentUserId,
+  onJump,
+  autoFocus,
+  onJumped
+}: MessageSearchProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -79,10 +90,11 @@ export function MessageSearch({ conversations, currentUserId, onJump }: MessageS
   function jump(conversationId: string, messageId: string) {
     onJump(conversationId, messageId);
     setQuery("");
+    onJumped?.();
   }
 
   return (
-    <div className="border-b border-border px-4 py-3">
+    <div>
       <div className="relative">
         <Input
           leftIcon={<Search className="h-4 w-4" aria-hidden />}
@@ -91,6 +103,7 @@ export function MessageSearch({ conversations, currentUserId, onJump }: MessageS
           onChange={(event) => setQuery(event.target.value)}
           className={query ? "pr-9" : undefined}
           aria-label="Search messages"
+          autoFocus={autoFocus}
         />
         {query ? (
           <button
