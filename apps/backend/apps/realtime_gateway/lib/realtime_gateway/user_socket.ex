@@ -22,7 +22,7 @@ defmodule RealtimeGateway.UserSocket do
          {:ok, authorization} <- authorization_param(params),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}) do
-      {:ok, assign_session(socket, session.user_id, session.device_id)}
+      {:ok, assign_session(socket, session.user_id, session.device_id, Map.get(session, :app_id))}
     else
       _ -> :error
     end
@@ -46,15 +46,18 @@ defmodule RealtimeGateway.UserSocket do
      assign_session(
        socket,
        Map.get(params, "user_id", "user_placeholder"),
-       Map.get(params, "device_id", "device_placeholder")
+       Map.get(params, "device_id", "device_placeholder"),
+       nil
      )}
   end
 
-  defp assign_session(socket, user_id, device_id) do
+  defp assign_session(socket, user_id, device_id, app_id) do
     socket
     |> assign(:current_user_id, user_id)
     |> assign(:user_id, user_id)
     |> assign(:device_id, device_id || "device_placeholder")
+    # The app (tenant) this socket belongs to — defaults to tenant zero for the existing app.
+    |> assign(:app_id, SharedInfra.Tenancy.app_id_or_default(app_id))
   end
 
   defp authorization_param(params) do

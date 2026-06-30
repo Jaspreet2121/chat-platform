@@ -129,6 +129,9 @@ defmodule AuthService.Sessions do
       # Global platform-admin flag, surfaced so the gateway's RequireAdmin gate + the frontend admin UI
       # can read it straight off the session (no extra lookup).
       is_admin: user.is_admin == true,
+      # The app (tenant) this session belongs to. Old tokens (minted before multi-tenancy) carry no
+      # "app" claim → resolve to tenant zero, so existing sessions keep working without re-login.
+      app_id: SharedInfra.Tenancy.app_id_or_default(claims["app"]),
       issued_at: unix_to_iso8601(claims["iat"]),
       expires_at: unix_to_iso8601(claims["exp"])
     }
@@ -141,6 +144,7 @@ defmodule AuthService.Sessions do
       device_id: "device_placeholder",
       platform: "ios",
       is_admin: false,
+      app_id: SharedInfra.Tenancy.default_app_id(),
       issued_at: "2026-06-16T18:00:00Z",
       expires_at: "2026-06-16T18:15:00Z"
     }

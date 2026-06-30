@@ -58,11 +58,15 @@ defmodule AuthService.Tokens do
     access_expires_at = DateTime.add(now, access_token_ttl_seconds, :second)
     refresh_expires_at = DateTime.add(now, refresh_token_ttl_seconds, :second)
 
+    # The app (tenant) this session belongs to. The existing login flow passes none → tenant zero.
+    app_id = SharedInfra.Tenancy.app_id_or_default(get_attr(attrs, :app_id))
+
     claims = %{
       "typ" => "access",
       "sub" => user_id,
       "sid" => session_id,
       "did" => device_id,
+      "app" => app_id,
       "iat" => DateTime.to_unix(now),
       "exp" => DateTime.to_unix(access_expires_at),
       "jti" => Ecto.UUID.generate(),
