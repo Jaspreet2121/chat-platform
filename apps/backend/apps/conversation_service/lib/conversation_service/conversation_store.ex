@@ -34,6 +34,20 @@ defmodule ConversationService.ConversationStore do
 
   def get_conversation(id), do: Repo.get(Conversation, id)
 
+  # Existing direct conversation for a canonical pair key WITHIN an app (the unique index is
+  # (app_id, direct_key) WHERE type='direct'). NULL keys / non-direct / other apps never match.
+  def get_by_direct_key(app_id, direct_key) when is_binary(app_id) and is_binary(direct_key) do
+    Repo.one(
+      from(conversation in Conversation,
+        where:
+          conversation.type == "direct" and conversation.app_id == ^app_id and
+            conversation.direct_key == ^direct_key
+      )
+    )
+  end
+
+  def get_by_direct_key(_app_id, _direct_key), do: nil
+
   def list_conversations do
     Conversation
     |> order_by([conversation], desc: conversation.updated_at)

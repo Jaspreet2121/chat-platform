@@ -158,30 +158,37 @@ defmodule ConversationService.Conversations do
         |> Enum.reject(&is_nil/1)
         |> Enum.uniq()
 
-      Repo.transaction(fn ->
-        with {:ok, conversation} <-
-               ConversationStore.create_conversation(%{
-                 "id" => conversation_id,
-                 "tenant_id" => get_attr(attrs, "tenant_id"),
-                 "type" => type,
-                 "title" => get_attr(attrs, "title"),
-                 "avatar_media_id" => get_attr(attrs, "avatar_media_id"),
-                 "created_by" => created_by,
-                 "status" => "active",
-                 "created_at" => now,
-                 "updated_at" => now
-               }),
-             :ok <-
-               add_initial_participants(conversation.id, created_by, participant_user_ids, now) do
-          conversation_response(conversation, participant_user_ids)
+      # The app (tenant) this conversation belongs to. The existing single-tenant gateway passes none →
+      # tenant zero. Set explicitly so direct dedup keys + the (app_id, direct_key) unique index scope
+      # per-app (and future per-app callers just pass their app_id).
+      app_id = SharedInfra.Tenancy.app_id_or_default(get_attr(attrs, "app_id"))
+
+      base_attrs = %{
+        "id" => conversation_id,
+        "tenant_id" => get_attr(attrs, "tenant_id"),
+        "app_id" => app_id,
+        "type" => type,
+        "title" => get_attr(attrs, "title"),
+        "avatar_media_id" => get_attr(attrs, "avatar_media_id"),
+        "created_by" => created_by,
+        "status" => "active",
+        "created_at" => now,
+        "updated_at" => now
+      }
+
+      # A 1:1 direct chat (exactly two distinct participants) is idempotent per user-pair WITHIN the app:
+      # return the existing thread for the pair if there is one, else create it. Everything else inserts.
+      result =
+        if type == "direct" and length(participant_user_ids) == 2 do
+          find_or_create_direct(app_id, base_attrs, created_by, participant_user_ids, now)
         else
-          {:error, reason} -> Repo.rollback(reason)
+          insert_conversation(base_attrs, created_by, participant_user_ids, now)
         end
-      end)
-      |> case do
-        {:ok, response} ->
-          # After the tx COMMITS, emit one participant_added per initial participant
-          # (fire-and-forget; never affects the create result).
+
+      case result do
+        {:ok, response, :created} ->
+          # Emit one participant_added per initial participant ONLY for a newly created conversation
+          # (fire-and-forget; never affects the result). Returning an existing thread stays silent.
           ParticipantEvents.publish_initial_participants(
             response.conversation_id,
             response.created_by,
@@ -190,12 +197,71 @@ defmodule ConversationService.Conversations do
 
           {:ok, response}
 
+        {:ok, response, :existing} ->
+          {:ok, response}
+
         {:error, _reason} ->
           {:error, :conversation_invalid}
       end
     end
   rescue
     Ecto.Query.CastError -> {:error, :conversation_invalid}
+  end
+
+  # Normal (non-deduped) create: conversation + initial participants in one transaction.
+  defp insert_conversation(base_attrs, created_by, participant_user_ids, now) do
+    Repo.transaction(fn ->
+      with {:ok, conversation} <- ConversationStore.create_conversation(base_attrs),
+           :ok <-
+             add_initial_participants(conversation.id, created_by, participant_user_ids, now) do
+        conversation_response(conversation, participant_user_ids)
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> case do
+      {:ok, response} -> {:ok, response, :created}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Idempotent direct create. Compute the canonical pair key, return the existing thread if present,
+  # else insert it (with the key). On the unique-violation RACE (two simultaneous "Message" clicks),
+  # the partial unique index rejects the loser → re-fetch by key and return the winner's thread, so
+  # two rows are never created.
+  defp find_or_create_direct(app_id, base_attrs, created_by, participant_user_ids, now) do
+    direct_key = participant_user_ids |> Enum.map(&to_string/1) |> Enum.sort() |> Enum.join(":")
+
+    case ConversationStore.get_by_direct_key(app_id, direct_key) do
+      nil ->
+        base_attrs
+        |> Map.put("direct_key", direct_key)
+        |> insert_conversation(created_by, participant_user_ids, now)
+        |> case do
+          {:ok, response, :created} ->
+            {:ok, response, :created}
+
+          {:error, %Ecto.Changeset{errors: errors}} ->
+            if Keyword.has_key?(errors, :direct_key) do
+              refetch_direct(app_id, direct_key, participant_user_ids)
+            else
+              {:error, :conversation_invalid}
+            end
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      existing ->
+        {:ok, conversation_response(existing, participant_user_ids), :existing}
+    end
+  end
+
+  defp refetch_direct(app_id, direct_key, participant_user_ids) do
+    case ConversationStore.get_by_direct_key(app_id, direct_key) do
+      nil -> {:error, :conversation_invalid}
+      existing -> {:ok, conversation_response(existing, participant_user_ids), :existing}
+    end
   end
 
   defp add_initial_participants(conversation_id, created_by, participant_user_ids, now) do
