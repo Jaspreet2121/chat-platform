@@ -51,6 +51,38 @@ defmodule AuthService.HTTP.Router do
     )
   end
 
+  # Secret API keys (per app). Management routes are gated upstream by the gateway behind app-owner
+  # auth; verify is called by the gateway's /v1 secret-key plug. The raw key is never logged here.
+  post "/internal/api_keys/create" do
+    send_result(conn, AuthService.ApiKeys.create_api_key(body(conn)))
+  end
+
+  post "/internal/api_keys/list" do
+    send_result(conn, AuthService.ApiKeys.list_api_keys(body(conn)))
+  end
+
+  post "/internal/api_keys/revoke" do
+    send_result(conn, AuthService.ApiKeys.revoke_api_key(body(conn)))
+  end
+
+  post "/internal/api_keys/verify" do
+    send_result(conn, AuthService.ApiKeys.verify_api_key(Map.get(body(conn), "api_key")))
+  end
+
+  # End-user token-exchange (gateway gates create behind a verified secret key; verify is used by the
+  # /v1 plug + the socket to authenticate end-user JWTs). Single crypto path: AuthService.Tokens.
+  post "/internal/app_auth/token" do
+    send_result(conn, AuthService.AppAuth.mint_app_user_token(body(conn)))
+  end
+
+  post "/internal/app_auth/resolve_user" do
+    send_result(conn, AuthService.AppAuth.resolve_external_user(body(conn)))
+  end
+
+  post "/internal/app_auth/verify_token" do
+    send_result(conn, AuthService.AppAuth.verify_app_user_token(Map.get(body(conn), "token")))
+  end
+
   # --- Admin moderation (gated upstream by the gateway's RequireAdmin + this internal TokenPlug) ---
   post "/internal/admin/users/list" do
     send_result(conn, {:ok, AuthService.Accounts.list_users(body(conn))})

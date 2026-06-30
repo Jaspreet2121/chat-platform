@@ -13,6 +13,13 @@ defmodule ApiGatewayWeb.Router do
     plug ApiGatewayWeb.Plugs.RequireAdmin
   end
 
+  # Public integrator API: authenticate (secret key OR end-user JWT) → app_id scope → per-app rate limit.
+  pipeline :v1 do
+    plug :accepts, ["json"]
+    plug ApiGatewayWeb.Plugs.V1Auth
+    plug ApiGatewayWeb.Plugs.V1RateLimit
+  end
+
   scope "/", ApiGatewayWeb do
     pipe_through :api
 
@@ -32,6 +39,25 @@ defmodule ApiGatewayWeb.Router do
     pipe_through [:api, :otp_request_rate_limited]
 
     post "/otp/request", AuthController, :request_otp
+  end
+
+  # App-owner management of secret API keys (logged-in app session; key's app = session app_id).
+  # Public, versioned integrator API — separate from the existing app's /api/v1 internal routes.
+  scope "/v1", ApiGatewayWeb.V1 do
+    pipe_through :v1
+
+    post "/auth/token", AuthController, :token
+    post "/conversations", ConversationController, :create
+    post "/conversations/:id/messages", MessageController, :create
+    get "/conversations/:id/messages", MessageController, :index
+  end
+
+  scope "/api/v1/api-keys", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/", ApiKeyController, :create
+    get "/", ApiKeyController, :index
+    delete "/:id", ApiKeyController, :revoke
   end
 
   scope "/api/v1/users", ApiGatewayWeb do

@@ -9,6 +9,8 @@ defmodule AuthService.AuthClientInProcess do
   @behaviour SharedInfra.AuthClient
 
   alias AuthService.Accounts
+  alias AuthService.ApiKeys
+  alias AuthService.AppAuth
   alias AuthService.Moderation
   alias AuthService.OTP
   alias AuthService.Sessions
@@ -20,6 +22,27 @@ defmodule AuthService.AuthClientInProcess do
   @impl true
   def lookup_user_by_phone(attrs),
     do: Accounts.lookup_active_by_phone(Map.get(attrs, "phone_number"))
+
+  @impl true
+  def create_api_key(attrs), do: ApiKeys.create_api_key(attrs)
+
+  @impl true
+  def list_api_keys(attrs), do: ApiKeys.list_api_keys(attrs)
+
+  @impl true
+  def revoke_api_key(attrs), do: ApiKeys.revoke_api_key(attrs)
+
+  @impl true
+  def verify_api_key(attrs), do: ApiKeys.verify_api_key(Map.get(attrs, "api_key"))
+
+  @impl true
+  def mint_app_user_token(attrs), do: AppAuth.mint_app_user_token(attrs)
+
+  @impl true
+  def resolve_external_user(attrs), do: AppAuth.resolve_external_user(attrs)
+
+  @impl true
+  def verify_app_user_token(attrs), do: AppAuth.verify_app_user_token(Map.get(attrs, "token"))
 
   @impl true
   def persistence_enabled?, do: Sessions.persistence_enabled?()

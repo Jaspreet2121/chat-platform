@@ -24,6 +24,27 @@ defmodule SharedInfra.AuthClientHttp do
   def lookup_user_by_phone(attrs), do: post("/internal/users/by_phone", attrs)
 
   @impl true
+  def create_api_key(attrs), do: post("/internal/api_keys/create", attrs)
+
+  @impl true
+  def list_api_keys(attrs), do: post("/internal/api_keys/list", attrs)
+
+  @impl true
+  def revoke_api_key(attrs), do: post("/internal/api_keys/revoke", attrs)
+
+  @impl true
+  def verify_api_key(attrs), do: post("/internal/api_keys/verify", attrs)
+
+  @impl true
+  def mint_app_user_token(attrs), do: post("/internal/app_auth/token", attrs)
+
+  @impl true
+  def resolve_external_user(attrs), do: post("/internal/app_auth/resolve_user", attrs)
+
+  @impl true
+  def verify_app_user_token(attrs), do: post("/internal/app_auth/verify_token", attrs)
+
+  @impl true
   def request_otp(attrs), do: post("/internal/otp/request", attrs)
 
   @impl true

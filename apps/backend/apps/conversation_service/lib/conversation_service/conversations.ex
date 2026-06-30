@@ -39,6 +39,29 @@ defmodule ConversationService.Conversations do
     end
   end
 
+  @doc """
+  Lightweight tenant lookup for the public /v1 gate: the conversation's app_id + type, WITHOUT a
+  membership check (a secret-key server acts for the whole app, not as a participant). The /v1 layer
+  compares this app_id to the caller's app_id and 404s on mismatch (no cross-tenant existence reveal).
+  """
+  def get_conversation_app(attrs) do
+    if conversation_persistence_enabled?() do
+      with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+           {:ok, conversation} <- fetch_active_conversation(conversation_id) do
+        {:ok,
+         %{
+           conversation_id: conversation.id,
+           app_id: conversation.app_id,
+           type: conversation.type
+         }}
+      end
+    else
+      {:error, :conversation_not_found}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :conversation_invalid}
+  end
+
   defp get_conversation_from_db(attrs) do
     with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
          {:ok, user_id} <- required_attr(attrs, "user_id"),
@@ -75,6 +98,9 @@ defmodule ConversationService.Conversations do
     %{
       conversation_id: conversation.id,
       tenant_id: conversation.tenant_id,
+      # The app (tenant) that owns this conversation — lets the /v1 layer reject cross-tenant access
+      # (a conversation not in the caller's app_id → 404).
+      app_id: conversation.app_id,
       type: conversation.type,
       title: conversation.title,
       created_by: conversation.created_by,

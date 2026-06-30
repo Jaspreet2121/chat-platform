@@ -21,12 +21,17 @@ defmodule SharedInfra.ConversationClient do
   @callback get_conversation(attrs()) :: result()
   @callback add_participant(attrs()) :: result()
   @callback remove_participant(attrs()) :: result()
+  @callback get_conversation_app(attrs()) :: result()
+
+  # Optional so existing test stubs of this behaviour don't all need it; the real adapters implement it.
+  @optional_callbacks get_conversation_app: 1
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
   def get_conversation(attrs), do: adapter().get_conversation(attrs)
   def add_participant(attrs), do: adapter().add_participant(attrs)
   def remove_participant(attrs), do: adapter().remove_participant(attrs)
+  def get_conversation_app(attrs), do: adapter().get_conversation_app(attrs)
 
   @doc "The configured Conversation client adapter (default `ConversationService.ConversationClientInProcess`)."
   def adapter do

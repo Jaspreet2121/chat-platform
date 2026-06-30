@@ -40,6 +40,49 @@ defmodule AuthService.Accounts do
 
   def lookup_active_by_phone(_phone_number), do: {:error, :not_found}
 
+  @doc """
+  Resolve an integrator's opaque end-user id to a stable user row WITHIN an app, creating it on first
+  sight. Idempotent: a second call (or a concurrent race on the (app_id, external_id) unique index)
+  returns the SAME user. App-A's "alice" and App-B's "alice" are different rows (multi-tenancy).
+  """
+  def resolve_or_create_external_user(app_id, external_id)
+      when is_binary(app_id) and app_id != "" and is_binary(external_id) and external_id != "" do
+    case get_external_user(app_id, external_id) do
+      %UserAuth{id: id} ->
+        {:ok, %{user_id: id}}
+
+      nil ->
+        %UserAuth{}
+        |> UserAuth.changeset(%{
+          "id" => Ecto.UUID.generate(),
+          "app_id" => app_id,
+          "external_id" => external_id,
+          "status" => "active"
+        })
+        |> Repo.insert()
+        |> case do
+          {:ok, user} ->
+            {:ok, %{user_id: user.id}}
+
+          {:error, %Ecto.Changeset{errors: errors}} ->
+            # Race: another request created it first → re-fetch and return that one.
+            if Keyword.has_key?(errors, :external_id) do
+              case get_external_user(app_id, external_id) do
+                %UserAuth{id: id} -> {:ok, %{user_id: id}}
+                nil -> {:error, :user_invalid}
+              end
+            else
+              {:error, :user_invalid}
+            end
+        end
+    end
+  end
+
+  def resolve_or_create_external_user(_app_id, _external_id), do: {:error, :user_invalid}
+
+  defp get_external_user(app_id, external_id),
+    do: Repo.get_by(UserAuth, app_id: app_id, external_id: external_id)
+
   def get_by_email(email) do
     Repo.get_by(UserAuth, email: email)
   end

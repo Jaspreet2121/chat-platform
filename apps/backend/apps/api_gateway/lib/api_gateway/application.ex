@@ -7,6 +7,8 @@ defmodule ApiGateway.Application do
   def start(_type, _args) do
     children = [
       {Phoenix.PubSub, name: ApiGateway.PubSub},
+      # Owns the /v1 ETS tables (rate-limit + idempotency) — must start before the Endpoint.
+      ApiGatewayWeb.V1Runtime,
       ApiGatewayWeb.Endpoint
     ]
 

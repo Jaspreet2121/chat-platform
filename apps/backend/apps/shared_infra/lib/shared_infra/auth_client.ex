@@ -36,13 +36,35 @@ defmodule SharedInfra.AuthClient do
   @callback write_audit(attrs()) :: result()
   @callback list_audit(attrs()) :: result()
 
-  # Optional so the many test stubs that implement this behaviour don't all need to add it; the real
-  # adapters (in-process + HTTP) both implement it, which is all the dispatcher ever resolves to.
-  @optional_callbacks lookup_user_by_phone: 1
+  @callback create_api_key(attrs()) :: result()
+  @callback list_api_keys(attrs()) :: result()
+  @callback revoke_api_key(attrs()) :: result()
+  @callback verify_api_key(attrs()) :: result()
+  @callback mint_app_user_token(attrs()) :: result()
+  @callback resolve_external_user(attrs()) :: result()
+  @callback verify_app_user_token(attrs()) :: result()
+
+  # Optional so the many test stubs that implement this behaviour don't all need to add them; the real
+  # adapters (in-process + HTTP) both implement them, which is all the dispatcher ever resolves to.
+  @optional_callbacks lookup_user_by_phone: 1,
+                      create_api_key: 1,
+                      list_api_keys: 1,
+                      revoke_api_key: 1,
+                      verify_api_key: 1,
+                      mint_app_user_token: 1,
+                      resolve_external_user: 1,
+                      verify_app_user_token: 1
 
   def current_session(attrs), do: adapter().current_session(attrs)
   def persistence_enabled?, do: adapter().persistence_enabled?()
   def lookup_user_by_phone(attrs), do: adapter().lookup_user_by_phone(attrs)
+  def create_api_key(attrs), do: adapter().create_api_key(attrs)
+  def list_api_keys(attrs), do: adapter().list_api_keys(attrs)
+  def revoke_api_key(attrs), do: adapter().revoke_api_key(attrs)
+  def verify_api_key(attrs), do: adapter().verify_api_key(attrs)
+  def mint_app_user_token(attrs), do: adapter().mint_app_user_token(attrs)
+  def resolve_external_user(attrs), do: adapter().resolve_external_user(attrs)
+  def verify_app_user_token(attrs), do: adapter().verify_app_user_token(attrs)
   def request_otp(attrs), do: adapter().request_otp(attrs)
   def verify_otp(attrs), do: adapter().verify_otp(attrs)
   def refresh(attrs), do: adapter().refresh(attrs)
