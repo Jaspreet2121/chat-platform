@@ -19,14 +19,33 @@ defmodule RealtimeGateway.UserSocket do
 
   defp authenticated_connect(params, socket) do
     with :ok <- require_db_backed_sessions(),
-         {:ok, authorization} <- authorization_param(params),
-         {:ok, session} <-
-           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}) do
-      {:ok, assign_session(socket, session.user_id, session.device_id, Map.get(session, :app_id))}
+         {:ok, authorization} <- authorization_param(params) do
+      # Try a normal logged-in session FIRST (existing app — behaviour unchanged). If that's not a
+      # session token, try an integrator END-USER (app_user) token — SAME verify crypto + authority as
+      # the /v1 REST plug. Anything malformed/expired/wrong-typ falls through to :error (no oracle).
+      case SharedInfra.AuthClient.current_session(%{"authorization" => authorization}) do
+        {:ok, session} ->
+          {:ok,
+           assign_session(socket, session.user_id, session.device_id, Map.get(session, :app_id))}
+
+        _ ->
+          case SharedInfra.AuthClient.verify_app_user_token(%{
+                 "token" => strip_bearer(authorization)
+               }) do
+            {:ok, %{app_id: app_id, user_id: user_id}} ->
+              {:ok, assign_session(socket, user_id, "end_user", app_id)}
+
+            _ ->
+              :error
+          end
+      end
     else
       _ -> :error
     end
   end
+
+  defp strip_bearer("Bearer " <> token), do: token
+  defp strip_bearer(token), do: token
 
   # Fail closed: when socket auth is enabled but the Auth session layer is NOT
   # genuinely DB-backed, `SharedInfra.AuthClient.current_session/1` returns an

@@ -4,6 +4,8 @@ defmodule RealtimeGateway.TopicAuthorizationUnavailableStub do
   @impl true
   def get_conversation(_attrs), do: {:error, :conversation_unavailable}
   @impl true
+  def get_conversation_app(_attrs), do: {:error, :conversation_unavailable}
+  @impl true
   def create_conversation(_attrs), do: {:error, :conversation_unavailable}
   @impl true
   def list_conversations(_attrs), do: {:error, :conversation_unavailable}

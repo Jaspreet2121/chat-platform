@@ -18,6 +18,7 @@ defmodule RealtimeGateway.TopicAuthorization do
 
   defp authorize_conversation_join(conversation_id, socket) do
     with {:ok, user_id} <- socket_user_id(socket),
+         :ok <- authorize_tenant(conversation_id, socket),
          {:ok, _conversation} <-
            SharedInfra.ConversationClient.get_conversation(%{
              "conversation_id" => conversation_id,
@@ -44,6 +45,28 @@ defmodule RealtimeGateway.TopicAuthorization do
   rescue
     _error ->
       {:error, %{code: "realtime.internal_error", message: "Realtime authorization failed"}}
+  end
+
+  # Authoritative TENANT gate: the conversation's app_id (from the SAME source the /v1 REST gate uses)
+  # must equal the socket's assigned app_id, else reject. A mismatch is reported as :conversation_not_found
+  # (→ forbidden, don't leak that the conversation exists in another tenant). This is independent of the
+  # membership check below — an App-A socket can never join an App-B topic.
+  defp authorize_tenant(conversation_id, socket) do
+    socket_app_id = Map.get(socket.assigns, :app_id)
+
+    case SharedInfra.ConversationClient.get_conversation_app(%{
+           "conversation_id" => conversation_id
+         }) do
+      {:ok, conversation} ->
+        conversation_app_id = Map.get(conversation, :app_id) || Map.get(conversation, "app_id")
+        if conversation_app_id == socket_app_id, do: :ok, else: {:error, :conversation_not_found}
+
+      {:error, :conversation_unavailable} ->
+        {:error, :conversation_unavailable}
+
+      _ ->
+        {:error, :conversation_not_found}
+    end
   end
 
   defp socket_user_id(socket) do
