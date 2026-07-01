@@ -12,17 +12,33 @@ defmodule ApiGatewayWeb.ApiKeyController do
   # POST /api/v1/api-keys — create a key; returns the full `sk_live_…` ONCE (store it now).
   def create(conn, params) do
     with {:ok, name} <- require_name(params),
+         {:ok, mode} <- require_mode(params),
          {:ok, session} <- app_session(conn),
          {:ok, key} <-
-           SharedInfra.AuthClient.create_api_key(%{"app_id" => session.app_id, "name" => name}) do
+           SharedInfra.AuthClient.create_api_key(%{
+             "app_id" => session.app_id,
+             "name" => name,
+             # "test" issues an sk_test_ key against the integrator's test-twin app_id; default "live".
+             "mode" => mode
+           }) do
       conn
       |> put_status(:created)
       |> json(key)
     else
       {:error, :missing_name} -> ErrorResponse.invalid_request(conn, "api_key.name_required")
+      {:error, :invalid_mode} -> ErrorResponse.invalid_request(conn, "api_key.invalid_mode")
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> ErrorResponse.invalid_request(conn, "api_key.invalid_request")
+    end
+  end
+
+  # mode is optional; defaults to "live". Only "live"/"test" accepted.
+  defp require_mode(params) do
+    case Map.get(params, "mode") do
+      nil -> {:ok, "live"}
+      mode when mode in ["live", "test"] -> {:ok, mode}
+      _ -> {:error, :invalid_mode}
     end
   end
 

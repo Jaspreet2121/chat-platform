@@ -21,12 +21,16 @@ defmodule AuthService.AppAuth do
          {:ok, external_id} <- fetch(attrs, "external_id"),
          {:ok, %{user_id: user_id}} <-
            Accounts.resolve_or_create_external_user(app_id, external_id) do
+      # Carry the caller's mode so a token minted from a TEST key is observably test-mode. Isolation is
+      # still purely by app_id (a test key's app_id is its twin) — mode is informational.
+      mode = app_mode(attrs)
       now = DateTime.utc_now()
       expires_at = DateTime.add(now, @app_user_ttl_seconds, :second)
 
       claims = %{
         "typ" => "app_user",
         "app" => app_id,
+        "mode" => mode,
         "sub" => user_id,
         "iat" => DateTime.to_unix(now),
         "exp" => DateTime.to_unix(expires_at),
@@ -41,11 +45,19 @@ defmodule AuthService.AppAuth do
          token: token,
          token_type: "app_user",
          app_id: app_id,
+         mode: mode,
          user_id: user_id,
          expires_in_seconds: @app_user_ttl_seconds
        }}
     else
       _ -> {:error, :token_exchange_failed}
+    end
+  end
+
+  defp app_mode(attrs) do
+    case Map.get(attrs, "mode") do
+      mode when mode in ["live", "test"] -> mode
+      _ -> "live"
     end
   end
 
@@ -58,14 +70,15 @@ defmodule AuthService.AppAuth do
   end
 
   @doc """
-  Verify an end-user JWT → {:ok, %{app_id, user_id}}. Rejects anything that isn't a valid, unexpired
-  `typ:"app_user"` token (expiry + signature are enforced by `Tokens.verify_signed_token/1`).
+  Verify an end-user JWT → {:ok, %{app_id, user_id, mode}}. Rejects anything that isn't a valid,
+  unexpired `typ:"app_user"` token (expiry + signature are enforced by `Tokens.verify_signed_token/1`).
+  `mode` defaults to "live" for tokens minted before mode was carried.
   """
   def verify_app_user_token(token) when is_binary(token) and token != "" do
     case Tokens.verify_signed_token(token) do
-      {:ok, %{"typ" => "app_user", "app" => app_id, "sub" => user_id}}
+      {:ok, %{"typ" => "app_user", "app" => app_id, "sub" => user_id} = claims}
       when is_binary(app_id) and is_binary(user_id) ->
-        {:ok, %{app_id: app_id, user_id: user_id}}
+        {:ok, %{app_id: app_id, user_id: user_id, mode: Map.get(claims, "mode", "live")}}
 
       _ ->
         {:error, :invalid_token}

@@ -21,14 +21,17 @@ defmodule ApiGatewayWeb.Plugs.V1Auth do
     case bearer(conn) do
       {:ok, "sk_" <> _ = secret_key} ->
         case SharedInfra.AuthClient.verify_api_key(%{"api_key" => secret_key}) do
-          {:ok, %{app_id: app_id}} -> assign_scope(conn, app_id, :app, nil)
-          _ -> unauthorized(conn)
+          {:ok, %{app_id: app_id} = res} ->
+            assign_scope(conn, app_id, :app, nil, Map.get(res, :mode))
+
+          _ ->
+            unauthorized(conn)
         end
 
       {:ok, jwt} ->
         case SharedInfra.AuthClient.verify_app_user_token(%{"token" => jwt}) do
-          {:ok, %{app_id: app_id, user_id: user_id}} ->
-            assign_scope(conn, app_id, :end_user, user_id)
+          {:ok, %{app_id: app_id, user_id: user_id} = res} ->
+            assign_scope(conn, app_id, :end_user, user_id, Map.get(res, :mode))
 
           _ ->
             unauthorized(conn)
@@ -39,12 +42,18 @@ defmodule ApiGatewayWeb.Plugs.V1Auth do
     end
   end
 
-  defp assign_scope(conn, app_id, actor, user_id) do
+  # app_mode is surfaced for observability (:live | :test). It is NOT an isolation predicate — a test
+  # credential already resolves to a DISTINCT app_id (its twin), which the existing app_id seal scopes.
+  defp assign_scope(conn, app_id, actor, user_id, mode) do
     conn
     |> assign(:v1_app_id, app_id)
     |> assign(:v1_actor, actor)
     |> assign(:v1_user_id, user_id)
+    |> assign(:v1_app_mode, mode_atom(mode))
   end
+
+  defp mode_atom("test"), do: :test
+  defp mode_atom(_), do: :live
 
   defp bearer(conn) do
     case get_req_header(conn, "authorization") do

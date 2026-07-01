@@ -16,6 +16,9 @@ defmodule AuthService.Schemas.ApiKey do
     field(:name, :string)
     field(:key_hash, :string)
     field(:key_prefix, :string)
+    # 'live' | 'test' — which key class. A test key is stored against the integrator's DISTINCT test
+    # app_id (its twin), so the app_id seal isolates test from live; mode is carried for observability.
+    field(:mode, :string, default: "live")
     field(:created_at, :utc_datetime_usec)
     field(:last_used_at, :utc_datetime_usec)
     field(:revoked_at, :utc_datetime_usec)
@@ -29,11 +32,13 @@ defmodule AuthService.Schemas.ApiKey do
       :name,
       :key_hash,
       :key_prefix,
+      :mode,
       :created_at,
       :last_used_at,
       :revoked_at
     ])
     |> validate_required([:app_id, :name, :key_hash, :key_prefix])
+    |> validate_inclusion(:mode, ["live", "test"])
     |> unique_constraint(:key_hash)
     |> foreign_key_constraint(:app_id)
   end

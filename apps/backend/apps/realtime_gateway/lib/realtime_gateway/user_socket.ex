@@ -25,15 +25,22 @@ defmodule RealtimeGateway.UserSocket do
       # the /v1 REST plug. Anything malformed/expired/wrong-typ falls through to :error (no oracle).
       case SharedInfra.AuthClient.current_session(%{"authorization" => authorization}) do
         {:ok, session} ->
+          # A normal app session is the default (live) tenant.
           {:ok,
-           assign_session(socket, session.user_id, session.device_id, Map.get(session, :app_id))}
+           assign_session(
+             socket,
+             session.user_id,
+             session.device_id,
+             Map.get(session, :app_id),
+             "live"
+           )}
 
         _ ->
           case SharedInfra.AuthClient.verify_app_user_token(%{
                  "token" => strip_bearer(authorization)
                }) do
-            {:ok, %{app_id: app_id, user_id: user_id}} ->
-              {:ok, assign_session(socket, user_id, "end_user", app_id)}
+            {:ok, %{app_id: app_id, user_id: user_id} = res} ->
+              {:ok, assign_session(socket, user_id, "end_user", app_id, Map.get(res, :mode))}
 
             _ ->
               :error
@@ -66,18 +73,25 @@ defmodule RealtimeGateway.UserSocket do
        socket,
        Map.get(params, "user_id", "user_placeholder"),
        Map.get(params, "device_id", "device_placeholder"),
-       nil
+       nil,
+       "live"
      )}
   end
 
-  defp assign_session(socket, user_id, device_id, app_id) do
+  defp assign_session(socket, user_id, device_id, app_id, mode) do
     socket
     |> assign(:current_user_id, user_id)
     |> assign(:user_id, user_id)
     |> assign(:device_id, device_id || "device_placeholder")
-    # The app (tenant) this socket belongs to — defaults to tenant zero for the existing app.
+    # The app (tenant) this socket belongs to — defaults to tenant zero for the existing app. A test
+    # credential's app_id is its DISTINCT twin, so join authz (which keys on app_id) isolates test↔live.
     |> assign(:app_id, SharedInfra.Tenancy.app_id_or_default(app_id))
+    # Surfaced for observability alongside app_id; not an isolation predicate.
+    |> assign(:app_mode, mode_atom(mode))
   end
+
+  defp mode_atom("test"), do: :test
+  defp mode_atom(_), do: :live
 
   defp authorization_param(params) do
     case Map.get(params, "authorization") || Map.get(params, "Authorization") ||

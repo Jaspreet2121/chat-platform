@@ -16,7 +16,9 @@ defmodule ApiGatewayWeb.V1.AuthController do
            SharedInfra.AuthClient.mint_app_user_token(%{
              "app_id" => conn.assigns.v1_app_id,
              "external_id" => external_id,
-             "display_name" => Map.get(params, "display_name")
+             "display_name" => Map.get(params, "display_name"),
+             # Propagate the caller's mode (from the presenting key) so the minted token is same-mode.
+             "mode" => Atom.to_string(conn.assigns[:v1_app_mode] || :live)
            }) do
       json(conn, result)
     else
