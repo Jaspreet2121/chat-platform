@@ -47,6 +47,9 @@ defmodule SharedInfra.AuthClient do
   @callback list_webhook_endpoints(attrs()) :: result()
   @callback update_webhook_endpoint(attrs()) :: result()
   @callback delete_webhook_endpoint(attrs()) :: result()
+  @callback list_failed_webhooks(attrs()) :: result()
+  @callback reenqueue_webhook(attrs()) :: result()
+  @callback reenqueue_webhooks_bulk(attrs()) :: result()
 
   # Optional so the many test stubs that implement this behaviour don't all need to add them; the real
   # adapters (in-process + HTTP) both implement them, which is all the dispatcher ever resolves to.
@@ -61,7 +64,10 @@ defmodule SharedInfra.AuthClient do
                       create_webhook_endpoint: 1,
                       list_webhook_endpoints: 1,
                       update_webhook_endpoint: 1,
-                      delete_webhook_endpoint: 1
+                      delete_webhook_endpoint: 1,
+                      list_failed_webhooks: 1,
+                      reenqueue_webhook: 1,
+                      reenqueue_webhooks_bulk: 1
 
   def current_session(attrs), do: adapter().current_session(attrs)
   def persistence_enabled?, do: adapter().persistence_enabled?()
@@ -77,6 +83,9 @@ defmodule SharedInfra.AuthClient do
   def list_webhook_endpoints(attrs), do: adapter().list_webhook_endpoints(attrs)
   def update_webhook_endpoint(attrs), do: adapter().update_webhook_endpoint(attrs)
   def delete_webhook_endpoint(attrs), do: adapter().delete_webhook_endpoint(attrs)
+  def list_failed_webhooks(attrs), do: adapter().list_failed_webhooks(attrs)
+  def reenqueue_webhook(attrs), do: adapter().reenqueue_webhook(attrs)
+  def reenqueue_webhooks_bulk(attrs), do: adapter().reenqueue_webhooks_bulk(attrs)
   def request_otp(attrs), do: adapter().request_otp(attrs)
   def verify_otp(attrs), do: adapter().verify_otp(attrs)
   def refresh(attrs), do: adapter().refresh(attrs)

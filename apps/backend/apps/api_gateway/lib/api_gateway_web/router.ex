@@ -151,6 +151,11 @@ defmodule ApiGatewayWeb.Router do
 
     get "/audit", AdminModerationController, :list_audit
 
+    # Webhook failed-delivery ops (dead-letter inspection + idempotent / bulk re-enqueue).
+    get "/webhooks/outbox/failed", AdminWebhookController, :failed
+    post "/webhooks/outbox/:id/reenqueue", AdminWebhookController, :reenqueue
+    post "/webhooks/outbox/reenqueue_bulk", AdminWebhookController, :reenqueue_bulk
+
     get "/health", AdminHealthController, :show
   end
 end

@@ -13,8 +13,12 @@ defmodule SharedInfra.WebhookOutbox do
       endpoint of the SAME app_id (tenant isolation).
   """
 
+  require Logger
+
   # Retry policy (Phase 3 wires backoff; the dead-letter cap is the start of Phase 4).
   @max_attempts 6
+  # Phase 4: ceiling on a single bulk re-drive so one call can't scan/lock the whole table.
+  @max_bulk 500
   @base_backoff_seconds 5
   @cap_backoff_seconds 300
   # Visibility timeout: a claimed ('delivering') row becomes due again after this, so a worker that
@@ -113,6 +117,159 @@ defmodule SharedInfra.WebhookOutbox do
     end
   rescue
     error -> mark_retry(repo, row, "exception: #{Exception.message(error)}")
+  end
+
+  # --- Phase 4: failed-delivery ops ------------------------------------------------------------
+
+  @doc """
+  Keyset-paginated list of FAILED (dead-lettered) deliveries. opts: :app_id, :event_type,
+  :limit (<=200), :cursor {created_at_iso, id}. Returns %{items, next_cursor: %{...}|nil, count}.
+  Keyset (created_at,id) — no OFFSET, so it stays fast as the dead-letter set grows.
+  """
+  def list_failed(repo, opts \\ []) do
+    limit = opts |> Keyword.get(:limit, 50) |> min(200) |> max(1)
+    {where, params, n} = {["o.status = 'failed'"], [], 0}
+
+    {where, params, n} =
+      case Keyword.get(opts, :app_id) do
+        v when is_binary(v) and v != "" ->
+          {where ++ ["o.app_id = $#{n + 1}::text::uuid"], params ++ [v], n + 1}
+
+        _ ->
+          {where, params, n}
+      end
+
+    {where, params, n} =
+      case Keyword.get(opts, :event_type) do
+        v when is_binary(v) and v != "" ->
+          {where ++ ["o.event_type = $#{n + 1}"], params ++ [v], n + 1}
+
+        _ ->
+          {where, params, n}
+      end
+
+    {where, params, n} =
+      case Keyword.get(opts, :cursor) do
+        {ts, id} when is_binary(ts) and is_binary(id) ->
+          {where ++ ["(o.created_at, o.id) < ($#{n + 1}::text::timestamptz, $#{n + 2}::text::uuid)"],
+           params ++ [ts, id], n + 2}
+
+        _ ->
+          {where, params, n}
+      end
+
+    sql =
+      "SELECT o.id::text, o.event_id::text, o.event_type, o.app_id::text, e.url AS endpoint_url, " <>
+        "o.attempts, o.last_error, o.next_attempt_at::text, o.created_at::text " <>
+        "FROM webhook_outbox o LEFT JOIN webhook_endpoints e ON e.id = o.endpoint_id " <>
+        "WHERE #{Enum.join(where, " AND ")} ORDER BY o.created_at DESC, o.id DESC LIMIT $#{n + 1}"
+
+    %{rows: rows, columns: cols} = repo.query!(sql, params ++ [limit])
+    items = Enum.map(rows, fn r -> cols |> Enum.zip(r) |> Map.new() end)
+
+    next_cursor =
+      if length(items) == limit and items != [] do
+        last = List.last(items)
+        %{"created_at" => last["created_at"], "id" => last["id"]}
+      else
+        nil
+      end
+
+    %{items: items, next_cursor: next_cursor, count: length(items)}
+  end
+
+  @doc """
+  Reset ONE failed row → pending (attempts=0, REUSING event_id so an integrator's dedupe on
+  x-webhook-event-id still holds), locked FOR UPDATE SKIP LOCKED. Idempotent: a non-failed / locked /
+  missing row is a no-op. Returns {:ok, :reenqueued} | {:ok, :noop, reason} | {:error, term}.
+  """
+  def reenqueue(repo, outbox_id, opts \\ []) do
+    actor = Keyword.get(opts, :actor, "system")
+
+    repo.transaction(fn ->
+      lock =
+        repo.query!(
+          "SELECT id::text, event_id::text, status FROM webhook_outbox " <>
+            "WHERE id = $1::text::uuid FOR UPDATE SKIP LOCKED",
+          [outbox_id]
+        )
+
+      case lock.rows do
+        [] ->
+          repo.rollback(:locked_or_missing)
+
+        [[id, event_id, "failed"]] ->
+          repo.query!(
+            "UPDATE webhook_outbox SET status='pending', attempts=0, last_error=NULL, " <>
+              "next_attempt_at=now() WHERE id=$1::text::uuid",
+            [outbox_id]
+          )
+
+          audit!(repo, id, event_id, "reenqueue", actor, "failed", "pending")
+          Logger.info("[webhook_outbox] reenqueue id=#{id} event_id=#{event_id} actor=#{actor}")
+          :reenqueued
+
+        [[_id, _event_id, other]] ->
+          repo.rollback({:not_failed, other})
+      end
+    end)
+    |> normalize_reenqueue()
+  end
+
+  defp normalize_reenqueue({:ok, :reenqueued}), do: {:ok, :reenqueued}
+  defp normalize_reenqueue({:error, :locked_or_missing}), do: {:ok, :noop, :locked_or_missing}
+  defp normalize_reenqueue({:error, {:not_failed, status}}), do: {:ok, :noop, {:not_failed, status}}
+  defp normalize_reenqueue(other), do: other
+
+  @doc "Bulk re-drive up to :limit (<= #{@max_bulk}) failed rows for a filter. Returns {:ok, count}."
+  def reenqueue_bulk(repo, filter, opts \\ []) do
+    actor = Keyword.get(opts, :actor, "system")
+    limit = filter |> Keyword.get(:limit, 100) |> min(@max_bulk) |> max(1)
+
+    repo.transaction(fn ->
+      {conds, params, n} = {["status = 'failed'"], [], 0}
+
+      {conds, params, n} =
+        case Keyword.get(filter, :app_id) do
+          v when is_binary(v) and v != "" ->
+            {conds ++ ["app_id = $#{n + 1}::text::uuid"], params ++ [v], n + 1}
+
+          _ ->
+            {conds, params, n}
+        end
+
+      {conds, params, n} =
+        case Keyword.get(filter, :event_type) do
+          v when is_binary(v) and v != "" ->
+            {conds ++ ["event_type = $#{n + 1}"], params ++ [v], n + 1}
+
+          _ ->
+            {conds, params, n}
+        end
+
+      sql =
+        "WITH picked AS (SELECT id FROM webhook_outbox WHERE #{Enum.join(conds, " AND ")} " <>
+          "ORDER BY created_at ASC LIMIT $#{n + 1} FOR UPDATE SKIP LOCKED) " <>
+          "UPDATE webhook_outbox o SET status='pending', attempts=0, last_error=NULL, next_attempt_at=now() " <>
+          "FROM picked WHERE o.id = picked.id RETURNING o.id::text, o.event_id::text"
+
+      %{rows: rows} = repo.query!(sql, params ++ [limit])
+
+      Enum.each(rows, fn [id, eid] ->
+        audit!(repo, id, eid, "reenqueue_bulk", actor, "failed", "pending")
+      end)
+
+      Logger.info("[webhook_outbox] reenqueue_bulk count=#{length(rows)} actor=#{actor}")
+      length(rows)
+    end)
+  end
+
+  defp audit!(repo, outbox_id, event_id, action, actor, from_status, to_status) do
+    repo.query!(
+      "INSERT INTO webhook_outbox_audit (outbox_id, event_id, action, actor, from_status, to_status) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, $6)",
+      [outbox_id, event_id, action, actor, from_status, to_status]
+    )
   end
 
   # --- internals -------------------------------------------------------------------------------

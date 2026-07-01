@@ -100,6 +100,19 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Webhooks.delete_endpoint(body(conn)))
   end
 
+  # Failed-delivery ops (Phase 4) — gateway gates these behind an ADMIN session; actor is the admin.
+  post "/internal/webhooks/outbox/failed" do
+    send_result(conn, AuthService.Webhooks.list_failed_deliveries(body(conn)))
+  end
+
+  post "/internal/webhooks/outbox/reenqueue" do
+    send_result(conn, AuthService.Webhooks.reenqueue_delivery(body(conn)))
+  end
+
+  post "/internal/webhooks/outbox/reenqueue_bulk" do
+    send_result(conn, AuthService.Webhooks.reenqueue_deliveries_bulk(body(conn)))
+  end
+
   # --- Admin moderation (gated upstream by the gateway's RequireAdmin + this internal TokenPlug) ---
   post "/internal/admin/users/list" do
     send_result(conn, {:ok, AuthService.Accounts.list_users(body(conn))})

@@ -57,6 +57,15 @@ defmodule SharedInfra.AuthClientHttp do
   def delete_webhook_endpoint(attrs), do: post("/internal/webhooks/endpoints/delete", attrs)
 
   @impl true
+  def list_failed_webhooks(attrs), do: post("/internal/webhooks/outbox/failed", attrs)
+
+  @impl true
+  def reenqueue_webhook(attrs), do: post("/internal/webhooks/outbox/reenqueue", attrs)
+
+  @impl true
+  def reenqueue_webhooks_bulk(attrs), do: post("/internal/webhooks/outbox/reenqueue_bulk", attrs)
+
+  @impl true
   def request_otp(attrs), do: post("/internal/otp/request", attrs)
 
   @impl true

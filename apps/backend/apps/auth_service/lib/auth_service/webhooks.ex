@@ -94,6 +94,72 @@ defmodule AuthService.Webhooks do
     Ecto.Query.CastError -> {:error, :webhook_invalid}
   end
 
+  # --- Phase 4: failed-delivery ops (delegate to SharedInfra.WebhookOutbox w/ this Repo) --------
+
+  def list_failed_deliveries(attrs) do
+    cursor =
+      case {Map.get(attrs, "cursor_ts"), Map.get(attrs, "cursor_id")} do
+        {ts, id} when is_binary(ts) and ts != "" and is_binary(id) and id != "" -> {ts, id}
+        _ -> nil
+      end
+
+    result =
+      SharedInfra.WebhookOutbox.list_failed(Repo,
+        app_id: presence(Map.get(attrs, "app_id")),
+        event_type: presence(Map.get(attrs, "event_type")),
+        limit: to_int(Map.get(attrs, "limit"), 50),
+        cursor: cursor
+      )
+
+    {:ok, result}
+  rescue
+    Ecto.Query.CastError -> {:error, :webhook_invalid}
+  end
+
+  def reenqueue_delivery(attrs) do
+    with {:ok, id} <- fetch(attrs, "id") do
+      case SharedInfra.WebhookOutbox.reenqueue(Repo, id, actor: actor(attrs)) do
+        {:ok, :reenqueued} -> {:ok, %{status: "reenqueued", id: id}}
+        {:ok, :noop, reason} -> {:ok, %{status: "noop", reason: inspect(reason)}}
+        {:error, _reason} -> {:error, :webhook_invalid}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :webhook_invalid}
+  end
+
+  def reenqueue_deliveries_bulk(attrs) do
+    case SharedInfra.WebhookOutbox.reenqueue_bulk(
+           Repo,
+           [
+             app_id: presence(Map.get(attrs, "app_id")),
+             event_type: presence(Map.get(attrs, "event_type")),
+             limit: to_int(Map.get(attrs, "limit"), 100)
+           ],
+           actor: actor(attrs)
+         ) do
+      {:ok, count} -> {:ok, %{status: "reenqueued", count: count}}
+      _ -> {:error, :webhook_invalid}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :webhook_invalid}
+  end
+
+  defp actor(attrs), do: presence(Map.get(attrs, "actor")) || "system"
+  defp presence(v) when is_binary(v) and v != "", do: v
+  defp presence(_), do: nil
+
+  defp to_int(value, _default) when is_integer(value), do: value
+
+  defp to_int(value, default) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, _} -> int
+      _ -> default
+    end
+  end
+
+  defp to_int(_value, default), do: default
+
   # --- internals -------------------------------------------------------------------------------
 
   defp generate_secret,

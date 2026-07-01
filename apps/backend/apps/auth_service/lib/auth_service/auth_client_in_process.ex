@@ -58,6 +58,15 @@ defmodule AuthService.AuthClientInProcess do
   def delete_webhook_endpoint(attrs), do: Webhooks.delete_endpoint(attrs)
 
   @impl true
+  def list_failed_webhooks(attrs), do: Webhooks.list_failed_deliveries(attrs)
+
+  @impl true
+  def reenqueue_webhook(attrs), do: Webhooks.reenqueue_delivery(attrs)
+
+  @impl true
+  def reenqueue_webhooks_bulk(attrs), do: Webhooks.reenqueue_deliveries_bulk(attrs)
+
+  @impl true
   def persistence_enabled?, do: Sessions.persistence_enabled?()
 
   @impl true
