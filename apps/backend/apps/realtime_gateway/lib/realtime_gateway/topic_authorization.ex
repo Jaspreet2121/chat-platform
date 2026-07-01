@@ -2,8 +2,12 @@ defmodule RealtimeGateway.TopicAuthorization do
   @moduledoc """
   Join authorization boundary for realtime topics.
 
-  Conversation membership checks are feature-gated behind Conversation Service
-  persistence. Tenant access and block-list checks remain future work.
+  A conversation join is gated by TWO independent checks (both behind Conversation Service
+  persistence): a TENANT check — the conversation must belong to the socket's app_id, resolved via the
+  SAME scoped store fn the HTTP /v1 gate uses (get_conversation_app with app_id → the (app_id, id)
+  predicate) — and a MEMBERSHIP check (the socket's user is an active participant). A cross-tenant or
+  unknown id both reject as forbidden, never confirming another tenant's conversation exists.
+  Block-list checks remain future work.
   """
 
   def authorize_join("conversation:" <> conversation_id, socket) do
@@ -47,19 +51,18 @@ defmodule RealtimeGateway.TopicAuthorization do
       {:error, %{code: "realtime.internal_error", message: "Realtime authorization failed"}}
   end
 
-  # Authoritative TENANT gate: the conversation's app_id (from the SAME source the /v1 REST gate uses)
-  # must equal the socket's assigned app_id, else reject. A mismatch is reported as :conversation_not_found
-  # (→ forbidden, don't leak that the conversation exists in another tenant). This is independent of the
-  # membership check below — an App-A socket can never join an App-B topic.
+  # Authoritative TENANT gate: reuse the SAME scoped lookup the HTTP /v1 gate uses — pass the socket's
+  # app_id INTO get_conversation_app so the conversation resolves ONLY within that app (the (app_id, id)
+  # predicate in ConversationStore.get_conversation_in_app). A cross-tenant OR unknown id both come back
+  # :conversation_not_found, so we never even load — let alone confirm the existence of — another
+  # tenant's conversation. An App-A socket can never join an App-B topic.
   defp authorize_tenant(conversation_id, socket) do
-    socket_app_id = Map.get(socket.assigns, :app_id)
-
     case SharedInfra.ConversationClient.get_conversation_app(%{
-           "conversation_id" => conversation_id
+           "conversation_id" => conversation_id,
+           "app_id" => Map.get(socket.assigns, :app_id)
          }) do
-      {:ok, conversation} ->
-        conversation_app_id = Map.get(conversation, :app_id) || Map.get(conversation, "app_id")
-        if conversation_app_id == socket_app_id, do: :ok, else: {:error, :conversation_not_found}
+      {:ok, _conversation} ->
+        :ok
 
       {:error, :conversation_unavailable} ->
         {:error, :conversation_unavailable}
