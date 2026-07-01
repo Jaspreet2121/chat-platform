@@ -11,6 +11,7 @@ defmodule AuthService.AuthClientInProcess do
   alias AuthService.Accounts
   alias AuthService.ApiKeys
   alias AuthService.AppAuth
+  alias AuthService.Webhooks
   alias AuthService.Moderation
   alias AuthService.OTP
   alias AuthService.Sessions
@@ -43,6 +44,18 @@ defmodule AuthService.AuthClientInProcess do
 
   @impl true
   def verify_app_user_token(attrs), do: AppAuth.verify_app_user_token(Map.get(attrs, "token"))
+
+  @impl true
+  def create_webhook_endpoint(attrs), do: Webhooks.create_endpoint(attrs)
+
+  @impl true
+  def list_webhook_endpoints(attrs), do: Webhooks.list_endpoints(attrs)
+
+  @impl true
+  def update_webhook_endpoint(attrs), do: Webhooks.update_endpoint(attrs)
+
+  @impl true
+  def delete_webhook_endpoint(attrs), do: Webhooks.delete_endpoint(attrs)
 
   @impl true
   def persistence_enabled?, do: Sessions.persistence_enabled?()

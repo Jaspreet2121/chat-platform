@@ -12,11 +12,26 @@ defmodule AuthService.Application do
   # In :test it is NOT started here (config sets `start_repo: false`); DataCase starts it
   # per-test, keeping plain `mix test` Docker-free.
   defp children do
-    repo_children() ++ http_children()
+    repo_children() ++ worker_children() ++ http_children()
   end
 
   defp repo_children do
     if Application.get_env(:auth_service, :start_repo, true), do: [AuthService.Repo], else: []
+  end
+
+  # The webhook delivery worker — started only when the Repo is up (so plain `mix test`, which doesn't
+  # start the Repo, starts no worker) and not explicitly disabled. Default ON in deployment.
+  defp worker_children do
+    if Application.get_env(:auth_service, :start_repo, true) and webhook_worker_enabled?() do
+      [AuthService.WebhookWorker]
+    else
+      []
+    end
+  end
+
+  defp webhook_worker_enabled? do
+    Application.get_env(:auth_service, :webhook_worker_enabled, true) and
+      System.get_env("WEBHOOK_WORKER_ENABLED") != "false"
   end
 
   # The internal HTTP API listener starts ONLY under AUTH_HTTP_API_ENABLED (default off), so the

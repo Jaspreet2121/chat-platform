@@ -765,14 +765,54 @@ defmodule MessageService.MessageStore.PostgresAdapter do
 
   @impl true
   def put_message(attrs) do
-    %Message{}
-    |> Message.changeset(attrs)
-    |> Repo.insert()
+    # TRANSACTIONAL OUTBOX: the message insert AND its webhook_outbox rows commit (or roll back) as ONE
+    # Postgres transaction via the SAME Repo — so a rolled-back message produces no webhook, and a
+    # committed message guarantees its outbox rows (no lost-event window). The outbox is scoped to the
+    # message's AUTHORITATIVE app_id (its conversation's app_id — same authority as the /v1 isolation
+    # gate), looked up inside the transaction.
+    Repo.transaction(fn ->
+      case %Message{} |> Message.changeset(attrs) |> Repo.insert() do
+        {:ok, message} ->
+          app_id = conversation_app_id(message.conversation_id)
+          SharedInfra.WebhookOutbox.emit(Repo, app_id, "message.created", message_event(message))
+          message_response(message)
+
+        {:error, _changeset} ->
+          Repo.rollback(:message_invalid)
+      end
+    end)
     |> case do
-      {:ok, message} -> {:ok, message_response(message)}
-      {:error, _changeset} -> {:error, :message_invalid}
+      {:ok, response} -> {:ok, response}
+      {:error, reason} -> {:error, reason}
     end
   end
+
+  # The message's authoritative tenant = its conversation's app_id (read inside the same transaction).
+  defp conversation_app_id(conversation_id) do
+    case Repo.query("SELECT app_id::text FROM conversations WHERE id = $1::text::uuid", [
+           conversation_id
+         ]) do
+      {:ok, %{rows: [[app_id]]}} -> app_id
+      _ -> nil
+    end
+  end
+
+  # The `data` body an integrator receives for message.created (the worker wraps it in the signed envelope).
+  defp message_event(%Message{} = message) do
+    %{
+      "message_id" => message.message_id,
+      "conversation_id" => message.conversation_id,
+      "sender_user_id" => message.sender_user_id,
+      "message_type" => message.message_type,
+      "body" => message.body,
+      "created_at" => to_iso(message.created_at)
+    }
+  end
+
+  defp to_iso(nil), do: nil
+  defp to_iso(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp to_iso(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
+  defp to_iso(other), do: other
 
   @impl true
   def get_message(attrs) do

@@ -83,6 +83,23 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.AppAuth.verify_app_user_token(Map.get(body(conn), "token")))
   end
 
+  # Webhook endpoint management (gateway gates these behind app-owner auth; app_id from the session).
+  post "/internal/webhooks/endpoints/create" do
+    send_result(conn, AuthService.Webhooks.create_endpoint(body(conn)))
+  end
+
+  post "/internal/webhooks/endpoints/list" do
+    send_result(conn, AuthService.Webhooks.list_endpoints(body(conn)))
+  end
+
+  post "/internal/webhooks/endpoints/update" do
+    send_result(conn, AuthService.Webhooks.update_endpoint(body(conn)))
+  end
+
+  post "/internal/webhooks/endpoints/delete" do
+    send_result(conn, AuthService.Webhooks.delete_endpoint(body(conn)))
+  end
+
   # --- Admin moderation (gated upstream by the gateway's RequireAdmin + this internal TokenPlug) ---
   post "/internal/admin/users/list" do
     send_result(conn, {:ok, AuthService.Accounts.list_users(body(conn))})

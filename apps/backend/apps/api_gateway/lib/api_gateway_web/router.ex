@@ -60,6 +60,16 @@ defmodule ApiGatewayWeb.Router do
     delete "/:id", ApiKeyController, :revoke
   end
 
+  # App-owner management of webhook endpoints (logged-in app session; endpoint app = session app_id).
+  scope "/api/v1/webhooks/endpoints", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/", WebhookEndpointController, :create
+    get "/", WebhookEndpointController, :index
+    patch "/:id", WebhookEndpointController, :update
+    delete "/:id", WebhookEndpointController, :delete
+  end
+
   scope "/api/v1/users", ApiGatewayWeb do
     pipe_through :api
 

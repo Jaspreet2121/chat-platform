@@ -240,6 +240,15 @@ defmodule ConversationService.Conversations do
       with {:ok, conversation} <- ConversationStore.create_conversation(base_attrs),
            :ok <-
              add_initial_participants(conversation.id, created_by, participant_user_ids, now) do
+        # TRANSACTIONAL OUTBOX: emit conversation.created in the SAME transaction (same Repo) as the
+        # conversation + participant inserts, scoped to the conversation's app_id. Atomic with the write.
+        SharedInfra.WebhookOutbox.emit(
+          Repo,
+          conversation.app_id,
+          "conversation.created",
+          conversation_event(conversation, participant_user_ids)
+        )
+
         conversation_response(conversation, participant_user_ids)
       else
         {:error, reason} -> Repo.rollback(reason)
@@ -249,6 +258,16 @@ defmodule ConversationService.Conversations do
       {:ok, response} -> {:ok, response, :created}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp conversation_event(conversation, participant_user_ids) do
+    %{
+      "conversation_id" => conversation.id,
+      "type" => conversation.type,
+      "title" => conversation.title,
+      "created_by" => conversation.created_by,
+      "participant_user_ids" => participant_user_ids
+    }
   end
 
   # Idempotent direct create. Compute the canonical pair key, return the existing thread if present,

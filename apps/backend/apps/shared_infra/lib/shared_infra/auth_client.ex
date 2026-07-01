@@ -43,6 +43,10 @@ defmodule SharedInfra.AuthClient do
   @callback mint_app_user_token(attrs()) :: result()
   @callback resolve_external_user(attrs()) :: result()
   @callback verify_app_user_token(attrs()) :: result()
+  @callback create_webhook_endpoint(attrs()) :: result()
+  @callback list_webhook_endpoints(attrs()) :: result()
+  @callback update_webhook_endpoint(attrs()) :: result()
+  @callback delete_webhook_endpoint(attrs()) :: result()
 
   # Optional so the many test stubs that implement this behaviour don't all need to add them; the real
   # adapters (in-process + HTTP) both implement them, which is all the dispatcher ever resolves to.
@@ -53,7 +57,11 @@ defmodule SharedInfra.AuthClient do
                       verify_api_key: 1,
                       mint_app_user_token: 1,
                       resolve_external_user: 1,
-                      verify_app_user_token: 1
+                      verify_app_user_token: 1,
+                      create_webhook_endpoint: 1,
+                      list_webhook_endpoints: 1,
+                      update_webhook_endpoint: 1,
+                      delete_webhook_endpoint: 1
 
   def current_session(attrs), do: adapter().current_session(attrs)
   def persistence_enabled?, do: adapter().persistence_enabled?()
@@ -65,6 +73,10 @@ defmodule SharedInfra.AuthClient do
   def mint_app_user_token(attrs), do: adapter().mint_app_user_token(attrs)
   def resolve_external_user(attrs), do: adapter().resolve_external_user(attrs)
   def verify_app_user_token(attrs), do: adapter().verify_app_user_token(attrs)
+  def create_webhook_endpoint(attrs), do: adapter().create_webhook_endpoint(attrs)
+  def list_webhook_endpoints(attrs), do: adapter().list_webhook_endpoints(attrs)
+  def update_webhook_endpoint(attrs), do: adapter().update_webhook_endpoint(attrs)
+  def delete_webhook_endpoint(attrs), do: adapter().delete_webhook_endpoint(attrs)
   def request_otp(attrs), do: adapter().request_otp(attrs)
   def verify_otp(attrs), do: adapter().verify_otp(attrs)
   def refresh(attrs), do: adapter().refresh(attrs)

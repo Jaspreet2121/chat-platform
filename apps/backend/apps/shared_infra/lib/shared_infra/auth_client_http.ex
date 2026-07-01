@@ -45,6 +45,18 @@ defmodule SharedInfra.AuthClientHttp do
   def verify_app_user_token(attrs), do: post("/internal/app_auth/verify_token", attrs)
 
   @impl true
+  def create_webhook_endpoint(attrs), do: post("/internal/webhooks/endpoints/create", attrs)
+
+  @impl true
+  def list_webhook_endpoints(attrs), do: post("/internal/webhooks/endpoints/list", attrs)
+
+  @impl true
+  def update_webhook_endpoint(attrs), do: post("/internal/webhooks/endpoints/update", attrs)
+
+  @impl true
+  def delete_webhook_endpoint(attrs), do: post("/internal/webhooks/endpoints/delete", attrs)
+
+  @impl true
   def request_otp(attrs), do: post("/internal/otp/request", attrs)
 
   @impl true
