@@ -7,6 +7,22 @@ import Config
 # override via Application.put_env after boot. DEFAULT "none" keeps prod safe (no plaintext OTP).
 config :auth_service, otp_delivery_mode: System.get_env("OTP_DELIVERY_MODE") || "none"
 
+# --- Shared Redis (ALL envs) ----------------------------------------------------------------------
+# Backs the /v1 runtime (rate-limit counter + idempotency KV) and the OTP rate limiter. MUST be here,
+# NOT config.exs: config.exs is compile-time for a release, so it would bake the BUILD-time value
+# (localhost, no REDIS_URL) and ignore the running container's REDIS_URL — every Redis call would then
+# silently fail-open and never touch Redis. runtime.exs is evaluated at BOOT. Tests pin the InMemory
+# adapter (test.exs), so this URL is unused there.
+config :shared_infra, :redis,
+  url:
+    System.get_env("RATE_LIMITER_REDIS_URL") ||
+      System.get_env("REDIS_URL") ||
+      "redis://localhost:6379/0",
+  timeout: String.to_integer(System.get_env("RATE_LIMITER_REDIS_TIMEOUT_MS") || "1000")
+
+config :shared_infra,
+  rate_limiter_fail_open: System.get_env("RATE_LIMITER_FAIL_OPEN", "true") in ["true", "1", "yes"]
+
 # OTP SMS delivery via SMSGatewayHub (DLT). DEFAULT OFF. api_key/entity_id/template_login_id/route
 # are secrets: env only, never committed. Keys match AuthService.SmsClient exactly.
 config :auth_service, :sms,

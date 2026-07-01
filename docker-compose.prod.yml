@@ -299,6 +299,24 @@ services:
       - "mc alias set local http://minio:9000 minioadmin minioadmin && mc mb --ignore-existing local/chat-media && mc ls local/"
     restart: "no"
 
+  # Shared Redis — backs the /v1 runtime: rate-limit counter (INCR/EXPIRE) + idempotency KV (SET EX /
+  # GET), so N gateway replicas enforce ONE combined limit and a replayed Idempotency-Key resolves on
+  # any replica. Previously staged off; enabled now that /v1 is Redis-backed. appendonly for durability.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks: [chatnet]
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   gateway:
     build:
       context: ./apps/backend
@@ -337,6 +355,11 @@ services:
       MESSAGE_SERVICE_URL: http://message:4104
       MEDIA_CLIENT_ADAPTER: http
       MEDIA_SERVICE_URL: http://media:4105
+      # Shared Redis backing the /v1 runtime (rate-limit counter + idempotency KV) so limits + dedupe
+      # hold ACROSS gateway replicas. V1_RUNTIME_BACKEND defaults to redis; set explicitly for clarity.
+      # On a Redis blip the runtime FAILS OPEN (allows the request) rather than 500-ing /v1.
+      REDIS_URL: redis://redis:6379/0
+      V1_RUNTIME_BACKEND: redis
     ports:
       - "4000:4000"
     # Start order only (containers, not readiness — the release images have no curl for a
@@ -355,6 +378,8 @@ services:
         condition: service_started
       media:
         condition: service_started
+      redis:
+        condition: service_healthy
 
 networks:
   chatnet:
@@ -364,3 +389,4 @@ volumes:
   pgdata:
   kafka_data:
   minio_data:
+  redis_data:

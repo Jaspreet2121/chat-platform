@@ -22,16 +22,10 @@ config :api_gateway, ApiGatewayWeb.Endpoint,
 config :api_gateway,
   rate_limiting_enabled: System.get_env("API_RATE_LIMITING_ENABLED") in ["true", "1", "yes"]
 
-config :shared_infra,
-  rate_limiter_adapter: SharedInfra.RateLimiter.RedisAdapter,
-  rate_limiter_fail_open: System.get_env("RATE_LIMITER_FAIL_OPEN", "true") in ["true", "1", "yes"]
-
-config :shared_infra, :redis,
-  url:
-    System.get_env("RATE_LIMITER_REDIS_URL") ||
-      System.get_env("REDIS_URL") ||
-      "redis://localhost:6379/0",
-  timeout: String.to_integer(System.get_env("RATE_LIMITER_REDIS_TIMEOUT_MS") || "1000")
+# Adapter is a compile-time constant. The env-dependent bits (Redis URL + fail-open) live in
+# runtime.exs so a RELEASE reads the container's REDIS_URL at BOOT — config.exs would bake the
+# build-time value (localhost) and ignore the running env (the config.exs baked-at-build trap).
+config :shared_infra, rate_limiter_adapter: SharedInfra.RateLimiter.RedisAdapter
 
 config :logger, :console,
   format: "$time $metadata[$level] $message\n",
