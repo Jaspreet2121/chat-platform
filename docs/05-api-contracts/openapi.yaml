@@ -1,0 +1,769 @@
+openapi: 3.1.0
+
+info:
+  title: Chat Platform API
+  version: "1.0.0"
+  description: |
+    The Chat Platform API lets you embed real-time messaging into your own
+    application. You create an **app**, issue **API keys**, and then:
+
+      - call the REST API from your **server** using a secret key, and
+      - connect your **end-users** to the real-time socket using short-lived
+        tokens you mint via token-exchange.
+
+    All data is isolated per app (tenant). A credential for one app can never
+    read, write, or join another app's data.
+
+    ## Authentication at a glance
+
+    | Caller | Credential | Where |
+    |--------|-----------|-------|
+    | Your server | Secret API key (`sk_live_…` / `sk_test_…`) | `Authorization: Bearer <key>` header |
+    | Your end-user (browser / mobile) | Short-lived end-user JWT (from token-exchange) | `Authorization: Bearer <jwt>` header, or socket query param |
+
+    **Never ship a secret key to a browser or mobile client.** Mint a
+    short-lived end-user token on your server (see `POST /v1/auth/token`) and
+    hand that to the client instead.
+
+    ## Test vs live mode
+
+    Keys are prefixed `sk_live_` or `sk_test_`. A test key resolves to a
+    separate, isolated app so you can build and test without touching live
+    data. Everything below works identically in both modes.
+
+  contact:
+    name: Chat Platform Support
+
+servers:
+  - url: http://localhost:4000
+    description: Local development
+  - url: https://your-gateway-host
+    description: Production (replace with your gateway host)
+
+tags:
+  - name: Token exchange
+    description: Mint short-lived end-user tokens (server-side, secret key only).
+  - name: Conversations
+    description: Create and read conversations.
+  - name: Messages
+    description: Send and list messages.
+  - name: App management
+    description: Register apps and manage API keys (first-party, session-authenticated).
+  - name: Webhooks
+    description: Register endpoints to receive server-to-server event deliveries.
+
+# ---------------------------------------------------------------------------
+
+security:
+  - SecretKey: []
+  - EndUserToken: []
+
+paths:
+
+  # ===== Token exchange =====================================================
+  /v1/auth/token:
+    post:
+      tags: [Token exchange]
+      summary: Mint a short-lived end-user token
+      description: |
+        Exchanges your secret API key for a short-lived JWT scoped to a single
+        end-user. Call this **from your server**, then hand the returned token
+        to that user's client (browser / mobile) so it can call the API and
+        connect to the socket on the user's behalf.
+
+        Only a secret API key may call this endpoint. Presenting an end-user
+        token here returns `403 v1.app_only`.
+
+        The returned token is valid for `expires_in_seconds` (currently 3600 =
+        1 hour). Mint a fresh token when it expires.
+      security:
+        - SecretKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [end_user_id]
+              properties:
+                end_user_id:
+                  type: string
+                  description: Your opaque identifier for the end-user. Resolved-or-created within your app; stable per id.
+                  example: user_8823
+                display_name:
+                  type: string
+                  description: "Optional. NOTE: currently accepted but not persisted."
+                  example: Priya S.
+      responses:
+        "200":
+          description: Token minted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string, description: The end-user JWT. }
+                  token_type: { type: string, example: app_user }
+                  app_id: { type: string, format: uuid }
+                  mode: { type: string, enum: [live, test] }
+                  user_id: { type: string, format: uuid, description: The internal user id this token is scoped to. }
+                  expires_in_seconds: { type: integer, example: 3600 }
+              example:
+                token: "eyJhbGciOi..."
+                token_type: app_user
+                app_id: "51f55f08-0000-0000-0000-000000000000"
+                mode: live
+                user_id: "2c12c8ac-0000-0000-0000-000000000000"
+                expires_in_seconds: 3600
+        "400":
+          $ref: '#/components/responses/InvalidRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/AppOnly'
+        "429":
+          $ref: '#/components/responses/RateLimited'
+
+  # ===== Conversations ======================================================
+  /v1/conversations:
+    post:
+      tags: [Conversations]
+      summary: Create a conversation
+      description: |
+        Creates a conversation within your app. Participants are your external
+        end-user ids; each is resolved-or-created in your app automatically.
+
+        For `type: "direct"`, creation is **idempotent per pair per app** — if a
+        direct conversation between the same two users already exists, the
+        existing one is returned rather than a duplicate.
+
+        `app_id` is always derived from your credential. Any `app_id` in the
+        body is ignored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, participants]
+              properties:
+                type:
+                  type: string
+                  enum: [direct, group]
+                participants:
+                  type: array
+                  minItems: 1
+                  items: { type: string }
+                  description: External end-user ids.
+                  example: ["user_8823", "user_9910"]
+                title:
+                  type: string
+                  description: Optional; typically used for groups.
+      responses:
+        "201":
+          description: Created (or existing direct thread returned).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConversationCreated' }
+        "400":
+          $ref: '#/components/responses/InvalidRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "429":
+          $ref: '#/components/responses/RateLimited'
+        "503":
+          $ref: '#/components/responses/Unavailable'
+
+  /v1/conversations/{id}:
+    get:
+      tags: [Conversations]
+      summary: Get a conversation
+      description: |
+        Returns a single conversation. A conversation that belongs to a
+        different app — or does not exist — returns `404` identically, so
+        existence is never revealed across tenants.
+
+        Note: the response shape here (a summary) differs from the create
+        response — see `ConversationSummary`.
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConversationSummary' }
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "429":
+          $ref: '#/components/responses/RateLimited'
+        "503":
+          $ref: '#/components/responses/Unavailable'
+
+  # ===== Messages ===========================================================
+  /v1/conversations/{id}/messages:
+    post:
+      tags: [Messages]
+      summary: Send a message
+      description: |
+        Sends a message into a conversation.
+
+        **Sender rules:**
+          - When authenticated with a **secret key**, `sender` is **required** —
+            your server names which end-user is sending.
+          - When authenticated with an **end-user token**, `sender` is ignored —
+            the sender is the token's user.
+
+        **Idempotency:** pass an `Idempotency-Key` header to make retries safe.
+        A replay with the same key (scoped to app + conversation) returns the
+        original message instead of creating a duplicate.
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: { type: string }
+          description: Optional. Read case-insensitively. Retries with the same key return the same message.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                body:
+                  type: string
+                  description: Message text. Required for text messages.
+                message_type:
+                  type: string
+                  default: text
+                metadata:
+                  type: object
+                  additionalProperties: true
+                sender:
+                  type: string
+                  description: External end-user id of the sender. Required with a secret key; ignored with an end-user token.
+              example:
+                body: "Your order has shipped."
+                sender: "user_8823"
+      responses:
+        "201":
+          description: Message created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Message' }
+        "400":
+          $ref: '#/components/responses/InvalidRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "429":
+          $ref: '#/components/responses/RateLimited'
+        "503":
+          $ref: '#/components/responses/Unavailable'
+    get:
+      tags: [Messages]
+      summary: List messages
+      description: |
+        Lists messages in a conversation, newest first (default limit 50).
+
+        Note: `next_cursor` is currently always `null` — cursor pagination is
+        not yet implemented.
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  conversation_id: { type: string, format: uuid }
+                  messages:
+                    type: array
+                    items: { $ref: '#/components/schemas/MessageListItem' }
+                  next_cursor:
+                    type: [string, "null"]
+                    description: Always null — pagination cursor not yet implemented.
+        "400":
+          $ref: '#/components/responses/InvalidRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "429":
+          $ref: '#/components/responses/RateLimited'
+
+  # ===== App management (first-party, session-authenticated) ================
+  /api/v1/apps:
+    post:
+      tags: [App management]
+      summary: Register an app
+      description: |
+        Registers a new business app and makes you its owner. You can own many
+        apps. Authenticated with your **OTP session token**, not an API key.
+      security:
+        - SessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, example: Acme }
+      responses:
+        "201":
+          description: App created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  app_id: { type: string, format: uuid }
+                  name: { type: string }
+                  mode: { type: string, example: live }
+        "400":
+          description: "`app.name_required` / `app.invalid_request`"
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        "401":
+          $ref: '#/components/responses/SessionInvalid'
+        "503":
+          $ref: '#/components/responses/Unavailable'
+    get:
+      tags: [App management]
+      summary: List owned apps
+      security:
+        - SessionToken: []
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apps:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        app_id: { type: string, format: uuid }
+                        name: { type: string }
+                        mode: { type: string }
+                        created_at: { type: string }
+        "401":
+          $ref: '#/components/responses/SessionInvalid'
+
+  /api/v1/api-keys:
+    post:
+      tags: [App management]
+      summary: Create an API key
+      description: |
+        Issues an API key. The raw key is returned **once** in `api_key` — store
+        it securely; it cannot be retrieved again. Only `key_prefix` is shown
+        afterward.
+
+        Pass `app_id` to issue the key against an app you own (else
+        `403 api_key.forbidden_app`). Omit it to use your default app.
+      security:
+        - SessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                mode: { type: string, enum: [live, test], default: live }
+                app_id:
+                  type: string
+                  format: uuid
+                  description: An app you own, or omit for your default app.
+      responses:
+        "201":
+          description: Key created (secret shown once).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  app_id: { type: string, format: uuid }
+                  name: { type: string }
+                  mode: { type: string }
+                  key_prefix: { type: string, example: sk_live_AbCd1234 }
+                  created_at: { type: string }
+                  api_key:
+                    type: string
+                    description: The full secret key. Shown ONCE.
+                    example: sk_live_AbCd1234EfGh...
+        "403":
+          description: "`api_key.forbidden_app` — you don't own that app."
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        "401":
+          $ref: '#/components/responses/SessionInvalid'
+    get:
+      tags: [App management]
+      summary: List API keys
+      description: Returns key metadata only — never the secret or its hash.
+      security:
+        - SessionToken: []
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  api_keys:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        name: { type: string }
+                        key_prefix: { type: string }
+                        created_at: { type: string }
+                        last_used_at: { type: [string, "null"] }
+                        revoked_at: { type: [string, "null"] }
+                        revoked: { type: boolean }
+
+  /api/v1/api-keys/{id}:
+    delete:
+      tags: [App management]
+      summary: Revoke an API key
+      security:
+        - SessionToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  revoked: { type: boolean, example: true }
+        "404":
+          description: "`api_key.not_found`"
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  # ===== Webhooks (first-party, session-authenticated) ======================
+  /api/v1/webhooks/endpoints:
+    post:
+      tags: [Webhooks]
+      summary: Register a webhook endpoint
+      description: |
+        Registers a URL to receive event deliveries for your app. The
+        `signing_secret` is returned **once** — store it to verify delivery
+        signatures (see the integration guide). It is never re-exposed.
+      security:
+        - SessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, example: "https://api.acme.com/hooks/chat" }
+                event_types:
+                  type: array
+                  items: { type: string, enum: [message.created, conversation.created] }
+                  description: Optional; filtered to known event types. Omit to receive all.
+      responses:
+        "201":
+          description: Endpoint registered (signing secret shown once).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  app_id: { type: string, format: uuid }
+                  url: { type: string }
+                  enabled: { type: boolean }
+                  event_types:
+                    type: array
+                    items: { type: string }
+                  created_at: { type: string }
+                  updated_at: { type: string }
+                  signing_secret:
+                    type: string
+                    description: HMAC signing secret. Shown ONCE.
+                    example: whsec_AbCd...
+        "400":
+          description: "`webhook.url_required` / `webhook.invalid_request`"
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+        "401":
+          $ref: '#/components/responses/SessionInvalid'
+        "503":
+          $ref: '#/components/responses/Unavailable'
+    get:
+      tags: [Webhooks]
+      summary: List webhook endpoints
+      security:
+        - SessionToken: []
+      responses:
+        "200":
+          description: OK (no secret returned).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhook_endpoints:
+                    type: array
+                    items: { $ref: '#/components/schemas/WebhookEndpoint' }
+
+  /api/v1/webhooks/endpoints/{id}:
+    patch:
+      tags: [Webhooks]
+      summary: Update a webhook endpoint
+      security:
+        - SessionToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                event_types:
+                  type: array
+                  items: { type: string }
+      responses:
+        "200":
+          description: Updated (no secret).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookEndpoint' }
+        "404":
+          description: "`webhook.not_found`"
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook endpoint
+      security:
+        - SessionToken: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Deleted.
+        "404":
+          description: "`webhook.not_found`"
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+# ---------------------------------------------------------------------------
+
+components:
+
+  securitySchemes:
+    SecretKey:
+      type: http
+      scheme: bearer
+      description: |
+        A secret API key, `sk_live_…` or `sk_test_…`, sent as
+        `Authorization: Bearer <key>`. Server-side only — never expose to a
+        browser or mobile client.
+    EndUserToken:
+      type: http
+      scheme: bearer
+      description: |
+        A short-lived end-user JWT obtained from `POST /v1/auth/token`, sent as
+        `Authorization: Bearer <jwt>`. Safe to use in client apps.
+    SessionToken:
+      type: http
+      scheme: bearer
+      description: |
+        A first-party OTP session access token, used only for app / key /
+        webhook management under `/api/v1`.
+
+  parameters:
+    ConversationId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+      description: The conversation id.
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string, example: v1.not_found }
+            message: { type: string }
+            correlation_id: { type: string, description: Echo this when contacting support. }
+
+    ConversationCreated:
+      type: object
+      description: Response shape from POST /v1/conversations.
+      properties:
+        conversation_id: { type: string, format: uuid }
+        tenant_id: { type: [string, "null"] }
+        type: { type: string, enum: [direct, group] }
+        title: { type: [string, "null"] }
+        created_by: { type: string, format: uuid }
+        participant_user_ids:
+          type: array
+          items: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+
+    ConversationSummary:
+      type: object
+      description: Response shape from GET /v1/conversations/{id} (differs from create).
+      properties:
+        conversation_id: { type: string, format: uuid }
+        app_id: { type: string, format: uuid }
+        type: { type: string, enum: [direct, group] }
+        title: { type: [string, "null"] }
+        created_by: { type: string, format: uuid }
+        status: { type: string, example: active }
+        created_at: { type: string, format: date-time }
+
+    Message:
+      type: object
+      description: Response shape from POST .../messages.
+      properties:
+        conversation_id: { type: string, format: uuid }
+        message_id: { type: string, format: uuid }
+        sender_user_id: { type: string, format: uuid }
+        message_type: { type: string, example: text }
+        body: { type: [string, "null"] }
+        media_id: { type: [string, "null"] }
+        reply_to_message_id: { type: [string, "null"] }
+        status: { type: string, example: active }
+        metadata: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+        edited_at: { type: [string, "null"] }
+        deleted_at: { type: [string, "null"] }
+
+    MessageListItem:
+      allOf:
+        - $ref: '#/components/schemas/Message'
+        - type: object
+          properties:
+            read_by_count: { type: integer }
+            delivered_by_count: { type: integer }
+            reactions:
+              type: array
+              items: { type: object, additionalProperties: true }
+            my_reaction: { type: [string, "null"] }
+            is_starred: { type: boolean }
+
+    WebhookEndpoint:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        app_id: { type: string, format: uuid }
+        url: { type: string }
+        enabled: { type: boolean }
+        event_types:
+          type: array
+          items: { type: string }
+        created_at: { type: string }
+        updated_at: { type: string }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials. Identical body for any auth failure (no oracle).
+      headers: {}
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: v1.unauthorized
+              message: Invalid or missing credentials
+              correlation_id: "req_abc123"
+    AppOnly:
+      description: This endpoint requires a secret API key (an end-user token was presented).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: v1.app_only, message: "Only an API key may mint end-user tokens", correlation_id: "req_abc123" }
+    NotFound:
+      description: Not found, or not in your app (cross-tenant access is indistinguishable from missing).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: v1.not_found, message: "Not found", correlation_id: "req_abc123" }
+    InvalidRequest:
+      description: Request body is invalid.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: v1.invalid_request, message: "Request body is invalid", correlation_id: "req_abc123" }
+    RateLimited:
+      description: |
+        Too many requests. A fixed 60-second window applies per app (default 60
+        requests/window). The `Retry-After` header gives seconds until the
+        window resets.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+          description: Seconds until the rate-limit window resets.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: v1.rate_limited, message: "Too many requests. Please try again later.", correlation_id: "req_abc123" }
+    Unavailable:
+      description: Service temporarily unavailable. Retry.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: v1.unavailable, message: "Service temporarily unavailable. Please try again.", correlation_id: "req_abc123" }
+    SessionInvalid:
+      description: Invalid or missing session token.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: auth.session_invalid, message: "Session is invalid", correlation_id: "req_abc123" }
+
+# ---------------------------------------------------------------------------
+# Real-time socket
+#
+# The WebSocket surface is not expressible in OpenAPI. It is documented in full
+# in INTEGRATION_GUIDE.md. Summary:
+#
+#   Mount:   /socket/websocket   (Phoenix; ?vsn=2.0.0)
+#   Token:   query param — first of authorization | access_token | token
+#            value: "Bearer <jwt>" or bare <jwt>. End-user JWT only; NOT sk_ keys.
+#   Topics:  conversation:<id> | user:<id> | call:<id>
+#   Reject:  connect failure -> HTTP 403; join failure -> phx_reply "error"
+#            with { code: "realtime.forbidden", message: ... }
+# ---------------------------------------------------------------------------
