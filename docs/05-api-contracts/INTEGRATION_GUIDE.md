@@ -457,8 +457,6 @@ Include the `correlation_id` when contacting support. Statuses used by `/v1`:
 
 Known gaps to be aware of when integrating today:
 
-- **`display_name` on token-exchange is not persisted.** Passing it succeeds but
-  has no effect; end-user display names aren't stored yet.
 - **Message list pagination.** `next_cursor` is always `null`; only the newest
   page (default 50) is returned.
 - **No `app_id` on the message response.** It is tracked internally but not

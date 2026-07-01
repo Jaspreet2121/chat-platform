@@ -92,7 +92,7 @@ paths:
                   example: user_8823
                 display_name:
                   type: string
-                  description: "Optional. NOTE: currently accepted but not persisted."
+                  description: "Optional. Persisted to the end-user's profile (set on first resolve, updated when provided again; omitting it never clears an existing name)."
                   example: Priya S.
       responses:
         "200":
