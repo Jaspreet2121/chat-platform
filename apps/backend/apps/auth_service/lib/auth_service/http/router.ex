@@ -53,6 +53,20 @@ defmodule AuthService.HTTP.Router do
 
   # Secret API keys (per app). Management routes are gated upstream by the gateway behind app-owner
   # auth; verify is called by the gateway's /v1 secret-key plug. The raw key is never logged here.
+  # Self-serve integrator apps — the gateway gates these behind an app-owner session; ownership authz
+  # (owns_app) is enforced here before any app-scoped action acts AS a given app_id.
+  post "/internal/apps/create" do
+    send_result(conn, AuthService.Apps.create_app(body(conn)))
+  end
+
+  post "/internal/apps/list" do
+    send_result(conn, AuthService.Apps.list_apps(body(conn)))
+  end
+
+  post "/internal/apps/owns" do
+    send_result(conn, AuthService.Apps.owns_app(body(conn)))
+  end
+
   post "/internal/api_keys/create" do
     send_result(conn, AuthService.ApiKeys.create_api_key(body(conn)))
   end

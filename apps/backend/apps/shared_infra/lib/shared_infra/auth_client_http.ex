@@ -66,6 +66,15 @@ defmodule SharedInfra.AuthClientHttp do
   def reenqueue_webhooks_bulk(attrs), do: post("/internal/webhooks/outbox/reenqueue_bulk", attrs)
 
   @impl true
+  def create_app(attrs), do: post("/internal/apps/create", attrs)
+
+  @impl true
+  def list_apps(attrs), do: post("/internal/apps/list", attrs)
+
+  @impl true
+  def owns_app(attrs), do: post("/internal/apps/owns", attrs)
+
+  @impl true
   def request_otp(attrs), do: post("/internal/otp/request", attrs)
 
   @impl true

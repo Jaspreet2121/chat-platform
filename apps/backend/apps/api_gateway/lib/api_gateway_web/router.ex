@@ -53,6 +53,14 @@ defmodule ApiGatewayWeb.Router do
     get "/conversations/:id/messages", MessageController, :index
   end
 
+  # Self-serve integrator onboarding — register a business app (distinct live app_id) + list owned apps.
+  scope "/api/v1/apps", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/", AppController, :create
+    get "/", AppController, :index
+  end
+
   scope "/api/v1/api-keys", ApiGatewayWeb do
     pipe_through :api
 

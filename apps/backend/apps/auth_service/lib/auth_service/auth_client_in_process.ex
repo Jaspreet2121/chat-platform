@@ -67,6 +67,15 @@ defmodule AuthService.AuthClientInProcess do
   def reenqueue_webhooks_bulk(attrs), do: Webhooks.reenqueue_deliveries_bulk(attrs)
 
   @impl true
+  def create_app(attrs), do: AuthService.Apps.create_app(attrs)
+
+  @impl true
+  def list_apps(attrs), do: AuthService.Apps.list_apps(attrs)
+
+  @impl true
+  def owns_app(attrs), do: AuthService.Apps.owns_app(attrs)
+
+  @impl true
   def persistence_enabled?, do: Sessions.persistence_enabled?()
 
   @impl true
