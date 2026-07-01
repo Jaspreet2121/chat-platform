@@ -34,6 +34,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Conversations.get_conversation_app(body(conn)))
   end
 
+  post "/internal/conversations/call_conversation" do
+    send_result(conn, ConversationService.Conversations.get_call_conversation(body(conn)))
+  end
+
   post "/internal/participants/add" do
     send_result(conn, ConversationService.Participants.add_participant(body(conn)))
   end

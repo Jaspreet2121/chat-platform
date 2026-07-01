@@ -24,6 +24,9 @@ defmodule ConversationService.ConversationClientInProcess do
   def get_conversation_app(attrs), do: Conversations.get_conversation_app(attrs)
 
   @impl true
+  def get_call_conversation(attrs), do: Conversations.get_call_conversation(attrs)
+
+  @impl true
   def add_participant(attrs), do: Participants.add_participant(attrs)
 
   @impl true

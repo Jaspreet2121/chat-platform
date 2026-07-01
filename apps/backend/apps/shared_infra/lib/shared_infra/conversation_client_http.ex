@@ -28,6 +28,9 @@ defmodule SharedInfra.ConversationClientHttp do
   def get_conversation_app(attrs), do: post("/internal/conversations/get_app", attrs)
 
   @impl true
+  def get_call_conversation(attrs), do: post("/internal/conversations/call_conversation", attrs)
+
+  @impl true
   def add_participant(attrs), do: post("/internal/participants/add", attrs)
 
   @impl true

@@ -77,6 +77,32 @@ defmodule ConversationService.Conversations do
     Ecto.Query.CastError -> {:error, :conversation_invalid}
   end
 
+  @doc """
+  Resolve a call to its parent conversation for the realtime call-topic gate: a call
+  (`call_sessions.id`) belongs to exactly one conversation (`call_sessions.conversation_id`). Returns
+  `{:ok, %{conversation_id}}` — the realtime layer then runs the SAME conversation tenant + membership
+  gate on that id, so a cross-tenant/unknown call is rejected without any call-existence reveal. Raw SQL
+  (Postgrex, `::text::uuid`) because `call_sessions` has no Ecto schema (it inherits tenancy via its
+  conversation — there is no reliable call-level app_id).
+  """
+  def get_call_conversation(attrs) do
+    if conversation_persistence_enabled?() do
+      with {:ok, call_id} <- required_attr(attrs, "call_id") do
+        case Repo.query(
+               "SELECT conversation_id::text FROM call_sessions WHERE id = $1::text::uuid",
+               [call_id]
+             ) do
+          {:ok, %{rows: [[conversation_id]]}} -> {:ok, %{conversation_id: conversation_id}}
+          _ -> {:error, :conversation_not_found}
+        end
+      end
+    else
+      {:error, :conversation_not_found}
+    end
+  rescue
+    _ -> {:error, :conversation_invalid}
+  end
+
   # The tenant-scoped conversation view returned to the public /v1 layer (the GET response + the
   # message-send gate). app_id is the caller's OWN tenant, so exposing it is not a cross-tenant leak.
   defp conversation_summary(conversation) do

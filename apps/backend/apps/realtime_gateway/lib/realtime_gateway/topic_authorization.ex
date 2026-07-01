@@ -7,7 +7,11 @@ defmodule RealtimeGateway.TopicAuthorization do
   SAME scoped store fn the HTTP /v1 gate uses (get_conversation_app with app_id → the (app_id, id)
   predicate) — and a MEMBERSHIP check (the socket's user is an active participant). A cross-tenant or
   unknown id both reject as forbidden, never confirming another tenant's conversation exists.
-  Block-list checks remain future work.
+
+  A CALL topic (`call:<call_session_id>`) is gated by its parent conversation (resolved via
+  `call_sessions.conversation_id`) through the SAME conversation gate — so an App-B socket can never
+  join App-A's call. A USER topic (`user:<user_id>`) is identity-pinned: a socket may only join its
+  OWN user topic. Block-list checks remain future work.
   """
 
   def authorize_join("conversation:" <> conversation_id, socket) do
@@ -18,7 +22,64 @@ defmodule RealtimeGateway.TopicAuthorization do
     end
   end
 
+  # A call belongs to a conversation (call_sessions.conversation_id → conversations). Gate the call
+  # topic by THAT conversation's tenant + membership — the SAME gate as the conversation topic, so an
+  # App-B socket can never join App-A's call. Skeleton mode (persistence off) stays open, matching the
+  # conversation clause.
+  def authorize_join("call:" <> call_id, socket) do
+    if conversation_persistence_enabled?() do
+      authorize_call_join(call_id, socket)
+    else
+      :ok
+    end
+  end
+
+  # Identity pin: a socket may ONLY join its OWN user topic. Tenant is implied by the user (an app's
+  # end-users are distinct rows per app), and this blocks subscribing to another user's per-user topic.
+  def authorize_join("user:" <> topic_user_id, socket) do
+    case socket_user_id(socket) do
+      {:ok, ^topic_user_id} ->
+        :ok
+
+      {:ok, _other_user} ->
+        {:error, %{code: "realtime.forbidden", message: "User topic join is forbidden"}}
+
+      {:error, :missing_user} ->
+        {:error, %{code: "realtime.unauthorized", message: "Missing or invalid socket user"}}
+    end
+  end
+
   def authorize_join(_topic, _socket), do: :ok
+
+  # Resolve the call → its conversation, then run the conversation tenant + membership gate on that id.
+  # A cross-tenant / unknown / non-participant call all reject as realtime.forbidden — no reveal that
+  # the call exists in another tenant.
+  defp authorize_call_join(call_id, socket) do
+    case SharedInfra.ConversationClient.get_call_conversation(%{"call_id" => call_id}) do
+      {:ok, resolved} ->
+        case call_conversation_id(resolved) do
+          conversation_id when is_binary(conversation_id) and conversation_id != "" ->
+            authorize_conversation_join(conversation_id, socket)
+
+          _ ->
+            {:error, %{code: "realtime.forbidden", message: "Call join is forbidden"}}
+        end
+
+      {:error, :conversation_unavailable} ->
+        {:error, %{code: "realtime.unavailable", message: "Conversation service is unavailable"}}
+
+      _ ->
+        {:error, %{code: "realtime.forbidden", message: "Call join is forbidden"}}
+    end
+  rescue
+    _error ->
+      {:error, %{code: "realtime.internal_error", message: "Realtime authorization failed"}}
+  end
+
+  defp call_conversation_id(map) when is_map(map),
+    do: Map.get(map, :conversation_id) || Map.get(map, "conversation_id")
+
+  defp call_conversation_id(_), do: nil
 
   defp authorize_conversation_join(conversation_id, socket) do
     with {:ok, user_id} <- socket_user_id(socket),
