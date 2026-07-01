@@ -18,6 +18,12 @@ defmodule MessageService.Schemas.Message do
 
   schema "messages" do
     field(:conversation_id, :binary_id)
+    # The message's tenant. AUTHORITATIVE: set on insert to the parent conversation's app_id (see
+    # MessageStore.PostgresAdapter.put_message) and backfilled by migration 056 — no longer the
+    # tenant-zero DB default. The conversation gate remains the enforcing authority; this is a reliable
+    # second layer. NOT in cast/3 — it's forced via put_change from the conversation, so a caller can't
+    # spoof it.
+    field(:app_id, :binary_id)
     field(:sender_user_id, :binary_id)
     field(:message_type, :string)
     field(:body, :string)

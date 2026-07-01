@@ -771,14 +771,29 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     # message's AUTHORITATIVE app_id (its conversation's app_id — same authority as the /v1 isolation
     # gate), looked up inside the transaction.
     Repo.transaction(fn ->
-      case %Message{} |> Message.changeset(attrs) |> Repo.insert() do
-        {:ok, message} ->
-          app_id = conversation_app_id(message.conversation_id)
-          SharedInfra.WebhookOutbox.emit(Repo, app_id, "message.created", message_event(message))
-          message_response(message)
-
-        {:error, _changeset} ->
+      # Resolve the conversation's AUTHORITATIVE app_id up-front and STAMP it on the message row
+      # (put_change, so a caller-supplied app_id can't spoof it) — messages.app_id is now trustworthy,
+      # not the tenant-zero default, and always agrees with the emitted event's app_id. An unknown
+      # conversation resolves to nil → reject (no orphan message under the wrong tenant). The
+      # conversation gate remains the enforcing authority; this is defense-in-depth.
+      case conversation_app_id(message_conversation_id(attrs)) do
+        nil ->
           Repo.rollback(:message_invalid)
+
+        app_id ->
+          changeset =
+            %Message{}
+            |> Message.changeset(attrs)
+            |> Ecto.Changeset.put_change(:app_id, app_id)
+
+          case Repo.insert(changeset) do
+            {:ok, message} ->
+              SharedInfra.WebhookOutbox.emit(Repo, app_id, "message.created", message_event(message))
+              message_response(message)
+
+            {:error, _changeset} ->
+              Repo.rollback(:message_invalid)
+          end
       end
     end)
     |> case do
@@ -788,7 +803,9 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   end
 
   # The message's authoritative tenant = its conversation's app_id (read inside the same transaction).
-  defp conversation_app_id(conversation_id) do
+  # nil conversation_id or unknown conversation → nil (caller rejects the insert).
+  defp conversation_app_id(conversation_id)
+       when is_binary(conversation_id) and conversation_id != "" do
     case Repo.query("SELECT app_id::text FROM conversations WHERE id = $1::text::uuid", [
            conversation_id
          ]) do
@@ -796,6 +813,12 @@ defmodule MessageService.MessageStore.PostgresAdapter do
       _ -> nil
     end
   end
+
+  defp conversation_app_id(_), do: nil
+
+  # conversation_id from the insert attrs (string or atom keyed), read BEFORE the row exists.
+  defp message_conversation_id(attrs),
+    do: Map.get(attrs, "conversation_id") || Map.get(attrs, :conversation_id)
 
   # The `data` body an integrator receives for message.created (the worker wraps it in the signed envelope).
   defp message_event(%Message{} = message) do
