@@ -46,19 +46,17 @@ defmodule ApiGatewayWeb.V1.MessageController do
     end
   end
 
-  # ISOLATION GATE: the conversation must belong to the caller's app_id, else 404. Any lookup failure
-  # also maps to 404 — a cross-tenant or unknown id are indistinguishable to the caller.
+  # ISOLATION GATE: the app_id is passed INTO the conversation lookup, which resolves the row only if
+  # it belongs to the caller's app (an (app_id, id) predicate). A cross-tenant OR unknown id both
+  # return not_found — indistinguishable to the caller, so we never confirm another tenant's resource
+  # exists. app_id is server-derived (V1Auth → conn.assigns.v1_app_id); a body app_id can't reach it.
   defp conversation_in_app(conversation_id, app_id) do
     case SharedInfra.ConversationClient.get_conversation_app(%{
-           "conversation_id" => conversation_id
+           "conversation_id" => conversation_id,
+           "app_id" => app_id
          }) do
-      {:ok, conversation} ->
-        if get_field(conversation, :app_id) == app_id,
-          do: {:ok, conversation},
-          else: {:error, :not_found}
-
-      _ ->
-        {:error, :not_found}
+      {:ok, conversation} -> {:ok, conversation}
+      _ -> {:error, :not_found}
     end
   end
 
@@ -117,8 +115,6 @@ defmodule ApiGatewayWeb.V1.MessageController do
       _ -> nil
     end
   end
-
-  defp get_field(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
 
   defp not_found(conn), do: ErrorResponse.not_found(conn, "v1.not_found", "Not found")
 end

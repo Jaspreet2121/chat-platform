@@ -48,6 +48,7 @@ defmodule ApiGatewayWeb.Router do
 
     post "/auth/token", AuthController, :token
     post "/conversations", ConversationController, :create
+    get "/conversations/:id", ConversationController, :show
     post "/conversations/:id/messages", MessageController, :create
     get "/conversations/:id/messages", MessageController, :index
   end

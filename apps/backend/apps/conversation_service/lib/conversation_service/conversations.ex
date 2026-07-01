@@ -46,20 +46,49 @@ defmodule ConversationService.Conversations do
   """
   def get_conversation_app(attrs) do
     if conversation_persistence_enabled?() do
-      with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
-           {:ok, conversation} <- fetch_active_conversation(conversation_id) do
-        {:ok,
-         %{
-           conversation_id: conversation.id,
-           app_id: conversation.app_id,
-           type: conversation.type
-         }}
+      with {:ok, conversation_id} <- required_attr(attrs, "conversation_id") do
+        case get_attr(attrs, "app_id") do
+          app_id when is_binary(app_id) and app_id != "" ->
+            # Tenant-scoped path (public /v1 gate): the (app_id, id) predicate IS the isolation
+            # boundary — a cross-tenant OR unknown id both return :conversation_not_found, so the
+            # caller can 404 without ever confirming another tenant's conversation exists.
+            case ConversationStore.get_conversation_in_app(conversation_id, app_id) do
+              nil -> {:error, :conversation_not_found}
+              conversation -> {:ok, conversation_summary(conversation)}
+            end
+
+          _ ->
+            # Legacy lightweight path (realtime socket authz): fetch by id, the caller compares
+            # the returned app_id against the socket's own app_id.
+            with {:ok, conversation} <- fetch_active_conversation(conversation_id) do
+              {:ok,
+               %{
+                 conversation_id: conversation.id,
+                 app_id: conversation.app_id,
+                 type: conversation.type
+               }}
+            end
+        end
       end
     else
       {:error, :conversation_not_found}
     end
   rescue
     Ecto.Query.CastError -> {:error, :conversation_invalid}
+  end
+
+  # The tenant-scoped conversation view returned to the public /v1 layer (the GET response + the
+  # message-send gate). app_id is the caller's OWN tenant, so exposing it is not a cross-tenant leak.
+  defp conversation_summary(conversation) do
+    %{
+      conversation_id: conversation.id,
+      app_id: conversation.app_id,
+      type: conversation.type,
+      title: conversation.title,
+      created_by: conversation.created_by,
+      status: conversation.status,
+      created_at: iso8601(conversation.created_at)
+    }
   end
 
   defp get_conversation_from_db(attrs) do

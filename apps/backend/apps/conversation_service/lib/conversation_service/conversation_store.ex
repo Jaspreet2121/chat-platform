@@ -34,6 +34,23 @@ defmodule ConversationService.ConversationStore do
 
   def get_conversation(id), do: Repo.get(Conversation, id)
 
+  # Tenant-scoped fetch for the public /v1 isolation gate: an ACTIVE conversation that belongs to
+  # `app_id`, else nil. The (app_id, id) predicate IS the isolation boundary — a cross-tenant or
+  # unknown id both return nil (no separate existence signal). Backed by idx_conversations_app_id_id.
+  # Ecto binds id/app_id as uuids via the schema field types, so no raw ::text::uuid cast is needed
+  # here (that guard is only for the raw Postgrex outbox queries).
+  def get_conversation_in_app(id, app_id) when is_binary(id) and is_binary(app_id) do
+    Repo.one(
+      from(conversation in Conversation,
+        where:
+          conversation.id == ^id and conversation.app_id == ^app_id and
+            conversation.status == "active"
+      )
+    )
+  end
+
+  def get_conversation_in_app(_id, _app_id), do: nil
+
   # Existing direct conversation for a canonical pair key WITHIN an app (the unique index is
   # (app_id, direct_key) WHERE type='direct'). NULL keys / non-direct / other apps never match.
   def get_by_direct_key(app_id, direct_key) when is_binary(app_id) and is_binary(direct_key) do

@@ -1,13 +1,34 @@
 defmodule ApiGatewayWeb.V1.ConversationController do
   @moduledoc """
-  Public `/v1` conversation create — scoped to the authenticated app_id. Participants are the
+  Public `/v1` conversation create + read — scoped to the authenticated app_id. Participants are the
   integrator's external end-user ids, resolved-or-created within this app. Reuses
   conversation_service's create/find_or_create_direct (direct chats stay idempotent per pair per app).
+  Reads resolve ONLY within the caller's app_id — a cross-tenant id is a 404.
   """
 
   use ApiGatewayWeb, :controller
 
   alias ApiGatewayWeb.ErrorResponse
+
+  # GET /v1/conversations/:id — tenant-scoped read. The conversation resolves ONLY within the caller's
+  # app_id (server-derived); a cross-tenant or unknown id both return 404 (no existence reveal).
+  def show(conn, %{"id" => conversation_id}) do
+    app_id = conn.assigns.v1_app_id
+
+    case SharedInfra.ConversationClient.get_conversation_app(%{
+           "conversation_id" => conversation_id,
+           "app_id" => app_id
+         }) do
+      {:ok, conversation} ->
+        json(conn, conversation)
+
+      {:error, :conversation_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "v1.unavailable")
+
+      _ ->
+        ErrorResponse.not_found(conn, "v1.not_found", "Not found")
+    end
+  end
 
   def create(conn, params) do
     app_id = conn.assigns.v1_app_id
