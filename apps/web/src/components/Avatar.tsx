@@ -22,15 +22,16 @@ const dotSizes = {
   lg: "h-3.5 w-3.5"
 };
 
-// A small, pleasant palette of gradient pairs. The id hash picks one deterministically,
-// so a given user always gets the same color across sessions.
+// A muted, desaturated palette (single-hue pairs, darker ends) so a list of avatars reads calm rather
+// than confetti — WhatsApp-style. The id hash picks one deterministically, so a given user always gets
+// the same color across sessions; white semibold initials keep readable contrast on these tones.
 const palettes = [
-  "from-indigo-500 to-violet-500",
-  "from-sky-500 to-cyan-500",
-  "from-emerald-500 to-teal-500",
-  "from-rose-500 to-pink-500",
-  "from-amber-500 to-orange-500",
-  "from-fuchsia-500 to-purple-500"
+  "from-slate-500 to-slate-600",
+  "from-zinc-500 to-zinc-600",
+  "from-teal-600 to-teal-700",
+  "from-indigo-500 to-indigo-600",
+  "from-rose-500 to-rose-600",
+  "from-stone-500 to-stone-600"
 ];
 
 const sizes = {

@@ -108,15 +108,16 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
   });
 
   return (
-    <aside className="flex h-full flex-col border-r border-border bg-surface/60 backdrop-blur-xl">
-      {/* Compact header: brand · actions (new conversation, theme, starred, logout) · identity */}
-      <div className="border-b border-border p-3">
+    // Flat, calm surface (WhatsApp-style): no glass blur, hairline right border.
+    <aside className="flex h-full flex-col border-r border-border/60 bg-surface">
+      {/* Compact header: small brand · quiet monochrome actions · slim identity row */}
+      <div className="border-b border-border/60 px-3 py-2">
         <div className="flex items-center justify-between gap-1">
           <div className="flex min-w-0 items-center gap-2">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand">
-              <MessagesSquare className="h-4 w-4 text-white" aria-hidden />
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand/90">
+              <MessagesSquare className="h-3.5 w-3.5 text-white" aria-hidden />
             </div>
-            <span className="truncate text-sm font-semibold text-fg">Chat Platform</span>
+            <span className="truncate text-sm font-medium text-fg">Chats</span>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
             <PlusMenu
@@ -138,7 +139,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
             type="button"
             onClick={onOpenProfile}
             aria-label="Edit my profile"
-            className="mt-3 flex w-full items-center gap-2.5 rounded-xl bg-elevated px-2.5 py-2 text-left transition-colors hover:bg-border"
+            className="mt-1.5 flex w-full items-center gap-2.5 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-elevated"
           >
             <Avatar
               id={session.user_id}
@@ -146,12 +147,10 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
               imageUrl={currentProfile?.avatar_url}
               size="sm"
             />
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-fg">
-                {currentProfile?.display_name || "Set up your profile"}
-              </p>
-              <p className="truncate text-xs text-faint">{shortId(session.user_id)}</p>
-            </div>
+            <p className="min-w-0 flex-1 truncate text-sm text-fg">
+              {currentProfile?.display_name || "Set up your profile"}
+              <span className="ml-2 text-xs text-faint">{shortId(session.user_id)}</span>
+            </p>
           </button>
         ) : null}
       </div>
@@ -160,35 +159,33 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
       {/* PRIMARY search: find someone by phone number → start a direct chat (always visible). */}
       <ContactSearch onStartDirectChat={onStartDirectChat} />
 
-      {/* Filter tabs — segmented control over the existing list, by conversation type. */}
-      <div className="px-3 pt-3" role="tablist" aria-label="Filter conversations">
-        <div className="flex gap-1 rounded-xl border border-border bg-elevated p-1">
-          {FILTERS.map((option) => {
-            const active = filter === option.key;
-            return (
-              <button
-                key={option.key}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setFilter(option.key)}
-                className={cn(
-                  "flex-1 rounded-lg px-2 py-1.5 text-xs font-medium transition-all duration-150",
-                  "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring",
-                  active
-                    ? "bg-brand-subtle text-brand-hover shadow-subtle ring-1 ring-inset ring-brand/20"
-                    : "text-muted hover:text-fg"
-                )}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
+      {/* Filter chips — light WhatsApp-style pills over the existing list, by conversation type. */}
+      <div className="flex gap-1.5 px-3 py-2" role="tablist" aria-label="Filter conversations">
+        {FILTERS.map((option) => {
+          const active = filter === option.key;
+          return (
+            <button
+              key={option.key}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setFilter(option.key)}
+              className={cn(
+                "rounded-full px-3 py-1 text-xs transition-colors duration-150",
+                "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring",
+                active
+                  ? "bg-brand-subtle font-medium text-brand-hover"
+                  : "text-muted hover:bg-elevated hover:text-fg"
+              )}
+            >
+              {option.label}
+            </button>
+          );
+        })}
       </div>
 
-      {/* Conversation list */}
-      <div className="flex-1 overflow-y-auto p-2">
+      {/* Conversation list — flat full-bleed rows with hairline separators. */}
+      <div className="flex-1 overflow-y-auto">
         {isLoading ? (
           <EmptyState title="Loading conversations…" />
         ) : conversations.length === 0 ? (
@@ -204,12 +201,13 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
             hint={filter === "personal" ? "No 1:1 chats yet." : "No group chats yet."}
           />
         ) : (
-          <div className="space-y-1">
+          <div className="divide-y divide-border/30">
             {filteredConversations.map((conversation) => (
               <ConversationListItem
                 key={conversation.conversation_id}
                 conversation={conversation}
                 isSelected={selectedConversationId === conversation.conversation_id}
+                currentUserId={session?.user_id}
                 onSelect={onSelectConversation}
               />
             ))}

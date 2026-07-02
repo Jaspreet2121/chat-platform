@@ -104,8 +104,8 @@ export function ContactSearch({ onStartDirectChat }: ContactSearchProps) {
   }
 
   return (
-    <div className="border-b border-border px-3 py-3">
-      <div className="flex gap-2">
+    <div className="border-b border-border/60 px-3 py-2.5">
+      <div className="flex gap-1.5">
         <CountryCodeSelect value={country} onChange={handleCountry} />
         <div className="relative min-w-0 flex-1">
           <Search
@@ -120,10 +120,9 @@ export function ContactSearch({ onStartDirectChat }: ContactSearchProps) {
             onChange={(event) => handleLocal(event.target.value)}
             aria-label="Search by phone number"
             className={cn(
-              "h-11 w-full rounded-xl border border-border bg-elevated/70 pl-9 pr-9 text-sm text-fg",
-              "placeholder:text-faint shadow-[inset_0_1px_2px_rgb(0_0_0/0.05)] outline-none",
-              "transition-all duration-200 focus:border-brand focus:bg-elevated focus:ring-2",
-              "focus:ring-brand-ring focus:shadow-glow-sm"
+              "h-11 w-full rounded-xl border border-border/70 bg-elevated/50 pl-9 pr-9 text-sm text-fg",
+              "placeholder:text-faint outline-none transition-colors duration-150",
+              "focus:border-brand/50 focus:bg-elevated focus:ring-1 focus:ring-brand-ring"
             )}
           />
           {state.kind === "loading" ? (
@@ -146,7 +145,7 @@ export function ContactSearch({ onStartDirectChat }: ContactSearchProps) {
 
       {/* Result / status area */}
       {state.kind === "found" ? (
-        <div className="mt-2.5 flex items-center gap-2.5 rounded-xl border border-border bg-elevated/80 p-2.5 shadow-subtle transition-colors hover:bg-elevated animate-bubble-in">
+        <div className="mt-2 flex items-center gap-2.5 rounded-xl border border-border/60 bg-elevated/50 p-2 transition-colors hover:bg-elevated animate-fade-in">
           <Avatar
             id={state.profile.user_id}
             name={state.profile.display_name ?? undefined}
@@ -154,7 +153,7 @@ export function ContactSearch({ onStartDirectChat }: ContactSearchProps) {
             size="sm"
           />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium text-fg">
+            <p className="truncate text-sm text-fg">
               {state.profile.display_name || "Unnamed profile"}
             </p>
             <p className="truncate text-xs text-faint">{shortId(state.profile.user_id)}</p>
@@ -164,7 +163,7 @@ export function ContactSearch({ onStartDirectChat }: ContactSearchProps) {
             onClick={() => handleMessage(state.profile)}
             isLoading={isStarting}
             leftIcon={<MessageSquarePlus className="h-4 w-4" aria-hidden />}
-            className="shrink-0 bg-gradient-to-r from-brand to-brand-hover shadow-glow-sm hover:opacity-90"
+            className="shrink-0"
           >
             Message
           </Button>

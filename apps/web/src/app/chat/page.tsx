@@ -45,6 +45,7 @@ import {
   StatusBanner
 } from "@/components/chat";
 import { primeUserProfile, useUserProfile } from "@/components/chat/useUserProfile";
+import { pickDirectPeer, primeConversationDetail } from "@/components/chat/useDirectPeer";
 import { cn } from "@/lib/cn";
 import imageCompression from "browser-image-compression";
 import { ForwardPicker } from "./ForwardPicker";
@@ -185,6 +186,8 @@ export default function ChatPage() {
           return;
         }
 
+        // Seed the shared detail cache so the sidebar row derives this chat's peer with no refetch.
+        primeConversationDetail(detail);
         setSelectedConversation(detail);
         setMessages(timeline.messages ?? []);
         setStatus(`Opened ${detail.title || detail.conversation_id}`);
@@ -891,14 +894,17 @@ export default function ChatPage() {
   const selectedIsDirect = selectedConversation?.type === "direct";
   const directPeerId = useMemo(() => {
     if (!selectedIsDirect) return null;
-    const peer = selectedConversation?.participants?.find(
-      (participant) => participant.user_id !== session?.user_id
-    );
-    return peer?.user_id ?? null;
+    // SHARED derivation (same helper as the sidebar rows — the two can't drift): participants minus
+    // me; self-chat resolves to me; unknown session → null (never guess).
+    return pickDirectPeer(selectedConversation?.participants, session?.user_id) ?? null;
   }, [selectedIsDirect, selectedConversation?.participants, session?.user_id]);
   const directPeerProfile = useUserProfile(directPeerId);
+  // Direct-chat title = the OTHER person. NEVER fall back to selectedConversation.title: for a direct
+  // chat the stored title is the creator-set peer name, so on the RECIPIENT's side it's their OWN name.
+  // Use the peer's live display_name, else a stable handle from their id — never self.
   const headerTitle = selectedIsDirect
-    ? directPeerProfile?.display_name?.trim() || selectedConversation?.title?.trim() || "Member"
+    ? directPeerProfile?.display_name?.trim() ||
+      (directPeerId ? `${directPeerId.slice(0, 8)}…` : "Member")
     : selectedTitle;
   const headerAvatarId = selectedIsDirect
     ? directPeerId ?? selectedConversationId
@@ -1021,11 +1027,13 @@ export default function ChatPage() {
         <ConversationDetailsPanel
           conversation={selectedConversation}
           conversationId={selectedConversationId}
-          title={selectedTitle}
+          title={headerTitle}
           isOpen={isDetailsOpen && Boolean(selectedConversationId)}
           onClose={() => setIsDetailsOpen(false)}
           onlineUserIds={onlineUserIds}
           currentUserId={session?.user_id}
+          messages={messages}
+          onJumpToMessage={handleJumpToMessage}
         />
 
         {forwardingMessage ? (
