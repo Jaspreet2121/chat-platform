@@ -30,7 +30,10 @@ defmodule ApiGateway.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:plug_cowboy, "~> 2.7"},
       {:cors_plug, "~> 3.0"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      # Observability-only raw connection (error capture + per-app metrics). Already resolved via
+      # shared_infra; declared here since the gateway starts + uses it directly.
+      {:postgrex, "~> 0.17"}
     ]
   end
 end

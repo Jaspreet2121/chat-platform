@@ -16,6 +16,8 @@ defmodule ApiGatewayWeb.Router do
   # Public integrator API: authenticate (secret key OR end-user JWT) → app_id scope → per-app rate limit.
   pipeline :v1 do
     plug :accepts, ["json"]
+    # FIRST: registers a before_send so it observes EVERY /v1 response — incl. 401/429 halts below.
+    plug ApiGatewayWeb.Plugs.Observability
     plug ApiGatewayWeb.Plugs.V1Auth
     plug ApiGatewayWeb.Plugs.V1RateLimit
   end
@@ -173,5 +175,8 @@ defmodule ApiGatewayWeb.Router do
     post "/webhooks/outbox/reenqueue_bulk", AdminWebhookController, :reenqueue_bulk
 
     get "/health", AdminHealthController, :show
+
+    # Per-app usage metrics (request counts by app+route, webhook deliveries, error counts).
+    get "/metrics", AdminMetricsController, :show
   end
 end
