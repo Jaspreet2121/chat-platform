@@ -51,6 +51,13 @@ defmodule ApiGatewayWeb.Router do
     get "/conversations/:id", ConversationController, :show
     post "/conversations/:id/messages", MessageController, :create
     get "/conversations/:id/messages", MessageController, :index
+
+    # Key-authenticated webhook management for integrator servers (app_id = the key's app; secret-key
+    # actor required). Same Webhooks context as the session route below.
+    post "/webhooks/endpoints", WebhookEndpointController, :create
+    get "/webhooks/endpoints", WebhookEndpointController, :index
+    patch "/webhooks/endpoints/:id", WebhookEndpointController, :update
+    delete "/webhooks/endpoints/:id", WebhookEndpointController, :delete
   end
 
   # Self-serve integrator onboarding — register a business app (distinct live app_id) + list owned apps.

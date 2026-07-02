@@ -96,15 +96,22 @@ curl -X POST http://localhost:4000/v1/conversations/c123.../messages \
 # -> {"message_id":"m456...", "sender_user_id":"...", "body":"Your order has shipped.", ...}
 ```
 
-**5 — Register a webhook** to receive events:
+**5 — Register a webhook** to receive events. Use your **secret key** — the
+endpoint is scoped to that key's app automatically, so deliveries fire for
+*your* app's events:
 
 ```bash
-curl -X POST http://localhost:4000/api/v1/webhooks/endpoints \
-  -H "Authorization: Bearer $SESSION_TOKEN" \
+curl -X POST http://localhost:4000/v1/webhooks/endpoints \
+  -H "Authorization: Bearer $LIVE_KEY" \
   -H "Content-Type: application/json" \
   -d '{"url":"https://api.acme.com/hooks/chat","event_types":["message.created"]}'
 # -> { ..., "signing_secret":"whsec_..." }   # save this — shown once
 ```
+
+> The same endpoints are also available under `/api/v1/webhooks/endpoints` with
+> your first-party OTP **session** (for a dashboard); pass an owned `app_id` to
+> target a specific app. An **end-user JWT may not** manage webhooks (`403
+> v1.app_only`) — only a secret key can.
 
 Done. Your server can now drive conversations, and you'll receive signed
 `message.created` deliveries. Next: connect your end-users in real time (§4, §6).
@@ -137,6 +144,9 @@ issue a new one.
 **App management endpoints** (`/api/v1/apps`, `/api/v1/api-keys`,
 `/api/v1/webhooks/endpoints`) are authenticated with your first-party **OTP
 session token**, not an API key, and are not subject to the `/v1` rate limit.
+Webhook endpoints are the exception: they can **also** be managed with a secret
+key under **`/v1/webhooks/endpoints`** (the recommended path for a headless
+integrator server — no session needed; the key's app scopes the endpoint).
 
 ---
 

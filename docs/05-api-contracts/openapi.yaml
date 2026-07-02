@@ -298,6 +298,102 @@ paths:
         "429":
           $ref: '#/components/responses/RateLimited'
 
+  /v1/webhooks/endpoints:
+    post:
+      tags: [Webhooks]
+      summary: Register a webhook endpoint (secret-key; RECOMMENDED for integrators)
+      description: |
+        Registers a URL to receive event deliveries for **your key's app**. The `signing_secret` is
+        returned **once** — store it to verify delivery signatures (§8). Requires a SECRET KEY actor;
+        an end-user JWT is rejected with `403 v1.app_only`.
+      security:
+        - SecretKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, example: "https://api.acme.com/hooks/chat" }
+                event_types:
+                  type: array
+                  items: { type: string, enum: [message.created, conversation.created] }
+                  description: Optional; filtered to known event types. Omit to receive all.
+      responses:
+        "201":
+          description: Endpoint registered (signing secret shown once).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  app_id: { type: string, format: uuid }
+                  url: { type: string }
+                  enabled: { type: boolean }
+                  event_types: { type: array, items: { type: string } }
+                  created_at: { type: string }
+                  updated_at: { type: string }
+                  signing_secret: { type: string, description: "HMAC signing secret. Shown ONCE.", example: whsec_AbCd... }
+        "400": { description: "`v1.invalid_request`", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { description: "`v1.app_only` — an end-user JWT may not manage webhooks", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        "429": { $ref: '#/components/responses/RateLimited' }
+    get:
+      tags: [Webhooks]
+      summary: List your app's webhook endpoints (secret-key)
+      security:
+        - SecretKey: []
+      responses:
+        "200":
+          description: OK (no secret returned).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  webhook_endpoints:
+                    type: array
+                    items: { $ref: '#/components/schemas/WebhookEndpoint' }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { description: "`v1.app_only`", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /v1/webhooks/endpoints/{id}:
+    patch:
+      tags: [Webhooks]
+      summary: Update a webhook endpoint (secret-key)
+      security:
+        - SecretKey: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+                event_types: { type: array, items: { type: string } }
+      responses:
+        "200": { description: Updated., content: { application/json: { schema: { $ref: '#/components/schemas/WebhookEndpoint' } } } }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { description: "`v1.app_only`", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        "404": { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Webhooks]
+      summary: Delete a webhook endpoint (secret-key)
+      security:
+        - SecretKey: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200": { description: Deleted. }
+        "401": { $ref: '#/components/responses/Unauthorized' }
+        "403": { description: "`v1.app_only`", content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        "404": { $ref: '#/components/responses/NotFound' }
+
   # ===== App management (first-party, session-authenticated) ================
   /api/v1/apps:
     post:
