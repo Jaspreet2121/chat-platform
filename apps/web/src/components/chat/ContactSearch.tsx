@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, MessageSquarePlus, Search, X } from "lucide-react";
+import { Check, Copy, Loader2, MessageCircle, MessageSquarePlus, Search, X } from "lucide-react";
 import { type CountryCode } from "libphonenumber-js";
 import { Country, DEFAULT_COUNTRY } from "@/lib/countries";
 import { formatLocal, phoneMeta, toE164 } from "@/lib/phone";
-import { findUserByPhone, type UserProfile } from "@/lib/api";
+import { createInvite, findUserByPhone, type UserProfile } from "@/lib/api";
 import { Avatar, Button, CountryCodeSelect } from "@/components";
 import { cn } from "@/lib/cn";
 
@@ -26,6 +26,104 @@ type Lookup =
 
 function shortId(id: string): string {
   return `#${id.slice(0, 8)}`;
+}
+
+// --- WhatsApp-style invite (number not on the platform) --------------------------------------------
+// Mints an invite code once (cached per searched number), then opens WhatsApp / the SMS app with the
+// recipient AND a pre-filled join message via device URL schemes — the user just hits Send. No
+// WhatsApp/SMS API involved.
+
+function inviteMessage(code: string): string {
+  return `Hey! Join me on Growblic: ${window.location.origin}/invite/${code}`;
+}
+
+// iOS wants `sms:<number>&body=`, everything else `sms:<number>?body=`.
+function smsHref(e164: string, message: string): string {
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  return `sms:${e164}${isIOS ? "&" : "?"}body=${encodeURIComponent(message)}`;
+}
+
+function waHref(e164: string, message: string): string {
+  return `https://wa.me/${e164.replace(/\D/g, "")}?text=${encodeURIComponent(message)}`;
+}
+
+function InviteActions({ e164 }: { e164: string }) {
+  const [code, setCode] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"whatsapp" | "sms" | "copy" | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState("");
+
+  // The invite code is stable per (you, number) — mint once, reuse for all three actions.
+  async function ensureCode(): Promise<string> {
+    if (code) return code;
+    const invite = await createInvite(e164);
+    setCode(invite.invite_code);
+    return invite.invite_code;
+  }
+
+  async function act(kind: "whatsapp" | "sms" | "copy") {
+    setBusy(kind);
+    setError("");
+    try {
+      const message = inviteMessage(await ensureCode());
+      if (kind === "whatsapp") {
+        window.open(waHref(e164, message), "_blank", "noopener,noreferrer");
+      } else if (kind === "sms") {
+        window.location.href = smsHref(e164, message);
+      } else {
+        await navigator.clipboard.writeText(message);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create the invite.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-xl border border-border/60 bg-elevated/50 p-2.5 animate-fade-in">
+      <p className="mb-2 px-0.5 text-xs text-muted">
+        This number isn&apos;t on Growblic yet — invite them:
+      </p>
+      <div className="flex flex-wrap gap-1.5">
+        <Button
+          size="sm"
+          onClick={() => act("whatsapp")}
+          isLoading={busy === "whatsapp"}
+          leftIcon={<MessageCircle className="h-4 w-4" aria-hidden />}
+        >
+          Invite on WhatsApp
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => act("sms")}
+          isLoading={busy === "sms"}
+          leftIcon={<MessageSquarePlus className="h-4 w-4" aria-hidden />}
+        >
+          Invite via SMS
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => act("copy")}
+          isLoading={busy === "copy"}
+          leftIcon={
+            copied ? (
+              <Check className="h-4 w-4 text-success" aria-hidden />
+            ) : (
+              <Copy className="h-4 w-4" aria-hidden />
+            )
+          }
+        >
+          {copied ? "Copied" : "Copy link"}
+        </Button>
+      </div>
+      {error ? <p className="mt-1.5 px-0.5 text-xs text-danger">{error}</p> : null}
+    </div>
+  );
 }
 
 // PRIMARY sidebar search: find someone by PHONE NUMBER (WhatsApp-style) and start a direct chat.
@@ -169,9 +267,7 @@ export function ContactSearch({ onStartDirectChat }: ContactSearchProps) {
           </Button>
         </div>
       ) : state.kind === "empty" ? (
-        <p className="mt-2 px-1 text-xs text-muted animate-fade-in">
-          No account uses this number.
-        </p>
+        <InviteActions key={e164} e164={e164} />
       ) : state.kind === "self" ? (
         <p className="mt-2 px-1 text-xs text-muted animate-fade-in">
           That&apos;s your own number.

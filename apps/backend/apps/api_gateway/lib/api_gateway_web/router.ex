@@ -100,6 +100,14 @@ defmodule ApiGatewayWeb.Router do
     get "/:user_id/profile", UserController, :profile
   end
 
+  # WhatsApp-style invites: mint an invite code for a non-platform phone number (session-authed).
+  # Sending happens on the user's device (wa.me / sms: URL schemes) — no send API here.
+  scope "/api/v1/invites", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/", InviteController, :create
+  end
+
   scope "/api/v1/conversations", ApiGatewayWeb do
     pipe_through :api
 

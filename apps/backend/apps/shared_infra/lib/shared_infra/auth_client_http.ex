@@ -120,6 +120,9 @@ defmodule SharedInfra.AuthClientHttp do
   def list_audit(attrs), do: post("/internal/admin/audit/list", attrs)
 
   @impl true
+  def create_invite(attrs), do: post("/internal/invites/create", attrs)
+
+  @impl true
   def persistence_enabled? do
     # Bare boolean over the wire; on transport failure FAIL CLOSED (false = not trustworthy →
     # realtime socket rejects), never a truthy error tuple.

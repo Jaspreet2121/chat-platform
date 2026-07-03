@@ -122,4 +122,7 @@ defmodule AuthService.AuthClientInProcess do
 
   @impl true
   def list_audit(attrs), do: Moderation.list_audit(attrs)
+
+  @impl true
+  def create_invite(attrs), do: AuthService.Invites.create_invite(attrs)
 end

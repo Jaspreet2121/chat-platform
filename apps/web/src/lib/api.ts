@@ -584,6 +584,21 @@ export function findUserByPhone(phone: string) {
   return request<UserProfile>(`/api/v1/users/by-phone?phone=${encodeURIComponent(phone)}`);
 }
 
+// WhatsApp-style invite: mint (or reuse) an invite code for a number that's NOT on the platform. The
+// caller builds the link (`${origin}/invite/${invite_code}`) and the pre-filled wa.me / sms: message —
+// the user's own WhatsApp/SMS app does the sending (device URL schemes, no send API).
+export type InviteResponse = {
+  invite_code: string;
+  invited_phone: string;
+};
+
+export function createInvite(phoneNumber: string) {
+  return request<InviteResponse>("/api/v1/invites", {
+    method: "POST",
+    body: JSON.stringify({ phone_number: phoneNumber })
+  });
+}
+
 export function listConversations() {
   return request<{
     conversations: ConversationListItem[];

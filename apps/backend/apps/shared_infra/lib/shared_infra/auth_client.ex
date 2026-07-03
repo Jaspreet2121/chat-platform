@@ -38,6 +38,8 @@ defmodule SharedInfra.AuthClient do
   @callback write_audit(attrs()) :: result()
   @callback list_audit(attrs()) :: result()
 
+  @callback create_invite(attrs()) :: result()
+
   @callback create_api_key(attrs()) :: result()
   @callback list_api_keys(attrs()) :: result()
   @callback revoke_api_key(attrs()) :: result()
@@ -114,6 +116,8 @@ defmodule SharedInfra.AuthClient do
   def update_report(attrs), do: adapter().update_report(attrs)
   def write_audit(attrs), do: adapter().write_audit(attrs)
   def list_audit(attrs), do: adapter().list_audit(attrs)
+
+  def create_invite(attrs), do: adapter().create_invite(attrs)
 
   @doc "The configured Auth client adapter (default `AuthService.AuthClientInProcess`)."
   def adapter do
