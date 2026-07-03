@@ -4,14 +4,15 @@ defmodule AuthService.OtpDelivery do
 
   Two INDEPENDENT mechanisms:
 
-    * SMS via `AuthService.SmsClient` (SMSGatewayHub), gated by `OTP_SMS_DELIVERY_ENABLED` — the
-      production channel. Default OFF.
+    * SMS via `AuthService.SMS` (the provider-agnostic front door), selected by `SMS_PROVIDER`
+      (`"console"` default → no real SMS; `"smsgatewayhub"` → real DLT send). The concrete gateway is a
+      swappable adapter behind that interface.
     * `OTP_DELIVERY_MODE` (default `"none"`) — a LOCAL/STAGING convenience to obtain the code WITHOUT
       SMS: `"echo"` returns the plaintext code in the OTP-request response (`debug_code`); `"log"`
       logs it; `"none"` surfaces nothing (prod-safe default).
 
-  So a local demo = SMS off + `OTP_DELIVERY_MODE=echo`. Default config (neither set) is unchanged:
-  hashed, never surfaced.
+  So a local demo = `SMS_PROVIDER=console` + `OTP_DELIVERY_MODE=echo`. Default config (neither set) is
+  unchanged: hashed, never surfaced.
 
   RESILIENCE: an SMS failure is LOGGED but does NOT fail OTP creation (the code is persisted; the user
   can resend). SAFETY: `echo`/`log` are LOCAL/STAGING ONLY — if `MIX_ENV=:prod` with one of them set,
@@ -33,7 +34,9 @@ defmodule AuthService.OtpDelivery do
   def deliver(destination, code, method) do
     warn_if_unsafe_in_prod()
 
-    if method == "sms" and sms_enabled?(), do: send_sms(destination, code)
+    # The SMS provider (incl. the no-op "console") decides whether a real send happens; email is a
+    # separate future channel and never touches SMS.
+    if method == "sms", do: send_sms(destination, code)
 
     if delivery_mode() == "log" do
       Logger.warning(
@@ -59,7 +62,7 @@ defmodule AuthService.OtpDelivery do
   def delivery_mode, do: Application.get_env(:auth_service, :otp_delivery_mode, "none")
 
   defp send_sms(destination, code) do
-    case AuthService.SmsClient.send_otp(destination, code) do
+    case AuthService.SMS.send_otp(destination, code) do
       :ok ->
         :ok
 
@@ -71,8 +74,6 @@ defmodule AuthService.OtpDelivery do
         :ok
     end
   end
-
-  defp sms_enabled?, do: Application.get_env(:auth_service, :sms, [])[:enabled] == true
 
   # LOUD guard: plaintext OTP exposure must never be on for real users. Warn once per VM (not a crash).
   defp warn_if_unsafe_in_prod do

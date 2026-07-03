@@ -86,4 +86,10 @@ defmodule AuthService.SmsClientTest do
   test "otp_text matches the DLT-approved LOGIN template verbatim" do
     assert SmsClient.otp_text("4321") == "Dear user, your login OTP is 4321 1500BC"
   end
+
+  test "otp_text renders a CONFIGURED template, substituting every {code}" do
+    Application.put_env(:auth_service, :sms, otp_template: "Your Growblic OTP is {code}. Valid 10 min.")
+
+    assert SmsClient.otp_text("9999") == "Your Growblic OTP is 9999. Valid 10 min."
+  end
 end

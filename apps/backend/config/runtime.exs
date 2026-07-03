@@ -23,12 +23,18 @@ config :shared_infra, :redis,
 config :shared_infra,
   rate_limiter_fail_open: System.get_env("RATE_LIMITER_FAIL_OPEN", "true") in ["true", "1", "yes"]
 
-# OTP SMS delivery via SMSGatewayHub (DLT). DEFAULT OFF. api_key/entity_id/template_login_id/route
-# are secrets: env only, never committed. Keys match AuthService.SmsClient exactly.
+# OTP SMS delivery via SMSGatewayHub (DLT). Provider-selected by SMS_PROVIDER: "console" (default →
+# no real SMS, no credits/DLT needed) or "smsgatewayhub" (real send). SMS_PROVIDER supersedes the legacy
+# OTP_SMS_DELIVERY_ENABLED flag (kept for back-compat: true → smsgatewayhub when SMS_PROVIDER is unset).
+# api_key/entity_id/template_login_id/route are secrets: env only, never committed. Keys match
+# AuthService.SmsClient / AuthService.SMS exactly.
 config :auth_service, :sms,
+  provider: System.get_env("SMS_PROVIDER"),
   enabled: System.get_env("OTP_SMS_DELIVERY_ENABLED") in ["true", "1", "yes"],
   base_url: System.get_env("SMS_GATEWAY_HUB_BASE_URL") || "https://www.smsgatewayhub.com",
   send_path: System.get_env("SMS_GATEWAY_HUB_SEND_PATH") || "/api/mt/SendSMS",
+  # HTTP method for the send. GET (default) — SendSMS is a query-param API; a bodyless POST → IIS 411.
+  http_method: System.get_env("SMS_HTTP_METHOD"),
   api_key: System.get_env("SMS_GATEWAY_HUB_API_KEY"),
   senderid: System.get_env("SMS_GATEWAY_HUB_SENDER_ID") || "ISOOBC",
   channel: System.get_env("SMS_GATEWAY_HUB_CHANNEL") || "2",
@@ -37,6 +43,11 @@ config :auth_service, :sms,
   route: System.get_env("SMS_GATEWAY_HUB_ROUTE"),
   entity_id: System.get_env("SMS_ENTITY_ID"),
   template_login_id: System.get_env("SMS_TEMPLATE_LOGIN_ID"),
+  # Send the bare 10-digit national number (drop the country code) when true — some DLT/provider setups
+  # require it. Default false (keeps the 91-prefixed number).
+  strip_country_code: System.get_env("SMS_STRIP_COUNTRY_CODE") in ["true", "1", "yes"],
+  # Message body template; `{code}` is replaced with the OTP. Must match the DLT-approved wording.
+  otp_template: System.get_env("SMS_OTP_TEMPLATE"),
   country_prefix: System.get_env("SMS_COUNTRY_PREFIX") || "91"
 
 # Runtime config — evaluated at BOOT (in a release) / after compile (in mix). Only the :prod

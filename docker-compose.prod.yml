@@ -81,8 +81,11 @@ services:
       AUTH_REFRESH_TOKEN_DB_BACKED: "true"
       AUTH_LOGOUT_DB_BACKED: "true"
       # OTP SMS delivery (SMSGatewayHub/DLT) runs HERE — auth_service owns the OTP request path; the
-      # gateway proxies to auth over HTTP, so these belong on the auth container only. All from .env;
-      # DEFAULT OFF (set OTP_SMS_DELIVERY_ENABLED=true + the secrets to enable real sends).
+      # gateway proxies to auth over HTTP, so these belong on the auth container only. All from .env.
+      # Provider toggle: console (default, no real SMS) | smsgatewayhub (real send). PROD must set
+      # SMS_PROVIDER=smsgatewayhub + the secrets below to actually text users.
+      SMS_PROVIDER: ${SMS_PROVIDER:-console}
+      # Legacy flag (still honored when SMS_PROVIDER is unset: true → smsgatewayhub). Prefer SMS_PROVIDER.
       OTP_SMS_DELIVERY_ENABLED: ${OTP_SMS_DELIVERY_ENABLED:-false}
       # Local/staging convenience to obtain the OTP without SMS (echo→response, log→logs). DEFAULT none.
       OTP_DELIVERY_MODE: ${OTP_DELIVERY_MODE:-none}
@@ -91,6 +94,10 @@ services:
       SMS_GATEWAY_HUB_ROUTE: ${SMS_GATEWAY_HUB_ROUTE:-}
       SMS_ENTITY_ID: ${SMS_ENTITY_ID:-}
       SMS_TEMPLATE_LOGIN_ID: ${SMS_TEMPLATE_LOGIN_ID:-}
+      # OTP message body ({code} → the OTP). Leave unset to use the built-in DLT-approved default.
+      SMS_OTP_TEMPLATE: ${SMS_OTP_TEMPLATE:-}
+      # Send the bare 10-digit number (drop 91) when true. Default false.
+      SMS_STRIP_COUNTRY_CODE: ${SMS_STRIP_COUNTRY_CODE:-false}
     expose: ["4101"]
 
   conversation:
