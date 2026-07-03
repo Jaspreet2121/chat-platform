@@ -1,0 +1,30 @@
+# PHASE 2 — domain with automatic HTTPS (Let's Encrypt). Requires DNS A-records for each host below
+# pointing at the EC2 public IP, and inbound 80+443 open in the security group (80 is needed for the
+# ACME challenge). Caddy obtains + renews certs automatically.
+#
+# Run Caddy on the chatnet network, publishing 80 + 443:
+#   docker run -d --name caddy --restart unless-stopped \
+#     --network chat-platform-prod_chatnet -p 80:80 -p 443:443 \
+#     -v $PWD/infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
+#     -v caddy_data:/data -v caddy_config:/config caddy:2
+#
+# Then set in .env (and recreate the app containers):
+#   PHX_HOST=api.example.com
+#   WEB_ORIGIN=https://app.example.com
+#   CORS_ORIGIN=https://app.example.com
+#   MINIO_PUBLIC_ENDPOINT=https://media.example.com
+
+# --- API + realtime websocket ---
+api.example.com {
+	reverse_proxy gateway:4000
+}
+
+# --- Media (MinIO S3 API) — presigned PUT/GET; Host is preserved so SigV4 matches ---
+media.example.com {
+	reverse_proxy minio:9000
+}
+
+# --- (Optional) web frontend, if you serve the Next.js app from a container on this network ---
+# app.example.com {
+# 	reverse_proxy web:3000
+# }

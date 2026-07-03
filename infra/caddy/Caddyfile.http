@@ -1,0 +1,22 @@
+# PHASE 1 — IP-only, HTTP (no TLS; TLS needs a domain — see Caddyfile).
+#
+# Run Caddy as a container ON the chat-platform-prod chatnet network so it can reach the internal
+# services by name (gateway:4000, minio:9000). Publish only 80 (and 443 later) from Caddy; keep the
+# gateway/minio host ports UNpublished (gateway can drop its "4000:4000" once Caddy fronts it).
+#
+#   docker run -d --name caddy --restart unless-stopped \
+#     --network chat-platform-prod_chatnet -p 80:80 \
+#     -v $PWD/infra/caddy/Caddyfile.http:/etc/caddy/Caddyfile:ro \
+#     -v caddy_data:/data caddy:2
+#
+# Reaches the API + realtime websocket via the gateway. (Caddy proxies websockets automatically.)
+
+:80 {
+	reverse_proxy gateway:4000
+}
+
+# NOTE on media (MinIO): presigned URLs are signed against MINIO_PUBLIC_ENDPOINT's exact host, which does
+# not work cleanly over plain HTTP on a bare IP. For phase 1, either skip media testing, or temporarily
+# publish MinIO on 9000 (compose: "9000:9000" + open the SG on 9000) with
+# MINIO_PUBLIC_ENDPOINT=http://<EC2_IP>:9000. Move to the domain-based Caddyfile (media subdomain) for a
+# clean, TLS-terminated media path.

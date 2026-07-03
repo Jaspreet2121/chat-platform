@@ -20,7 +20,7 @@ name: chat-platform-prod
 # gateway concern but is currently required for every release (documented quirk).
 x-secrets: &secrets
   MIX_ENV: prod
-  DATABASE_URL: postgres://chat_user:chat_password@postgres:5432/chat_platform
+  DATABASE_URL: postgres://chat_user:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/chat_platform
   DATABASE_SSL: "false"
   # Public host for URL generation. Set PHX_HOST=<server-ip-or-domain> in .env for a real server
   # (defaults to localhost for a local smoke test).
@@ -37,6 +37,9 @@ x-secrets: &secrets
 x-service-base: &service-base
   restart: unless-stopped
   networks: [chatnet]
+  # RAM cap for the core Elixir/BEAM services (auth/conversation/user/message/media) on the 7.6GB box.
+  # Each idles ~150MB; 384m gives headroom without letting one balloon and OOM the host.
+  mem_limit: 384m
   # Services need Postgres ready before they serve DB requests.
   depends_on:
     postgres:
@@ -46,10 +49,11 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    mem_limit: 768m
     environment:
       POSTGRES_DB: chat_platform
       POSTGRES_USER: chat_user
-      POSTGRES_PASSWORD: chat_password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Postgres auto-runs *.sql here IN FILENAME ORDER on the FIRST init of an empty volume.
@@ -113,8 +117,10 @@ services:
       CONVERSATION_DB_BACKED: "true"
       # Publish participant_added/removed to the live broker (fire-and-forget; see message svc note).
       KAFKA_PRODUCER_ADAPTER: brod
-      CONVERSATION_PUBLISH_ENABLED: "true"
-      KAFKA_BROKERS: kafka:9092
+      # Set false in .env to run WITHOUT Kafka (fanout off — see runbook); avoids publish retries when
+      # the kafka service isn't started. runtime.exs honors KAFKA_BROKERS at boot (not a compile trap).
+      CONVERSATION_PUBLISH_ENABLED: ${CONVERSATION_PUBLISH_ENABLED:-true}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
     expose: ["4102"]
 
   user:
@@ -148,8 +154,9 @@ services:
       # Producing is fire-and-forget — core message creation succeeds even if the broker is down,
       # so this stays additive and core deps (postgres only) are unchanged.
       KAFKA_PRODUCER_ADAPTER: brod
-      KAFKA_PUBLISH_ENABLED: "true"
-      KAFKA_BROKERS: kafka:9092
+      # Set false in .env to run WITHOUT Kafka (fanout off — see runbook).
+      KAFKA_PUBLISH_ENABLED: ${KAFKA_PUBLISH_ENABLED:-true}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
     expose: ["4104"]
 
   media:
@@ -175,8 +182,9 @@ services:
       # service). Override for a real deployment (e.g. https://media.example.com).
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       MINIO_BUCKET: chat-media
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      # Must MATCH the minio service's root creds (media authenticates to MinIO with them). From .env.
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
       MINIO_REGION: us-east-1
       MINIO_PATH_STYLE: "true"
     expose: ["4105"]
@@ -198,6 +206,11 @@ services:
     image: bitnamilegacy/kafka:3.7.1-debian-12-r4
     restart: unless-stopped
     networks: [chatnet]
+    # PHASE 1 = OFF: gated behind the "kafka" profile, so plain `up -d` does NOT start it. Enable with
+    # `docker compose --profile kafka up -d` (+ set the publish flags true in .env).
+    profiles: ["kafka"]
+    # RAM cap on the box: the JVM heap is bounded (below) + a hard container limit as a backstop.
+    mem_limit: 1g
     # Internal-only broker: services reach it at kafka:9092 over chatnet. NOT published to the host
     # (a prod broker shouldn't be host-exposed; also avoids clashing with the dev infra compose's
     # kafka on 9094). For host tooling, attach to chatnet or use `docker compose exec kafka`.
@@ -218,6 +231,8 @@ services:
       KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: "1"
       KAFKA_CFG_NUM_PARTITIONS: "3"
       ALLOW_PLAINTEXT_LISTENER: "yes"
+      # Cap the JVM heap for the 7.6GB box (Bitnami Kafka would otherwise grab a large default heap).
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
     volumes:
       - kafka_data:/bitnami/kafka
     healthcheck:
@@ -232,6 +247,7 @@ services:
   kafka-init:
     image: bitnamilegacy/kafka:3.7.1-debian-12-r4
     networks: [chatnet]
+    profiles: ["kafka"]
     depends_on:
       kafka:
         condition: service_healthy
@@ -255,9 +271,11 @@ services:
       args: {RELEASE: notification_service, SERVICE_PORT: "4106"}
     restart: unless-stopped
     networks: [chatnet]
+    profiles: ["kafka"]
+    mem_limit: 384m
     environment:
       <<: *secrets
-      KAFKA_BROKERS: kafka:9092
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
       NOTIFICATION_CONSUMER_ENABLED: "true"
       NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED: "true"
     depends_on:
@@ -275,15 +293,18 @@ services:
     image: minio/minio:latest
     restart: unless-stopped
     networks: [chatnet]
+    mem_limit: 512m
     expose: ["9000", "9001"]
-    # Publish the S3 API to the host so the browser can PUT/GET presigned URLs signed against
-    # MINIO_PUBLIC_ENDPOINT (http://localhost:9000). The console (9001) stays internal.
+    # LOOPBACK-ONLY: the S3 API is bound to 127.0.0.1 so it is NOT publicly reachable. A local reverse
+    # proxy (Caddy) fronts it for the browser (presigned PUT/GET) with TLS — see infra/caddy + runbook.
+    # (For a quick pre-Caddy IP smoke test only, temporarily change to "9000:9000" and open the SG on
+    # 9000, with MINIO_PUBLIC_ENDPOINT=http://<IP>:9000 — then revert once Caddy is up.)
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
     volumes:
       - minio_data:/data
     healthcheck:
@@ -300,10 +321,13 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
     entrypoint:
       - /bin/sh
       - -c
-      - "mc alias set local http://minio:9000 minioadmin minioadmin && mc mb --ignore-existing local/chat-media && mc ls local/"
+      - 'mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" && mc mb --ignore-existing local/chat-media && mc ls local/'
     restart: "no"
 
   # Shared Redis — backs the /v1 runtime: rate-limit counter (INCR/EXPIRE) + idempotency KV (SET EX /
@@ -313,11 +337,13 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     networks: [chatnet]
-    command: ["redis-server", "--appendonly", "yes"]
+    mem_limit: 256m
+    # INTERNAL-ONLY: no host port — the gateway reaches it at redis:6379 over chatnet. Redis has no auth,
+    # so it must never be host-published. maxmemory caps the dataset (rate-limit/idempotency is small);
+    # allkeys-lru evicts under pressure rather than OOMing.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "200mb", "--maxmemory-policy", "allkeys-lru"]
     volumes:
       - redis_data:/data
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -331,6 +357,8 @@ services:
       args: {RELEASE: gateway, SERVICE_PORT: "4000"}
     restart: unless-stopped
     networks: [chatnet]
+    # Slightly higher cap than the domain services: bundles api_gateway + realtime_gateway (sockets).
+    mem_limit: 512m
     environment:
       <<: *secrets
       PORT: "4000"
@@ -367,8 +395,9 @@ services:
       # On a Redis blip the runtime FAILS OPEN (allows the request) rather than 500-ing /v1.
       REDIS_URL: redis://redis:6379/0
       V1_RUNTIME_BACKEND: redis
-    ports:
-      - "4000:4000"
+    # NOT host-published: Caddy is the only public edge and reaches the gateway at gateway:4000 over
+    # chatnet. (expose is docs-only; the port is reachable on the network regardless.)
+    expose: ["4000"]
     # Start order only (containers, not readiness — the release images have no curl for a
     # readiness probe). If the gateway calls a service before it's listening, the HTTP adapters
     # return {:error, :*_unavailable} → 503 (NOT a crash); it recovers once the service is up.
@@ -388,6 +417,26 @@ services:
       redis:
         condition: service_healthy
 
+  # Public edge — the ONLY host-published service. Reverse-proxies to the internal gateway (and MinIO for
+  # media in phase 2). PHASE 1 mounts the HTTP Caddyfile (:80 → gateway:4000, no TLS). To switch to
+  # domain/auto-HTTPS later: change the mount to ./infra/caddy/Caddyfile (see that file's header) + set
+  # PHX_HOST/WEB_ORIGIN/CORS_ORIGIN/MINIO_PUBLIC_ENDPOINT in .env, then `up -d`. 443 is already published
+  # so the switch needs no compose change; caddy_data persists the certs.
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    networks: [chatnet]
+    mem_limit: 128m
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/caddy/Caddyfile.http:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - gateway
+
 networks:
   chatnet:
     driver: bridge
@@ -397,3 +446,5 @@ volumes:
   kafka_data:
   minio_data:
   redis_data:
+  caddy_data:
+  caddy_config:
