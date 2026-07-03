@@ -148,6 +148,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Moderation.ban_user(body(conn)))
   end
 
+  post "/internal/admin/users/role" do
+    send_result(conn, AuthService.Moderation.set_role(body(conn)))
+  end
+
   post "/internal/admin/reports/list" do
     send_result(conn, AuthService.Moderation.list_reports(body(conn)))
   end

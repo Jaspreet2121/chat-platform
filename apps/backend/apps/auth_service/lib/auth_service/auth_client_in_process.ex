@@ -106,6 +106,9 @@ defmodule AuthService.AuthClientInProcess do
   def ban_user(attrs), do: Moderation.ban_user(attrs)
 
   @impl true
+  def set_user_role(attrs), do: Moderation.set_role(attrs)
+
+  @impl true
   def list_reports(attrs), do: Moderation.list_reports(attrs)
 
   @impl true

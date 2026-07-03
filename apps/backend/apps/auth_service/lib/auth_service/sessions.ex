@@ -121,14 +121,20 @@ defmodule AuthService.Sessions do
   end
 
   defp session_response(claims, device_session, user) do
+    role = user.role || "user"
+
     %{
       user_id: device_session.user_id,
       session_id: device_session.id,
       device_id: device_session.device_id,
       platform: device_session.platform,
-      # Global platform-admin flag, surfaced so the gateway's RequireAdmin gate + the frontend admin UI
-      # can read it straight off the session (no extra lookup).
-      is_admin: user.is_admin == true,
+      # IAM (migration 058): the user's role + its resolved permissions (strings — safe over the
+      # internal-API wire), surfaced so the gateway gate reads them straight off the session.
+      role: role,
+      permissions: SharedInfra.IAM.permissions_for(role),
+      # is_admin is now DERIVED from role (root/admin) — backward-compat with the existing gate + the
+      # frontend AdminLayout, and it can't drift from the role.
+      is_admin: SharedInfra.IAM.admin?(role),
       # The app (tenant) this session belongs to. Old tokens (minted before multi-tenancy) carry no
       # "app" claim → resolve to tenant zero, so existing sessions keep working without re-login.
       app_id: SharedInfra.Tenancy.app_id_or_default(claims["app"]),
@@ -143,6 +149,8 @@ defmodule AuthService.Sessions do
       user_id: "user_placeholder",
       device_id: "device_placeholder",
       platform: "ios",
+      role: "user",
+      permissions: [],
       is_admin: false,
       app_id: SharedInfra.Tenancy.default_app_id(),
       issued_at: "2026-06-16T18:00:00Z",

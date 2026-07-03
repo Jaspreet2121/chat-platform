@@ -102,6 +102,9 @@ defmodule SharedInfra.AuthClientHttp do
   def ban_user(attrs), do: post("/internal/admin/users/ban", attrs)
 
   @impl true
+  def set_user_role(attrs), do: post("/internal/admin/users/role", attrs)
+
+  @impl true
   def list_reports(attrs), do: post("/internal/admin/reports/list", attrs)
 
   @impl true

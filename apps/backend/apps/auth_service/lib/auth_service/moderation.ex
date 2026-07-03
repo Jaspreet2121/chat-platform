@@ -143,6 +143,61 @@ defmodule AuthService.Moderation do
     {:ok, %{written: true}}
   end
 
+  # --- Roles (IAM Phase 1) ------------------------------------------------------------------------
+
+  @doc """
+  Assign `role` to a user. Validates the role, guards the LAST root (the system can never reach zero
+  roots), keeps the compat `is_admin` column in sync, and writes an audit row (old → new). Errors:
+  `:invalid_role` (bad role), `:user_not_found`, `:last_root` (would demote the final root).
+
+  Concurrency-safe: locks the full root set (`FOR UPDATE`) before counting, so two simultaneous
+  demotions serialize instead of both passing the count check and leaving zero roots.
+  """
+  def set_role(attrs) do
+    with {:ok, user_id} <- require_attr(attrs, "user_id"),
+         {:ok, new_role} <- validate_role(attrs["role"]) do
+      Repo.transaction(fn ->
+        # Lock every root row first (stable order) so concurrent demotions can't race to zero roots.
+        %Postgrex.Result{rows: root_rows} =
+          Repo.query!("SELECT id::text FROM users_auth WHERE role = 'root' FOR UPDATE")
+
+        root_count = length(root_rows)
+
+        case Repo.query!("SELECT role FROM users_auth WHERE id = $1 FOR UPDATE", [uuid_param(user_id)]) do
+          %Postgrex.Result{rows: []} ->
+            Repo.rollback(:user_not_found)
+
+          %Postgrex.Result{rows: [[old_role]]} ->
+            if old_role == "root" and new_role != "root" and root_count <= 1 do
+              Repo.rollback(:last_root)
+            else
+              Repo.query!(
+                "UPDATE users_auth SET role = $1, is_admin = $2, updated_at = now() WHERE id = $3",
+                [new_role, SharedInfra.IAM.admin?(new_role), uuid_param(user_id)]
+              )
+
+              audit(actor(attrs), "user.role_change", "user", user_id, %{
+                "old_role" => old_role,
+                "new_role" => new_role
+              })
+
+              %{user_id: user_id, role: new_role, previous_role: old_role}
+            end
+        end
+      end)
+      |> case do
+        {:ok, data} -> {:ok, data}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp validate_role(role) when is_binary(role) do
+    if SharedInfra.IAM.valid_role?(role), do: {:ok, role}, else: {:error, :invalid_role}
+  end
+
+  defp validate_role(_), do: {:error, :invalid_role}
+
   def list_audit(attrs) do
     page = page(attrs)
     page_size = 50

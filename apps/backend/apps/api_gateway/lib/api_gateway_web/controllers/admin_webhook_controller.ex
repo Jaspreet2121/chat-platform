@@ -7,6 +7,13 @@ defmodule ApiGatewayWeb.AdminWebhookController do
 
   use ApiGatewayWeb, :controller
 
+  # Read-only dead-letter inspection = webhooks.view; the reenqueue MUTATIONS = webhooks.manage
+  # (root/admin only) — a mutation shouldn't ride a view permission.
+  plug ApiGatewayWeb.Plugs.RequirePermission, "webhooks.view" when action in [:failed]
+
+  plug ApiGatewayWeb.Plugs.RequirePermission, "webhooks.manage"
+       when action in [:reenqueue, :reenqueue_bulk]
+
   alias ApiGatewayWeb.ErrorResponse
 
   # GET /api/v1/admin/webhooks/outbox/failed?app_id=&event_type=&limit=&cursor=

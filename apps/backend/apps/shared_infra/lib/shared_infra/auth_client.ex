@@ -31,6 +31,7 @@ defmodule SharedInfra.AuthClient do
   @callback suspend_user(attrs()) :: result()
   @callback reactivate_user(attrs()) :: result()
   @callback ban_user(attrs()) :: result()
+  @callback set_user_role(attrs()) :: result()
   @callback list_reports(attrs()) :: result()
   @callback update_report(attrs()) :: result()
   @callback write_audit(attrs()) :: result()
@@ -56,7 +57,8 @@ defmodule SharedInfra.AuthClient do
 
   # Optional so the many test stubs that implement this behaviour don't all need to add them; the real
   # adapters (in-process + HTTP) both implement them, which is all the dispatcher ever resolves to.
-  @optional_callbacks lookup_user_by_phone: 1,
+  @optional_callbacks set_user_role: 1,
+                      lookup_user_by_phone: 1,
                       create_api_key: 1,
                       list_api_keys: 1,
                       revoke_api_key: 1,
@@ -104,6 +106,7 @@ defmodule SharedInfra.AuthClient do
   def suspend_user(attrs), do: adapter().suspend_user(attrs)
   def reactivate_user(attrs), do: adapter().reactivate_user(attrs)
   def ban_user(attrs), do: adapter().ban_user(attrs)
+  def set_user_role(attrs), do: adapter().set_user_role(attrs)
   def list_reports(attrs), do: adapter().list_reports(attrs)
   def update_report(attrs), do: adapter().update_report(attrs)
   def write_audit(attrs), do: adapter().write_audit(attrs)

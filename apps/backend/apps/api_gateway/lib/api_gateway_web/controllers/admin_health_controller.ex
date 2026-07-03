@@ -8,6 +8,8 @@ defmodule ApiGatewayWeb.AdminHealthController do
   """
   use ApiGatewayWeb, :controller
 
+  plug ApiGatewayWeb.Plugs.RequirePermission, "platform.view"
+
   # name, shared_infra config key, env fallback — the services the gateway can reach over HTTP.
   @services [
     {"auth", :auth_service_url, "AUTH_SERVICE_URL"},

@@ -161,6 +161,7 @@ defmodule ApiGatewayWeb.Router do
     post "/users/:id/suspend", AdminModerationController, :suspend_user
     post "/users/:id/reactivate", AdminModerationController, :reactivate_user
     post "/users/:id/ban", AdminModerationController, :ban_user
+    post "/users/:id/role", AdminModerationController, :set_user_role
 
     delete "/messages/:id", AdminModerationController, :delete_message
 

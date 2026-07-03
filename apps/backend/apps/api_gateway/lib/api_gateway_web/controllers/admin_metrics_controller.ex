@@ -11,6 +11,8 @@ defmodule ApiGatewayWeb.AdminMetricsController do
 
   use ApiGatewayWeb, :controller
 
+  plug ApiGatewayWeb.Plugs.RequirePermission, "platform.view"
+
   def show(conn, params) do
     hours = parse_hours(Map.get(params, "hours"))
     metrics = SharedInfra.Observability.metrics(ApiGateway.Application.observability_db(), hours: hours)

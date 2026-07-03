@@ -9,6 +9,19 @@ defmodule ApiGatewayWeb.AdminModerationController do
   use ApiGatewayWeb, :controller
 
   alias ApiGatewayWeb.ErrorResponse
+  alias ApiGatewayWeb.Plugs.RequirePermission
+
+  # Per-route capability (IAM Phase 1). Viewing users/reports = users.view; any mutation
+  # (suspend/reactivate/ban/message-delete/report-status) = users.moderate; the audit log = audit.view.
+  plug RequirePermission, "users.view" when action in [:list_users, :get_user, :list_reports]
+
+  plug RequirePermission, "users.moderate"
+       when action in [:suspend_user, :reactivate_user, :ban_user, :delete_message, :update_report]
+
+  plug RequirePermission, "audit.view" when action in [:list_audit]
+
+  # Role assignment is root-only (roles.manage is in root's bundle only).
+  plug RequirePermission, "roles.manage" when action in [:set_user_role]
 
   # --- Users ----------------------------------------------------------------------------------
   def list_users(conn, params) do
@@ -92,6 +105,18 @@ defmodule ApiGatewayWeb.AdminModerationController do
     )
   end
 
+  # --- Roles (IAM Phase 1) --------------------------------------------------------------------
+  def set_user_role(conn, %{"id" => user_id} = params) do
+    forward(
+      conn,
+      SharedInfra.AuthClient.set_user_role(%{
+        "user_id" => user_id,
+        "role" => params["role"],
+        "actor_user_id" => actor(conn)
+      })
+    )
+  end
+
   # --- Audit ----------------------------------------------------------------------------------
   def list_audit(conn, params) do
     forward(conn, SharedInfra.AuthClient.list_audit(take_paging(params)))
@@ -109,6 +134,13 @@ defmodule ApiGatewayWeb.AdminModerationController do
 
   defp error(conn, :user_not_found),
     do: ErrorResponse.invalid_request(conn, "admin.user_not_found")
+
+  # IAM role-assignment errors: the last root can't be demoted; unknown role value.
+  defp error(conn, :last_root),
+    do: ErrorResponse.invalid_request(conn, "iam.last_root")
+
+  defp error(conn, :invalid_role),
+    do: ErrorResponse.invalid_request(conn, "iam.invalid_role")
 
   defp error(conn, :report_not_found),
     do: ErrorResponse.invalid_request(conn, "admin.report_not_found")

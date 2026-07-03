@@ -11,14 +11,16 @@ defmodule ApiGatewayWeb.AdminController do
     json(conn, %{ok: true})
   end
 
-  # The authenticated admin's basic identity (smoke test for the gate).
+  # The authenticated admin's identity + IAM role/permissions (the frontend gate reads these in Phase 3).
   def me(conn, _params) do
     session = conn.assigns.admin_session
 
     json(conn, %{
       user_id: session.user_id,
       session_id: session.session_id,
-      is_admin: true
+      is_admin: Map.get(session, :is_admin) == true,
+      role: Map.get(session, :role),
+      permissions: Map.get(session, :permissions) || []
     })
   end
 end

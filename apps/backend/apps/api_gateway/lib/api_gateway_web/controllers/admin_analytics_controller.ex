@@ -6,6 +6,8 @@ defmodule ApiGatewayWeb.AdminAnalyticsController do
   """
   use ApiGatewayWeb, :controller
 
+  plug ApiGatewayWeb.Plugs.RequirePermission, "platform.view"
+
   alias ApiGatewayWeb.ErrorResponse
 
   def overview(conn, _params) do

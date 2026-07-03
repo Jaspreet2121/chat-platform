@@ -21,6 +21,8 @@ defmodule AuthService.Schemas.UserAuth do
     field(:password_hash, :string)
     field(:status, :string, default: "active")
     field(:is_admin, :boolean, default: false)
+    # IAM role (migration 058). One role per user; permission bundles live in SharedInfra.IAM.
+    field(:role, :string, default: "user")
     field(:created_at, :utc_datetime_usec)
     field(:updated_at, :utc_datetime_usec)
   end
@@ -35,11 +37,13 @@ defmodule AuthService.Schemas.UserAuth do
       :external_id,
       :password_hash,
       :status,
-      :is_admin
+      :is_admin,
+      :role
     ])
     |> validate_required([:status])
     |> validate_contact()
     |> validate_inclusion(:status, ["active", "suspended", "deleted"])
+    |> validate_inclusion(:role, SharedInfra.IAM.roles())
     |> unique_constraint(:phone_number)
     |> unique_constraint(:email)
     |> unique_constraint(:external_id, name: :users_auth_app_external_id_key)
