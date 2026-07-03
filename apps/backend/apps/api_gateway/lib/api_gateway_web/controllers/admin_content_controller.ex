@@ -89,8 +89,28 @@ defmodule ApiGatewayWeb.AdminContentController do
       app_id: app_id,
       masked: false,
       message_count: length(messages),
-      messages: Enum.map(messages, &enrich_media/1)
+      messages: enrich_all(messages)
     })
+  end
+
+  # Presign media download URLs CONCURRENTLY (bounded, ordered). With the HTTP media-client adapter each
+  # presign is a gateway→media-service round trip; doing up to 200 sequentially blocked the whole
+  # response. A failed/slow presign degrades that one message (no URL) instead of the list.
+  @enrich_concurrency 16
+  @enrich_timeout_ms 5_000
+  defp enrich_all(messages) do
+    messages
+    |> Task.async_stream(&enrich_media/1,
+      max_concurrency: @enrich_concurrency,
+      timeout: @enrich_timeout_ms,
+      on_timeout: :kill_task,
+      zip_input_on_exit: true,
+      ordered: true
+    )
+    |> Enum.map(fn
+      {:ok, enriched} -> enriched
+      {:exit, {message, _reason}} -> message
+    end)
   end
 
   # No content.read → masked metadata only + a lighter oversight row. Text is dropped before serialize.

@@ -88,15 +88,16 @@ function MediaContent({ m }: { m: AdminMessage }) {
           <img
             src={url}
             alt={filename}
+            loading="lazy"
             className="max-h-64 max-w-xs rounded-lg border border-border object-contain"
           />
         </a>
       ) : contentType.startsWith("audio/") ? (
-        <audio controls preload="metadata" src={url} className="h-10 w-full max-w-xs">
+        <audio controls preload="none" src={url} className="h-10 w-full max-w-xs">
           Your browser cannot play this audio.
         </audio>
       ) : contentType.startsWith("video/") ? (
-        <video controls preload="metadata" src={url} className="max-h-64 max-w-xs rounded-lg" />
+        <video controls preload="none" src={url} className="max-h-64 max-w-xs rounded-lg" />
       ) : (
         <a
           href={url}
