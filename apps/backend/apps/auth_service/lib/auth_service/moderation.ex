@@ -22,6 +22,7 @@ defmodule AuthService.Moderation do
 
   def reactivate_user(attrs) do
     with {:ok, user_id} <- require_attr(attrs, "user_id"),
+         :ok <- guard_hierarchy(attrs, user_id),
          {:ok, user} <- Accounts.set_status(user_id, "active") do
       record_enforcement(user_id, "warn", actor(attrs), reason(attrs, "Reactivated"), nil)
       audit(actor(attrs), "user.reactivate", "user", user_id, %{})
@@ -29,8 +30,34 @@ defmodule AuthService.Moderation do
     end
   end
 
+  # Role-hierarchy guard for suspend/ban/reactivate: you may only act on a STRICTLY lower-ranked target,
+  # and never yourself. Both roles are read from the DB (source of truth — never a client-passed role),
+  # so this holds regardless of the UI. Errors: :cannot_moderate_self, :cannot_moderate_peer_or_superior.
+  defp guard_hierarchy(attrs, target_id) do
+    actor_id = actor(attrs)
+
+    cond do
+      is_binary(actor_id) and actor_id == target_id ->
+        {:error, :cannot_moderate_self}
+
+      true ->
+        actor_user = actor_id && Accounts.get_user(actor_id)
+        target_user = Accounts.get_user(target_id)
+
+        cond do
+          is_nil(target_user) -> {:error, :user_not_found}
+          is_nil(actor_user) -> {:error, :cannot_moderate_peer_or_superior}
+          SharedInfra.IAM.can_moderate?(actor_user.role, target_user.role) -> :ok
+          true -> {:error, :cannot_moderate_peer_or_superior}
+        end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :user_not_found}
+  end
+
   defp enforce(attrs, action_type, status, ends_at) do
     with {:ok, user_id} <- require_attr(attrs, "user_id"),
+         :ok <- guard_hierarchy(attrs, user_id),
          {:ok, user} <- Accounts.set_status(user_id, status) do
       reason = reason(attrs, "#{action_type} by admin")
       record_enforcement(user_id, action_type, actor(attrs), reason, ends_at)
@@ -197,6 +224,74 @@ defmodule AuthService.Moderation do
   end
 
   defp validate_role(_), do: {:error, :invalid_role}
+
+  @doc """
+  Permanently delete a user (IAM users.delete, root-only — the gateway gates it). "Anonymize-keep" policy:
+
+    * GUARDS (before any mutation): the target must exist, must NOT be the acting user, and must NOT be a
+      root/admin. Errors: `:user_not_found`, `:cannot_delete_self`, `:cannot_delete_privileged`.
+    * ONE transaction (all-or-nothing): reassign the three NOT-NULL / NO-ACTION blockers
+      (conversations.created_by, media_assets.owner_user_id, call_sessions.started_by) to the acting root
+      so those artifacts survive → hard-delete `users_auth` (Postgres CASCADE removes profile, settings,
+      privacy, device_sessions, refresh_tokens, memberships, app_owners, blocked_users, call_participants,
+      reporter-reports; SET NULL on audit actor etc.) → write the audit row.
+    * ANONYMIZE: messages/reactions/receipts/stars/notifications are LEFT intact (no FK) — their now-orphan
+      sender id resolves to nothing, so the UI shows "Deleted user" while other participants keep the text.
+  """
+  def delete_user(attrs) do
+    target_id = present(attrs["user_id"])
+    actor_id = actor(attrs)
+
+    with {:ok, target} <- fetch_deletable(target_id),
+         :ok <- guard_not_self(target_id, actor_id),
+         :ok <- guard_not_privileged(target) do
+      Repo.transaction(fn ->
+        target_bin = uuid_param(target_id)
+        actor_bin = uuid_param(actor_id)
+
+        # Reassign the NOT-NULL / ON DELETE NO ACTION blockers to the acting root (keeps the artifacts).
+        Repo.query!("UPDATE conversations SET created_by = $1 WHERE created_by = $2", [actor_bin, target_bin])
+        Repo.query!("UPDATE media_assets SET owner_user_id = $1 WHERE owner_user_id = $2", [actor_bin, target_bin])
+        Repo.query!("UPDATE call_sessions SET started_by = $1 WHERE started_by = $2", [actor_bin, target_bin])
+
+        # Hard-delete the identity; CASCADE cleans the FK-linked rows. Messages/reactions/receipts/stars/
+        # notifications are intentionally NOT touched (anonymized via the profile deletion above).
+        Repo.query!("DELETE FROM users_auth WHERE id = $1", [target_bin])
+
+        audit(actor_id, "user.delete", "user", target_id, %{
+          "role" => target.role,
+          "policy" => "anonymize-keep"
+        })
+
+        %{user_id: target_id, deleted: true}
+      end)
+      |> case do
+        {:ok, data} -> {:ok, data}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp fetch_deletable(nil), do: {:error, :user_not_found}
+
+  defp fetch_deletable(user_id) do
+    case Accounts.get_user(user_id) do
+      nil -> {:error, :user_not_found}
+      user -> {:ok, user}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :user_not_found}
+  end
+
+  defp guard_not_self(id, id) when is_binary(id), do: {:error, :cannot_delete_self}
+  defp guard_not_self(_target, _actor), do: :ok
+
+  # Never delete a root or admin (belt-and-suspenders: also honors the legacy is_admin flag).
+  defp guard_not_privileged(%{role: role, is_admin: is_admin}) do
+    if SharedInfra.IAM.admin?(role) or is_admin == true,
+      do: {:error, :cannot_delete_privileged},
+      else: :ok
+  end
 
   def list_audit(attrs) do
     page = page(attrs)

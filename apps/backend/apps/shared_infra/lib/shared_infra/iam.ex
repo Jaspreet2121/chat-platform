@@ -31,6 +31,7 @@ defmodule SharedInfra.IAM do
     webhooks.manage
     audit.view
     roles.manage
+    users.delete
   )
 
   # Console roles (can reach /api/v1/admin at all), most→least privileged. `user` is excluded.
@@ -44,7 +45,9 @@ defmodule SharedInfra.IAM do
 
   @role_permissions %{
     "root" => @permissions,
-    "admin" => @permissions -- ["content.read", "roles.manage"],
+    # users.delete is ROOT-ONLY (permanent identity deletion) — excluded from admin alongside content.read
+    # and roles.manage.
+    "admin" => @permissions -- ["content.read", "roles.manage", "users.delete"],
     "moderator" => ~w(users.view users.moderate audit.view),
     "support" => @support_view,
     "user" => []
@@ -61,6 +64,18 @@ defmodule SharedInfra.IAM do
   @doc "Whether `role` is a valid role name."
   @spec valid_role?(term()) :: boolean()
   def valid_role?(role), do: to_string(role) in @all_roles
+
+  # Hierarchy rank (higher = more privileged). Used for the moderation guard: you may only act on a
+  # STRICTLY lower-ranked target.
+  @role_ranks %{"root" => 4, "admin" => 3, "moderator" => 2, "support" => 1, "user" => 0}
+
+  @doc "Numeric hierarchy rank for `role` (root=4 … user=0; unknown/nil → 0)."
+  @spec rank(term()) :: non_neg_integer()
+  def rank(role), do: Map.get(@role_ranks, normalize(role), 0)
+
+  @doc "Whether an actor of `actor_role` may moderate a target of `target_role` (strictly higher rank)."
+  @spec can_moderate?(term(), term()) :: boolean()
+  def can_moderate?(actor_role, target_role), do: rank(actor_role) > rank(target_role)
 
   @doc "The permission list (strings) granted to `role`. Unknown/nil → []."
   @spec permissions_for(term()) :: [String.t()]

@@ -22,6 +22,12 @@ defmodule SharedInfra.ConversationClientHttp do
   def list_conversations(attrs), do: post("/internal/conversations/list", attrs)
 
   @impl true
+  def admin_list_conversations(attrs), do: post("/internal/conversations/admin_list", attrs)
+
+  @impl true
+  def admin_user_conversations(attrs), do: post("/internal/conversations/admin_user", attrs)
+
+  @impl true
   def get_conversation(attrs), do: post("/internal/conversations/get", attrs)
 
   @impl true

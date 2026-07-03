@@ -109,6 +109,9 @@ defmodule AuthService.AuthClientInProcess do
   def set_user_role(attrs), do: Moderation.set_role(attrs)
 
   @impl true
+  def delete_user(attrs), do: Moderation.delete_user(attrs)
+
+  @impl true
   def list_reports(attrs), do: Moderation.list_reports(attrs)
 
   @impl true

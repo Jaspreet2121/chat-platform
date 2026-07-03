@@ -25,6 +25,38 @@ defmodule ApiGatewayWeb.AdminContentController do
 
   @max_limit 200
 
+  # Browsable conversation list (metadata only — no message content), so admins don't type UUIDs. Entry
+  # is console access (any admin role); content stays gated + masked when a conversation is opened.
+  def conversations(conn, params) do
+    case SharedInfra.ConversationClient.admin_list_conversations(%{
+           "q" => params["q"],
+           "page" => params["page"]
+         }) do
+      {:ok, data} ->
+        json(conn, data)
+
+      {:error, :conversation_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "admin.unavailable")
+
+      {:error, _reason} ->
+        ErrorResponse.invalid_request(conn, "admin.invalid_request")
+    end
+  end
+
+  # A given user's conversations (metadata only — who they've chatted with). Console-access gated.
+  def user_conversations(conn, %{"id" => user_id}) do
+    case SharedInfra.ConversationClient.admin_user_conversations(%{"user_id" => user_id}) do
+      {:ok, data} ->
+        json(conn, data)
+
+      {:error, :conversation_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "admin.unavailable")
+
+      {:error, _reason} ->
+        ErrorResponse.invalid_request(conn, "admin.invalid_request")
+    end
+  end
+
   def messages(conn, %{"id" => conversation_id} = params) do
     session = conn.assigns.admin_session
     unmasked? = "content.read" in (Map.get(session, :permissions) || [])

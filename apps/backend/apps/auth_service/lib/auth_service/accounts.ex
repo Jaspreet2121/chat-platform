@@ -118,10 +118,13 @@ defmodule AuthService.Accounts do
     {where, params} = list_filters(opts)
 
     # uuid columns must be ::text — raw Repo.query! returns uuid as a 16-byte binary that Jason can't encode.
+    # LEFT JOIN user_profiles for display_name (same shared DB; admin-gated list). role comes from
+    # users_auth (mig 058). ua.* is qualified because both tables have a created_at column.
     sql =
-      "SELECT id::text, phone_number, email, status, is_admin, " <>
-        "to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at " <>
-        "FROM users_auth #{where} ORDER BY created_at DESC LIMIT #{page_size} OFFSET #{offset}"
+      "SELECT ua.id::text, ua.phone_number, ua.email, ua.status, ua.is_admin, ua.role, up.display_name, " <>
+        "to_char(ua.created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at " <>
+        "FROM users_auth ua LEFT JOIN user_profiles up ON up.user_id = ua.id " <>
+        "#{where} ORDER BY ua.created_at DESC LIMIT #{page_size} OFFSET #{offset}"
 
     %Postgrex.Result{rows: rows} = Repo.query!(sql, params)
 
@@ -129,13 +132,15 @@ defmodule AuthService.Accounts do
       page: page,
       page_size: page_size,
       users:
-        Enum.map(rows, fn [id, phone, email, status, is_admin, created_at] ->
+        Enum.map(rows, fn [id, phone, email, status, is_admin, role, display_name, created_at] ->
           %{
             user_id: id,
             phone_number: phone,
             email: email,
             status: status,
             is_admin: is_admin,
+            role: role,
+            display_name: display_name,
             created_at: created_at
           }
         end)

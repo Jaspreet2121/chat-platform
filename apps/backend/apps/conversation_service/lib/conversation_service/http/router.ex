@@ -26,6 +26,14 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Conversations.list_conversations(body(conn)))
   end
 
+  post "/internal/conversations/admin_list" do
+    send_result(conn, ConversationService.Conversations.admin_list_conversations(body(conn)))
+  end
+
+  post "/internal/conversations/admin_user" do
+    send_result(conn, ConversationService.Conversations.admin_user_conversations(body(conn)))
+  end
+
   post "/internal/conversations/get" do
     send_result(conn, ConversationService.Conversations.get_conversation(body(conn)))
   end

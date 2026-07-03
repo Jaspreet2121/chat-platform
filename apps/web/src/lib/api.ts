@@ -48,6 +48,10 @@ export type Session = {
   device_id: string;
   platform: string;
   is_admin?: boolean;
+  // IAM (Phase 1): the session's role + resolved permissions, surfaced by /auth/session so the admin
+  // console can gate features (e.g. role management requires "roles.manage").
+  role?: string;
+  permissions?: string[];
   issued_at: string;
   expires_at: string;
 };
@@ -305,6 +309,10 @@ export type AdminUser = {
   email?: string | null;
   status: string;
   is_admin: boolean;
+  // IAM role (users_auth.role) + profile display name (user_profiles) — surfaced by the admin-gated
+  // /admin/users list so the console can show who a user is and their current role.
+  role?: string | null;
+  display_name?: string | null;
   created_at?: string | null;
 };
 
@@ -446,6 +454,115 @@ export type SystemHealth = {
 
 export function getAdminHealth() {
   return request<SystemHealth>("/api/v1/admin/health");
+}
+
+// --- Admin IAM: role assignment (root-only; behind RequirePermission roles.manage) --------------
+export const IAM_ROLES = ["root", "admin", "moderator", "support", "user"] as const;
+export type IamRole = (typeof IAM_ROLES)[number];
+
+export type RoleAssignment = { user_id: string; role: string; previous_role?: string };
+
+// Assign a role to a user. Only a root session (roles.manage) is authorized — the backend 403s others
+// and blocks demoting the last root (error code "iam.last_root", surfaced via the thrown message).
+export function setUserRole(userId: string, role: IamRole | string) {
+  return request<RoleAssignment>(`/api/v1/admin/users/${encodeURIComponent(userId)}/role`, {
+    method: "POST",
+    body: JSON.stringify({ role })
+  });
+}
+
+// Permanently delete a user (root-only, users.delete). Anonymize-keep policy on the backend. The backend
+// rejects deleting a root/admin/self (iam.cannot_delete_privileged / iam.cannot_delete_self), surfaced via
+// the thrown message.
+export function deleteUser(userId: string) {
+  return request<{ user_id: string; deleted: boolean }>(
+    `/api/v1/admin/users/${encodeURIComponent(userId)}`,
+    { method: "DELETE" }
+  );
+}
+
+// --- Admin content access (behind RequireAdmin; content is masked unless the caller has content.read) ---
+export type AdminMessage = {
+  message_id: string;
+  sender_user_id?: string | null;
+  message_type?: string | null;
+  status?: string | null;
+  created_at?: string | null;
+  edited_at?: string | null;
+  deleted_at?: string | null;
+  // Present (full) for content.read (root); on masked responses body is absent and `content` is the
+  // redaction placeholder ("[content hidden]") with `content_length` only.
+  body?: string | null;
+  caption?: string | null;
+  content?: string | null;
+  content_length?: number;
+};
+
+export type AdminConversationMessages = {
+  conversation_id: string;
+  app_id?: string | null;
+  masked: boolean;
+  message_count: number;
+  messages: AdminMessage[];
+};
+
+// Read a conversation's messages for admin oversight. The backend returns FULL content for content.read
+// (root) and MASKED metadata otherwise — masking is server-side, so the UI just renders `masked`.
+export function getAdminConversationMessages(conversationId: string) {
+  return request<AdminConversationMessages>(
+    `/api/v1/admin/conversations/${encodeURIComponent(conversationId)}/messages`
+  );
+}
+
+// Browsable conversation list (metadata ONLY — no message content), so admins pick a conversation
+// instead of typing a UUID. Console-access gated; content stays masked on open unless content.read.
+export type AdminConversationSummary = {
+  conversation_id: string;
+  type: string;
+  title?: string | null;
+  app_id?: string | null;
+  status?: string | null;
+  last_activity?: string | null;
+  participant_count?: number;
+  message_count?: number;
+};
+
+export type AdminConversationsPage = {
+  page: number;
+  page_size: number;
+  conversations: AdminConversationSummary[];
+};
+
+export function getAdminConversations(opts: { q?: string; page?: number } = {}) {
+  const qs = new URLSearchParams();
+  if (opts.q) qs.set("q", opts.q);
+  if (opts.page) qs.set("page", String(opts.page));
+  const s = qs.toString();
+  return request<AdminConversationsPage>(`/api/v1/admin/conversations${s ? `?${s}` : ""}`);
+}
+
+// A given user's conversations (metadata only — who they've chatted with). `other_name` is the direct
+// peer's name/phone/id; groups carry their title. Console-access gated; no message content.
+export type AdminUserConversation = {
+  conversation_id: string;
+  type: string;
+  title?: string | null;
+  status?: string | null;
+  last_activity?: string | null;
+  message_count?: number;
+  participant_count?: number;
+  other_name?: string | null;
+};
+
+export type AdminUserConversations = {
+  user_id: string;
+  conversations: AdminUserConversation[];
+};
+
+export function getAdminUserConversations(userId: string) {
+  return request<AdminUserConversations>(
+    `/api/v1/admin/users/${encodeURIComponent(userId)}/conversations`
+  );
 }
 
 export function getPublicProfile(userId: string) {

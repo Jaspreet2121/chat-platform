@@ -162,11 +162,14 @@ defmodule ApiGatewayWeb.Router do
     post "/users/:id/reactivate", AdminModerationController, :reactivate_user
     post "/users/:id/ban", AdminModerationController, :ban_user
     post "/users/:id/role", AdminModerationController, :set_user_role
+    delete "/users/:id", AdminModerationController, :delete_user
 
     delete "/messages/:id", AdminModerationController, :delete_message
 
     # IAM Phase 2 — admin content-access (oversight). Entry = console access; the controller returns FULL
     # content only for content.read (root) and audits every unmasked read, else MASKED metadata.
+    get "/conversations", AdminContentController, :conversations
+    get "/users/:id/conversations", AdminContentController, :user_conversations
     get "/conversations/:id/messages", AdminContentController, :messages
 
     get "/reports", AdminModerationController, :list_reports

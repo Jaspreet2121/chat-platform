@@ -20,8 +20,9 @@ defmodule ApiGatewayWeb.AdminModerationController do
 
   plug RequirePermission, "audit.view" when action in [:list_audit]
 
-  # Role assignment is root-only (roles.manage is in root's bundle only).
+  # Role assignment + permanent delete are root-only (roles.manage / users.delete are in root's bundle only).
   plug RequirePermission, "roles.manage" when action in [:set_user_role]
+  plug RequirePermission, "users.delete" when action in [:delete_user]
 
   # --- Users ----------------------------------------------------------------------------------
   def list_users(conn, params) do
@@ -117,6 +118,17 @@ defmodule ApiGatewayWeb.AdminModerationController do
     )
   end
 
+  # Permanent delete (root-only via RequirePermission users.delete). Guards + transaction live in auth.
+  def delete_user(conn, %{"id" => user_id}) do
+    forward(
+      conn,
+      SharedInfra.AuthClient.delete_user(%{
+        "user_id" => user_id,
+        "actor_user_id" => actor(conn)
+      })
+    )
+  end
+
   # --- Audit ----------------------------------------------------------------------------------
   def list_audit(conn, params) do
     forward(conn, SharedInfra.AuthClient.list_audit(take_paging(params)))
@@ -141,6 +153,19 @@ defmodule ApiGatewayWeb.AdminModerationController do
 
   defp error(conn, :invalid_role),
     do: ErrorResponse.invalid_request(conn, "iam.invalid_role")
+
+  defp error(conn, :cannot_delete_privileged),
+    do: ErrorResponse.invalid_request(conn, "iam.cannot_delete_privileged")
+
+  defp error(conn, :cannot_delete_self),
+    do: ErrorResponse.invalid_request(conn, "iam.cannot_delete_self")
+
+  # Moderation hierarchy guard → 403 (you may only act on a strictly lower-ranked target, never yourself).
+  defp error(conn, :cannot_moderate_peer_or_superior),
+    do: ErrorResponse.forbidden(conn, "iam.cannot_moderate_peer_or_superior", "You can only moderate users below your role")
+
+  defp error(conn, :cannot_moderate_self),
+    do: ErrorResponse.forbidden(conn, "iam.cannot_moderate_self", "You cannot moderate yourself")
 
   defp error(conn, :report_not_found),
     do: ErrorResponse.invalid_request(conn, "admin.report_not_found")

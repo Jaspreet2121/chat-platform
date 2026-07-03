@@ -10,13 +10,25 @@ import {
   getAdminAudit,
   getAdminReports,
   getAdminUsers,
+  getCurrentSession,
   reactivateUser,
   suspendUser,
   updateReportStatus
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
 import { cn } from "@/lib/cn";
+import { roleLabel, roleRank, userTitle } from "@/lib/adminUser";
 import { UserDetailDrawer } from "./UserDetailDrawer";
+
+// A viewer may moderate a target only if strictly higher-ranked, and never themselves (backend enforces).
+function canModerate(
+  viewer: { role?: string | null; user_id?: string } | null,
+  target: AdminUser
+) {
+  if (!viewer) return false;
+  if (viewer.user_id && viewer.user_id === target.user_id) return false;
+  return roleRank(viewer.role) > roleRank(target.role);
+}
 
 type Tab = "users" | "reports" | "audit";
 
@@ -150,6 +162,14 @@ function UsersTab({ flash }: { flash: Flash }) {
   const [busyId, setBusyId] = useState("");
   const [confirm, setConfirm] = useState<{ user: AdminUser } | null>(null);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  // The viewer's role + id gate which rows are moderatable (UX only — backend enforces the hierarchy).
+  const [viewer, setViewer] = useState<{ role?: string | null; user_id?: string } | null>(null);
+
+  useEffect(() => {
+    getCurrentSession()
+      .then((s) => setViewer({ role: s.role, user_id: s.user_id }))
+      .catch(() => setViewer(null));
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -202,7 +222,7 @@ function UsersTab({ flash }: { flash: Flash }) {
       <div className="mb-3 flex flex-wrap gap-2">
         <input
           className="h-9 w-56 rounded-lg border border-border bg-elevated px-3 text-sm text-fg placeholder:text-faint outline-none focus:border-brand focus:ring-2 focus:ring-brand-ring"
-          placeholder="Search phone or email"
+          placeholder="Search by phone or email…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && load()}
@@ -236,52 +256,53 @@ function UsersTab({ flash }: { flash: Flash }) {
                 className="flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left transition-colors hover:opacity-80"
                 title="View profile"
               >
-                <Avatar id={u.user_id} name={u.phone_number ?? u.email ?? undefined} size="sm" />
+                <Avatar id={u.user_id} name={userTitle(u)} size="sm" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-fg">
-                    {u.phone_number || u.email || shortId(u.user_id)}
-                    {u.is_admin ? (
-                      <span className="ml-2 rounded-full bg-brand-subtle/60 px-1.5 py-0.5 text-[10px] font-medium text-brand-hover">
-                        admin
-                      </span>
-                    ) : null}
+                    {userTitle(u)}
+                    <span className="ml-2 rounded-full bg-brand-subtle/60 px-1.5 py-0.5 text-[10px] font-medium text-brand-hover">
+                      {roleLabel(u)}
+                    </span>
                   </p>
                   <p className="truncate text-xs text-faint">{shortId(u.user_id)}</p>
                 </div>
               </button>
               <StatusBadge status={u.status} />
-              <div className="flex gap-1">
-                {u.status === "active" ? (
+              {/* Only show moderation actions on a target STRICTLY below the viewer's role (never self). */}
+              {canModerate(viewer, u) ? (
+                <div className="flex gap-1">
+                  {u.status === "active" ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => act(u, "suspend")}
+                      isLoading={busyId === u.user_id}
+                      leftIcon={<UserX className="h-4 w-4" />}
+                    >
+                      Suspend
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => act(u, "reactivate")}
+                      isLoading={busyId === u.user_id}
+                      leftIcon={<RotateCcw className="h-4 w-4" />}
+                    >
+                      Reactivate
+                    </Button>
+                  )}
                   <Button
                     size="sm"
-                    variant="ghost"
-                    onClick={() => act(u, "suspend")}
-                    isLoading={busyId === u.user_id}
-                    leftIcon={<UserX className="h-4 w-4" />}
+                    variant="danger"
+                    onClick={() => setConfirm({ user: u })}
+                    disabled={busyId === u.user_id}
+                    leftIcon={<Ban className="h-4 w-4" />}
                   >
-                    Suspend
+                    Ban
                   </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => act(u, "reactivate")}
-                    isLoading={busyId === u.user_id}
-                    leftIcon={<RotateCcw className="h-4 w-4" />}
-                  >
-                    Reactivate
-                  </Button>
-                )}
-                <Button
-                  size="sm"
-                  variant="danger"
-                  onClick={() => setConfirm({ user: u })}
-                  disabled={busyId === u.user_id}
-                  leftIcon={<Ban className="h-4 w-4" />}
-                >
-                  Ban
-                </Button>
-              </div>
+                </div>
+              ) : null}
             </div>
           ))}
         </Card>

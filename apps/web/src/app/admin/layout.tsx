@@ -3,17 +3,30 @@
 import { ReactNode, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Activity, BarChart3, LayoutDashboard, Loader2, LogOut, ShieldAlert } from "lucide-react";
+import {
+  Activity,
+  BarChart3,
+  LayoutDashboard,
+  Loader2,
+  LogOut,
+  MessagesSquare,
+  ShieldAlert,
+  ShieldCheck
+} from "lucide-react";
 import { getCurrentSession } from "@/lib/api";
 import { clearSessionTokens, hasAccessToken } from "@/lib/session";
 import { cn } from "@/lib/cn";
 
 const LOGIN_ROUTE = "/admin/login";
 
-const nav = [
+// `perm`, when set, gates the entry on the session having that permission (IAM Phase 1). Role management
+// requires roles.manage (root only); Content is visible to any admin role (backend masks non-content.read).
+const nav: { href: string; label: string; icon: typeof Activity; exact: boolean; perm?: string }[] = [
   { href: "/admin", label: "Dashboard", icon: LayoutDashboard, exact: true },
   { href: "/admin/analytics", label: "Analytics", icon: BarChart3, exact: false },
   { href: "/admin/moderation", label: "Moderation", icon: ShieldAlert, exact: false },
+  { href: "/admin/roles", label: "Roles", icon: ShieldCheck, exact: false, perm: "roles.manage" },
+  { href: "/admin/content", label: "Content", icon: MessagesSquare, exact: false },
   { href: "/admin/health", label: "Health", icon: Activity, exact: false }
 ];
 
@@ -29,6 +42,8 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
   // admin to view it (infinite loop). The gate skips it entirely and renders it standalone.
   const isLoginRoute = pathname === LOGIN_ROUTE;
   const [status, setStatus] = useState<GateStatus>("loading");
+  // The session's IAM permissions, used to gate nav entries (e.g. Roles → roles.manage).
+  const [permissions, setPermissions] = useState<string[]>([]);
   const redirectedRef = useRef(false);
 
   // Resolve the session and set a terminal status. Re-runs when entering/leaving the login route
@@ -51,6 +66,7 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
       try {
         const session = await getCurrentSession();
         if (!active) return;
+        setPermissions(session.permissions ?? []);
         setStatus(session.is_admin === true ? "authorized" : "forbidden");
       } catch {
         if (active) setStatus("unauthenticated");
@@ -103,7 +119,9 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
         </div>
 
         <nav className="flex-1 space-y-1 p-3">
-          {nav.map((item) => {
+          {nav
+            .filter((item) => !item.perm || permissions.includes(item.perm))
+            .map((item) => {
             const active = item.exact ? pathname === item.href : pathname.startsWith(item.href);
             const Icon = item.icon;
             return (

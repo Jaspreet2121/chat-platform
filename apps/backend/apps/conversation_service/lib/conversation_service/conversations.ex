@@ -31,6 +31,123 @@ defmodule ConversationService.Conversations do
     end
   end
 
+  @doc """
+  Admin oversight: a paginated, cross-tenant list of conversations with METADATA ONLY (id, type, title,
+  app_id, status, last activity, participant + message COUNTS) — never any message content. Admin-gated
+  at the gateway; deliberately not tenant-scoped (the /v1 path is). Optional `q` searches title / id.
+  """
+  def admin_list_conversations(attrs) do
+    if conversation_persistence_enabled?() do
+      page = admin_page(attrs)
+      page_size = 25
+      offset = (page - 1) * page_size
+      {where, params} = admin_conv_filter(attrs)
+
+      # uuid columns ::text for Jason. Counts are subqueries (metadata only — no body/content selected).
+      sql =
+        "SELECT c.id::text, c.type, c.title, c.app_id::text, c.status, " <>
+          "to_char(c.updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS last_activity, " <>
+          "(SELECT count(*) FROM conversation_participants p WHERE p.conversation_id = c.id) AS participant_count, " <>
+          "(SELECT count(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count " <>
+          "FROM conversations c #{where} " <>
+          "ORDER BY c.updated_at DESC LIMIT #{page_size} OFFSET #{offset}"
+
+      %Postgrex.Result{rows: rows} = Repo.query!(sql, params)
+
+      {:ok,
+       %{
+         page: page,
+         page_size: page_size,
+         conversations:
+           Enum.map(rows, fn [id, type, title, app_id, status, last_activity, pcount, mcount] ->
+             %{
+               conversation_id: id,
+               type: type,
+               title: title,
+               app_id: app_id,
+               status: status,
+               last_activity: last_activity,
+               participant_count: pcount,
+               message_count: mcount
+             }
+           end)
+       }}
+    else
+      {:ok, %{page: 1, page_size: 25, conversations: []}}
+    end
+  end
+
+  defp admin_page(attrs) do
+    case Integer.parse(to_string(attrs["page"] || attrs[:page] || "1")) do
+      {n, _} when n > 0 -> n
+      _ -> 1
+    end
+  end
+
+  defp admin_conv_filter(attrs) do
+    case attrs["q"] || attrs[:q] do
+      q when is_binary(q) and q != "" ->
+        {"WHERE (c.title ILIKE $1 OR c.id::text ILIKE $1)", ["%#{q}%"]}
+
+      _ ->
+        {"", []}
+    end
+  end
+
+  @doc """
+  Admin oversight: a given user's conversations (who they've chatted with), METADATA ONLY — never message
+  content. Each row carries the OTHER participant's name (display_name → phone → id, for the direct-chat
+  peer that isn't this user), the group title, message/participant counts, and last activity. Admin-gated
+  at the gateway.
+  """
+  def admin_user_conversations(attrs) do
+    if conversation_persistence_enabled?() do
+      # uuid columns need the 16-byte binary param (Postgrex can't infer a string for `= $1`).
+      case Ecto.UUID.dump(to_string(get_attr(attrs, "user_id") || "")) do
+        {:ok, uuid_bin} ->
+          sql =
+            "SELECT c.id::text, c.type, c.title, c.status, " <>
+              "to_char(c.updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS last_activity, " <>
+              "(SELECT count(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count, " <>
+              "(SELECT count(*) FROM conversation_participants p WHERE p.conversation_id = c.id) AS participant_count, " <>
+              "(SELECT COALESCE(up.display_name, ua.phone_number, o.user_id::text) " <>
+              "   FROM conversation_participants o " <>
+              "   LEFT JOIN user_profiles up ON up.user_id = o.user_id " <>
+              "   LEFT JOIN users_auth ua ON ua.id = o.user_id " <>
+              "   WHERE o.conversation_id = c.id AND o.user_id <> $1 " <>
+              "   ORDER BY o.joined_at LIMIT 1) AS other_name " <>
+              "FROM conversations c " <>
+              "JOIN conversation_participants me ON me.conversation_id = c.id AND me.user_id = $1 " <>
+              "ORDER BY c.updated_at DESC LIMIT 100"
+
+          %Postgrex.Result{rows: rows} = Repo.query!(sql, [uuid_bin])
+
+          {:ok,
+           %{
+             user_id: Ecto.UUID.load!(uuid_bin),
+             conversations:
+               Enum.map(rows, fn [id, type, title, status, last_activity, mcount, pcount, other] ->
+                 %{
+                   conversation_id: id,
+                   type: type,
+                   title: title,
+                   status: status,
+                   last_activity: last_activity,
+                   message_count: mcount,
+                   participant_count: pcount,
+                   other_name: other
+                 }
+               end)
+           }}
+
+        _ ->
+          {:error, :invalid_request}
+      end
+    else
+      {:ok, %{conversations: []}}
+    end
+  end
+
   def get_conversation(attrs) do
     if conversation_persistence_enabled?() do
       get_conversation_from_db(attrs)
