@@ -27,6 +27,29 @@ export function formatLocal(iso: CountryCode, raw: string, maxDigits: number): s
   return new AsYouType(iso).input(digits);
 }
 
+// Region-less normalization for the CHAT search (no country dropdown): accepts a bare national number
+// (normalized with the default region, e.g. "98765 43210" → "+91…") OR a full international "+<cc>…"
+// number. Returns E.164 when valid, "" otherwise — the same shape the backend stores, so lookups match.
+export function toE164Loose(raw: string, defaultIso: CountryCode): string {
+  const cleaned = raw.replace(/[^\d+]/g, "");
+  if (cleaned.replace(/\D/g, "") === "") return "";
+  try {
+    const parsed = parsePhoneNumber(cleaned, defaultIso);
+    return parsed && parsed.isValid() ? parsed.number : "";
+  } catch {
+    return "";
+  }
+}
+
+// Format a chat-search input as-you-type: keeps an optional leading "+", formats via the default
+// region (or internationally when "+"-prefixed). Digits capped at 15 (E.164 max).
+export function formatSearchInput(raw: string, defaultIso: CountryCode): string {
+  const plus = raw.trimStart().startsWith("+") ? "+" : "";
+  const digits = raw.replace(/\D/g, "").slice(0, 15);
+  if (!digits) return plus;
+  return new AsYouType(defaultIso).input(plus + digits);
+}
+
 // Valid national number → E.164 ("+91…"); otherwise "" (callers gate their submit on a non-empty value).
 export function toE164(iso: CountryCode, formatted: string): string {
   const digits = formatted.replace(/\D/g, "");

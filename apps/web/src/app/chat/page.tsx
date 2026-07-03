@@ -19,7 +19,6 @@ import {
   getConversation,
   getCurrentSession,
   getMe,
-  getPublicProfile,
   listConversations,
   listMessages,
   reactToMessage,
@@ -101,9 +100,6 @@ export default function ChatPage() {
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
   const [newTitle, setNewTitle] = useState("");
-  const [lookupUserId, setLookupUserId] = useState("");
-  const [lookupProfile, setLookupProfile] = useState<UserProfile | null>(null);
-  const [lookupStatus, setLookupStatus] = useState("");
   const [selectedParticipants, setSelectedParticipants] = useState<UserProfile[]>([]);
   // New-conversation mode: "direct" = 1:1 (no title, one participant), "group" = titled multi-party.
   // Direct is the default since 1:1 chats are the common case. Drives the create branch + the modal UI.
@@ -113,9 +109,7 @@ export default function ChatPage() {
   const [status, setStatus] = useState("Loading session...");
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [isLookingUpProfile, setIsLookingUpProfile] = useState(false);
   const [isCreatingConversation, setIsCreatingConversation] = useState(false);
-  const [conversationMode, setConversationMode] = useState<"direct" | "group">("direct");
   const [isSending, setIsSending] = useState(false);
   const [mediaStatus, setMediaStatus] = useState("");
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
@@ -359,17 +353,8 @@ export default function ChatPage() {
     );
   }
 
-  // Switching Direct/Group resets the transient new-conversation state so each mode starts clean
-  // (a direct chat keeps one participant + no title; a group keeps a title + many).
-  function handleConversationModeChange(mode: "direct" | "group") {
-    setConversationMode(mode);
-    setSelectedParticipants([]);
-    setNewTitle("");
-    setLookupUserId("");
-    setLookupProfile(null);
-    setLookupStatus("");
-  }
-
+  // GROUP creation (1:1 direct chats start straight from the phone search — handleStartDirectChat).
+  // Participants arrive phone-resolved from the modal; the API takes their user IDs unchanged.
   async function handleCreateConversation(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const title = newTitle.trim();
@@ -379,15 +364,7 @@ export default function ChatPage() {
       setStatus("Add at least one participant.");
       return;
     }
-
-    // The branch is the explicit mode (not the participant count): a 1:1 DIRECT chat (type:"direct",
-    // exactly one participant, no title required — auto-named after the other person) vs. a titled GROUP.
-    const isDirect = conversationMode === "direct";
-    if (isDirect && participantUserIds.length !== 1) {
-      setStatus("A direct chat needs exactly one participant.");
-      return;
-    }
-    if (!isDirect && !title) {
+    if (!title) {
       setStatus("Add a title for a group conversation.");
       return;
     }
@@ -395,21 +372,11 @@ export default function ChatPage() {
     setIsCreatingConversation(true);
 
     try {
-      // Direct: no title required from the user — auto-fill the peer's name so it reads nicely in lists.
-      const directTitle = selectedParticipants[0]?.display_name?.trim() || "Direct chat";
-      const conversation = await createConversation(
-        isDirect
-          ? { title: directTitle, participantUserIds: [participantUserIds[0]], type: "direct" }
-          : { title, participantUserIds, type: "group" }
-      );
+      const conversation = await createConversation({ title, participantUserIds, type: "group" });
       setNewTitle("");
-      setLookupUserId("");
-      setLookupProfile(null);
-      setLookupStatus("");
       setSelectedParticipants([]);
-      setConversationMode("direct");
       await refreshConversationList(conversation.conversation_id);
-      setStatus(isDirect ? "Direct chat created." : "Conversation created.");
+      setStatus("Conversation created.");
     } catch (error) {
       setStatus(
         error instanceof Error ? error.message : "Conversation creation failed."
@@ -435,60 +402,19 @@ export default function ChatPage() {
     }
   }
 
-  async function handleLookupProfile() {
-    const userId = lookupUserId.trim();
-
-    if (!userId) {
-      setLookupStatus("Enter a user ID to look up.");
-      setLookupProfile(null);
-      return;
-    }
-
-    setIsLookingUpProfile(true);
-    setLookupStatus("Looking up profile...");
-    setLookupProfile(null);
-
-    try {
-      const profile = await getPublicProfile(userId);
-      setLookupProfile(profile);
-      setLookupStatus(
-        profile.display_name
-          ? "Profile found."
-          : "Profile exists but has no display name yet."
-      );
-    } catch (error) {
-      setLookupStatus(error instanceof Error ? error.message : "Profile lookup failed.");
-    } finally {
-      setIsLookingUpProfile(false);
-    }
-  }
-
-  function handleAddParticipant() {
-    if (!lookupProfile) {
-      return;
-    }
-
-    setSelectedParticipants((current) => {
-      if (current.some((profile) => profile.user_id === lookupProfile.user_id)) {
-        return current;
-      }
-
-      return [...current, lookupProfile];
-    });
-    setLookupStatus("Participant added.");
-    setLookupUserId("");
-    setLookupProfile(null);
+  // Append a phone-resolved group participant (deduped by user id).
+  function handleAddParticipant(profile: UserProfile) {
+    setSelectedParticipants((current) =>
+      current.some((existing) => existing.user_id === profile.user_id)
+        ? current
+        : [...current, profile]
+    );
   }
 
   function handleRemoveParticipant(userId: string) {
     setSelectedParticipants((current) =>
       current.filter((profile) => profile.user_id !== userId)
     );
-  }
-
-  // Direct mode: a peer resolved by phone number becomes THE single participant (a 1:1 has exactly one).
-  function handleSelectDirectParticipant(profile: UserProfile) {
-    setSelectedParticipants([profile]);
   }
 
   async function handleSend(event: FormEvent<HTMLFormElement>) {
@@ -936,10 +862,7 @@ export default function ChatPage() {
         currentProfile={currentProfile}
         hasUnread={hasUnread}
         mobileHidden={Boolean(selectedConversationId)}
-        onNewGroup={() => {
-          handleConversationModeChange("group");
-          setNewConvNonce((n) => n + 1);
-        }}
+        onNewGroup={() => setNewConvNonce((n) => n + 1)}
         onInvite={() => setSearchFocusNonce((n) => n + 1)}
         onOpenStarred={() => setIsStarredOpen(true)}
         onOpenProfile={() => setIsProfileOpen(true)}
@@ -965,20 +888,11 @@ export default function ChatPage() {
           onOpenProfile={() => setIsProfileOpen(true)}
           newTitle={newTitle}
           onNewTitleChange={setNewTitle}
-          conversationMode={conversationMode}
-          onConversationModeChange={handleConversationModeChange}
           onCreateConversation={handleCreateConversation}
           isCreatingConversation={isCreatingConversation}
-          lookupUserId={lookupUserId}
-          onLookupUserIdChange={setLookupUserId}
-          onLookup={handleLookupProfile}
-          isLookingUpProfile={isLookingUpProfile}
-          lookupStatus={lookupStatus}
-          lookupProfile={lookupProfile}
           onAddParticipant={handleAddParticipant}
           selectedParticipants={selectedParticipants}
           onRemoveParticipant={handleRemoveParticipant}
-          onSelectFoundUser={handleSelectDirectParticipant}
           onStartDirectChat={handleStartDirectChat}
           conversations={conversations}
           selectedConversationId={selectedConversationId}

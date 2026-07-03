@@ -35,23 +35,13 @@ export type ConversationSidebarProps = {
 
   newTitle: string;
   onNewTitleChange: (value: string) => void;
-  conversationMode: "direct" | "group";
-  onConversationModeChange: (mode: "direct" | "group") => void;
   onCreateConversation: (event: FormEvent<HTMLFormElement>) => void;
   isCreatingConversation: boolean;
 
-  lookupUserId: string;
-  onLookupUserIdChange: (value: string) => void;
-  onLookup: () => void;
-  isLookingUpProfile: boolean;
-  lookupStatus: string;
-  lookupProfile: UserProfile | null;
-  onAddParticipant: () => void;
-
+  /** Append a phone-resolved group participant (deduped by the parent). */
+  onAddParticipant: (profile: UserProfile) => void;
   selectedParticipants: UserProfile[];
   onRemoveParticipant: (userId: string) => void;
-  /** Direct mode: set the single peer resolved from a phone-number lookup. */
-  onSelectFoundUser: (profile: UserProfile) => void;
   /** Primary header search: start a 1:1 direct chat with a peer found by phone number. */
   onStartDirectChat: (profile: UserProfile) => void | Promise<void>;
 
@@ -62,7 +52,7 @@ export type ConversationSidebarProps = {
   onJumpToMessage: (conversationId: string, messageId: string) => void;
   isLoading: boolean;
 
-  /** Bumped by the rail's "New group" — opens the new-conversation modal (mode set by the parent). */
+  /** Bumped by the rail's "New group" — opens the new-group modal. */
   openNewConvNonce?: number;
   /** Bumped by the rail's "Invite" — focuses the phone-number search (its empty state invites). */
   searchFocusNonce?: number;
@@ -73,20 +63,11 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     session,
     newTitle,
     onNewTitleChange,
-    conversationMode,
-    onConversationModeChange,
     onCreateConversation,
     isCreatingConversation,
-    lookupUserId,
-    onLookupUserIdChange,
-    onLookup,
-    isLookingUpProfile,
-    lookupStatus,
-    lookupProfile,
     onAddParticipant,
     selectedParticipants,
     onRemoveParticipant,
-    onSelectFoundUser,
     onStartDirectChat,
     conversations,
     selectedConversationId,
@@ -97,8 +78,10 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     searchFocusNonce
   } = props;
 
-  // Local UI state: new-conversation modal + message-search sheet (header actions).
+  // Local UI state: new-group modal + message-search sheet (header actions), and a local bump for
+  // focusing the phone search (the edit button/FAB start a DM there — no type-picker step).
   const [isNewConvOpen, setIsNewConvOpen] = useState(false);
+  const [localFocusNonce, setLocalFocusNonce] = useState(0);
   const [isMsgSearchOpen, setIsMsgSearchOpen] = useState(false);
   // Client-side filter by conversation state/type (a UI view of the existing list — no fetch).
   const [filter, setFilter] = useState<ConversationFilter>("all");
@@ -124,12 +107,9 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
-            onClick={() => {
-              onConversationModeChange("direct");
-              setIsNewConvOpen(true);
-            }}
+            onClick={() => setLocalFocusNonce((n) => n + 1)}
             aria-label="New chat"
-            title="New chat"
+            title="New chat — search a number"
             className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-subtle text-brand-hover md:h-9 md:w-9 transition-colors hover:bg-brand-subtle/70 outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
           >
             <SquarePen className="h-[18px] w-[18px]" aria-hidden />
@@ -149,7 +129,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
       {/* PRIMARY search (find by phone → chat/invite). Desktop: on top of the list. Mobile: moved to
           the BOTTOM of the pane (thumb reach) via order — the flex column reorders, nothing remounts. */}
       <div className="max-md:order-last max-md:border-t max-md:border-border">
-        <ContactSearch onStartDirectChat={onStartDirectChat} focusNonce={searchFocusNonce} />
+        <ContactSearch onStartDirectChat={onStartDirectChat} focusNonce={(searchFocusNonce ?? 0) + localFocusNonce} />
       </div>
 
       {/* Filter chips — active chip carries the accent gradient. */}
@@ -211,10 +191,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         {/* Mobile floating compose — sits above the bottom search bar, thumb-side. */}
         <button
           type="button"
-          onClick={() => {
-            onConversationModeChange("direct");
-            setIsNewConvOpen(true);
-          }}
+          onClick={() => setLocalFocusNonce((n) => n + 1)}
           aria-label="New chat"
           className="accent-gradient fixed bottom-[148px] right-4 z-30 flex h-[52px] w-[52px] items-center justify-center rounded-full text-white shadow-accent-glow transition-transform active:scale-95 md:hidden"
         >
@@ -222,26 +199,17 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         </button>
       </div>
 
-      {/* New-conversation popup — same fields + handlers. */}
+      {/* New-group popup (participants added by phone number). */}
       <NewConversationModal
         isOpen={isNewConvOpen}
         onClose={() => setIsNewConvOpen(false)}
         newTitle={newTitle}
         onNewTitleChange={onNewTitleChange}
-        mode={conversationMode}
-        onModeChange={onConversationModeChange}
         onCreateConversation={onCreateConversation}
         isCreatingConversation={isCreatingConversation}
-        lookupUserId={lookupUserId}
-        onLookupUserIdChange={onLookupUserIdChange}
-        onLookup={onLookup}
-        isLookingUpProfile={isLookingUpProfile}
-        lookupStatus={lookupStatus}
-        lookupProfile={lookupProfile}
         onAddParticipant={onAddParticipant}
         selectedParticipants={selectedParticipants}
         onRemoveParticipant={onRemoveParticipant}
-        onSelectFoundUser={onSelectFoundUser}
       />
 
       {/* "Search messages" sheet. */}

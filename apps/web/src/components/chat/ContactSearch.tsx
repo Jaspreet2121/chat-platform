@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, Loader2, MessageCircle, MessageSquarePlus, Search, X } from "lucide-react";
 import { type CountryCode } from "libphonenumber-js";
-import { Country, DEFAULT_COUNTRY } from "@/lib/countries";
-import { formatLocal, phoneMeta, toE164 } from "@/lib/phone";
+import { DEFAULT_COUNTRY } from "@/lib/countries";
+import { formatSearchInput, toE164Loose } from "@/lib/phone";
 import { createInvite, findUserByPhone, type UserProfile } from "@/lib/api";
-import { Avatar, Button, CountryCodeSelect } from "@/components";
+import { Avatar, Button } from "@/components";
 import { cn } from "@/lib/cn";
 
 const DEBOUNCE_MS = 350;
@@ -129,12 +129,14 @@ function InviteActions({ e164 }: { e164: string }) {
 }
 
 // PRIMARY sidebar search: find someone by PHONE NUMBER (WhatsApp-style) and start a direct chat.
-// Reuses the shared libphonenumber-js helpers (India +91 default, country dropdown, as-you-type +
-// per-country validation) so it emits the exact E.164 the backend stores → lookup_active_by_phone
+// NO country dropdown here (that belongs to login/account creation): the number is normalized
+// silently — a bare national number gets the default region (+91), and a full "+<cc>…" international
+// number parses as typed — producing the SAME E.164 the backend stores → lookup_active_by_phone
 // matches. Debounced; clean idle/loading/no-result/self/error states.
+const SEARCH_ISO = DEFAULT_COUNTRY.iso2 as CountryCode;
+
 export function ContactSearch({ onStartDirectChat, focusNonce }: ContactSearchProps) {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [country, setCountry] = useState<Country>(DEFAULT_COUNTRY);
   const [localNumber, setLocalNumber] = useState("");
   const [state, setState] = useState<Lookup>({ kind: "idle" });
   const [isStarting, setIsStarting] = useState(false);
@@ -144,8 +146,7 @@ export function ContactSearch({ onStartDirectChat, focusNonce }: ContactSearchPr
     if (focusNonce) inputRef.current?.focus();
   }, [focusNonce]);
 
-  const meta = useMemo(() => phoneMeta(country.iso2 as CountryCode), [country]);
-  const e164 = toE164(country.iso2 as CountryCode, localNumber);
+  const e164 = useMemo(() => toE164Loose(localNumber, SEARCH_ISO), [localNumber]);
   const hasDigits = localNumber.replace(/\D/g, "").length > 0;
   const showIncompleteHint = hasDigits && e164 === "" && state.kind === "idle";
 
@@ -185,14 +186,8 @@ export function ContactSearch({ onStartDirectChat, focusNonce }: ContactSearchPr
     };
   }, [e164]);
 
-  function handleCountry(next: Country) {
-    setCountry(next);
-    const iso = next.iso2 as CountryCode;
-    setLocalNumber((current) => formatLocal(iso, current, phoneMeta(iso).maxDigits));
-  }
-
   function handleLocal(raw: string) {
-    setLocalNumber(formatLocal(country.iso2 as CountryCode, raw, meta.maxDigits));
+    setLocalNumber(formatSearchInput(raw, SEARCH_ISO));
   }
 
   function clear() {
@@ -212,7 +207,6 @@ export function ContactSearch({ onStartDirectChat, focusNonce }: ContactSearchPr
   return (
     <div className="border-b border-border/60 px-3 py-2.5">
       <div className="flex gap-1.5">
-        <CountryCodeSelect value={country} onChange={handleCountry} />
         <div className="relative min-w-0 flex-1">
           <Search
             className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint"
@@ -285,7 +279,7 @@ export function ContactSearch({ onStartDirectChat, focusNonce }: ContactSearchPr
         <p className="mt-2 px-1 text-xs text-danger animate-fade-in">{state.message}</p>
       ) : showIncompleteHint ? (
         <p className="mt-2 px-1 text-xs text-faint">
-          Enter a valid {country.name} number ({meta.maxDigits} digits).
+          Keep typing — a full {DEFAULT_COUNTRY.name} mobile number, or +country code for others.
         </p>
       ) : null}
     </div>
