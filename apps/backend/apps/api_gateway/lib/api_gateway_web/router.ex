@@ -165,6 +165,10 @@ defmodule ApiGatewayWeb.Router do
 
     delete "/messages/:id", AdminModerationController, :delete_message
 
+    # IAM Phase 2 — admin content-access (oversight). Entry = console access; the controller returns FULL
+    # content only for content.read (root) and audits every unmasked read, else MASKED metadata.
+    get "/conversations/:id/messages", AdminContentController, :messages
+
     get "/reports", AdminModerationController, :list_reports
     post "/reports/:id/status", AdminModerationController, :update_report
 
