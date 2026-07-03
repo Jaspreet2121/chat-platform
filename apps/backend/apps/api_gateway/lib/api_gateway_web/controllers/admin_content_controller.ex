@@ -79,6 +79,8 @@ defmodule ApiGatewayWeb.AdminContentController do
   end
 
   # content.read → full content + MANDATORY audit of the access (records that it happened, never the text).
+  # Media messages are enriched with a presigned download_url so the viewer can display/play them — the
+  # media view is part of the same audited content.read (no separate unaudited path).
   defp respond(conn, session, conversation_id, app_id, messages, true) do
     audit(session, conversation_id, app_id, length(messages), "content.read", false)
 
@@ -87,7 +89,7 @@ defmodule ApiGatewayWeb.AdminContentController do
       app_id: app_id,
       masked: false,
       message_count: length(messages),
-      messages: messages
+      messages: Enum.map(messages, &enrich_media/1)
     })
   end
 
@@ -106,7 +108,10 @@ defmodule ApiGatewayWeb.AdminContentController do
   end
 
   # WHITELIST: only safe metadata is copied out; body/caption/media_id/metadata are never included.
-  defp mask(m) do
+  # For media messages the redaction label is type-aware ("[image hidden]" etc.) — the label is derived
+  # server-side from the content_type and is the ONLY thing emitted; no URL, media_id or object_key.
+  @doc false
+  def mask(m) do
     %{
       message_id: mget(m, :message_id),
       sender_user_id: mget(m, :sender_user_id),
@@ -116,8 +121,52 @@ defmodule ApiGatewayWeb.AdminContentController do
       edited_at: mget(m, :edited_at),
       deleted_at: mget(m, :deleted_at),
       content_length: byte_size(to_string(mget(m, :body) || "")),
-      content: "[content hidden]"
+      content: masked_label(m)
     }
+  end
+
+  defp masked_label(m) do
+    if mget(m, :message_type) == "media" do
+      metadata = mget(m, :metadata) || %{}
+      content_type = to_string(Map.get(metadata, "content_type") || Map.get(metadata, :content_type))
+
+      cond do
+        String.starts_with?(content_type, "image/") -> "[image hidden]"
+        String.starts_with?(content_type, "audio/") -> "[voice message hidden]"
+        String.starts_with?(content_type, "video/") -> "[video hidden]"
+        true -> "[media hidden]"
+      end
+    else
+      "[content hidden]"
+    end
+  end
+
+  # content.read only: attach a presigned GET download_url to media messages (same signing path the
+  # normal chat uses) so the admin viewer can render them. Best-effort — a presign failure leaves the
+  # message intact without a URL. Non-media messages pass through untouched.
+  @doc false
+  def enrich_media(m) do
+    metadata = mget(m, :metadata) || %{}
+    object_key = Map.get(metadata, "object_key") || Map.get(metadata, :object_key)
+    media_id = mget(m, :media_id)
+
+    if mget(m, :message_type) == "media" and is_binary(object_key) and media_id do
+      case SharedInfra.MediaClient.get_download_url(%{
+             "media_id" => media_id,
+             "owner_user_id" => mget(m, :sender_user_id) || "admin_content_read",
+             "object_key" => object_key
+           }) do
+        {:ok, download} ->
+          Map.put(m, :download_url, Map.get(download, :download_url) || Map.get(download, "download_url"))
+
+        {:error, _reason} ->
+          m
+      end
+    else
+      m
+    end
+  rescue
+    _ -> m
   end
 
   defp audit(session, conversation_id, app_id, count, action, masked?) do

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, ChevronRight, Loader2, Lock, Search, Unlock } from "lucide-react";
 import {
   AdminConversationMessages,
+  AdminMessage,
   AdminUser,
   AdminUserConversation,
   getAdminConversationMessages,
@@ -60,6 +61,57 @@ function fmt(ts?: string | null) {
 
 function Centered({ children }: { children: React.ReactNode }) {
   return <div className="flex items-center justify-center gap-2 py-16 text-muted">{children}</div>;
+}
+
+// Unmasked (content.read) media rendering. The presigned download_url comes from the backend, attached
+// as part of the audited content.read — same signing path as normal chat. Signed URLs expire (~15 min);
+// a reload re-fetches (and re-audits) fresh ones.
+function MediaContent({ m }: { m: AdminMessage }) {
+  const contentType = typeof m.metadata?.content_type === "string" ? m.metadata.content_type : "";
+  const filename = typeof m.metadata?.filename === "string" ? m.metadata.filename : "attachment";
+  const caption = m.caption || m.body;
+  const url = m.download_url;
+
+  if (!url) {
+    return (
+      <p className="text-sm text-faint">
+        [{contentType.startsWith("audio/") ? "voice message" : "media"} — URL unavailable]
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      {contentType.startsWith("image/") ? (
+        <a href={url} target="_blank" rel="noopener noreferrer">
+          {/* eslint-disable-next-line @next/next/no-img-element -- presigned, short-lived remote URL */}
+          <img
+            src={url}
+            alt={filename}
+            className="max-h-64 max-w-xs rounded-lg border border-border object-contain"
+          />
+        </a>
+      ) : contentType.startsWith("audio/") ? (
+        <audio controls preload="metadata" src={url} className="h-10 w-full max-w-xs">
+          Your browser cannot play this audio.
+        </audio>
+      ) : contentType.startsWith("video/") ? (
+        <video controls preload="metadata" src={url} className="max-h-64 max-w-xs rounded-lg" />
+      ) : (
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-sm text-brand underline underline-offset-2"
+        >
+          {filename}
+        </a>
+      )}
+      {caption ? (
+        <p className="whitespace-pre-wrap break-words text-sm text-fg">{caption}</p>
+      ) : null}
+    </div>
+  );
 }
 
 export default function AdminContentPage() {
@@ -352,14 +404,18 @@ function MessagesView({
                 {data.masked ? (
                   <p className="text-sm italic text-faint">
                     {m.content ?? "[content hidden]"}
-                    {m.content_length ? ` · ${m.content_length} chars` : ""}
+                    {m.message_type !== "media" && m.content_length
+                      ? ` · ${m.content_length} chars`
+                      : ""}
                   </p>
+                ) : m.message_type === "media" ? (
+                  <MediaContent m={m} />
                 ) : m.body || m.content ? (
                   <p className="whitespace-pre-wrap break-words text-sm text-fg">
                     {m.body || m.content}
                   </p>
                 ) : (
-                  <p className="text-sm text-faint">— (no text — media/system message)</p>
+                  <p className="text-sm text-faint">— (no text — system message)</p>
                 )}
               </div>
             ))}

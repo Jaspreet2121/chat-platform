@@ -491,11 +491,18 @@ export type AdminMessage = {
   edited_at?: string | null;
   deleted_at?: string | null;
   // Present (full) for content.read (root); on masked responses body is absent and `content` is the
-  // redaction placeholder ("[content hidden]") with `content_length` only.
+  // redaction placeholder ("[content hidden]" / "[image hidden]" / "[voice message hidden]" …) with
+  // `content_length` only.
   body?: string | null;
   caption?: string | null;
   content?: string | null;
   content_length?: number;
+  // Media fields — ONLY on unmasked (content.read) responses. download_url is a presigned GET the
+  // backend attaches server-side (the media view is part of the audited content.read). Masked
+  // responses never carry these (server-side whitelist).
+  media_id?: string | null;
+  metadata?: Record<string, unknown> | null;
+  download_url?: string | null;
 };
 
 export type AdminConversationMessages = {
