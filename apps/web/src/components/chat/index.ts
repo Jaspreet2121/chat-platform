@@ -24,3 +24,5 @@ export { EmptyState } from "./EmptyState";
 export type { EmptyStateProps } from "./EmptyState";
 export { StatusBanner } from "./StatusBanner";
 export type { StatusBannerProps } from "./StatusBanner";
+export { NavRail } from "./NavRail";
+export type { NavRailProps } from "./NavRail";

@@ -1,6 +1,11 @@
+"use client";
+
+import { motion } from "framer-motion";
+import { CheckCheck } from "lucide-react";
 import type { ConversationListItem as ConversationListItemData } from "@/lib/api";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
+import { SPRING } from "@/lib/motion";
 import { useDirectPeerName } from "./useDirectPeer";
 
 export type ConversationListItemProps = {
@@ -44,33 +49,67 @@ export function ConversationListItem({
   const subtitle =
     conversation.last_message_preview || (isDirect ? "Direct message" : "Group chat");
   const time = listTime(conversation.updated_at);
+  const unread = conversation.unread_count ?? 0;
 
   return (
-    // Flat, full-bleed row (WhatsApp-calm): no card box, no accent bar — selection and hover are
-    // quiet full-row tints only.
+    // Premium row: jewel avatar, unread-weighted name, and on the ACTIVE row a soft periwinkle
+    // gradient tint + a rounded 3px accent bar hugging the left edge.
     <button
       type="button"
       onClick={() => onSelect(conversation.conversation_id)}
       className={cn(
-        "flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors duration-150",
-        "outline-none focus-visible:bg-elevated/60",
-        isSelected ? "bg-elevated" : "hover:bg-elevated/60"
+        "relative flex w-full items-center gap-3 px-4 py-3 text-left transition-colors duration-150 ease-standard",
+        "outline-none focus-visible:bg-brand-subtle/50",
+        isSelected
+          ? "bg-gradient-to-r from-brand-subtle/90 to-brand-subtle/40 shadow-subtle"
+          : "hover:bg-elevated"
       )}
     >
+      {isSelected ? (
+        <span
+          className="accent-gradient absolute left-0 top-1/2 h-9 w-[3px] -translate-y-1/2 rounded-r-full"
+          aria-hidden
+        />
+      ) : null}
+
       <Avatar id={conversation.conversation_id} name={title} />
+
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
-          <p className="truncate text-sm text-fg">{title}</p>
+          <p
+            className={cn(
+              "truncate text-sm text-fg",
+              unread > 0 ? "font-semibold" : "font-medium"
+            )}
+          >
+            {title}
+          </p>
           {time ? (
-            <span className="shrink-0 text-[11px] tabular-nums text-faint">{time}</span>
+            <span
+              className={cn(
+                "shrink-0 text-[11px] tabular-nums",
+                unread > 0 ? "font-medium text-brand-hover" : "text-faint"
+              )}
+            >
+              {time}
+            </span>
           ) : null}
         </div>
         <div className="mt-0.5 flex items-center justify-between gap-2">
           <p className="truncate text-xs text-muted">{subtitle}</p>
-          {conversation.unread_count ? (
-            <span className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-brand px-1 text-[10px] font-medium leading-none text-white">
-              {conversation.unread_count}
-            </span>
+          {unread > 0 ? (
+            // Micro-animation: re-keying on the count springs the badge on each change (new message).
+            <motion.span
+              key={unread}
+              initial={{ scale: 0.5, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={SPRING}
+              className="accent-gradient inline-flex h-[18px] min-w-[18px] shrink-0 items-center justify-center rounded-full px-1.5 text-[10px] font-semibold leading-none text-white shadow-accent-glow"
+            >
+              {unread}
+            </motion.span>
+          ) : conversation.last_message_preview ? (
+            <CheckCheck className="h-3.5 w-3.5 shrink-0 text-brand-hover/70" aria-hidden />
           ) : null}
         </div>
       </div>

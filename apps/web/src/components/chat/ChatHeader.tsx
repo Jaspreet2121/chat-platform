@@ -1,4 +1,4 @@
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, MoreVertical, Phone, Video } from "lucide-react";
 import { Avatar, IconButton } from "@/components";
 
 export type ChatHeaderProps = {
@@ -30,7 +30,7 @@ export function ChatHeader({
   online
 }: ChatHeaderProps) {
   return (
-    <header className="flex items-center gap-2 border-b border-border/70 bg-surface/55 px-3 py-3 backdrop-blur-xl sm:px-6">
+    <header className="flex items-center gap-1.5 border-b border-border bg-surface px-2 py-2.5 sm:px-4">
       {onBack && (
         <div className="md:hidden">
           <IconButton label="Back to conversations" variant="ghost" onClick={onBack} type="button">
@@ -42,7 +42,7 @@ export function ChatHeader({
         type="button"
         onClick={onOpenDetails}
         disabled={!onOpenDetails || !conversationId}
-        className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-1 py-0.5 text-left transition-colors enabled:hover:bg-elevated disabled:cursor-default"
+        className="flex min-w-0 flex-1 items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors enabled:hover:bg-elevated disabled:cursor-default"
         title={onOpenDetails && conversationId ? "View conversation details" : undefined}
       >
         {conversationId && (
@@ -54,16 +54,46 @@ export function ChatHeader({
           />
         )}
         <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold text-fg">{title}</h2>
+          <h2 className="truncate text-[15px] font-semibold text-fg">{title}</h2>
           {typingUser ? (
-            <p className="truncate text-xs text-brand-hover">typing…</p>
+            <p className="truncate text-xs font-medium text-brand-hover">typing…</p>
           ) : online ? (
-            <p className="truncate text-xs text-success">online</p>
+            <p className="truncate text-xs font-medium text-brand-hover">Active now</p>
           ) : subtitle ? (
             <p className="truncate text-xs text-muted">{subtitle}</p>
           ) : null}
         </div>
       </button>
+
+      {/* Right-side actions: calls are visual-parity placeholders (coming soon); the menu opens the
+          real details panel. Hidden entirely with no conversation. */}
+      {conversationId ? (
+        <div className="flex shrink-0 items-center gap-0.5">
+          <span
+            className="hidden h-10 w-10 cursor-not-allowed items-center justify-center rounded-xl text-faint sm:flex"
+            title="Voice call — coming soon"
+            aria-hidden
+          >
+            <Phone className="h-[18px] w-[18px]" />
+          </span>
+          <span
+            className="hidden h-10 w-10 cursor-not-allowed items-center justify-center rounded-xl text-faint sm:flex"
+            title="Video call — coming soon"
+            aria-hidden
+          >
+            <Video className="h-[18px] w-[18px]" />
+          </span>
+          <IconButton
+            label="Conversation details"
+            variant="ghost"
+            onClick={onOpenDetails}
+            type="button"
+            disabled={!onOpenDetails}
+          >
+            <MoreVertical className="h-5 w-5" aria-hidden />
+          </IconButton>
+        </div>
+      ) : null}
     </header>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, Loader2, MessageCircle, MessageSquarePlus, Search, X } from "lucide-react";
 import { type CountryCode } from "libphonenumber-js";
 import { Country, DEFAULT_COUNTRY } from "@/lib/countries";
@@ -14,6 +14,8 @@ const DEBOUNCE_MS = 350;
 export type ContactSearchProps = {
   /** Start (create) a 1:1 direct chat with the resolved peer. Awaited so we can show a spinner + reset. */
   onStartDirectChat: (profile: UserProfile) => void | Promise<void>;
+  /** Bump to focus the number input (the rail/tab-bar "Invite" entry lands here). */
+  focusNonce?: number;
 };
 
 type Lookup =
@@ -130,11 +132,17 @@ function InviteActions({ e164 }: { e164: string }) {
 // Reuses the shared libphonenumber-js helpers (India +91 default, country dropdown, as-you-type +
 // per-country validation) so it emits the exact E.164 the backend stores → lookup_active_by_phone
 // matches. Debounced; clean idle/loading/no-result/self/error states.
-export function ContactSearch({ onStartDirectChat }: ContactSearchProps) {
+export function ContactSearch({ onStartDirectChat, focusNonce }: ContactSearchProps) {
+  const inputRef = useRef<HTMLInputElement>(null);
   const [country, setCountry] = useState<Country>(DEFAULT_COUNTRY);
   const [localNumber, setLocalNumber] = useState("");
   const [state, setState] = useState<Lookup>({ kind: "idle" });
   const [isStarting, setIsStarting] = useState(false);
+
+  // Invite entry: focus the input so the user types the number to invite.
+  useEffect(() => {
+    if (focusNonce) inputRef.current?.focus();
+  }, [focusNonce]);
 
   const meta = useMemo(() => phoneMeta(country.iso2 as CountryCode), [country]);
   const e164 = toE164(country.iso2 as CountryCode, localNumber);
@@ -211,6 +219,7 @@ export function ContactSearch({ onStartDirectChat }: ContactSearchProps) {
             aria-hidden
           />
           <input
+            ref={inputRef}
             inputMode="tel"
             autoComplete="off"
             placeholder="Search by phone number"

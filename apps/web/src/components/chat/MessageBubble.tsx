@@ -190,12 +190,13 @@ export function MessageBubble({
               ? // Seamless photo/video: no bubble surface — only the media's own rounded box shows.
                 "max-w-full text-fg"
               : cn(
-                  // Single clean surface (no nested ring/glow). Theme-aware tokens: own = green, others =
-                  // blue on light; tinted glass on dark. Hover darkens bg + border smoothly.
-                  "rounded-2xl border px-3.5 py-2.5 shadow-pop transition-colors dark:backdrop-blur-md",
+                  // Locked periwinkle bubbles: OUTGOING = accent gradient with white text and a soft
+                  // glow; INCOMING = periwinkle-tinted surface with dark text. 18px radius, 5px tail
+                  // corner on the sender's side.
+                  "rounded-[18px] px-3.5 py-2.5 transition-shadow",
                   isOwn
-                    ? "rounded-br-md bg-[var(--bubble-own-bg)] text-[var(--bubble-own-fg)] border-[var(--bubble-own-border)] hover:bg-[var(--bubble-own-bg-hover)] hover:border-[var(--bubble-own-border-hover)]"
-                    : "rounded-bl-md bg-[var(--bubble-other-bg)] text-[var(--bubble-other-fg)] border-[var(--bubble-other-border)] hover:bg-[var(--bubble-other-bg-hover)] hover:border-[var(--bubble-other-border-hover)]"
+                    ? "bubble-own-gradient rounded-br-[5px] text-white shadow-accent-glow"
+                    : "rounded-bl-[5px] bg-[var(--bubble-other-bg)] text-[var(--bubble-other-fg)] shadow-subtle hover:bg-[var(--bubble-other-bg-hover)]"
                 )
           )}
         >
@@ -466,7 +467,7 @@ function ReadTicks({ message }: { message: Message }) {
   if (read) {
     return (
       <span title="Read" aria-label="Read">
-        <CheckCheck className="h-3.5 w-3.5 text-sky-400" aria-hidden />
+        <CheckCheck className="h-3.5 w-3.5 text-brand-hover" aria-hidden />
       </span>
     );
   }

@@ -22,16 +22,18 @@ const dotSizes = {
   lg: "h-3.5 w-3.5"
 };
 
-// A muted, desaturated palette (single-hue pairs, darker ends) so a list of avatars reads calm rather
-// than confetti — WhatsApp-style. The id hash picks one deterministically, so a given user always gets
-// the same color across sessions; white semibold initials keep readable contrast on these tones.
+// JEWEL-TONE gradients (rich, saturated single-hue pairs) — every contact gets a deterministic
+// per-id color, all sitting comfortably next to the periwinkle accent family. White semibold
+// initials stay readable on the darker gradient ends.
 const palettes = [
-  "from-slate-500 to-slate-600",
-  "from-zinc-500 to-zinc-600",
-  "from-teal-600 to-teal-700",
-  "from-indigo-500 to-indigo-600",
-  "from-rose-500 to-rose-600",
-  "from-stone-500 to-stone-600"
+  "from-violet-500 to-violet-700",
+  "from-blue-500 to-indigo-700",
+  "from-fuchsia-500 to-purple-700",
+  "from-emerald-500 to-teal-700",
+  "from-amber-500 to-orange-700",
+  "from-rose-500 to-pink-700",
+  "from-cyan-500 to-sky-700",
+  "from-indigo-400 to-violet-600"
 ];
 
 const sizes = {
@@ -67,7 +69,7 @@ export function Avatar({ id, name, size = "md", online, imageUrl, className }: A
     <div className="relative inline-flex shrink-0">
       <div
         className={cn(
-          "flex items-center justify-center overflow-hidden rounded-full bg-gradient-to-br font-semibold text-white",
+          "flex items-center justify-center overflow-hidden rounded-full bg-gradient-to-br font-semibold text-white shadow-subtle",
           palette,
           sizes[size],
           className

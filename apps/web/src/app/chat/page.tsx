@@ -41,6 +41,7 @@ import {
   ConversationSidebar,
   MessageList,
   MyProfileModal,
+  NavRail,
   StarredPanel,
   StatusBanner
 } from "@/components/chat";
@@ -106,12 +107,15 @@ export default function ChatPage() {
   const [selectedParticipants, setSelectedParticipants] = useState<UserProfile[]>([]);
   // New-conversation mode: "direct" = 1:1 (no title, one participant), "group" = titled multi-party.
   // Direct is the default since 1:1 chats are the common case. Drives the create branch + the modal UI.
-  const [conversationMode, setConversationMode] = useState<"direct" | "group">("direct");
+  // Rail → sidebar signals: bump to open the new-conversation modal / focus the phone search.
+  const [newConvNonce, setNewConvNonce] = useState(0);
+  const [searchFocusNonce, setSearchFocusNonce] = useState(0);
   const [status, setStatus] = useState("Loading session...");
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isLookingUpProfile, setIsLookingUpProfile] = useState(false);
   const [isCreatingConversation, setIsCreatingConversation] = useState(false);
+  const [conversationMode, setConversationMode] = useState<"direct" | "group">("direct");
   const [isSending, setIsSending] = useState(false);
   const [mediaStatus, setMediaStatus] = useState("");
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
@@ -919,16 +923,41 @@ export default function ChatPage() {
     ? "error"
     : "neutral";
 
+  const hasUnread = conversations.some((c) => (c.unread_count ?? 0) > 0);
+
   return (
-    <main className="flex h-screen overflow-hidden bg-bg">
-      {/* Sidebar — full width on mobile when no conversation is open, fixed pane at md+ */}
+    // The app floats as one rounded card on a soft periwinkle page from xl up (the mock's depth);
+    // below xl it fills the viewport edge-to-edge.
+    <main className="flex h-dvh overflow-hidden bg-bg xl:items-center xl:justify-center xl:p-5">
+      <div className="flex h-full w-full overflow-hidden xl:max-w-[1440px] xl:rounded-2xl xl:border xl:border-border xl:shadow-elevated">
+      {/* Desktop: thin indigo rail. Mobile: bottom tab bar (hidden while a chat is open full-screen). */}
+      <NavRail
+        session={session}
+        currentProfile={currentProfile}
+        hasUnread={hasUnread}
+        mobileHidden={Boolean(selectedConversationId)}
+        onNewGroup={() => {
+          handleConversationModeChange("group");
+          setNewConvNonce((n) => n + 1);
+        }}
+        onInvite={() => setSearchFocusNonce((n) => n + 1)}
+        onOpenStarred={() => setIsStarredOpen(true)}
+        onOpenProfile={() => setIsProfileOpen(true)}
+        onLogout={handleLogout}
+      />
+
+      {/* Sidebar — full width on mobile when no conversation is open (with tab-bar clearance), fixed
+          pane at md+. */}
       <div
         className={cn(
           "w-full shrink-0 md:block md:w-[340px]",
+          "max-md:pb-[calc(60px+env(safe-area-inset-bottom))]",
           selectedConversationId ? "hidden md:block" : "block"
         )}
       >
         <ConversationSidebar
+          openNewConvNonce={newConvNonce}
+          searchFocusNonce={searchFocusNonce}
           session={session}
           currentProfile={currentProfile}
           onLogout={handleLogout}
@@ -959,11 +988,11 @@ export default function ChatPage() {
         />
       </div>
 
-      {/* Chat pane */}
+      {/* Chat pane — on mobile it slides in full-screen over the list. */}
       <section
         className={cn(
-          "relative min-w-0 flex-1 flex-col",
-          selectedConversationId ? "flex" : "hidden md:flex"
+          "relative min-w-0 flex-1 flex-col bg-surface",
+          selectedConversationId ? "flex max-md:animate-slide-in-right" : "hidden md:flex"
         )}
       >
         {showBanner && <StatusBanner message={status} tone={bannerTone} />}
@@ -1061,6 +1090,7 @@ export default function ChatPage() {
           onSaved={handleProfileSaved}
         />
       ) : null}
+      </div>
     </main>
   );
 }

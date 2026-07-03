@@ -21,10 +21,11 @@ const config: Config = {
         muted: "rgb(var(--color-muted) / <alpha-value>)", // secondary text
         faint: "rgb(var(--color-faint) / <alpha-value>)", // tertiary / placeholder
         brand: {
-          DEFAULT: "#6366f1", // indigo — same in both themes (brand identity)
+          DEFAULT: "#7a73e0", // periwinkle — the locked accent (gradient start); same in both themes
           hover: "rgb(var(--color-brand-hover) / <alpha-value>)", // accent text/hover (lighter on dark, darker on light)
           subtle: "rgb(var(--color-brand-subtle) / <alpha-value>)", // tint surface (deep indigo on dark, pale indigo on light)
-          ring: "rgba(99, 102, 241, 0.35)"
+          deep: "#4e63c8", // gradient end
+          ring: "rgba(122, 115, 224, 0.35)"
         },
         success: "#22c55e",
         danger: "#ef4444",
@@ -36,7 +37,20 @@ const config: Config = {
         mint: "#0f766e"
       },
       fontFamily: {
-        sans: ["var(--font-inter)", "ui-sans-serif", "system-ui", "sans-serif"]
+        // Body/UI — DM Sans (warm, legible). Display — Space Grotesk (distinctive; brand moment only).
+        sans: ["var(--font-dm-sans)", "ui-sans-serif", "system-ui", "sans-serif"],
+        display: [
+          "var(--font-space-grotesk)",
+          "var(--font-dm-sans)",
+          "ui-sans-serif",
+          "system-ui",
+          "sans-serif"
+        ]
+      },
+      transitionTimingFunction: {
+        // Shared motion rhythm (mirrors src/lib/motion.ts EASE): standard = Linear-crisp, out = decelerate.
+        standard: "cubic-bezier(0.2, 0, 0, 1)",
+        "out-soft": "cubic-bezier(0.16, 1, 0.3, 1)"
       },
       borderRadius: {
         lg: "0.625rem",
@@ -50,8 +64,10 @@ const config: Config = {
         pop: "var(--shadow-md)",
         elevated: "var(--shadow-lg)",
         // Indigo glows stay fixed (used on own bubbles + brand accents) — read in both themes.
-        glow: "0 0 0 1px rgba(99, 102, 241, 0.2), 0 8px 30px rgba(99, 102, 241, 0.12)",
-        "glow-sm": "0 6px 22px -8px rgba(99, 102, 241, 0.55)"
+        glow: "0 0 0 1px rgba(122, 115, 224, 0.2), 0 8px 30px rgba(122, 115, 224, 0.12)",
+        "glow-sm": "0 6px 22px -8px rgba(122, 115, 224, 0.55)",
+        // Outgoing-bubble / badge / send-button glow (soft periwinkle lift under accent elements).
+        "accent-glow": "0 6px 18px -6px rgba(94, 104, 212, 0.5)"
       },
       keyframes: {
         "fade-in": {

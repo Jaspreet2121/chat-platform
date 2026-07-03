@@ -41,6 +41,29 @@ function buildGroups(messages: Message[]): Message[][] {
   return groups;
 }
 
+// Date-divider label for a group's first message: Today / Yesterday / a readable date.
+function dateLabel(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  const startOf = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diffDays = Math.round((startOf(now) - startOf(date)) / 86_400_000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: date.getFullYear() === now.getFullYear() ? undefined : "numeric"
+  });
+}
+
+function dayKey(iso: string): string {
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
 export type MessageListProps = {
   messages: Message[];
   currentUserId?: string;
@@ -157,23 +180,37 @@ export function MessageList({
 
   return (
     <div className="chat-ambient flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
-      {groups.map((group) => (
-        <MessageGroup
-          key={group[0].message_id}
-          group={group}
-          currentUserId={currentUserId}
-          highlightedId={highlightedId}
-          byId={byId}
-          onEdit={onEdit}
-          onDelete={onDelete}
-          onReply={onReply}
-          onForward={onForward}
-          onReact={onReact}
-          onRemoveReaction={onRemoveReaction}
-          onStar={onStar}
-          onUnstar={onUnstar}
-        />
-      ))}
+      {groups.map((group, index) => {
+        const previous = groups[index - 1];
+        const newDay =
+          !previous || dayKey(previous[0].created_at) !== dayKey(group[0].created_at);
+        return (
+          <div key={group[0].message_id} className="space-y-4">
+            {newDay ? (
+              // Date-divider pill (Today / Yesterday / date) — quiet periwinkle-tinted chip.
+              <div className="flex justify-center">
+                <span className="rounded-full bg-brand-subtle px-3 py-1 text-[11px] font-medium text-brand-hover shadow-subtle">
+                  {dateLabel(group[0].created_at)}
+                </span>
+              </div>
+            ) : null}
+            <MessageGroup
+              group={group}
+              currentUserId={currentUserId}
+              highlightedId={highlightedId}
+              byId={byId}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              onReply={onReply}
+              onForward={onForward}
+              onReact={onReact}
+              onRemoveReaction={onRemoveReaction}
+              onStar={onStar}
+              onUnstar={onUnstar}
+            />
+          </div>
+        );
+      })}
       <div ref={bottomRef} />
     </div>
   );

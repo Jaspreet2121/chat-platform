@@ -1,5 +1,5 @@
-import { FormEvent, RefObject, useState } from "react";
-import { CornerUpLeft, Mic, Paperclip, Send, Square, X } from "lucide-react";
+import { FormEvent, RefObject, useEffect, useRef, useState } from "react";
+import { CornerUpLeft, Mic, Paperclip, Send, Smile, Square, X } from "lucide-react";
 import { Button, IconButton } from "@/components";
 import { formatFileSize } from "./format";
 import { useVoiceRecorder } from "./useVoiceRecorder";
@@ -45,6 +45,22 @@ export function Composer({
 
   const recorder = useVoiceRecorder();
   const [isSendingVoice, setIsSendingVoice] = useState(false);
+  // Quick emoji tray (inserts into the draft — a lightweight picker, not a decoration).
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const emojiRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!emojiOpen) return;
+    function onDown(event: MouseEvent | TouchEvent) {
+      if (emojiRef.current && !emojiRef.current.contains(event.target as Node)) setEmojiOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [emojiOpen]);
   // Show the mic only when the row is otherwise empty (WhatsApp-style); recording/preview then takes
   // over the whole row (replacing text + attach + send) via the recorder.status branch below.
   const canRecord = hasConversation && !isSending && !selectedFile && !draft.trim();
@@ -63,7 +79,10 @@ export function Composer({
   }
 
   return (
-    <form className="border-t border-border/70 bg-surface/55 p-3 backdrop-blur-xl sm:p-4" onSubmit={onSubmit}>
+    <form
+      className="border-t border-border bg-surface p-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:p-3"
+      onSubmit={onSubmit}
+    >
       {replyPreview ? (
         <div className="mb-2 flex items-center gap-2 rounded-lg border-l-2 border-brand bg-elevated px-3 py-2">
           <CornerUpLeft className="h-4 w-4 shrink-0 text-brand-hover" aria-hidden />
@@ -157,7 +176,39 @@ export function Composer({
           </Button>
         </div>
       ) : (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* Emoji quick tray */}
+          <div ref={emojiRef} className="relative">
+            <IconButton
+              label="Add an emoji"
+              variant="ghost"
+              disabled={!hasConversation || isSending}
+              onClick={() => setEmojiOpen((v) => !v)}
+              type="button"
+              aria-expanded={emojiOpen}
+            >
+              <Smile className="h-5 w-5" aria-hidden />
+            </IconButton>
+            {emojiOpen ? (
+              <div className="absolute bottom-full left-0 z-30 mb-2 flex gap-1 rounded-2xl border border-border bg-surface p-1.5 shadow-elevated animate-scale-in">
+                {["😀", "😂", "❤️", "👍", "🙏", "🎉", "😍", "😮"].map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => {
+                      onDraftChange(draft + emoji);
+                      setEmojiOpen(false);
+                    }}
+                    className="rounded-lg p-1.5 text-lg leading-none transition-transform hover:scale-125"
+                    aria-label={`Insert ${emoji}`}
+                  >
+                    {emoji}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
           <IconButton
             label="Attach a file"
             variant="ghost"
@@ -169,13 +220,13 @@ export function Composer({
           </IconButton>
 
           <input
-            className="h-11 min-w-0 flex-1 rounded-xl border border-border bg-elevated px-4 text-fg placeholder:text-faint outline-none transition-colors focus:border-brand focus:ring-2 focus:ring-brand-ring disabled:opacity-60"
+            className="h-11 min-w-0 flex-1 rounded-full border border-border bg-elevated px-4 text-[15px] text-fg placeholder:text-faint outline-none transition-colors focus:border-brand focus:ring-2 focus:ring-brand-ring disabled:opacity-60"
             disabled={!hasConversation}
             placeholder={
               selectedFile
                 ? "Add a caption"
                 : hasConversation
-                  ? "Type a message"
+                  ? "Type a message…"
                   : "Select a conversation first"
             }
             value={draft}
@@ -193,10 +244,19 @@ export function Composer({
             </IconButton>
           ) : null}
 
-          <Button type="submit" disabled={!canSend} isLoading={isSending} aria-label="Send message">
-            {!isSending && <Send className="h-4 w-4" aria-hidden />}
-            <span className="hidden sm:inline">Send</span>
-          </Button>
+          {/* Round accent-gradient send button with glow */}
+          <button
+            type="submit"
+            disabled={!canSend}
+            aria-label="Send message"
+            className="accent-gradient flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white shadow-accent-glow transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-brand-ring active:scale-95 disabled:opacity-40 disabled:shadow-none"
+          >
+            {isSending ? (
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden />
+            ) : (
+              <Send className="h-[18px] w-[18px] -translate-x-px" aria-hidden />
+            )}
+          </button>
         </div>
       )}
     </form>

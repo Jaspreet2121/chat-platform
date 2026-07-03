@@ -1,13 +1,24 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { Inter } from "next/font/google";
+import { DM_Sans, Space_Grotesk } from "next/font/google";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import "./globals.css";
 
-const inter = Inter({
+// Body/UI face — DM Sans: warm, round, highly legible geometric sans (personal-messaging warmth).
+const dmSans = DM_Sans({
   subsets: ["latin"],
-  variable: "--font-inter",
-  display: "swap"
+  variable: "--font-dm-sans",
+  display: "swap",
+  weight: ["400", "500", "600", "700"]
+});
+
+// Display face — Space Grotesk: distinctive geometric grotesque, used with restraint for the brand
+// moment (wordmark + login headline). Self-hosted via next/font, so no CDN flash.
+const spaceGrotesk = Space_Grotesk({
+  subsets: ["latin"],
+  variable: "--font-space-grotesk",
+  display: "swap",
+  weight: ["400", "500", "600", "700"]
 });
 
 export const metadata: Metadata = {
@@ -23,7 +34,11 @@ export default function RootLayout({
   return (
     // suppressHydrationWarning: next-themes sets the theme class on <html> before paint, so the class
     // legitimately differs between the server-rendered and client markup.
-    <html lang="en" className={inter.variable} suppressHydrationWarning>
+    <html
+      lang="en"
+      className={`${dmSans.variable} ${spaceGrotesk.variable}`}
+      suppressHydrationWarning
+    >
       <body className="min-h-screen bg-bg font-sans text-fg antialiased">
         <ThemeProvider>{children}</ThemeProvider>
       </body>
