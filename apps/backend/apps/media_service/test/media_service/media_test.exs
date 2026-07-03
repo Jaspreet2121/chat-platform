@@ -169,6 +169,51 @@ defmodule MediaService.MediaTest do
     assert params["X-Amz-Signature"] =~ ~r/^[0-9a-f]{64}$/
   end
 
+  test "minio adapter SigV4 canonical host omits scheme-default ports, keeps explicit ones" do
+    # The signed host must match the Host header the client actually sends: browsers omit :443/:80.
+    assert Storage.MinioAdapter.canonical_host(URI.parse("https://media.growblic.com")) ==
+             "media.growblic.com"
+
+    assert Storage.MinioAdapter.canonical_host(URI.parse("https://media.growblic.com:443")) ==
+             "media.growblic.com"
+
+    assert Storage.MinioAdapter.canonical_host(URI.parse("http://media.growblic.com")) ==
+             "media.growblic.com"
+
+    # Non-default ports stay — internal signing against http://minio:9000 must keep ":9000".
+    assert Storage.MinioAdapter.canonical_host(URI.parse("http://minio:9000")) == "minio:9000"
+    assert Storage.MinioAdapter.canonical_host(URI.parse("http://localhost:9000")) == "localhost:9000"
+
+    assert Storage.MinioAdapter.canonical_host(URI.parse("https://media.growblic.com:8443")) ==
+             "media.growblic.com:8443"
+  end
+
+  test "minio adapter presigned URL over https public endpoint carries no default port" do
+    configure_minio_adapter!()
+
+    minio = Application.get_env(:media_service, :minio, [])
+
+    Application.put_env(
+      :media_service,
+      :minio,
+      Keyword.put(minio, :public_endpoint, "https://media.growblic.com")
+    )
+
+    assert {:ok, upload} =
+             Media.create_upload(%{
+               "owner_user_id" => @owner_user_id,
+               "filename" => "photo.png",
+               "content_type" => "image/png",
+               "size_bytes" => 123
+             })
+
+    refute upload.upload_url =~ ":443"
+    uri = URI.parse(upload.upload_url)
+    assert uri.scheme == "https"
+    assert uri.host == "media.growblic.com"
+    assert URI.decode_query(uri.query)["X-Amz-Signature"] =~ ~r/^[0-9a-f]{64}$/
+  end
+
   test "minio adapter generates presigned download URL" do
     configure_minio_adapter!()
 

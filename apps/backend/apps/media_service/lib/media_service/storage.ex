@@ -110,12 +110,7 @@ defmodule MediaService.Storage.MinioAdapter do
     # Sign against the browser-reachable public endpoint when set (so the SigV4 host header matches the
     # host the browser actually PUTs/GETs); fall back to the internal endpoint otherwise.
     endpoint_uri = URI.parse(config[:public_endpoint] || config[:endpoint])
-
-    host =
-      case endpoint_uri.port do
-        nil -> endpoint_uri.host
-        port -> "#{endpoint_uri.host}:#{port}"
-      end
+    host = canonical_host(endpoint_uri)
 
     query_params = %{
       "X-Amz-Algorithm" => @algorithm,
@@ -161,6 +156,18 @@ defmodule MediaService.Storage.MinioAdapter do
     {:ok, URI.to_string(url)}
   rescue
     _ -> {:error, :media_storage_unavailable}
+  end
+
+  # SigV4 host for the canonical request. Must match the Host header the client will actually send:
+  # browsers (and URI.to_string) omit scheme-default ports (443 for https, 80 for http), so the port is
+  # included ONLY when non-default (e.g. minio:9000 / localhost:9000). Signing "host:443" while the
+  # browser sends a bare host causes MinIO to reject with SignatureDoesNotMatch.
+  @doc false
+  def canonical_host(%URI{} = uri) do
+    case uri.port do
+      nil -> uri.host
+      port -> if port == URI.default_port(uri.scheme || "http"), do: uri.host, else: "#{uri.host}:#{port}"
+    end
   end
 
   defp canonical_uri(config, object_key) do
