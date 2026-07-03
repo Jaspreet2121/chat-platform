@@ -98,6 +98,26 @@ small switch, no new container:
    and Caddy with the domain config. Auto-HTTPS provisions Let's Encrypt certs (needs 80+443 open + DNS
    resolving). Verify `https://api.example.com/health`.
 
+## 8. Web frontend (Next.js `web` service) — web.growblic.com + admin.growblic.com
+One container serves both: chat at `/`, admin at `/admin`; Caddy routes both domains to `web:3000`
+(internal-only, not host-published). `NEXT_PUBLIC_*` values are baked into the JS bundle **at build
+time** (compose build args) — rebuild `web` after changing them.
+
+1. 🟦 DNS A-records: `web.growblic.com`, `admin.growblic.com` → EC2 IP.
+2. 🖥️ on the server:
+```bash
+cd chat-platform && git pull
+# .env: NEXT_PUBLIC_API_BASE_URL / NEXT_PUBLIC_REALTIME_URL (defaults already point at
+# https://api.growblic.com / wss://api.growblic.com/socket), and make sure WEB_ORIGIN + CORS_ORIGIN
+# include https://web.growblic.com,https://admin.growblic.com (comma-separated — both parsed as lists).
+docker compose -f docker-compose.prod.yml build web        # Next.js build; ~fine on 2 vCPU with swap
+docker compose -f docker-compose.prod.yml up -d web        # start the container
+docker compose -f docker-compose.prod.yml restart caddy    # pick up the web/admin Caddyfile blocks
+docker compose -f docker-compose.prod.yml up -d            # recreate backend if WEB/CORS_ORIGIN changed
+```
+3. 🖥️ verify: `https://web.growblic.com` (chat) and `https://admin.growblic.com/admin` (admin) — Caddy
+   auto-provisions certs for the new hostnames on first request/startup.
+
 ---
 
 ## Notes / decisions
@@ -110,5 +130,5 @@ small switch, no new container:
 - **Data:** named volumes `pgdata`/`kafka_data`/`minio_data`/`redis_data`/`caddy_data`/`caddy_config`
   persist across restarts (caddy_data holds the TLS certs). Back up Postgres regularly
   (`docker compose exec postgres pg_dump …`). `docker builder prune` to reclaim disk.
-- **Web frontend** is not in this compose — host it separately (e.g. Vercel) or add a `web` container and
-  a Caddy `app.example.com` block.
+- **Web frontend** is the `web` compose service (Next.js standalone, `apps/web/Dockerfile`, mem_limit
+  512m, internal-only :3000). Caddy serves it at web.growblic.com + admin.growblic.com — see §8.

@@ -417,11 +417,25 @@ services:
       redis:
         condition: service_healthy
 
-  # Public edge — the ONLY host-published service. Reverse-proxies to the internal gateway (and MinIO for
-  # media in phase 2). PHASE 1 mounts the HTTP Caddyfile (:80 → gateway:4000, no TLS). To switch to
-  # domain/auto-HTTPS later: change the mount to ./infra/caddy/Caddyfile (see that file's header) + set
-  # PHX_HOST/WEB_ORIGIN/CORS_ORIGIN/MINIO_PUBLIC_ENDPOINT in .env, then `up -d`. 443 is already published
-  # so the switch needs no compose change; caddy_data persists the certs.
+  # Next.js frontend — chat at / and admin at /admin in ONE app/container. Caddy routes BOTH
+  # web.growblic.com and admin.growblic.com to web:3000 (see infra/caddy/Caddyfile). Not host-published.
+  # NEXT_PUBLIC_* values are inlined into the JS bundle AT BUILD TIME → they are build args here, not
+  # runtime env. Changing them requires `docker compose build web` again.
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-https://api.growblic.com}
+        NEXT_PUBLIC_REALTIME_URL: ${NEXT_PUBLIC_REALTIME_URL:-wss://api.growblic.com/socket}
+    restart: unless-stopped
+    networks: [chatnet]
+    mem_limit: 512m
+    expose: ["3000"]
+
+  # Public edge — the ONLY host-published service. Mounts the domain/auto-HTTPS Caddyfile
+  # (api/media/web/admin.growblic.com — matches what the server runs). For an IP-only HTTP bring-up,
+  # temporarily mount ./infra/caddy/Caddyfile.http instead (:80 → gateway:4000, no TLS).
+  # caddy_data persists the Let's Encrypt certs.
   caddy:
     image: caddy:2.8-alpine
     restart: unless-stopped
@@ -431,11 +445,12 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./infra/caddy/Caddyfile.http:/etc/caddy/Caddyfile:ro
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
       - gateway
+      - web
 
 networks:
   chatnet:
