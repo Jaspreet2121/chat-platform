@@ -15,6 +15,9 @@ export type OtpVerifyInput = {
   otpRequestId: string;
   otpCode: string;
   deviceId: string;
+  // "Remember me" → a 7-day session; otherwise the default (~3h) session. Sent to the verify endpoint,
+  // which sets the issued access token's lifetime accordingly.
+  rememberMe?: boolean;
 };
 
 export type CreateMessageInput = {
@@ -226,7 +229,8 @@ export function verifyOtp(input: OtpVerifyInput) {
       ...destinationPayload(input.destination),
       otp_request_id: input.otpRequestId,
       otp_code: input.otpCode,
-      device_id: input.deviceId
+      device_id: input.deviceId,
+      remember_me: input.rememberMe ?? false
     })
   });
 }

@@ -26,6 +26,26 @@ defmodule AuthService.Tokens do
   def token_issuer, do: token_config(:issuer, "chat-platform")
   def token_audience, do: token_config(:audience, "chat-platform-clients")
 
+  # Login session lifetime (the ACCESS token's own TTL): a real working session by default, or a long
+  # "remember me" session. Env-overridable, read at runtime (no config.exs build-bake). Logout still
+  # invalidates a long token — current_session checks the device session, which logout revokes.
+  @default_session_ttl_seconds 10_800
+  @remember_me_ttl_seconds 604_800
+
+  @spec session_ttl_seconds(boolean()) :: pos_integer()
+  def session_ttl_seconds(true),
+    do: env_int("AUTH_SESSION_REMEMBER_TTL_SECONDS", @remember_me_ttl_seconds)
+
+  def session_ttl_seconds(_remember_me),
+    do: env_int("AUTH_SESSION_TTL_SECONDS", @default_session_ttl_seconds)
+
+  defp env_int(key, default) do
+    case Integer.parse(System.get_env(key) || "") do
+      {n, _} when n > 0 -> n
+      _ -> default
+    end
+  end
+
   def issue_pair(_attrs), do: {:error, :not_implemented}
 
   def refresh(attrs) when is_map(attrs) do
@@ -53,7 +73,8 @@ defmodule AuthService.Tokens do
     refresh_token_id = Ecto.UUID.generate()
     refresh_token = random_token()
     refresh_token_hash = hash_token(refresh_token, secret)
-    access_token_ttl_seconds = access_token_ttl_seconds()
+    # The login path passes :access_ttl_seconds (remember-me aware); other callers use the global default.
+    access_token_ttl_seconds = Keyword.get(opts, :access_ttl_seconds) || access_token_ttl_seconds()
     refresh_token_ttl_seconds = refresh_token_ttl_seconds()
     access_expires_at = DateTime.add(now, access_token_ttl_seconds, :second)
     refresh_expires_at = DateTime.add(now, refresh_token_ttl_seconds, :second)

@@ -34,6 +34,7 @@ function AdminLoginForm() {
   const [destination, setDestination] = useState("");
   const [otpRequestId, setOtpRequestId] = useState("");
   const [otpCode, setOtpCode] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [deliveryMethod, setDeliveryMethod] = useState("");
   const [error, setError] = useState("");
   const [denied, setDenied] = useState(false);
@@ -157,7 +158,8 @@ function AdminLoginForm() {
         destination: destination.trim(),
         otpRequestId: otpRequestId.trim(),
         otpCode: code,
-        deviceId
+        deviceId,
+        rememberMe
       });
       setSessionTokens({
         accessToken: response.access_token,
@@ -269,6 +271,16 @@ function AdminLoginForm() {
             ) : null}
 
             {error ? <p className="text-sm text-danger">{error}</p> : null}
+
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-muted">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(event) => setRememberMe(event.target.checked)}
+                className="h-4 w-4 rounded border-border text-brand accent-brand focus:ring-brand-ring"
+              />
+              Keep me signed in for 7 days
+            </label>
 
             <Button type="submit" fullWidth isLoading={isVerifying} disabled={otpCode.trim() === ""}>
               Verify &amp; enter console

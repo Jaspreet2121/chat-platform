@@ -223,7 +223,10 @@ defmodule AuthService.OTP do
              DeviceSessions.get_device_session(user.id, get_attr(attrs, :device_id)),
            session_id <- session_id(existing_session),
            {:ok, token_pair} <-
-             Tokens.prepare_issue_pair(token_attrs(attrs, user.id, session_id), now: now),
+             Tokens.prepare_issue_pair(token_attrs(attrs, user.id, session_id),
+               now: now,
+               access_ttl_seconds: Tokens.session_ttl_seconds(remember_me?(attrs))
+             ),
            {:ok, device_session} <-
              create_or_update_device_session(existing_session, session_id, token_pair),
            {:ok, _refresh_token} <-
@@ -300,6 +303,15 @@ defmodule AuthService.OTP do
       "device_name" => get_attr(attrs, :device_name) || get_in(attrs, ["device", "device_name"]),
       "platform" => get_attr(attrs, :platform) || get_in(attrs, ["device", "platform"]) || "web"
     }
+  end
+
+  # "Remember me" opt-in (accepts a boolean or the string "true"/"1"). Selects the 7-day session TTL.
+  defp remember_me?(attrs) do
+    case get_attr(attrs, :remember_me) do
+      true -> true
+      value when is_binary(value) -> value in ["true", "1", "yes"]
+      _ -> false
+    end
   end
 
   defp session_id(nil), do: Ecto.UUID.generate()

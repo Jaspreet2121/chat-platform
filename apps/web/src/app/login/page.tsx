@@ -45,6 +45,7 @@ function LoginForm() {
   // Captured silently from the requestOtp response and passed to verifyOtp — never a visible field.
   const [otpRequestId, setOtpRequestId] = useState("");
   const [otpCode, setOtpCode] = useState("");
+  const [rememberMe, setRememberMe] = useState(false);
   const [deliveryMethod, setDeliveryMethod] = useState("");
   const [userId, setUserId] = useState("");
   const [error, setError] = useState("");
@@ -142,7 +143,8 @@ function LoginForm() {
         destination: destination.trim(),
         otpRequestId: otpRequestId.trim(),
         otpCode: normalizedOtpCode,
-        deviceId
+        deviceId,
+        rememberMe
       });
 
       // OTP mechanics unchanged: store the tokens exactly as before.
@@ -239,6 +241,16 @@ function LoginForm() {
             )}
 
             {error && <p className="text-sm text-danger">{error}</p>}
+
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-muted">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(event) => setRememberMe(event.target.checked)}
+                className="h-4 w-4 rounded border-border text-brand accent-brand focus:ring-brand-ring"
+              />
+              Keep me signed in for 7 days
+            </label>
 
             <Button type="submit" fullWidth isLoading={isVerifying} disabled={otpCode.trim() === ""}>
               Verify &amp; continue
