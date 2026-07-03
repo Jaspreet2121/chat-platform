@@ -849,6 +849,24 @@ export default function ChatPage() {
     ? "error"
     : "neutral";
 
+  // iOS keyboard-dismiss guard: Safari PANS the document for the keyboard instead of resizing the
+  // layout viewport, and any residual pan offset after dismiss clips the app's top (header cut). When
+  // the visual viewport returns to (near) full height — keyboard closed — zero out any stray offsets.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    function onResize() {
+      if (!viewport) return;
+      const keyboardClosed = window.innerHeight - viewport.height < 80;
+      if (keyboardClosed && (window.scrollY !== 0 || document.documentElement.scrollTop !== 0)) {
+        window.scrollTo(0, 0);
+        document.documentElement.scrollTop = 0;
+      }
+    }
+    viewport.addEventListener("resize", onResize);
+    return () => viewport.removeEventListener("resize", onResize);
+  }, []);
+
   const hasUnread = conversations.some((c) => (c.unread_count ?? 0) > 0);
 
   return (

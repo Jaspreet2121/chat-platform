@@ -96,7 +96,7 @@ export function MessageList({
   onUnstar,
   scrollTarget
 }: MessageListProps) {
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   // The last scroll-target nonce we've acted on, so an incoming message doesn't re-trigger the jump.
   const handledNonceRef = useRef<number | null>(null);
@@ -112,10 +112,14 @@ export function MessageList({
 
   // Keep the newest message in view as messages arrive (send + realtime) — UNLESS a jump-to-message is
   // pending, in which case we let the scroll effect below land on the target instead of the bottom.
-  // (Reading the ref here is fine — it's inside an effect, not render.)
+  // Scrolls ONLY the list container (never scrollIntoView): scrollIntoView also scrolls every
+  // scrollable ANCESTOR, and on iOS with the keyboard open that pans the whole document — leaving a
+  // residual offset that clips the header when the keyboard closes.
   useEffect(() => {
     if (scrollTarget && handledNonceRef.current !== scrollTarget.n) return;
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const container = containerRef.current;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
   }, [messages.length, scrollTarget]);
 
   // Scroll to + briefly highlight a search/starred target once it's loaded. Nonce-guarded so it fires
@@ -130,8 +134,12 @@ export function MessageList({
     // Defer to the next frame so the target node is laid out; also keeps setState out of the effect body.
     const raf = requestAnimationFrame(() => {
       const node = document.getElementById(`msg-${scrollTarget.id}`);
-      if (!node) return;
-      node.scrollIntoView({ behavior: "smooth", block: "center" });
+      const container = containerRef.current;
+      if (!node || !container) return;
+      // Center the target within the LIST only (container-confined; see the bottom-pin note above).
+      const nodeTop = node.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      const top = container.scrollTop + nodeTop - container.clientHeight / 2 + node.clientHeight / 2;
+      container.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
       setHighlightedId(scrollTarget.id);
       if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
       highlightTimerRef.current = setTimeout(() => setHighlightedId(null), 2200);
@@ -179,7 +187,10 @@ export function MessageList({
   }
 
   return (
-    <div className="chat-ambient flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
+    <div
+      ref={containerRef}
+      className="chat-ambient min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6"
+    >
       {groups.map((group, index) => {
         const previous = groups[index - 1];
         const newDay =
@@ -211,7 +222,6 @@ export function MessageList({
           </div>
         );
       })}
-      <div ref={bottomRef} />
     </div>
   );
 }
