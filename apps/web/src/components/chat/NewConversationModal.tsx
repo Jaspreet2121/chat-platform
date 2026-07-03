@@ -2,8 +2,11 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { UserPlus, X } from "lucide-react";
+import { type CountryCode } from "libphonenumber-js";
 import { findUserByPhone, type UserProfile } from "@/lib/api";
-import { Avatar, Button, Card, Input, LoginIdentityFields } from "@/components";
+import { DEFAULT_COUNTRY } from "@/lib/countries";
+import { formatSearchInput, toE164Loose } from "@/lib/phone";
+import { Avatar, Button, Card, Input } from "@/components";
 
 export type NewConversationModalProps = {
   isOpen: boolean;
@@ -19,6 +22,10 @@ export type NewConversationModalProps = {
   onAddParticipant: (profile: UserProfile) => void;
   onRemoveParticipant: (userId: string) => void;
 };
+
+// Same silent normalization as the chat search (no country dropdown outside login/signup): bare
+// national numbers get the default region, "+<cc>…" parses as typed.
+const PHONE_ISO = DEFAULT_COUNTRY.iso2 as CountryCode;
 
 function shortId(id: string): string {
   return `#${id.slice(0, 8)}`;
@@ -61,12 +68,12 @@ export function NewConversationModal({
 }: NewConversationModalProps) {
   const wasCreatingRef = useRef(false);
 
-  // Phone → participant lookup (LoginIdentityFields emits a valid E.164, or "" while incomplete).
-  const [phoneDestination, setPhoneDestination] = useState("");
+  // Phone → participant lookup. The raw input formats as-you-type; `phoneDestination` is the silently
+  // normalized E.164 ("" while incomplete/invalid) — same helpers as the chat search.
+  const [phoneRaw, setPhoneRaw] = useState("");
   const [isFinding, setIsFinding] = useState(false);
   const [findError, setFindError] = useState("");
-  // Re-key the phone field after each successful add so it resets for the next number.
-  const [phoneFieldKey, setPhoneFieldKey] = useState(0);
+  const phoneDestination = toE164Loose(phoneRaw, PHONE_ISO);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -100,8 +107,7 @@ export function NewConversationModal({
     try {
       const profile = await findUserByPhone(phone);
       onAddParticipant(profile);
-      setPhoneDestination("");
-      setPhoneFieldKey((k) => k + 1);
+      setPhoneRaw("");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not find that number.";
       setFindError(
@@ -154,11 +160,14 @@ export function NewConversationModal({
 
           {/* Add participants by phone number (same lookup as the DM search). */}
           <div className="space-y-2 rounded-xl border border-border bg-elevated p-2.5">
-            <LoginIdentityFields
-              key={phoneFieldKey}
-              onChange={setPhoneDestination}
-              phoneLabel="Participant's phone number"
-              phoneOnly
+            <Input
+              label="Participant's phone number"
+              inputMode="tel"
+              autoComplete="off"
+              placeholder="Type their number"
+              value={phoneRaw}
+              onChange={(event) => setPhoneRaw(formatSearchInput(event.target.value, PHONE_ISO))}
+              className="bg-surface"
             />
             <Button
               type="button"
