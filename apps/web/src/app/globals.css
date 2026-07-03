@@ -127,6 +127,24 @@ textarea {
   font: inherit;
 }
 
+/* iOS Safari auto-zooms any focused input with font-size < 16px. On phone widths, floor EVERY text
+   control at 16px (overrides utility classes like text-sm on inputs — deliberate: killing the zoom
+   class-wide beats per-field patches). Desktop keeps the designed sizes. */
+@media (max-width: 767px) {
+  input,
+  select,
+  textarea {
+    font-size: 1rem !important;
+  }
+}
+
+/* No horizontal overflow, ever: the app is a single-viewport layout; anything wider is a bug, so clip
+   it at the shell instead of letting the page pan sideways. */
+html,
+body {
+  overflow-x: clip;
+}
+
 /* Crisp, slim scrollbars that match the active theme. */
 * {
   scrollbar-width: thin;

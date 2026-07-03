@@ -153,7 +153,7 @@ function MobileTabBar({
   if (mobileHidden) return null;
   const tabClass = (active: boolean) =>
     cn(
-      "relative flex h-full min-w-[44px] flex-1 flex-col items-center justify-center gap-0.5 rounded-lg text-[10px] font-medium",
+      "relative flex h-full min-w-0 flex-1 basis-0 flex-col items-center justify-center gap-0.5 rounded-lg text-[10px] font-medium",
       "outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white/60",
       active ? "text-white" : "text-white/60"
     );
@@ -161,7 +161,7 @@ function MobileTabBar({
   return (
     <nav
       aria-label="Main navigation"
-      className="rail-gradient fixed inset-x-0 bottom-0 z-40 flex h-[calc(60px+env(safe-area-inset-bottom))] items-stretch gap-1 px-2 pb-[env(safe-area-inset-bottom)] md:hidden"
+      className="rail-gradient fixed inset-x-0 bottom-0 z-40 flex h-[calc(60px+env(safe-area-inset-bottom))] items-stretch gap-0.5 px-1 pb-[env(safe-area-inset-bottom)] md:hidden"
     >
       <span className={tabClass(true)} aria-current="page">
         <span className="relative">
@@ -173,15 +173,15 @@ function MobileTabBar({
             />
           ) : null}
         </span>
-        Messages
+        <span className="max-w-full truncate">Messages</span>
       </span>
       <button type="button" onClick={onNewGroup} className={tabClass(false)}>
         <Users className="h-5 w-5" aria-hidden />
-        Groups
+        <span className="max-w-full truncate">Groups</span>
       </button>
       <button type="button" onClick={onInvite} className={tabClass(false)}>
         <UserPlus className="h-5 w-5" aria-hidden />
-        Invite
+        <span className="max-w-full truncate">Invite</span>
       </button>
       <div className={tabClass(false)}>
         <SettingsMenu onOpenStarred={onOpenStarred} onLogout={onLogout} direction="up" bare />
@@ -195,7 +195,7 @@ function MobileTabBar({
             size="sm"
             className="h-6 w-6 text-[9px]"
           />
-          Profile
+          <span className="max-w-full truncate">Profile</span>
         </button>
       ) : null}
     </nav>
@@ -249,7 +249,7 @@ function SettingsMenu({
         }
       >
         <Settings className="h-5 w-5" aria-hidden />
-        {bare ? "Settings" : <span className="sr-only">Settings</span>}
+        {bare ? <span className="max-w-full truncate">Settings</span> : <span className="sr-only">Settings</span>}
       </button>
 
       {open ? (

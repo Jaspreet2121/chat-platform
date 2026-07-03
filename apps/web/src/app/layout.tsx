@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import { DM_Sans, Space_Grotesk } from "next/font/google";
 import { ThemeProvider } from "@/components/ThemeProvider";
@@ -24,6 +24,15 @@ const spaceGrotesk = Space_Grotesk({
 export const metadata: Metadata = {
   title: "Chat Platform",
   description: "Chat Platform web MVP"
+};
+
+// viewport-fit=cover is REQUIRED for env(safe-area-inset-*) to be non-zero on notched phones — the
+// safe-area padding on the app shell, tab bar and composer all depend on it. Zoom stays enabled (no
+// maximumScale) for accessibility; inputs avoid iOS auto-zoom via the ≥16px rule in globals.css.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover"
 };
 
 export default function RootLayout({

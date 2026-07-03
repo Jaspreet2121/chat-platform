@@ -855,7 +855,7 @@ export default function ChatPage() {
     // The app floats as one rounded card on a soft periwinkle page from xl up (the mock's depth);
     // below xl it fills the viewport edge-to-edge.
     <main className="flex h-dvh overflow-hidden bg-bg xl:items-center xl:justify-center xl:p-5">
-      <div className="flex h-full w-full overflow-hidden xl:max-w-[1440px] xl:rounded-2xl xl:border xl:border-border xl:shadow-elevated">
+      <div className="flex h-full w-full overflow-hidden max-md:pt-[env(safe-area-inset-top)] xl:max-w-[1440px] xl:rounded-2xl xl:border xl:border-border xl:shadow-elevated">
       {/* Desktop: thin indigo rail. Mobile: bottom tab bar (hidden while a chat is open full-screen). */}
       <NavRail
         session={session}

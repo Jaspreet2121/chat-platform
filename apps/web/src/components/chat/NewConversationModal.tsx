@@ -136,7 +136,7 @@ export function NewConversationModal({
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-fade-in">
       <button type="button" aria-label="Close" onClick={onClose} className="absolute inset-0" />
 
-      <Card className="relative flex max-h-[85vh] w-full max-w-sm flex-col p-0 animate-scale-in">
+      <Card className="relative flex max-h-[min(80dvh,34rem)] w-[calc(100%-2rem)] max-w-sm flex-col p-0 animate-scale-in">
         <header className="flex items-center justify-between border-b border-border px-4 py-3">
           <h2 className="text-sm font-semibold text-fg">New group</h2>
           <button

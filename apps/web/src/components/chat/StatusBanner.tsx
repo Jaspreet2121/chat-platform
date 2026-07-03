@@ -10,7 +10,7 @@ export function StatusBanner({ message, tone = "neutral" }: StatusBannerProps) {
   if (!message) return null;
 
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-3 z-10 flex justify-center px-4 animate-slide-up">
+    <div className="pointer-events-none absolute inset-x-0 top-[4.5rem] z-10 flex justify-center px-4 animate-slide-up">
       <div
         className={cn(
           "pointer-events-auto max-w-md truncate rounded-full border px-3.5 py-1.5 text-xs font-medium shadow-elevated backdrop-blur",
