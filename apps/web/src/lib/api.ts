@@ -605,6 +605,24 @@ export function listConversations() {
   }>("/api/v1/conversations");
 }
 
+// USER-SCOPED soft-hides (server-side; nothing is deleted for anyone else). Clear = hide history
+// before now for THIS user; auto-delete = rolling window (off/24h/7d) for THIS user.
+export function clearConversation(conversationId: string) {
+  return request<{ cleared: boolean }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/clear`,
+    { method: "POST", body: JSON.stringify({}) }
+  );
+}
+
+export type AutoDeleteMode = "off" | "24h" | "7d";
+
+export function setConversationAutoDelete(conversationId: string, mode: AutoDeleteMode) {
+  return request<{ auto_delete_seconds: number | null }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/auto-delete`,
+    { method: "PUT", body: JSON.stringify({ mode }) }
+  );
+}
+
 export function getConversation(conversationId: string) {
   return request<ConversationDetail>(
     `/api/v1/conversations/${encodeURIComponent(conversationId)}`

@@ -115,6 +115,9 @@ defmodule ApiGatewayWeb.Router do
     get "/", ConversationController, :index
     get "/:conversation_id", ConversationController, :show
     post "/:conversation_id/participants", ConversationController, :add_participant
+    # User-scoped soft-hides (nothing deleted; admin content viewer unaffected).
+    post "/:conversation_id/clear", ConversationController, :clear
+    put "/:conversation_id/auto-delete", ConversationController, :auto_delete
     delete "/:conversation_id/participants/:user_id", ConversationController, :remove_participant
   end
 

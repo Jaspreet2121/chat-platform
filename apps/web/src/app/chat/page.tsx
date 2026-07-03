@@ -995,6 +995,16 @@ export default function ChatPage() {
           currentUserId={session?.user_id}
           messages={messages}
           onJumpToMessage={handleJumpToMessage}
+          onCleared={() => {
+            // Refetch THIS user's (now-narrowed) timeline; other participants and admin are unaffected.
+            setMessages([]);
+            if (selectedConversationId) {
+              void listMessages(selectedConversationId).then(
+                (timeline) => setMessages(timeline.messages ?? []),
+                () => undefined
+              );
+            }
+          }}
         />
 
         {forwardingMessage ? (

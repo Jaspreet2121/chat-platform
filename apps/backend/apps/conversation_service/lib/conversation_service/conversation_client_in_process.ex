@@ -37,4 +37,10 @@ defmodule ConversationService.ConversationClientInProcess do
 
   @impl true
   def remove_participant(attrs), do: Participants.remove_participant(attrs)
+
+  @impl true
+  def clear_history(attrs), do: Participants.clear_history(attrs)
+
+  @impl true
+  def set_auto_delete(attrs), do: Participants.set_auto_delete(attrs)
 end

@@ -854,6 +854,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     rows =
       Message
       |> where([m], m.conversation_id == ^conversation_id)
+      |> apply_viewer_window(conversation_id, viewer)
       |> order_by([m], desc: m.created_at)
       |> limit(^limit)
       |> Repo.all()
@@ -877,6 +878,48 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     {:ok, %{conversation_id: conversation_id, messages: messages, next_cursor: nil}}
   rescue
     Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  # USER-SCOPED soft-hide window ("clear chat" + "auto-delete") — applies ONLY when a viewer is
+  # present. The admin content viewer calls list_messages WITHOUT viewer_user_id, so it can never be
+  # narrowed (structural guarantee); and this is purely a read filter — no messages row is ever
+  # deleted or updated by clear/auto-delete. The cutoff is the LATER of the viewer's cleared_before
+  # and their rolling auto-delete window (NULL-safe: absent prefs → no narrowing).
+  defp apply_viewer_window(query, _conversation_id, nil), do: query
+  defp apply_viewer_window(query, _conversation_id, ""), do: query
+
+  defp apply_viewer_window(query, conversation_id, viewer) do
+    case viewer_window_cutoff(conversation_id, viewer) do
+      nil -> query
+      cutoff -> where(query, [m], m.created_at > ^cutoff)
+    end
+  rescue
+    # Malformed ids → no narrowing (matches the permissive read path; membership is gated upstream).
+    _ -> query
+  end
+
+  defp viewer_window_cutoff(conversation_id, viewer) do
+    case Repo.query(
+           "SELECT cleared_before, auto_delete_seconds FROM conversation_participants " <>
+             "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+           [conversation_id, viewer]
+         ) do
+      {:ok, %{rows: [[cleared_before, auto_delete_seconds]]}} ->
+        auto_cutoff =
+          if is_integer(auto_delete_seconds) and auto_delete_seconds > 0 do
+            DateTime.add(DateTime.utc_now(), -auto_delete_seconds, :second)
+          end
+
+        [cleared_before, auto_cutoff]
+        |> Enum.reject(&is_nil/1)
+        |> case do
+          [] -> nil
+          cutoffs -> Enum.max(cutoffs, DateTime)
+        end
+
+      _ ->
+        nil
+    end
   end
 
   # The subset of the listed message_ids that `viewer` has starred (one query, no N+1).

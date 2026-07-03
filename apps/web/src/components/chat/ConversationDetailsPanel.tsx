@@ -3,16 +3,23 @@ import {
   CalendarDays,
   ChevronDown,
   ChevronRight,
+  Eraser,
   FileText,
   Image as ImageIcon,
   Link2,
   Play,
   Star,
+  Timer,
   Users,
   X
 } from "lucide-react";
-import type { ConversationDetail, Message } from "@/lib/api";
-import { getMediaDownloadUrl, listStarred } from "@/lib/api";
+import type { AutoDeleteMode, ConversationDetail, Message } from "@/lib/api";
+import {
+  clearConversation,
+  getMediaDownloadUrl,
+  listStarred,
+  setConversationAutoDelete
+} from "@/lib/api";
 import { Avatar, IconButton } from "@/components";
 import { cn } from "@/lib/cn";
 import { PublicProfileCard } from "./PublicProfileCard";
@@ -33,6 +40,8 @@ export type ConversationDetailsPanelProps = {
   messages?: Message[];
   /** Jump the main pane to a message (same mechanism as search/starred). Optional: strip stays display-only without it. */
   onJumpToMessage?: (conversationId: string, messageId: string) => void;
+  /** Called after a successful "clear chat" so the page refetches this user's (now-empty) timeline. */
+  onCleared?: () => void;
 };
 
 function shortId(id: string): string {
@@ -70,17 +79,27 @@ export function ConversationDetailsPanel({
   onlineUserIds = [],
   currentUserId,
   messages = [],
-  onJumpToMessage
+  onJumpToMessage,
+  onCleared
 }: ConversationDetailsPanelProps) {
   const [profileUserId, setProfileUserId] = useState<string | null>(null);
   const [starred, setStarred] = useState<Message[] | null>(null);
   const [starredOpen, setStarredOpen] = useState(false);
+  // Message-visibility actions (user-scoped soft-hides — server-side; per-session display state).
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
+  const [autoDelete, setAutoDelete] = useState<AutoDeleteMode | null>(null);
+  const [isSavingAutoDelete, setIsSavingAutoDelete] = useState(false);
+  const [actionError, setActionError] = useState("");
 
   // Reset transient state when the panel closes or the conversation changes.
+  // (Visibility-action state resets in the same effect below via the shared deps.)
   useEffect(() => {
     if (!isOpen) {
       setProfileUserId(null);
       setStarredOpen(false);
+      setConfirmClear(false);
+      setActionError("");
     }
   }, [isOpen]);
 
@@ -342,6 +361,95 @@ export function ConversationDetailsPanel({
               ) : null}
             </div>
           ) : null}
+
+          {/* SECTION — message visibility (user-scoped: affects ONLY this account's view; the other
+              participants keep their copy). Clear = hide everything so far; auto-delete = rolling window. */}
+          <div className="border-b border-border px-5 py-3">
+            <div className="flex min-h-11 items-center gap-3 py-1">
+              <Timer className="h-4 w-4 shrink-0 text-muted" aria-hidden />
+              <span className="flex-1 text-sm text-muted">Auto-delete messages</span>
+              <div className="flex gap-1" role="radiogroup" aria-label="Auto-delete messages">
+                {(["off", "24h", "7d"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={autoDelete === mode}
+                    disabled={isSavingAutoDelete}
+                    onClick={() => {
+                      setActionError("");
+                      setIsSavingAutoDelete(true);
+                      setConversationAutoDelete(conversationId, mode)
+                        .then(() => setAutoDelete(mode))
+                        .catch((e) =>
+                          setActionError(e instanceof Error ? e.message : "Could not update.")
+                        )
+                        .finally(() => setIsSavingAutoDelete(false));
+                    }}
+                    className={cn(
+                      "rounded-full px-2.5 py-1 text-xs transition-all duration-150",
+                      "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring disabled:opacity-50",
+                      autoDelete === mode
+                        ? "accent-gradient font-medium text-white shadow-accent-glow"
+                        : "bg-elevated text-muted hover:text-fg"
+                    )}
+                  >
+                    {mode === "off" ? "Off" : mode === "24h" ? "24 hours" : "7 days"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {confirmClear ? (
+              <div className="mt-1 rounded-xl border border-danger/30 bg-danger/5 p-3">
+                <p className="text-sm text-fg">
+                  Clear this chat for you? Messages stay for the other participant and can&apos;t be
+                  recovered by you.
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    disabled={isClearing}
+                    onClick={() => {
+                      setActionError("");
+                      setIsClearing(true);
+                      clearConversation(conversationId)
+                        .then(() => {
+                          setConfirmClear(false);
+                          onCleared?.();
+                        })
+                        .catch((e) =>
+                          setActionError(e instanceof Error ? e.message : "Could not clear.")
+                        )
+                        .finally(() => setIsClearing(false));
+                    }}
+                    className="rounded-lg bg-danger px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                  >
+                    {isClearing ? "Clearing…" : "Clear chat"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isClearing}
+                    onClick={() => setConfirmClear(false)}
+                    className="rounded-lg bg-elevated px-3 py-1.5 text-xs font-medium text-muted transition-colors hover:text-fg"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmClear(true)}
+                className="flex min-h-11 w-full items-center gap-3 py-1 text-left transition-colors hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
+              >
+                <Eraser className="h-4 w-4 shrink-0 text-danger" aria-hidden />
+                <span className="text-sm font-medium text-danger">Clear chat</span>
+              </button>
+            )}
+
+            {actionError ? <p className="pt-1 text-xs text-danger">{actionError}</p> : null}
+          </div>
 
           {/* SECTION — quiet detail rows. Hidden entirely when nothing is known. */}
           {memberSince || viewerRole ? (

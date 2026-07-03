@@ -112,6 +112,48 @@ defmodule ApiGatewayWeb.ConversationController do
     end
   end
 
+  # USER-SCOPED soft-hides (nothing is deleted; only the caller's own participant row is written).
+  # "Clear chat for me": stamps cleared_before = now() on the caller's membership row.
+  def clear(conn, %{"conversation_id" => conversation_id}) do
+    with_own_participant(conn, fn user_id ->
+      SharedInfra.ConversationClient.clear_history(%{
+        "conversation_id" => conversation_id,
+        "user_id" => user_id
+      })
+    end)
+  end
+
+  # "Auto-delete messages" (off / 24h / 7d): sets the caller's rolling view window.
+  def auto_delete(conn, %{"conversation_id" => conversation_id} = params) do
+    with_own_participant(conn, fn user_id ->
+      SharedInfra.ConversationClient.set_auto_delete(%{
+        "conversation_id" => conversation_id,
+        "user_id" => user_id,
+        "mode" => params["mode"]
+      })
+    end)
+  end
+
+  # Shared session gate for the self-scoped ops above. Membership is enforced by the service (the
+  # UPDATE only matches the caller's own ACTIVE participant row → non-members get 403).
+  defp with_own_participant(conn, operation) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, response} <- operation.(session.user_id) do
+      json(conn, response)
+    else
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :not_participant} -> forbidden_membership(conn)
+      _ -> invalid_request(conn)
+    end
+  end
+
+  defp forbidden_membership(conn),
+    do: ErrorResponse.forbidden(conn, "conversation.not_participant", "Not a participant")
+
   def add_participant(conn, %{"conversation_id" => conversation_id} = params) do
     if conversation_persistence_enabled?() do
       add_participant_from_db(conn, conversation_id, params)

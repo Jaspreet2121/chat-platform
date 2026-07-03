@@ -50,6 +50,14 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Participants.add_participant(body(conn)))
   end
 
+  post "/internal/participants/clear_history" do
+    send_result(conn, ConversationService.Participants.clear_history(body(conn)))
+  end
+
+  post "/internal/participants/set_auto_delete" do
+    send_result(conn, ConversationService.Participants.set_auto_delete(body(conn)))
+  end
+
   post "/internal/participants/remove" do
     send_result(conn, ConversationService.Participants.remove_participant(body(conn)))
   end

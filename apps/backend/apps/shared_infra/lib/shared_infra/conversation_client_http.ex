@@ -42,6 +42,12 @@ defmodule SharedInfra.ConversationClientHttp do
   @impl true
   def remove_participant(attrs), do: post("/internal/participants/remove", attrs)
 
+  @impl true
+  def clear_history(attrs), do: post("/internal/participants/clear_history", attrs)
+
+  @impl true
+  def set_auto_delete(attrs), do: post("/internal/participants/set_auto_delete", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs, unavailable: @unavailable)
   end
