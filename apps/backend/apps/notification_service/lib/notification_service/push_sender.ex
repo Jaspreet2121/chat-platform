@@ -29,27 +29,106 @@ defmodule NotificationService.PushSender do
   end
 
   defp deliver(attrs, recipients) do
-    payload = build_payload(attrs)
+    # Shared per-event context (one lookup each): the sender's name, the message preview, and — for a
+    # GROUP — the group name. Per-recipient bits (mute, unread count) are resolved in the loop.
+    context = message_context(attrs)
 
-    for recipient <- recipients,
-        subscription <- subscriptions_for(recipient) do
-      send_one(subscription, payload)
+    for recipient <- recipients, not muted?(attrs.conversation_id, recipient) do
+      payload = build_payload(context, attrs, unread_count(attrs.conversation_id, recipient))
+
+      for subscription <- subscriptions_for(recipient) do
+        send_one(subscription, payload)
+      end
     end
   rescue
     error -> Logger.warning("web-push deliver raised, ignored: #{inspect(error)}")
   end
 
-  # Chrome collapses notifications sharing a tag — tag by conversation so a burst shows once.
-  defp build_payload(attrs) do
+  defp message_context(attrs) do
     %{body: body, message_type: message_type, content_type: content_type} =
       message_preview_fields(attrs.message_id)
 
+    %{
+      sender: sender_name(attrs.sender_user_id),
+      preview: preview(body, message_type, content_type),
+      group_name: group_name(attrs.conversation_id)
+    }
+  end
+
+  # Per-recipient payload. DM → title = sender, body = preview. GROUP → "Sender in GroupName" as the
+  # title (who + where), preview as the body. `unread` lets the SW collapse a burst into "N new
+  # messages" (the tag already coalesces same-conversation notifications). No avatar (presign/expiry).
+  defp build_payload(context, attrs, unread) do
+    title =
+      if context.group_name,
+        do: "#{context.sender} in #{context.group_name}",
+        else: context.sender
+
     Jason.encode!(%{
-      title: sender_name(attrs.sender_user_id),
-      body: preview(body, message_type, content_type),
+      title: title,
+      body: context.preview,
       tag: "conversation:#{attrs.conversation_id}",
-      data: %{conversation_id: attrs.conversation_id, message_id: attrs.message_id}
+      data: %{
+        conversation_id: attrs.conversation_id,
+        message_id: attrs.message_id,
+        unread: unread
+      }
     })
+  end
+
+  # WEB-PUSH mute: skip a recipient whose participant row for this conversation is muted right now
+  # (muted_until > now(); 'infinity' = always). In-app notification rows are unaffected.
+  defp muted?(conversation_id, user_id) do
+    case Repo.query(
+           "SELECT 1 FROM conversation_participants " <>
+             "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid " <>
+             "AND muted_until IS NOT NULL AND muted_until > now()",
+           [conversation_id, user_id]
+         ) do
+      {:ok, %{num_rows: n}} -> n > 0
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  # The recipient's current unread count for this conversation (their read receipts + clear/auto-delete
+  # window respected) — used for the collapse label. Best-effort: on any error, 1 (show the single msg).
+  defp unread_count(conversation_id, user_id) do
+    case Repo.query(
+           "SELECT count(*) FROM messages m " <>
+             "JOIN conversation_participants cp " <>
+             "  ON cp.conversation_id = m.conversation_id AND cp.user_id = $2::text::uuid " <>
+             "WHERE m.conversation_id = $1::text::uuid AND m.deleted_at IS NULL " <>
+             "AND m.sender_user_id <> $2::text::uuid " <>
+             "AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before) " <>
+             "AND (cp.auto_delete_seconds IS NULL " <>
+             "     OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds)) " <>
+             "AND NOT EXISTS (SELECT 1 FROM message_receipts r " <>
+             "  WHERE r.conversation_id = m.conversation_id AND r.message_id = m.message_id " <>
+             "  AND r.user_id = $2::text::uuid AND (r.status = 'read' OR r.read_at IS NOT NULL))",
+           [conversation_id, user_id]
+         ) do
+      {:ok, %{rows: [[count]]}} when is_integer(count) and count > 0 -> count
+      _ -> 1
+    end
+  rescue
+    _ -> 1
+  end
+
+  # Group name for the "Sender in GroupName" title; nil for a DM (no group_profiles row).
+  defp group_name(conversation_id) do
+    case Repo.query(
+           "SELECT gp.name FROM conversations c " <>
+             "LEFT JOIN group_profiles gp ON gp.conversation_id = c.id " <>
+             "WHERE c.id = $1::text::uuid AND c.type = 'group'",
+           [conversation_id]
+         ) do
+      {:ok, %{rows: [[name]]}} when is_binary(name) and name != "" -> name
+      _ -> nil
+    end
+  rescue
+    _ -> nil
   end
 
   defp send_one(%{id: id, endpoint: endpoint, p256dh: p256dh, auth: auth}, payload) do

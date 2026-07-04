@@ -134,6 +134,17 @@ defmodule ApiGatewayWeb.ConversationController do
     end)
   end
 
+  # "Mute notifications" (off / 8h / 1w / always): suppresses WEB-PUSH for the caller in this chat.
+  def mute(conn, %{"conversation_id" => conversation_id} = params) do
+    with_own_participant(conn, fn user_id ->
+      SharedInfra.ConversationClient.set_mute(%{
+        "conversation_id" => conversation_id,
+        "user_id" => user_id,
+        "mode" => params["mode"]
+      })
+    end)
+  end
+
   # Shared session gate for the self-scoped ops above. Membership is enforced by the service (the
   # UPDATE only matches the caller's own ACTIVE participant row → non-members get 403).
   defp with_own_participant(conn, operation) do

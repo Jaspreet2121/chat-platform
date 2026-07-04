@@ -130,6 +130,7 @@ defmodule ApiGatewayWeb.Router do
     # Shared-media gallery (membership-gated filtered read).
     get "/:conversation_id/media", MessageController, :media
     put "/:conversation_id/auto-delete", ConversationController, :auto_delete
+    put "/:conversation_id/mute", ConversationController, :mute
     delete "/:conversation_id/participants/:user_id", ConversationController, :remove_participant
   end
 

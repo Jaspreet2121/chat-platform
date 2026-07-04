@@ -43,4 +43,7 @@ defmodule ConversationService.ConversationClientInProcess do
 
   @impl true
   def set_auto_delete(attrs), do: Participants.set_auto_delete(attrs)
+
+  @impl true
+  def set_mute(attrs), do: Participants.set_mute(attrs)
 end

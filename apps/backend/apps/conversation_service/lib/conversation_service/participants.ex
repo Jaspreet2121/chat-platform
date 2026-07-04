@@ -70,6 +70,38 @@ defmodule ConversationService.Participants do
     end
   end
 
+  # Mute modes → the `muted_until` SET clause. "always" = 'infinity' (never < now()); off = NULL.
+  @mute_clauses %{
+    "off" => "muted_until = NULL",
+    "8h" => "muted_until = now() + interval '8 hours'",
+    "1w" => "muted_until = now() + interval '7 days'",
+    "always" => "muted_until = 'infinity'"
+  }
+
+  # "Mute notifications": set the CALLER's muted_until on their own participant row. Suppresses
+  # WEB-PUSH for this conversation while muted (PushSender skips muted recipients). Read marker only —
+  # nothing else changes; clauses come ONLY from the fixed map (no user input interpolated).
+  def set_mute(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, user_id} <- required_attr(attrs, "user_id"),
+         {:ok, set_clause} <- mute_clause(attrs) do
+      if conversation_persistence_enabled?() do
+        update_own_participant(set_clause, conversation_id, user_id, fn ->
+          %{conversation_id: conversation_id, user_id: user_id, mode: attrs["mode"]}
+        end)
+      else
+        {:ok, %{conversation_id: conversation_id, user_id: user_id, mode: attrs["mode"]}}
+      end
+    end
+  end
+
+  defp mute_clause(attrs) do
+    case Map.fetch(@mute_clauses, to_string(attrs["mode"])) do
+      {:ok, clause} -> {:ok, clause}
+      :error -> {:error, :invalid_request}
+    end
+  end
+
   # seconds comes ONLY from the fixed mode map (never interpolated user input).
   defp auto_delete_seconds(attrs) do
     case Map.fetch(@auto_delete_modes, to_string(attrs["mode"])) do

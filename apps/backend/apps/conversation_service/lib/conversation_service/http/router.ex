@@ -58,6 +58,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Participants.set_auto_delete(body(conn)))
   end
 
+  post "/internal/participants/set_mute" do
+    send_result(conn, ConversationService.Participants.set_mute(body(conn)))
+  end
+
   post "/internal/participants/remove" do
     send_result(conn, ConversationService.Participants.remove_participant(body(conn)))
   end

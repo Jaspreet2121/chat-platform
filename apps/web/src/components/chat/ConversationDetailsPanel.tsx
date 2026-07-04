@@ -9,19 +9,21 @@ import {
   Image as ImageIcon,
   Link2,
   Play,
+  BellOff,
   Star,
   Timer,
   Users,
   X
 } from "lucide-react";
-import type { AutoDeleteMode, ConversationDetail, Message } from "@/lib/api";
+import type { AutoDeleteMode, ConversationDetail, Message, MuteMode } from "@/lib/api";
 import {
   clearConversation,
   getMediaDownloadUrl,
   getPeerContact,
   listConversationMedia,
   listStarred,
-  setConversationAutoDelete
+  setConversationAutoDelete,
+  setConversationMute
 } from "@/lib/api";
 import { Avatar, IconButton } from "@/components";
 import { cn } from "@/lib/cn";
@@ -117,6 +119,10 @@ export function ConversationDetailsPanel({
   const [isClearing, setIsClearing] = useState(false);
   const [autoDelete, setAutoDelete] = useState<AutoDeleteMode | null>(null);
   const [isSavingAutoDelete, setIsSavingAutoDelete] = useState(false);
+  // Notification mute (per-conversation; suppresses web-push). Unknown until the user sets it — the
+  // control reflects the last choice made this session (server state isn't surfaced in the panel yet).
+  const [mute, setMute] = useState<MuteMode>("off");
+  const [isSavingMute, setIsSavingMute] = useState(false);
   const [actionError, setActionError] = useState("");
 
   // Reset transient state when the panel closes or the conversation changes.
@@ -153,11 +159,13 @@ export function ConversationDetailsPanel({
   useEffect(() => {
     if (!isOpen || !conversationId) return;
     let active = true;
-    // Reset deferred (timer) so no setState runs synchronously in the effect body.
+    // Reset deferred (timer) so no setState runs synchronously in the effect body. Mute is
+    // per-conversation, so reset its local reflection here too (same conversationId dependency).
     const reset = setTimeout(() => {
       if (active) {
         setGallery(null);
         setGalleryCursor(null);
+        setMute("off");
       }
     }, 0);
     listConversationMedia(conversationId, { limit: 18 })
@@ -445,6 +453,41 @@ export function ConversationDetailsPanel({
           {/* SECTION — message visibility (user-scoped: affects ONLY this account's view; the other
               participants keep their copy). Clear = hide everything so far; auto-delete = rolling window. */}
           <div className="border-b border-border px-5 py-3">
+            <div className="flex min-h-11 items-center gap-3 py-1">
+              <BellOff className="h-4 w-4 shrink-0 text-muted" aria-hidden />
+              <span className="flex-1 text-sm text-muted">Mute notifications</span>
+              <div className="flex gap-1" role="radiogroup" aria-label="Mute notifications">
+                {(["off", "8h", "1w", "always"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={mute === mode}
+                    disabled={isSavingMute}
+                    onClick={() => {
+                      setActionError("");
+                      setIsSavingMute(true);
+                      setConversationMute(conversationId, mode)
+                        .then(() => setMute(mode))
+                        .catch((e) =>
+                          setActionError(e instanceof Error ? e.message : "Could not update.")
+                        )
+                        .finally(() => setIsSavingMute(false));
+                    }}
+                    className={cn(
+                      "rounded-full px-2.5 py-1 text-xs transition-all duration-150",
+                      "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring disabled:opacity-50",
+                      mute === mode
+                        ? "accent-gradient font-medium text-white shadow-accent-glow"
+                        : "bg-elevated text-muted hover:text-fg"
+                    )}
+                  >
+                    {mode === "off" ? "Off" : mode === "8h" ? "8h" : mode === "1w" ? "1 week" : "Always"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className="flex min-h-11 items-center gap-3 py-1">
               <Timer className="h-4 w-4 shrink-0 text-muted" aria-hidden />
               <span className="flex-1 text-sm text-muted">Auto-delete messages</span>

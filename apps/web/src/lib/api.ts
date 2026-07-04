@@ -620,6 +620,16 @@ export function clearConversation(conversationId: string) {
   );
 }
 
+export type MuteMode = "off" | "8h" | "1w" | "always";
+
+// Mute web-push notifications for THIS conversation (per-user). off = unmute; always = indefinite.
+export function setConversationMute(conversationId: string, mode: MuteMode) {
+  return request<{ mode: MuteMode }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/mute`,
+    { method: "PUT", body: JSON.stringify({ mode }) }
+  );
+}
+
 export type AutoDeleteMode = "off" | "24h" | "7d";
 
 export function setConversationAutoDelete(conversationId: string, mode: AutoDeleteMode) {

@@ -23,11 +23,17 @@ self.addEventListener("push", (event) => {
   }
 
   const title = payload.title || "Growblic";
+  const data = payload.data || {};
+  // Collapse a burst: same-conversation notifications share a tag, so only the latest shows. When the
+  // recipient has more than one unread in this chat, say so instead of just the single message.
+  const unread = typeof data.unread === "number" ? data.unread : 1;
+  const body = unread > 1 ? `${unread} new messages` : payload.body || "New message";
+
   event.waitUntil(
     self.registration.showNotification(title, {
-      body: payload.body || "New message",
+      body,
       tag: payload.tag,
-      data: payload.data || {},
+      data,
       icon: "/icon-192.png",
       badge: "/icon-192.png"
     })
