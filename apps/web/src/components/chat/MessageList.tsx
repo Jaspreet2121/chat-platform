@@ -122,6 +122,19 @@ export function MessageList({
     container.scrollTo({ top: container.scrollHeight, behavior: "smooth" });
   }, [messages.length, scrollTarget]);
 
+  // Keep the newest message visible when the LIST ITSELF resizes (keyboard opening shrinks the shell):
+  // if the user was pinned near the bottom, re-pin after the resize. Container-confined (never window).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
+      if (distance < 160) container.scrollTop = container.scrollHeight;
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [hasConversation, isLoading, messages.length]);
+
   // Scroll to + briefly highlight a search/starred target once it's loaded. Nonce-guarded so it fires
   // once per jump (not on every subsequent message). If the target isn't in the loaded page (an older
   // message beyond the fetched window), we do nothing — "load around a message" is out of scope here.

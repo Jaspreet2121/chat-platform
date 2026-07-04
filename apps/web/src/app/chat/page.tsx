@@ -849,22 +849,36 @@ export default function ChatPage() {
     ? "error"
     : "neutral";
 
-  // iOS keyboard-dismiss guard: Safari PANS the document for the keyboard instead of resizing the
-  // layout viewport, and any residual pan offset after dismiss clips the app's top (header cut). When
-  // the visual viewport returns to (near) full height — keyboard closed — zero out any stray offsets.
+  // Keyboard handling (iOS Safari pans the visual viewport instead of resizing the layout):
+  //  - OPEN: pin the app shell to the VISUAL viewport height so the composer's bottom sits exactly on
+  //    the keyboard's top (typed text stays visible), and keep the document un-panned (scroll 0).
+  //  - CLOSED: release the pin and zero any residual pan offset (the earlier top-clip guard).
+  // The message list keeps itself pinned to the newest message via its own ResizeObserver.
+  const [keyboardHeight, setKeyboardHeight] = useState<number | null>(null);
   useEffect(() => {
     const viewport = window.visualViewport;
     if (!viewport) return;
-    function onResize() {
+    function sync() {
       if (!viewport) return;
-      const keyboardClosed = window.innerHeight - viewport.height < 80;
-      if (keyboardClosed && (window.scrollY !== 0 || document.documentElement.scrollTop !== 0)) {
-        window.scrollTo(0, 0);
-        document.documentElement.scrollTop = 0;
+      const inset = window.innerHeight - viewport.height;
+      if (inset > 80) {
+        setKeyboardHeight(viewport.height);
+        // Content now fits above the keyboard — defeat Safari's pan so the header stays visible too.
+        requestAnimationFrame(() => window.scrollTo(0, 0));
+      } else {
+        setKeyboardHeight(null);
+        if (window.scrollY !== 0 || document.documentElement.scrollTop !== 0) {
+          window.scrollTo(0, 0);
+          document.documentElement.scrollTop = 0;
+        }
       }
     }
-    viewport.addEventListener("resize", onResize);
-    return () => viewport.removeEventListener("resize", onResize);
+    viewport.addEventListener("resize", sync);
+    viewport.addEventListener("scroll", sync);
+    return () => {
+      viewport.removeEventListener("resize", sync);
+      viewport.removeEventListener("scroll", sync);
+    };
   }, []);
 
   const hasUnread = conversations.some((c) => (c.unread_count ?? 0) > 0);
