@@ -29,6 +29,13 @@ self.addEventListener("push", (event) => {
   const unread = typeof data.unread === "number" ? data.unread : 1;
   const body = unread > 1 ? `${unread} new messages` : payload.body || "New message";
 
+  // App-icon badge (installed PWA, closed): set it to the recipient's total unread from the payload.
+  // The app reconciles the true total authoritatively whenever it's focused, so this only needs to be
+  // close enough while closed. Feature-detected — a no-op where the Badging API is unsupported.
+  if (typeof data.badgeCount === "number" && "setAppBadge" in self.navigator) {
+    self.navigator.setAppBadge(data.badgeCount).catch(() => {});
+  }
+
   event.waitUntil(
     self.registration.showNotification(title, {
       body,

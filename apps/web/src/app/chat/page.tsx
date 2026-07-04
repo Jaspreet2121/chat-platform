@@ -900,6 +900,20 @@ export default function ChatPage() {
     ? "error"
     : "neutral";
 
+  // PWA app-icon badge (Badging API) — AUTHORITATIVE reconciler. Whenever the unread total changes
+  // while the app is open/focused, set the badge to the real total (or clear it at zero — which also
+  // covers "opened the last unread chat"). This fixes any drift left by the SW's push-time estimate.
+  // Feature-detected → no-op where unsupported (older iOS, non-installed browsers).
+  useEffect(() => {
+    if (!("setAppBadge" in navigator)) return;
+    const total = conversations.reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
+    if (total > 0) {
+      void navigator.setAppBadge(total).catch(() => undefined);
+    } else {
+      void navigator.clearAppBadge?.().catch(() => undefined);
+    }
+  }, [conversations]);
+
   // IN-APP notifications: join MY OWN user topic once per session. The backend mirrors
   // message_created for every conversation I participate in onto it — so messages in chats I'm NOT
   // viewing produce a toast + a live unread bump (never for my own sends; never for the open chat,

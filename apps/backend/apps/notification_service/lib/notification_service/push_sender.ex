@@ -34,7 +34,13 @@ defmodule NotificationService.PushSender do
     context = message_context(attrs)
 
     for recipient <- recipients, not muted?(attrs.conversation_id, recipient) do
-      payload = build_payload(context, attrs, unread_count(attrs.conversation_id, recipient))
+      payload =
+        build_payload(
+          context,
+          attrs,
+          unread_count(attrs.conversation_id, recipient),
+          total_unread_count(recipient)
+        )
 
       for subscription <- subscriptions_for(recipient) do
         send_one(subscription, payload)
@@ -57,8 +63,10 @@ defmodule NotificationService.PushSender do
 
   # Per-recipient payload. DM → title = sender, body = preview. GROUP → "Sender in GroupName" as the
   # title (who + where), preview as the body. `unread` lets the SW collapse a burst into "N new
-  # messages" (the tag already coalesces same-conversation notifications). No avatar (presign/expiry).
-  defp build_payload(context, attrs, unread) do
+  # messages" (the tag already coalesces same-conversation notifications). `badgeCount` is the
+  # recipient's TOTAL unread across all conversations → the SW sets the PWA app-icon badge while the
+  # app is closed (the app itself reconciles authoritatively on focus). No avatar (presign/expiry).
+  defp build_payload(context, attrs, unread, badge_count) do
     title =
       if context.group_name,
         do: "#{context.sender} in #{context.group_name}",
@@ -71,7 +79,8 @@ defmodule NotificationService.PushSender do
       data: %{
         conversation_id: attrs.conversation_id,
         message_id: attrs.message_id,
-        unread: unread
+        unread: unread,
+        badgeCount: badge_count
       }
     })
   end
@@ -114,6 +123,33 @@ defmodule NotificationService.PushSender do
     end
   rescue
     _ -> 1
+  end
+
+  # The recipient's TOTAL unread across ALL their active conversations (same per-conversation window
+  # rules, summed) — the SW sets this as the app-icon badge while the app is closed. Best-effort: on
+  # any error, 0 (the app reconciles the true total on next focus, so a miss self-corrects).
+  defp total_unread_count(user_id) do
+    case Repo.query(
+           "SELECT count(*) FROM messages m " <>
+             "JOIN conversation_participants cp " <>
+             "  ON cp.conversation_id = m.conversation_id AND cp.user_id = $1::text::uuid " <>
+             "     AND cp.left_at IS NULL " <>
+             "WHERE m.deleted_at IS NULL AND m.sender_user_id <> $1::text::uuid " <>
+             # Muted chats still count toward the badge (mute silences the alert, not the count) —
+             # matches the app-side reconciler which sums the chat-list unread without a mute filter.
+             "AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before) " <>
+             "AND (cp.auto_delete_seconds IS NULL " <>
+             "     OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds)) " <>
+             "AND NOT EXISTS (SELECT 1 FROM message_receipts r " <>
+             "  WHERE r.conversation_id = m.conversation_id AND r.message_id = m.message_id " <>
+             "  AND r.user_id = $1::text::uuid AND (r.status = 'read' OR r.read_at IS NOT NULL))",
+           [user_id]
+         ) do
+      {:ok, %{rows: [[count]]}} when is_integer(count) and count >= 0 -> count
+      _ -> 0
+    end
+  rescue
+    _ -> 0
   end
 
   # Group name for the "Sender in GroupName" title; nil for a DM (no group_profiles row).
