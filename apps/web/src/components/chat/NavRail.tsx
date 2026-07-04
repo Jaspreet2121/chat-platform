@@ -15,6 +15,8 @@ import type { Session, UserProfile } from "@/lib/api";
 import { Avatar, ThemeToggle } from "@/components";
 import { cn } from "@/lib/cn";
 
+export type MobileView = "chats" | "calls" | "profile";
+
 export type NavRailProps = {
   session: Session | null;
   /** Hide the mobile tab bar (a conversation is open full-screen). Desktop rail is unaffected. */
@@ -22,6 +24,10 @@ export type NavRailProps = {
   currentProfile: UserProfile | null;
   /** Any conversation carries unread messages → notification dot on the Messages icon. */
   hasUnread: boolean;
+  /** The mobile screen currently shown (Messages / Calls-placeholder / Profile). */
+  activeView?: MobileView;
+  /** Switch the mobile screen (view tabs: Messages, Calls, You). */
+  onSelectView?: (view: MobileView) => void;
   /** Groups → open the new-conversation modal in group mode. */
   onNewGroup: () => void;
   /** Invite → focus the phone-number search (its empty state offers the WhatsApp/SMS invite). */
@@ -144,50 +150,85 @@ function MobileTabBar({
   currentProfile,
   hasUnread,
   mobileHidden,
+  activeView = "chats",
+  onSelectView,
   onNewGroup,
-  onInvite,
-  onOpenStarred,
-  onOpenProfile,
-  onLogout
+  onInvite
 }: NavRailProps) {
   if (mobileHidden) return null;
+
+  // Liquid-glass floating pill: translucent frosted surface over the periwinkle page, active tab
+  // carried on an accent-gradient pill. All five tabs flex evenly (basis-0 min-w-0) so 360px fits.
   const tabClass = (active: boolean) =>
     cn(
-      "relative flex h-full min-w-0 flex-1 basis-0 flex-col items-center justify-center gap-0.5 rounded-lg text-[10px] font-medium",
-      "outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white/60",
-      active ? "text-white" : "text-white/60"
+      "relative flex h-full min-w-0 flex-1 basis-0 flex-col items-center justify-center gap-0.5 rounded-2xl text-[10px] font-medium",
+      "outline-none transition-all duration-200 ease-out-soft focus-visible:ring-2 focus-visible:ring-brand-ring",
+      active ? "text-white" : "text-muted hover:text-fg active:scale-95"
     );
+
+  const activePill = (
+    <span
+      className="accent-gradient absolute inset-x-1 inset-y-1 -z-10 rounded-2xl shadow-accent-glow animate-scale-in"
+      aria-hidden
+    />
+  );
 
   return (
     <nav
       aria-label="Main navigation"
-      className="rail-gradient fixed inset-x-0 bottom-0 z-40 flex h-[calc(60px+env(safe-area-inset-bottom))] items-stretch gap-0.5 px-1 pb-[env(safe-area-inset-bottom)] md:hidden"
+      className={cn(
+        "fixed inset-x-3 z-40 flex h-[64px] items-stretch gap-0.5 rounded-[26px] px-1.5 py-1 md:hidden",
+        "bottom-[max(0.75rem,env(safe-area-inset-bottom))]",
+        // Frosted glass: translucent surface + blur + hairline border + soft lifted shadow.
+        "border border-white/50 bg-white/70 shadow-elevated backdrop-blur-xl backdrop-saturate-150",
+        "dark:border-white/10 dark:bg-surface/70"
+      )}
     >
-      <span className={tabClass(true)} aria-current="page">
+      <button
+        type="button"
+        onClick={() => onSelectView?.("chats")}
+        aria-current={activeView === "chats" ? "page" : undefined}
+        className={tabClass(activeView === "chats")}
+      >
+        {activeView === "chats" ? activePill : null}
         <span className="relative">
           <MessageCircle className="h-5 w-5" aria-hidden />
           {hasUnread ? (
-            <span
-              className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-[#8de08a]"
-              aria-hidden
-            />
+            <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-[#8de08a]" aria-hidden />
           ) : null}
         </span>
         <span className="max-w-full truncate">Messages</span>
-      </span>
+      </button>
+
       <button type="button" onClick={onNewGroup} className={tabClass(false)}>
         <Users className="h-5 w-5" aria-hidden />
         <span className="max-w-full truncate">Groups</span>
       </button>
+
+      <button
+        type="button"
+        onClick={() => onSelectView?.("calls")}
+        aria-current={activeView === "calls" ? "page" : undefined}
+        className={tabClass(activeView === "calls")}
+      >
+        {activeView === "calls" ? activePill : null}
+        <Phone className="h-5 w-5" aria-hidden />
+        <span className="max-w-full truncate">Calls</span>
+      </button>
+
       <button type="button" onClick={onInvite} className={tabClass(false)}>
         <UserPlus className="h-5 w-5" aria-hidden />
         <span className="max-w-full truncate">Invite</span>
       </button>
-      <div className={tabClass(false)}>
-        <SettingsMenu onOpenStarred={onOpenStarred} onLogout={onLogout} direction="up" bare />
-      </div>
-      {session ? (
-        <button type="button" onClick={onOpenProfile} className={tabClass(false)}>
+
+      <button
+        type="button"
+        onClick={() => onSelectView?.("profile")}
+        aria-current={activeView === "profile" ? "page" : undefined}
+        className={tabClass(activeView === "profile")}
+      >
+        {activeView === "profile" ? activePill : null}
+        {session ? (
           <Avatar
             id={session.user_id}
             name={currentProfile?.display_name ?? undefined}
@@ -195,9 +236,11 @@ function MobileTabBar({
             size="sm"
             className="h-6 w-6 text-[9px]"
           />
-          <span className="max-w-full truncate">Profile</span>
-        </button>
-      ) : null}
+        ) : (
+          <UserPlus className="h-5 w-5" aria-hidden />
+        )}
+        <span className="max-w-full truncate">You</span>
+      </button>
     </nav>
   );
 }

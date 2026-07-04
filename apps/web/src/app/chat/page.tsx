@@ -40,7 +40,9 @@ import {
   ConversationSidebar,
   MessageList,
   MyProfileModal,
+  CallsComingSoon,
   NavRail,
+  ProfileTab,
   StarredPanel,
   StatusBanner
 } from "@/components/chat";
@@ -106,6 +108,8 @@ export default function ChatPage() {
   // Rail → sidebar signals: bump to open the new-conversation modal / focus the phone search.
   const [newConvNonce, setNewConvNonce] = useState(0);
   const [searchFocusNonce, setSearchFocusNonce] = useState(0);
+  // Mobile screen behind the tab bar: Messages (the list) / Calls placeholder / the "You" profile tab.
+  const [mobileView, setMobileView] = useState<"chats" | "calls" | "profile">("chats");
   const [status, setStatus] = useState("Loading session...");
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -886,7 +890,10 @@ export default function ChatPage() {
   return (
     // The app floats as one rounded card on a soft periwinkle page from xl up (the mock's depth);
     // below xl it fills the viewport edge-to-edge.
-    <main className="flex h-dvh overflow-hidden bg-bg xl:items-center xl:justify-center xl:p-5">
+    <main
+      className="flex h-dvh overflow-hidden bg-bg xl:items-center xl:justify-center xl:p-5"
+      style={keyboardHeight ? { height: keyboardHeight } : undefined}
+    >
       <div className="flex h-full w-full overflow-hidden max-md:pt-[env(safe-area-inset-top)] xl:max-w-[1440px] xl:rounded-2xl xl:border xl:border-border xl:shadow-elevated">
       {/* Desktop: thin indigo rail. Mobile: bottom tab bar (hidden while a chat is open full-screen). */}
       <NavRail
@@ -894,20 +901,49 @@ export default function ChatPage() {
         currentProfile={currentProfile}
         hasUnread={hasUnread}
         mobileHidden={Boolean(selectedConversationId)}
-        onNewGroup={() => setNewConvNonce((n) => n + 1)}
-        onInvite={() => setSearchFocusNonce((n) => n + 1)}
+        activeView={mobileView}
+        onSelectView={setMobileView}
+        onNewGroup={() => {
+          setMobileView("chats");
+          setNewConvNonce((n) => n + 1);
+        }}
+        onInvite={() => {
+          setMobileView("chats");
+          setSearchFocusNonce((n) => n + 1);
+        }}
         onOpenStarred={() => setIsStarredOpen(true)}
         onOpenProfile={() => setIsProfileOpen(true)}
         onLogout={handleLogout}
       />
+
+      {/* Mobile alternate views (Calls placeholder / Profile) — replace the list below md. */}
+      {!selectedConversationId && mobileView !== "chats" ? (
+        <div className="w-full shrink-0 md:hidden">
+          {mobileView === "profile" ? (
+            <ProfileTab
+              session={session}
+              currentProfile={currentProfile}
+              onEditProfile={() => setIsProfileOpen(true)}
+              onOpenStarred={() => setIsStarredOpen(true)}
+              onInvite={() => {
+                setMobileView("chats");
+                setSearchFocusNonce((n) => n + 1);
+              }}
+              onLogout={handleLogout}
+            />
+          ) : (
+            <CallsComingSoon />
+          )}
+        </div>
+      ) : null}
 
       {/* Sidebar — full width on mobile when no conversation is open (with tab-bar clearance), fixed
           pane at md+. */}
       <div
         className={cn(
           "w-full shrink-0 md:block md:w-[340px]",
-          "max-md:pb-[calc(60px+env(safe-area-inset-bottom))]",
-          selectedConversationId ? "hidden md:block" : "block"
+          "max-md:pb-[calc(84px+env(safe-area-inset-bottom))]",
+          selectedConversationId || mobileView !== "chats" ? "hidden md:block" : "block"
         )}
       >
         <ConversationSidebar
