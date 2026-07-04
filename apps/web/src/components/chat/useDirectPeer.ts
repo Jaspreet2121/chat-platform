@@ -69,6 +69,20 @@ export function useDirectPeerName(
   enabled: boolean,
   currentUserId?: string
 ): string | null {
+  const peer = useDirectPeer(conversationId, enabled, currentUserId);
+  return peer.name;
+}
+
+/**
+ * Full peer info for a direct conversation's row/header: id, display name, and the REAL avatar URL
+ * (presigned by the gateway on the profile response) — so list rows show the uploaded photo with the
+ * initials-gradient fallback. Same caches as useDirectPeerName (this supersedes it internally).
+ */
+export function useDirectPeer(
+  conversationId: string,
+  enabled: boolean,
+  currentUserId?: string
+): { peerId: string | null; name: string | null; avatarUrl: string | null } {
   const [detail, setDetail] = useState<ConversationDetail | null>(() =>
     enabled ? detailCache.get(conversationId) ?? null : null
   );
@@ -91,6 +105,10 @@ export function useDirectPeerName(
   const peerId = enabled ? pickDirectPeer(detail?.participants, currentUserId) : undefined;
   const peerProfile = useUserProfile(peerId ?? null);
 
-  if (!enabled || !peerId) return null;
-  return peerProfile?.display_name?.trim() || `#${peerId.slice(0, 8)}`;
+  if (!enabled || !peerId) return { peerId: null, name: null, avatarUrl: null };
+  return {
+    peerId,
+    name: peerProfile?.display_name?.trim() || `#${peerId.slice(0, 8)}`,
+    avatarUrl: peerProfile?.avatar_url ?? null
+  };
 }

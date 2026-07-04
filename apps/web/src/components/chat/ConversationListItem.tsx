@@ -6,7 +6,7 @@ import type { ConversationListItem as ConversationListItemData } from "@/lib/api
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { SPRING } from "@/lib/motion";
-import { useDirectPeerName } from "./useDirectPeer";
+import { useDirectPeer } from "./useDirectPeer";
 
 export type ConversationListItemProps = {
   conversation: ConversationListItemData;
@@ -42,9 +42,9 @@ export function ConversationListItem({
   // never the stored title first: the stored title is the peer name from the CREATOR's perspective, so
   // for chats the other party started it is the viewer's OWN name. Until derived (loading / no session
   // yet), fall back to the stored title, then a generic label. Groups keep their stored title.
-  const peerName = useDirectPeerName(conversation.conversation_id, isDirect, currentUserId);
+  const peer = useDirectPeer(conversation.conversation_id, isDirect, currentUserId);
   const title = isDirect
-    ? peerName || conversation.title || "Direct message"
+    ? peer.name || conversation.title || "Direct message"
     : conversation.title || conversation.conversation_id;
   const subtitle =
     conversation.last_message_preview || (isDirect ? "Direct message" : "Group chat");
@@ -72,7 +72,13 @@ export function ConversationListItem({
         />
       ) : null}
 
-      <Avatar id={conversation.conversation_id} name={title} />
+      {/* Real uploaded photo when the peer has one; deterministic gradient initials otherwise
+          (groups keep initials — no group avatar concept yet). */}
+      <Avatar
+        id={isDirect ? peer.peerId ?? conversation.conversation_id : conversation.conversation_id}
+        name={title}
+        imageUrl={isDirect ? peer.avatarUrl : null}
+      />
 
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
