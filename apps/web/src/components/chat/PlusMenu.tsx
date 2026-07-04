@@ -2,9 +2,11 @@
 
 import { ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, motion } from "framer-motion";
 import { Plus, Search, SquarePen } from "lucide-react";
 import { IconButton } from "@/components";
 import { cn } from "@/lib/cn";
+import { popMenu } from "@/lib/motion";
 
 export type PlusMenuProps = {
   /** Open the New conversation modal (Direct/Group). */
@@ -86,28 +88,44 @@ export function PlusMenu({ onNewChat, onSearchMessages }: PlusMenuProps) {
         <Plus className="h-5 w-5" aria-hidden />
       </IconButton>
 
-      {open && pos && typeof document !== "undefined"
+      {typeof document !== "undefined"
         ? createPortal(
-            <div
-              ref={menuRef}
-              role="menu"
-              aria-label="New conversation menu"
-              style={{ position: "fixed", top: pos.top, left: pos.left, width: MENU_WIDTH }}
-              className="z-[70] overflow-hidden rounded-2xl border border-border bg-surface/95 p-1.5 shadow-glow-sm backdrop-blur-xl animate-bubble-in"
-            >
-              <MenuItem
-                icon={<SquarePen className="h-4 w-4" aria-hidden />}
-                title="New chat"
-                subtitle="Start a direct or group chat"
-                onClick={() => choose(onNewChat)}
-              />
-              <MenuItem
-                icon={<Search className="h-4 w-4" aria-hidden />}
-                title="Search messages"
-                subtitle="Find within your conversations"
-                onClick={() => choose(onSearchMessages)}
-              />
-            </div>,
+            // AnimatePresence keeps the node mounted through its exit spring; the menu pops from the
+            // trigger's top-right corner (spring) and fades out faster than it enters.
+            <AnimatePresence>
+              {open && pos ? (
+                <motion.div
+                  ref={menuRef}
+                  role="menu"
+                  aria-label="New conversation menu"
+                  variants={popMenu}
+                  initial="hidden"
+                  animate="show"
+                  exit="exit"
+                  style={{
+                    position: "fixed",
+                    top: pos.top,
+                    left: pos.left,
+                    width: MENU_WIDTH,
+                    transformOrigin: "top right"
+                  }}
+                  className="z-[70] overflow-hidden rounded-2xl border border-border bg-surface/95 p-1.5 shadow-glow-sm backdrop-blur-xl"
+                >
+                  <MenuItem
+                    icon={<SquarePen className="h-4 w-4" aria-hidden />}
+                    title="New chat"
+                    subtitle="Start a direct or group chat"
+                    onClick={() => choose(onNewChat)}
+                  />
+                  <MenuItem
+                    icon={<Search className="h-4 w-4" aria-hidden />}
+                    title="Search messages"
+                    subtitle="Find within your conversations"
+                    onClick={() => choose(onSearchMessages)}
+                  />
+                </motion.div>
+              ) : null}
+            </AnimatePresence>,
             document.body
           )
         : null}

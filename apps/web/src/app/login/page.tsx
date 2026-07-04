@@ -6,11 +6,9 @@ import { ArrowLeft, ArrowRight, MessagesSquare, RotateCcw, ShieldCheck } from "l
 import { getMe, requestOtp, verifyOtp } from "@/lib/api";
 import { hasAccessToken, setSessionTokens } from "@/lib/session";
 import { AuthLayout, Button, Card, Input, LoginIdentityFields } from "@/components";
-import { cn } from "@/lib/cn";
 import { OnboardingStep } from "./OnboardingStep";
 
 type Step = "phone" | "code" | "onboarding";
-type Mode = "signin" | "signup";
 
 const HIGHLIGHTS = [
   "Secure one-time-passcode sign-in",
@@ -39,7 +37,6 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = safeRedirect(searchParams.get("redirect"));
-  const [mode, setMode] = useState<Mode>("signin");
   const [step, setStep] = useState<Step>("phone");
   const [destination, setDestination] = useState("");
   // Captured silently from the requestOtp response and passed to verifyOtp — never a visible field.
@@ -93,7 +90,7 @@ function LoginForm() {
   const sendOtp = useCallback(async () => {
     const normalizedDestination = destination.trim();
     if (!normalizedDestination) {
-      setError("Enter a phone number or email first.");
+      setError("Enter your phone number first.");
       return;
     }
 
@@ -207,7 +204,7 @@ function LoginForm() {
             </button>
 
             <div>
-              <h1 className="text-xl font-semibold tracking-tight text-fg">Enter your code</h1>
+              <h1 className="font-display text-2xl font-semibold tracking-tight text-fg">Enter your code</h1>
               <p className="mt-1 text-sm text-muted">
                 We sent a code via {deliveryMethod || "SMS"} to{" "}
                 <span className="font-medium text-fg">{destination.trim()}</span>.
@@ -271,42 +268,20 @@ function LoginForm() {
         </Card>
       ) : (
         <Card className="p-6 sm:p-7">
-          {/* Sign in / Sign up — same OTP path (auto-register); the choice sets the copy/expectation. */}
-          <div
-            role="tablist"
-            aria-label="Sign in or sign up"
-            className="mb-5 flex gap-1 rounded-xl border border-border bg-elevated p-1"
-          >
-            {(["signin", "signup"] as Mode[]).map((option) => (
-              <button
-                key={option}
-                type="button"
-                role="tab"
-                aria-selected={mode === option}
-                onClick={() => setMode(option)}
-                className={cn(
-                  "flex-1 rounded-lg px-3 py-1.5 text-sm font-medium transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-brand-ring",
-                  mode === option ? "bg-surface text-fg shadow-subtle" : "text-muted hover:text-fg"
-                )}
-              >
-                {option === "signin" ? "Sign in" : "Sign up"}
-              </button>
-            ))}
-          </div>
-
+          {/* One passwordless path: enter phone → OTP. The backend find-or-creates on verify, so there's
+              no sign-in/sign-up choice — new numbers get an account, returning numbers sign in. */}
           <div className="mb-5">
-            <h1 className="text-xl font-semibold tracking-tight text-fg">
-              {mode === "signup" ? "Create your account" : "Welcome back"}
+            <h1 className="font-display text-2xl font-semibold tracking-tight text-fg">
+              Enter your phone number
             </h1>
             <p className="mt-1 text-sm text-muted">
-              {mode === "signup"
-                ? "Enter your phone or email — we'll send a code to get you started."
-                : "Enter your phone or email — we'll send a code to sign you in."}
+              We&apos;ll text you a one-time code. No password — if you&apos;re new, your account is
+              created automatically.
             </p>
           </div>
 
           <form className="space-y-5" onSubmit={handleRequestOtp}>
-            <LoginIdentityFields onChange={setDestination} autoFocus />
+            <LoginIdentityFields onChange={setDestination} phoneOnly autoFocus />
 
             {error && <p className="text-sm text-danger">{error}</p>}
 
@@ -322,14 +297,7 @@ function LoginForm() {
           </form>
 
           <p className="mt-5 text-center text-xs text-faint">
-            {mode === "signup" ? "Already have an account? " : "New to Chat Platform? "}
-            <button
-              type="button"
-              onClick={() => setMode(mode === "signup" ? "signin" : "signup")}
-              className="font-medium text-brand-hover transition-colors hover:text-brand"
-            >
-              {mode === "signup" ? "Sign in" : "Create an account"}
-            </button>
+            By continuing you agree to receive a one-time verification code by SMS.
           </p>
         </Card>
       )}

@@ -213,7 +213,9 @@ function AdminLoginForm() {
     >
       <Card className="p-6 sm:p-7">
         <div className="mb-5">
-          <h1 className="text-xl font-semibold tracking-tight text-fg">Administrator sign in</h1>
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-fg">
+            Administrator sign in
+          </h1>
           <p className="mt-1 text-sm text-muted">Restricted area — administrators only.</p>
         </div>
 

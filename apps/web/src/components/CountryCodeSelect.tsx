@@ -9,12 +9,22 @@ export type CountryCodeSelectProps = {
   value: Country;
   onChange: (country: Country) => void;
   className?: string;
+  /**
+   * "flush" renders the trigger border-less with a right hairline divider, so it can sit INSIDE a single
+   * unified field container (the parent owns the border + focus ring). Behavior is unchanged.
+   */
+  variant?: "default" | "flush";
 };
 
 // A searchable country-code picker. Trigger shows the selected flag + dial code; opening reveals a
 // filterable list (by country name or dial code) of every country. Click / Enter selects; Esc or a
 // click outside closes.
-export function CountryCodeSelect({ value, onChange, className }: CountryCodeSelectProps) {
+export function CountryCodeSelect({
+  value,
+  onChange,
+  className,
+  variant = "default"
+}: CountryCodeSelectProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -67,7 +77,12 @@ export function CountryCodeSelect({ value, onChange, className }: CountryCodeSel
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={`Country code: ${value.name} ${value.dialCode}`}
-        className="flex h-11 items-center gap-1.5 rounded-xl border border-border bg-elevated px-3 text-sm text-fg outline-none transition-colors hover:border-border-strong focus:border-brand focus:ring-2 focus:ring-brand-ring"
+        className={cn(
+          "flex h-11 items-center gap-1.5 text-sm text-fg outline-none transition-colors",
+          variant === "flush"
+            ? "rounded-l-xl border-r border-border bg-transparent pl-3.5 pr-2.5 hover:bg-elevated"
+            : "rounded-xl border border-border bg-elevated px-3 hover:border-border-strong focus:border-brand focus:ring-2 focus:ring-brand-ring"
+        )}
       >
         <span className="text-base leading-none">{flagEmoji(value.iso2)}</span>
         <span className="tabular-nums">{value.dialCode}</span>

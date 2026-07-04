@@ -100,8 +100,9 @@ export function LoginIdentityFields({
     <div className="space-y-2">
       <div>
         <label className="mb-1.5 block text-sm font-medium text-muted">{phoneLabel}</label>
-        <div className="flex gap-2">
-          <CountryCodeSelect value={country} onChange={handleCountry} />
+        {/* One unified control: country selector + national number share a single border + focus ring. */}
+        <div className="flex items-stretch rounded-xl border border-border bg-elevated transition-colors focus-within:border-brand focus-within:ring-2 focus-within:ring-brand-ring">
+          <CountryCodeSelect value={country} onChange={handleCountry} variant="flush" />
           <input
             inputMode="tel"
             autoComplete="tel-national"
@@ -110,7 +111,7 @@ export function LoginIdentityFields({
             onChange={(event) => handleLocal(event.target.value)}
             autoFocus={autoFocus}
             aria-label={`${phoneLabel} (national number)`}
-            className="h-11 min-w-0 flex-1 rounded-xl border border-border bg-elevated px-4 text-fg placeholder:text-faint outline-none transition-colors focus:border-brand focus:ring-2 focus:ring-brand-ring"
+            className="h-11 min-w-0 flex-1 rounded-r-xl bg-transparent px-3.5 text-fg placeholder:text-faint outline-none"
           />
         </div>
         {showIncompleteHint ? (
