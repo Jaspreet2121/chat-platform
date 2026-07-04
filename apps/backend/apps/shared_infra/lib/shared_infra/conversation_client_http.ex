@@ -51,6 +51,9 @@ defmodule SharedInfra.ConversationClientHttp do
   @impl true
   def set_mute(attrs), do: post("/internal/participants/set_mute", attrs)
 
+  @impl true
+  def set_group_profile(attrs), do: post("/internal/conversations/set_group_profile", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs, unavailable: @unavailable)
   end

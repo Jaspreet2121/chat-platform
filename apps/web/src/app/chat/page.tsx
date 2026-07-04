@@ -890,7 +890,9 @@ export default function ChatPage() {
   const headerAvatarId = selectedIsDirect
     ? directPeerId ?? selectedConversationId
     : selectedConversationId;
-  const headerAvatarUrl = selectedIsDirect ? directPeerProfile?.avatar_url ?? null : null;
+  const headerAvatarUrl = selectedIsDirect
+    ? directPeerProfile?.avatar_url ?? null
+    : selectedConversation?.group_avatar_url ?? null;
   // The signed-in identity now lives in the sidebar; the "Opened …" line is implicit in the header.
   // Surface only transient, actionable status (sends, errors) as a subtle banner.
   const showBanner = Boolean(
@@ -1217,6 +1219,19 @@ export default function ChatPage() {
                 () => undefined
               );
             }
+          }}
+          onGroupUpdated={() => {
+            // Group name/photo changed → refresh the conversation detail (header/hero) + the list rows.
+            if (selectedConversationId) {
+              void getConversation(selectedConversationId).then(
+                (detail) => {
+                  setSelectedConversation(detail);
+                  primeConversationDetail(detail);
+                },
+                () => undefined
+              );
+            }
+            void refreshConversationList(selectedConversationId);
           }}
         />
 

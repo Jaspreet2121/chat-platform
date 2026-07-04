@@ -65,7 +65,7 @@ defmodule ApiGatewayWeb.ConversationController do
            params
            |> Map.put("user_id", session.user_id)
            |> SharedInfra.ConversationClient.list_conversations() do
-      json(conn, response)
+      json(conn, enrich_list_group_avatars(response))
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
@@ -100,7 +100,7 @@ defmodule ApiGatewayWeb.ConversationController do
            |> Map.put("conversation_id", conversation_id)
            |> Map.put("user_id", session.user_id)
            |> SharedInfra.ConversationClient.get_conversation() do
-      json(conn, response)
+      json(conn, with_group_avatar_url(response))
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
@@ -142,6 +142,86 @@ defmodule ApiGatewayWeb.ConversationController do
         "user_id" => user_id,
         "mode" => params["mode"]
       })
+    end)
+  end
+
+  # Group name/photo update — OWNER-gated by the conversation service (the caller must be an active
+  # owner/admin). Empty-string avatar fields clear the photo. Returns the fresh group_avatar_url.
+  def group_profile(conn, %{"conversation_id" => conversation_id} = params) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, response} <-
+           SharedInfra.ConversationClient.set_group_profile(%{
+             "conversation_id" => conversation_id,
+             "actor_user_id" => session.user_id,
+             "name" => params["name"],
+             "avatar_media_id" => params["avatar_media_id"],
+             "avatar_object_key" => params["avatar_object_key"]
+           }) do
+      json(conn, with_group_avatar_url(response))
+    else
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_forbidden} ->
+        ErrorResponse.forbidden(conn, "conversation.not_owner", "Only the group owner can change this")
+
+      _ -> invalid_request(conn)
+    end
+  end
+
+  # Presign a group's avatar (media_id + object_key) → group_avatar_url. Mirrors user with_avatar_url.
+  # Best-effort: missing fields / media error → the map is unchanged (no group_avatar_url).
+  defp with_group_avatar_url(map) when is_map(map) do
+    with media_id when is_binary(media_id) <-
+           Map.get(map, :group_avatar_media_id) || Map.get(map, "group_avatar_media_id"),
+         object_key when is_binary(object_key) <-
+           Map.get(map, :group_avatar_object_key) || Map.get(map, "group_avatar_object_key"),
+         owner when is_binary(owner) <-
+           Map.get(map, :conversation_id) || Map.get(map, "conversation_id"),
+         {:ok, download} <-
+           SharedInfra.MediaClient.get_download_url(%{
+             "media_id" => media_id,
+             "owner_user_id" => owner,
+             "object_key" => object_key
+           }),
+         url when is_binary(url) <-
+           Map.get(download, :download_url) || Map.get(download, "download_url") do
+      Map.put(map, :group_avatar_url, url)
+    else
+      _ -> map
+    end
+  end
+
+  defp with_group_avatar_url(other), do: other
+
+  # Presign group avatars for the LIST concurrently (only group rows with a photo). Bounded fan-out;
+  # a failed presign just leaves that row without a group_avatar_url (client falls back to initials).
+  defp enrich_list_group_avatars(%{conversations: conversations} = response)
+       when is_list(conversations) do
+    %{response | conversations: enrich_rows(conversations)}
+  end
+
+  defp enrich_list_group_avatars(%{"conversations" => conversations} = response)
+       when is_list(conversations) do
+    Map.put(response, "conversations", enrich_rows(conversations))
+  end
+
+  defp enrich_list_group_avatars(other), do: other
+
+  defp enrich_rows(conversations) do
+    conversations
+    |> Task.async_stream(&with_group_avatar_url/1,
+      max_concurrency: 8,
+      timeout: 5_000,
+      on_timeout: :kill_task,
+      zip_input_on_exit: true,
+      ordered: true
+    )
+    |> Enum.map(fn
+      {:ok, row} -> row
+      {:exit, {row, _reason}} -> row
     end)
   end
 

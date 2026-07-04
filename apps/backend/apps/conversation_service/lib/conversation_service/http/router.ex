@@ -62,6 +62,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Participants.set_mute(body(conn)))
   end
 
+  post "/internal/conversations/set_group_profile" do
+    send_result(conn, ConversationService.Conversations.set_group_profile(body(conn)))
+  end
+
   post "/internal/participants/remove" do
     send_result(conn, ConversationService.Participants.remove_participant(body(conn)))
   end

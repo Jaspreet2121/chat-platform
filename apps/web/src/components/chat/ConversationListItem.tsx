@@ -95,7 +95,7 @@ export function ConversationListItem({
       <Avatar
         id={isDirect ? peer.peerId ?? conversation.conversation_id : conversation.conversation_id}
         name={title}
-        imageUrl={isDirect ? peer.avatarUrl : null}
+        imageUrl={isDirect ? peer.avatarUrl : conversation.group_avatar_url}
       />
 
       <div className="min-w-0 flex-1">

@@ -46,6 +46,62 @@ defmodule ConversationService.PostgresIntegrationTest do
   end
 
   @tag :postgres_integration
+  test "group profile: created on group creation, owner-gated update + set/clear photo" do
+    owner_id = Ecto.UUID.generate()
+    member_id = Ecto.UUID.generate()
+    insert_user_auth_parent!(owner_id)
+    insert_user_auth_parent!(member_id)
+
+    {:ok, conv} =
+      Conversations.create_conversation(%{
+        "type" => "group",
+        "title" => "Launch Team",
+        "created_by" => owner_id,
+        "participant_user_ids" => [member_id]
+      })
+
+    cid = conv.conversation_id
+
+    # A group_profiles row is created on group creation (name from the title).
+    assert %ConversationService.Schemas.GroupProfile{name: "Launch Team"} =
+             ConversationService.GroupProfileStore.get_group_profile(cid)
+
+    # NON-owner cannot change the group profile.
+    assert {:error, :conversation_forbidden} =
+             Conversations.set_group_profile(%{
+               "conversation_id" => cid,
+               "actor_user_id" => member_id,
+               "name" => "Hijacked"
+             })
+
+    # Owner sets a photo.
+    media_id = Ecto.UUID.generate()
+
+    assert {:ok, set} =
+             Conversations.set_group_profile(%{
+               "conversation_id" => cid,
+               "actor_user_id" => owner_id,
+               "avatar_media_id" => media_id,
+               "avatar_object_key" => "media/group/photo.png"
+             })
+
+    assert set.avatar_media_id == media_id
+    assert set.avatar_object_key == "media/group/photo.png"
+
+    # Empty-string avatar fields REMOVE the photo (revert to initials).
+    assert {:ok, cleared} =
+             Conversations.set_group_profile(%{
+               "conversation_id" => cid,
+               "actor_user_id" => owner_id,
+               "avatar_media_id" => "",
+               "avatar_object_key" => ""
+             })
+
+    assert cleared.avatar_media_id == nil
+    assert cleared.avatar_object_key == nil
+  end
+
+  @tag :postgres_integration
   test "create_conversation rejects missing participants" do
     creator_id = Ecto.UUID.generate()
     insert_user_auth_parent!(creator_id)

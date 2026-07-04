@@ -133,6 +133,8 @@ defmodule ApiGatewayWeb.Router do
     get "/:conversation_id/media", MessageController, :media
     put "/:conversation_id/auto-delete", ConversationController, :auto_delete
     put "/:conversation_id/mute", ConversationController, :mute
+    # Group name/photo (owner-gated in the conversation service).
+    put "/:conversation_id/group-profile", ConversationController, :group_profile
     delete "/:conversation_id/participants/:user_id", ConversationController, :remove_participant
   end
 

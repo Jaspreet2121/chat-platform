@@ -4,6 +4,7 @@ defmodule ConversationService.Conversations do
   """
 
   alias ConversationService.ConversationStore
+  alias ConversationService.GroupProfileStore
   alias ConversationService.ParticipantEvents
   alias ConversationService.ParticipantStore
   alias ConversationService.Repo
@@ -244,11 +245,24 @@ defmodule ConversationService.Conversations do
         |> ParticipantStore.list_active_participants()
         |> Enum.map(&participant_response/1)
 
-      {:ok, conversation_detail_response(conversation, participants)}
+      {:ok, conversation_detail_response(conversation, participants, group_avatar(conversation))}
     end
   rescue
     Ecto.Query.CastError -> {:error, :conversation_invalid}
   end
+
+  # Group avatar id/key for the detail payload (the gateway presigns → group_avatar_url). nil for DMs.
+  defp group_avatar(%{type: "group", id: id}) do
+    case GroupProfileStore.get_group_profile(id) do
+      %{avatar_media_id: media_id, avatar_object_key: key} when is_binary(media_id) ->
+        %{avatar_media_id: media_id, avatar_object_key: key}
+
+      _ ->
+        nil
+    end
+  end
+
+  defp group_avatar(_), do: nil
 
   defp fetch_active_conversation(conversation_id) do
     case ConversationStore.get_conversation(conversation_id) do
@@ -266,7 +280,7 @@ defmodule ConversationService.Conversations do
     end
   end
 
-  defp conversation_detail_response(conversation, participants) do
+  defp conversation_detail_response(conversation, participants, group_avatar) do
     %{
       conversation_id: conversation.id,
       tenant_id: conversation.tenant_id,
@@ -276,7 +290,10 @@ defmodule ConversationService.Conversations do
       type: conversation.type,
       title: conversation.title,
       created_by: conversation.created_by,
-      participants: participants
+      participants: participants,
+      # Group photo id/key (nil for DMs / no photo) — the gateway presigns into group_avatar_url.
+      group_avatar_media_id: group_avatar && group_avatar.avatar_media_id,
+      group_avatar_object_key: group_avatar && group_avatar.avatar_object_key
     }
   end
 
@@ -325,10 +342,12 @@ defmodule ConversationService.Conversations do
                lm.body, lm.message_type, lm.metadata->>'content_type',
                to_char(COALESCE(lm.created_at, c.updated_at) AT TIME ZONE 'UTC',
                        'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-               COALESCE(un.unread, 0)::int
+               COALESCE(un.unread, 0)::int,
+               gp.avatar_media_id::text, gp.avatar_object_key
         FROM conversations c
         JOIN conversation_participants cp
           ON cp.conversation_id = c.id AND cp.user_id = $1 AND cp.left_at IS NULL
+        LEFT JOIN group_profiles gp ON gp.conversation_id = c.id
         LEFT JOIN LATERAL (
           SELECT m.body, m.message_type, m.metadata, m.created_at
           FROM messages m
@@ -361,7 +380,7 @@ defmodule ConversationService.Conversations do
         [user_uuid]
       )
 
-    Enum.map(rows, fn [id, type, title, body, message_type, content_type, activity_at, unread] ->
+    Enum.map(rows, fn [id, type, title, body, message_type, content_type, activity_at, unread, avatar_media_id, avatar_object_key] ->
       %{
         conversation_id: id,
         type: type,
@@ -369,7 +388,10 @@ defmodule ConversationService.Conversations do
         last_message_preview: preview_text(body, message_type),
         last_message_kind: message_kind(message_type, content_type),
         unread_count: unread,
-        updated_at: activity_at
+        updated_at: activity_at,
+        # Group photo id/key (nil for DMs / no photo) — the gateway presigns into group_avatar_url.
+        group_avatar_media_id: avatar_media_id,
+        group_avatar_object_key: avatar_object_key
       }
     end)
   end
@@ -482,7 +504,8 @@ defmodule ConversationService.Conversations do
     Repo.transaction(fn ->
       with {:ok, conversation} <- ConversationStore.create_conversation(base_attrs),
            :ok <-
-             add_initial_participants(conversation.id, created_by, participant_user_ids, now) do
+             add_initial_participants(conversation.id, created_by, participant_user_ids, now),
+           :ok <- maybe_create_group_profile(conversation) do
         # TRANSACTIONAL OUTBOX: emit conversation.created in the SAME transaction (same Repo) as the
         # conversation + participant inserts, scoped to the conversation's app_id. Atomic with the write.
         SharedInfra.WebhookOutbox.emit(
@@ -500,6 +523,89 @@ defmodule ConversationService.Conversations do
     |> case do
       {:ok, response} -> {:ok, response, :created}
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Groups get a group_profiles row on creation (name = title) so the name/photo can be edited later.
+  # Direct chats have no group profile. Best-effort inside the txn: a failure rolls the create back.
+  defp maybe_create_group_profile(%{type: "group"} = conversation) do
+    case GroupProfileStore.create_group_profile(%{
+           "conversation_id" => conversation.id,
+           "name" => conversation.title || "Group"
+         }) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp maybe_create_group_profile(_conversation), do: :ok
+
+  @doc """
+  OWNER-gated group name/photo update. The caller must be an active OWNER (or admin) of the group.
+  Empty-string avatar fields = REMOVE the photo (→ nil, mirroring the user-avatar clear); nil =
+  unchanged. Lazy-creates the group_profiles row for groups that predate it.
+  """
+  def set_group_profile(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, user_id} <- required_attr(attrs, "actor_user_id") do
+      if conversation_persistence_enabled?() do
+        set_group_profile_in_db(conversation_id, user_id, attrs)
+      else
+        {:ok, %{conversation_id: conversation_id, updated: true}}
+      end
+    end
+  end
+
+  defp set_group_profile_in_db(conversation_id, user_id, attrs) do
+    with {:ok, conversation} <- fetch_active_conversation(conversation_id),
+         :ok <- ensure_group(conversation),
+         {:ok, participant} <- fetch_active_participant(conversation_id, user_id),
+         :ok <- ensure_owner(participant),
+         changes when changes != %{} <- group_profile_changes(attrs),
+         {:ok, profile} <- upsert_group_profile(conversation, changes) do
+      {:ok,
+       %{
+         conversation_id: conversation_id,
+         name: profile.name,
+         avatar_media_id: profile.avatar_media_id,
+         avatar_object_key: profile.avatar_object_key
+       }}
+    else
+      %{} -> {:error, :conversation_invalid}
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :conversation_invalid}
+  end
+
+  defp ensure_group(%{type: "group"}), do: :ok
+  defp ensure_group(_), do: {:error, :conversation_invalid}
+
+  defp ensure_owner(%{role: role}) when role in ["owner", "admin"], do: :ok
+  defp ensure_owner(_), do: {:error, :conversation_forbidden}
+
+  # Whitelist name/avatar changes. "" on an avatar field → nil (clear); nil → omitted (unchanged).
+  defp group_profile_changes(attrs) do
+    [{"name", "name"}, {"avatar_media_id", "avatar_media_id"}, {"avatar_object_key", "avatar_object_key"}]
+    |> Enum.reduce(%{}, fn {src, dest}, acc ->
+      case Map.get(attrs, src) do
+        nil -> acc
+        "" when dest in ["avatar_media_id", "avatar_object_key"] -> Map.put(acc, dest, nil)
+        "" -> acc
+        value -> Map.put(acc, dest, value)
+      end
+    end)
+  end
+
+  defp upsert_group_profile(conversation, changes) do
+    case GroupProfileStore.get_group_profile(conversation.id) do
+      nil ->
+        GroupProfileStore.create_group_profile(
+          Map.merge(%{"conversation_id" => conversation.id, "name" => conversation.title || "Group"}, changes)
+        )
+
+      profile ->
+        GroupProfileStore.update_group_profile(profile, changes)
     end
   end
 

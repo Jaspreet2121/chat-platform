@@ -60,6 +60,8 @@ export type ConversationListItem = {
   conversation_id: string;
   type: string;
   title?: string | null;
+  // Group photo (presigned) — present only for groups with a photo; groups without → initials.
+  group_avatar_url?: string | null;
   // The last VISIBLE message for this caller (their clear/auto-delete window applies server-side):
   // text body in `last_message_preview`; media carries a kind ("image"|"video"|"audio"|"file") and a
   // null preview — the row renders a label from the kind.
@@ -76,6 +78,8 @@ export type ConversationDetail = {
   type: string;
   title?: string | null;
   created_by?: string;
+  // Group photo (presigned) for the info header / chat header; absent → gradient initials.
+  group_avatar_url?: string | null;
   participants?: Array<{
     user_id: string;
     role: string;
@@ -629,6 +633,21 @@ export function setConversationMute(conversationId: string, mode: MuteMode) {
   return request<{ mode: MuteMode }>(
     `/api/v1/conversations/${encodeURIComponent(conversationId)}/mute`,
     { method: "PUT", body: JSON.stringify({ mode }) }
+  );
+}
+
+// Owner-only: set a group's name / photo. Empty-string avatar fields REMOVE the photo (revert to
+// initials); omitted = unchanged. Returns the fresh group_avatar_url.
+export type GroupProfileInput = {
+  name?: string;
+  avatar_media_id?: string;
+  avatar_object_key?: string;
+};
+
+export function setGroupProfile(conversationId: string, input: GroupProfileInput) {
+  return request<{ conversation_id: string; name?: string; group_avatar_url?: string | null }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/group-profile`,
+    { method: "PUT", body: JSON.stringify(input) }
   );
 }
 

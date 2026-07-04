@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   ChevronDown,
@@ -10,6 +10,8 @@ import {
   Link2,
   Play,
   BellOff,
+  Camera,
+  Loader2,
   Star,
   Timer,
   Users,
@@ -18,13 +20,17 @@ import {
 import type { AutoDeleteMode, ConversationDetail, Message, MuteMode } from "@/lib/api";
 import {
   clearConversation,
+  completeMediaUpload,
+  createMediaUpload,
   getMediaDownloadUrl,
   getPeerContact,
   listConversationMedia,
   listStarred,
   setConversationAutoDelete,
-  setConversationMute
+  setConversationMute,
+  setGroupProfile
 } from "@/lib/api";
+import imageCompression from "browser-image-compression";
 import { Avatar, IconButton } from "@/components";
 import { cn } from "@/lib/cn";
 import { PublicProfileCard } from "./PublicProfileCard";
@@ -47,6 +53,8 @@ export type ConversationDetailsPanelProps = {
   onJumpToMessage?: (conversationId: string, messageId: string) => void;
   /** Called after a successful "clear chat" so the page refetches this user's (now-empty) timeline. */
   onCleared?: () => void;
+  /** Called after the group name/photo changes so the page refetches the conversation + list. */
+  onGroupUpdated?: () => void;
 };
 
 function shortId(id: string): string {
@@ -103,7 +111,8 @@ export function ConversationDetailsPanel({
   currentUserId,
   messages = [],
   onJumpToMessage,
-  onCleared
+  onCleared,
+  onGroupUpdated
 }: ConversationDetailsPanelProps) {
   const [profileUserId, setProfileUserId] = useState<string | null>(null);
   const [starred, setStarred] = useState<Message[] | null>(null);
@@ -117,6 +126,10 @@ export function ConversationDetailsPanel({
   const [galleryLoading, setGalleryLoading] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
+  // Group photo — local override for instant feedback; the page refetch keeps list/header in sync.
+  const [groupAvatarUrl, setGroupAvatarUrl] = useState<string | null>(null);
+  const [isSavingGroupPhoto, setIsSavingGroupPhoto] = useState(false);
+  const groupPhotoInputRef = useRef<HTMLInputElement>(null);
   const [autoDelete, setAutoDelete] = useState<AutoDeleteMode | null>(null);
   const [isSavingAutoDelete, setIsSavingAutoDelete] = useState(false);
   // Notification mute (per-conversation; suppresses web-push). Unknown until the user sets it — the
@@ -166,6 +179,7 @@ export function ConversationDetailsPanel({
         setGallery(null);
         setGalleryCursor(null);
         setMute("off");
+        setGroupAvatarUrl(null);
       }
     }, 0);
     listConversationMedia(conversationId, { limit: 18 })
@@ -199,6 +213,65 @@ export function ConversationDetailsPanel({
   const peerProfile = useUserProfile(peer?.user_id ?? null);
   const peerOnline = Boolean(peer && online.has(peer.user_id));
   const heroBio = isDirect ? peerProfile?.bio?.trim() || null : null;
+
+  // Group photo: owner-only edit (owner = the creator). Display uses the local override, else server.
+  const isGroupOwner =
+    !isDirect && Boolean(createdBy && currentUserId && createdBy === currentUserId);
+  const groupPhoto = groupAvatarUrl ?? conversation?.group_avatar_url ?? null;
+
+  async function handleGroupPhotoFile(file: File) {
+    if (!file.type.startsWith("image/")) {
+      setActionError("Please choose an image file.");
+      return;
+    }
+    setIsSavingGroupPhoto(true);
+    setActionError("");
+    try {
+      const compressed = await imageCompression(file, {
+        maxSizeMB: 0.5,
+        maxWidthOrHeight: 512,
+        initialQuality: 0.8,
+        useWebWorker: true
+      }).catch(() => file);
+      const contentType = compressed.type || file.type || "image/jpeg";
+      const upload = await createMediaUpload({
+        filename: file.name,
+        content_type: contentType,
+        size_bytes: compressed.size
+      });
+      const put = await fetch(upload.upload_url, {
+        method: "PUT",
+        body: compressed,
+        headers: { "Content-Type": contentType }
+      });
+      if (!put.ok) throw new Error(`Upload failed (${put.status})`);
+      await completeMediaUpload(upload.media_id, upload.object_key);
+      const result = await setGroupProfile(conversationId, {
+        avatar_media_id: upload.media_id,
+        avatar_object_key: upload.object_key
+      });
+      setGroupAvatarUrl(result.group_avatar_url ?? URL.createObjectURL(compressed));
+      onGroupUpdated?.();
+    } catch (uploadError) {
+      setActionError(uploadError instanceof Error ? uploadError.message : "Could not set the photo.");
+    } finally {
+      setIsSavingGroupPhoto(false);
+    }
+  }
+
+  async function handleRemoveGroupPhoto() {
+    setIsSavingGroupPhoto(true);
+    setActionError("");
+    try {
+      await setGroupProfile(conversationId, { avatar_media_id: "", avatar_object_key: "" });
+      setGroupAvatarUrl(null);
+      onGroupUpdated?.();
+    } catch (removeError) {
+      setActionError(removeError instanceof Error ? removeError.message : "Could not remove the photo.");
+    } finally {
+      setIsSavingGroupPhoto(false);
+    }
+  }
 
   // Direct-peer phone: fetched only for a DM (the endpoint 403s for anyone but the verified peer).
   const peerUserId = peer?.user_id ?? null;
@@ -293,14 +366,73 @@ export function ConversationDetailsPanel({
                   size="lg"
                   className="h-28 w-28 text-3xl shadow-elevated ring-4 ring-surface/80"
                 />
+              ) : isGroupOwner ? (
+                <button
+                  type="button"
+                  onClick={() => groupPhotoInputRef.current?.click()}
+                  disabled={isSavingGroupPhoto}
+                  className="group relative rounded-full outline-none focus-visible:ring-2 focus-visible:ring-brand-ring disabled:opacity-60"
+                  aria-label="Change group photo"
+                >
+                  <Avatar
+                    id={conversationId}
+                    name={title}
+                    imageUrl={groupPhoto}
+                    size="lg"
+                    className="h-28 w-28 text-3xl shadow-elevated ring-4 ring-surface/80"
+                  />
+                  <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
+                    {isSavingGroupPhoto ? (
+                      <Loader2 className="h-6 w-6 animate-spin text-white" aria-hidden />
+                    ) : (
+                      <Camera className="h-6 w-6 text-white" aria-hidden />
+                    )}
+                  </span>
+                </button>
               ) : (
                 <Avatar
                   id={conversationId}
                   name={title}
+                  imageUrl={groupPhoto}
                   size="lg"
                   className="h-28 w-28 text-3xl shadow-elevated ring-4 ring-surface/80"
                 />
               )}
+              {isGroupOwner ? (
+                <>
+                  <input
+                    ref={groupPhotoInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void handleGroupPhotoFile(file);
+                      event.target.value = "";
+                    }}
+                  />
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => groupPhotoInputRef.current?.click()}
+                      disabled={isSavingGroupPhoto}
+                      className="text-xs font-medium text-brand-hover transition-colors hover:text-brand disabled:opacity-60"
+                    >
+                      {groupPhoto ? "Change photo" : "Add photo"}
+                    </button>
+                    {groupPhoto ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleRemoveGroupPhoto()}
+                        disabled={isSavingGroupPhoto}
+                        className="text-xs font-medium text-danger transition-colors hover:opacity-80 disabled:opacity-60"
+                      >
+                        Remove photo
+                      </button>
+                    ) : null}
+                  </div>
+                </>
+              ) : null}
               <div className="min-w-0">
                 <p className="truncate text-xl font-semibold text-fg">{title}</p>
                 {isDirect ? (
