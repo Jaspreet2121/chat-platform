@@ -100,6 +100,8 @@ defmodule ApiGatewayWeb.Router do
     get "/:user_id/profile", UserController, :profile
     # Direct-peer contact info (phone) — server-verified shared-direct-conversation scope.
     get "/:user_id/peer-contact", UserController, :peer_contact
+    # PUBLIC avatar proxy (stable URL → 302 to a fresh presign) — for web-push notification icons.
+    get "/:user_id/avatar", UserController, :avatar
   end
 
   # WhatsApp-style invites: mint an invite code for a non-platform phone number (session-authed).

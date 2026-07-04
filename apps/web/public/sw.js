@@ -36,12 +36,17 @@ self.addEventListener("push", (event) => {
     self.navigator.setAppBadge(data.badgeCount).catch(() => {});
   }
 
+  // Sender's avatar as the icon when provided (a stable proxy URL that 302s to a fresh presign);
+  // fall back to the app icon. A broken/absent avatar URL never breaks the notification — the OS
+  // just renders the fallback. badge stays the app icon (the monochrome status-bar glyph).
+  const icon = typeof data.icon === "string" && data.icon ? data.icon : "/icon-192.png";
+
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
       tag: payload.tag,
       data,
-      icon: "/icon-192.png",
+      icon,
       badge: "/icon-192.png"
     })
   );

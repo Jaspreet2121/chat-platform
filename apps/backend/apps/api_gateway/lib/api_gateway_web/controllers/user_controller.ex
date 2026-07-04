@@ -32,6 +32,28 @@ defmodule ApiGatewayWeb.UserController do
   end
 
   @doc """
+  PUBLIC avatar proxy — a STABLE, unauthenticated URL that 302-redirects to a freshly-presigned avatar
+  download. Exists so a web-push notification ICON can point at a permanent URL: the presign happens
+  per-request, so the URL itself never expires. Serves ONLY the avatar image (302 to MinIO), nothing
+  else; no avatar / any error → 404 so the client falls back to the app icon. Must be public because
+  the OS/service-worker fetches notification icons with no session.
+
+  Privacy note: this makes avatars fetchable by user id without auth (already visible to any
+  authenticated peer via /profile; standard for chat notification icons). `profile_photo_visibility`
+  gating is the same tracked follow-up noted on `with_avatar_url`.
+  """
+  def avatar(conn, %{"user_id" => user_id}) do
+    with {:ok, profile} <- SharedInfra.UserClient.get_public_profile(%{"user_id" => user_id}),
+         %{avatar_url: url} when is_binary(url) <- with_avatar_url(profile) do
+      conn
+      |> put_resp_header("cache-control", "private, max-age=60")
+      |> redirect(external: url)
+    else
+      _ -> conn |> put_status(:not_found) |> json(%{error: %{code: "user.no_avatar"}})
+    end
+  end
+
+  @doc """
   DIRECT-PEER contact info (phone number) — the ONLY place a user's phone is exposed to another user.
 
   Privacy scope, verified SERVER-SIDE before any phone read:

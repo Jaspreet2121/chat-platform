@@ -65,15 +65,30 @@ defmodule NotificationService.PushSender do
     %{
       sender: sender_name(attrs.sender_user_id),
       preview: preview(body, message_type, content_type),
-      group_name: group_name(attrs.conversation_id)
+      group_name: group_name(attrs.conversation_id),
+      icon: avatar_icon_url(attrs.sender_user_id)
     }
+  end
+
+  # Sender's avatar as the notification icon: a STABLE public proxy URL on the gateway (it 302s to a
+  # fresh presign, so the URL never expires). Built from PHX_HOST; nil in dev / when the host isn't a
+  # real domain, so the SW falls back to the app icon. Broken/absent avatar → the proxy 404s → the SW
+  # still shows the notification with the app icon (a broken avatar never breaks the notification).
+  defp avatar_icon_url(sender_user_id) do
+    case System.get_env("PHX_HOST") do
+      host when is_binary(host) and host not in ["", "localhost"] ->
+        "https://#{host}/api/v1/users/#{sender_user_id}/avatar"
+
+      _ ->
+        nil
+    end
   end
 
   # Per-recipient payload. DM → title = sender, body = preview. GROUP → "Sender in GroupName" as the
   # title (who + where), preview as the body. `unread` lets the SW collapse a burst into "N new
   # messages" (the tag already coalesces same-conversation notifications). `badgeCount` is the
-  # recipient's TOTAL unread across all conversations → the SW sets the PWA app-icon badge while the
-  # app is closed (the app itself reconciles authoritatively on focus). No avatar (presign/expiry).
+  # recipient's TOTAL unread → the SW sets the PWA app-icon badge while closed (the app reconciles on
+  # focus). `icon` is the sender's avatar-proxy URL → the SW uses it, falling back to the app icon.
   defp build_payload(context, attrs, unread, badge_count) do
     title =
       if context.group_name,
@@ -88,7 +103,8 @@ defmodule NotificationService.PushSender do
         conversation_id: attrs.conversation_id,
         message_id: attrs.message_id,
         unread: unread,
-        badgeCount: badge_count
+        badgeCount: badge_count,
+        icon: context.icon
       }
     })
   end
