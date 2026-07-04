@@ -147,7 +147,11 @@ export default function ChatPage() {
         const response = await listConversations();
         const loadedConversations = response.conversations ?? [];
         setConversations(loadedConversations);
-        setSelectedConversationId(loadedConversations[0]?.conversation_id ?? "");
+        // Desktop: auto-open the first conversation (three-pane layout wants content in the chat
+        // pane). Mobile: land on the Messages LIST — the user taps a chat to open it.
+        setSelectedConversationId(
+          isDesktopViewport() ? loadedConversations[0]?.conversation_id ?? "" : ""
+        );
       } catch (error) {
         setStatus(error instanceof Error ? error.message : "Open /login first.");
         // Clear the (likely stale/expired) token BEFORE redirecting so the /login presence-guard
@@ -352,7 +356,7 @@ export default function ChatPage() {
     setSelectedConversationId(
       selectConversationId ||
         selectedConversationId ||
-        loadedConversations[0]?.conversation_id ||
+        (isDesktopViewport() ? loadedConversations[0]?.conversation_id : "") ||
         ""
     );
   }
@@ -853,35 +857,42 @@ export default function ChatPage() {
     ? "error"
     : "neutral";
 
-  // Keyboard handling (iOS Safari pans the visual viewport instead of resizing the layout):
-  //  - OPEN: pin the app shell to the VISUAL viewport height so the composer's bottom sits exactly on
-  //    the keyboard's top (typed text stays visible), and keep the document un-panned (scroll 0).
-  //  - CLOSED: release the pin and zero any residual pan offset (the earlier top-clip guard).
-  // The message list keeps itself pinned to the newest message via its own ResizeObserver.
-  const [keyboardHeight, setKeyboardHeight] = useState<number | null>(null);
+  // Keyboard handling — VISUAL-VIEWPORT TRACKING. iOS Safari overlays the keyboard and PANS the
+  // visual viewport (it also clamps/ignores window.scrollTo while an input is focused, which is why
+  // a height-only pin fails on device). The battle-tested fix: while the keyboard is up, glue the app
+  // to the visible area with BOTH height = visualViewport.height AND translateY(visualViewport.
+  // offsetTop), re-synced on every vv resize/scroll — wherever Safari pans, the app (composer, search
+  // bars, and fixed overlays inside it) always fills exactly the area above the keyboard. On close,
+  // release and zero any residual pan (the top-clip guard).
+  const [vvPin, setVvPin] = useState<{ height: number; offsetTop: number } | null>(null);
   useEffect(() => {
     const viewport = window.visualViewport;
     if (!viewport) return;
+    let raf = 0;
     function sync() {
       if (!viewport) return;
-      const inset = window.innerHeight - viewport.height;
-      if (inset > 80) {
-        setKeyboardHeight(viewport.height);
-        // Content now fits above the keyboard — defeat Safari's pan so the header stays visible too.
-        requestAnimationFrame(() => window.scrollTo(0, 0));
-      } else {
-        setKeyboardHeight(null);
-        if (window.scrollY !== 0 || document.documentElement.scrollTop !== 0) {
-          window.scrollTo(0, 0);
-          document.documentElement.scrollTop = 0;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const keyboardOpen = window.innerHeight - viewport.height > 80;
+        if (keyboardOpen) {
+          setVvPin({ height: viewport.height, offsetTop: viewport.offsetTop });
+        } else {
+          setVvPin(null);
+          if (window.scrollY !== 0 || document.documentElement.scrollTop !== 0) {
+            window.scrollTo(0, 0);
+            document.documentElement.scrollTop = 0;
+          }
         }
-      }
+      });
     }
     viewport.addEventListener("resize", sync);
     viewport.addEventListener("scroll", sync);
+    window.addEventListener("scroll", sync);
     return () => {
+      cancelAnimationFrame(raf);
       viewport.removeEventListener("resize", sync);
       viewport.removeEventListener("scroll", sync);
+      window.removeEventListener("scroll", sync);
     };
   }, []);
 
@@ -892,7 +903,11 @@ export default function ChatPage() {
     // below xl it fills the viewport edge-to-edge.
     <main
       className="flex h-dvh overflow-hidden bg-bg xl:items-center xl:justify-center xl:p-5"
-      style={keyboardHeight ? { height: keyboardHeight } : undefined}
+      style={
+        vvPin
+          ? { height: vvPin.height, transform: `translateY(${vvPin.offsetTop}px)` }
+          : undefined
+      }
     >
       <div className="flex h-full w-full overflow-hidden max-md:pt-[env(safe-area-inset-top)] xl:max-w-[1440px] xl:rounded-2xl xl:border xl:border-border xl:shadow-elevated">
       {/* Desktop: thin indigo rail. Mobile: bottom tab bar (hidden while a chat is open full-screen). */}
@@ -1085,6 +1100,11 @@ export default function ChatPage() {
       </div>
     </main>
   );
+}
+
+// md breakpoint — the same 768px the layout splits panes on. Guarded for SSR.
+function isDesktopViewport(): boolean {
+  return typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches;
 }
 
 function mergeMessage(messages: Message[], message: Message) {
