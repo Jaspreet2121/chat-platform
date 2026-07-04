@@ -54,6 +54,15 @@ defmodule SharedInfra.ConversationClientHttp do
   @impl true
   def set_group_profile(attrs), do: post("/internal/conversations/set_group_profile", attrs)
 
+  @impl true
+  def set_participant_role(attrs), do: post("/internal/participants/set_role", attrs)
+
+  @impl true
+  def set_group_settings(attrs), do: post("/internal/conversations/set_group_settings", attrs)
+
+  @impl true
+  def authorize_send(attrs), do: post("/internal/conversations/authorize_send", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs, unavailable: @unavailable)
   end

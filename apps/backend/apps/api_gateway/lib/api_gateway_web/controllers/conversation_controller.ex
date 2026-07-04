@@ -171,6 +171,54 @@ defmodule ApiGatewayWeb.ConversationController do
     end
   end
 
+  # OWNER-only: promote/demote a member (role: "admin" | "member"). The conversation service enforces
+  # that the caller is the owner and the target isn't the owner.
+  def set_participant_role(conn, %{"conversation_id" => conversation_id, "user_id" => user_id} = params) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, response} <-
+           SharedInfra.ConversationClient.set_participant_role(%{
+             "conversation_id" => conversation_id,
+             "user_id" => user_id,
+             "actor_user_id" => session.user_id,
+             "role" => params["role"]
+           }) do
+      json(conn, response)
+    else
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :participant_forbidden} ->
+        ErrorResponse.forbidden(conn, "conversation.not_owner", "Only the group owner can manage admins")
+
+      _ -> invalid_request(conn)
+    end
+  end
+
+  # OWNER or ADMIN: toggle group settings (only_admins_can_send).
+  def set_group_settings(conn, %{"conversation_id" => conversation_id} = params) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, response} <-
+           SharedInfra.ConversationClient.set_group_settings(%{
+             "conversation_id" => conversation_id,
+             "actor_user_id" => session.user_id,
+             "only_admins_can_send" => params["only_admins_can_send"]
+           }) do
+      json(conn, response)
+    else
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :participant_forbidden} ->
+        ErrorResponse.forbidden(conn, "conversation.not_admin", "Only an owner or admin can change this")
+
+      _ -> invalid_request(conn)
+    end
+  end
+
   # Presign a group's avatar (media_id + object_key) → group_avatar_url. Mirrors user with_avatar_url.
   # Best-effort: missing fields / media error → the map is unchanged (no group_avatar_url).
   defp with_group_avatar_url(map) when is_map(map) do

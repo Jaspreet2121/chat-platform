@@ -32,6 +32,12 @@ defmodule ApiGatewayWeb.MessageController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          :ok <- authorize_membership(conversation_id, session.user_id),
+         # SERVER-SIDE only-admins-can-send enforcement (a member can't bypass via the API).
+         {:ok, _} <-
+           SharedInfra.ConversationClient.authorize_send(%{
+             "conversation_id" => conversation_id,
+             "user_id" => session.user_id
+           }),
          {:ok, response} <-
            params
            |> Map.put("sender_user_id", session.user_id)
@@ -45,6 +51,9 @@ defmodule ApiGatewayWeb.MessageController do
       {:error, :message_unavailable} -> service_unavailable(conn)
       {:error, :conversation_unavailable} -> service_unavailable(conn)
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
+      {:error, :only_admins_can_send} ->
+        ErrorResponse.forbidden(conn, "group.only_admins_can_send", "Only admins can send messages")
+
       _ -> invalid_request(conn)
     end
   end

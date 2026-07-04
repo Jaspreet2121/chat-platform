@@ -49,4 +49,13 @@ defmodule ConversationService.ConversationClientInProcess do
 
   @impl true
   def set_group_profile(attrs), do: ConversationService.Conversations.set_group_profile(attrs)
+
+  @impl true
+  def set_participant_role(attrs), do: ConversationService.Participants.set_participant_role(attrs)
+
+  @impl true
+  def set_group_settings(attrs), do: ConversationService.Participants.set_group_settings(attrs)
+
+  @impl true
+  def authorize_send(attrs), do: ConversationService.Participants.authorize_send(attrs)
 end

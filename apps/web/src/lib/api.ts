@@ -80,6 +80,8 @@ export type ConversationDetail = {
   created_by?: string;
   // Group photo (presigned) for the info header / chat header; absent → gradient initials.
   group_avatar_url?: string | null;
+  // Group admin setting — when true, only owner/admin may send (server-enforced; UI locks the composer).
+  only_admins_can_send?: boolean;
   participants?: Array<{
     user_id: string;
     role: string;
@@ -643,6 +645,34 @@ export type GroupProfileInput = {
   avatar_media_id?: string;
   avatar_object_key?: string;
 };
+
+// Owner-only: promote a member → admin ("admin") or demote → member ("member").
+export function setParticipantRole(
+  conversationId: string,
+  userId: string,
+  role: "admin" | "member"
+) {
+  return request<{ conversation_id: string; user_id: string; role: string }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/participants/${encodeURIComponent(userId)}/role`,
+    { method: "PUT", body: JSON.stringify({ role }) }
+  );
+}
+
+// Owner/admin: remove a participant (soft-remove; the removed user loses access).
+export function removeParticipant(conversationId: string, userId: string) {
+  return request<{ removed: boolean }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/participants/${encodeURIComponent(userId)}`,
+    { method: "DELETE" }
+  );
+}
+
+// Owner/admin: toggle "only admins can send" for a group (server-enforced on send).
+export function setGroupOnlyAdminsCanSend(conversationId: string, value: boolean) {
+  return request<{ conversation_id: string; only_admins_can_send: boolean }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/settings`,
+    { method: "PUT", body: JSON.stringify({ only_admins_can_send: value }) }
+  );
+}
 
 export function setGroupProfile(conversationId: string, input: GroupProfileInput) {
   return request<{ conversation_id: string; name?: string; group_avatar_url?: string | null }>(

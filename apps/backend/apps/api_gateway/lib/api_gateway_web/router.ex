@@ -136,6 +136,9 @@ defmodule ApiGatewayWeb.Router do
     # Group name/photo (owner-gated in the conversation service).
     put "/:conversation_id/group-profile", ConversationController, :group_profile
     delete "/:conversation_id/participants/:user_id", ConversationController, :remove_participant
+    # Group admin: promote/demote (owner-only) + only-admins-can-send toggle (owner/admin).
+    put "/:conversation_id/participants/:user_id/role", ConversationController, :set_participant_role
+    put "/:conversation_id/settings", ConversationController, :set_group_settings
   end
 
   scope "/api/v1/conversations/:conversation_id/messages", ApiGatewayWeb do

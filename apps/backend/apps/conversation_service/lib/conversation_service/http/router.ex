@@ -66,6 +66,18 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Conversations.set_group_profile(body(conn)))
   end
 
+  post "/internal/participants/set_role" do
+    send_result(conn, ConversationService.Participants.set_participant_role(body(conn)))
+  end
+
+  post "/internal/conversations/set_group_settings" do
+    send_result(conn, ConversationService.Participants.set_group_settings(body(conn)))
+  end
+
+  post "/internal/conversations/authorize_send" do
+    send_result(conn, ConversationService.Participants.authorize_send(body(conn)))
+  end
+
   post "/internal/participants/remove" do
     send_result(conn, ConversationService.Participants.remove_participant(body(conn)))
   end

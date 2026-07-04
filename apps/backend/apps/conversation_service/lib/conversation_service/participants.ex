@@ -3,9 +3,11 @@ defmodule ConversationService.Participants do
   Conversation participant boundary.
   """
 
+  alias ConversationService.ConversationSettingsStore
   alias ConversationService.ConversationStore
   alias ConversationService.ParticipantEvents
   alias ConversationService.ParticipantStore
+  alias ConversationService.Repo
 
   @type participant_attrs :: map()
   @type result :: {:ok, map()} | {:error, atom()}
@@ -26,6 +28,128 @@ defmodule ConversationService.Participants do
       remove_participant_in_db(attrs)
     else
       placeholder_remove_participant(attrs)
+    end
+  end
+
+  # --- Group admin (roles / only-admins-send) -----------------------------------------------------
+
+  @doc """
+  OWNER-only: promote a member → admin or demote an admin → member. Rejects setting/clearing "owner",
+  targeting the owner, or an invalid role. Only the owner manages who is an admin.
+  """
+  def set_participant_role(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, target_user_id} <- required_attr(attrs, "user_id"),
+         {:ok, actor_user_id} <- required_attr(attrs, "actor_user_id"),
+         {:ok, role} <- validate_settable_role(attrs["role"]) do
+      if conversation_persistence_enabled?() do
+        with {:ok, _conversation} <- fetch_active_conversation(conversation_id),
+             {:ok, _actor} <- require_owner(conversation_id, actor_user_id),
+             {:ok, target} <- fetch_active_participant(conversation_id, target_user_id),
+             :ok <- ensure_not_owner_target(target),
+             %Postgrex.Result{num_rows: 1} <-
+               Repo.query!(
+                 "UPDATE conversation_participants SET role = $3 " <>
+                   "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid AND left_at IS NULL",
+                 [conversation_id, target_user_id, role]
+               ) do
+          {:ok, %{conversation_id: conversation_id, user_id: target_user_id, role: role}}
+        else
+          {:error, reason} -> {:error, reason}
+          _ -> {:error, :participant_invalid}
+        end
+      else
+        {:ok, %{conversation_id: conversation_id, user_id: target_user_id, role: role}}
+      end
+    end
+  rescue
+    _ -> {:error, :participant_invalid}
+  end
+
+  @doc """
+  Owner OR admin: toggle group settings (currently only_admins_can_send). Upserts the settings row.
+  """
+  def set_group_settings(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, actor_user_id} <- required_attr(attrs, "actor_user_id"),
+         {:ok, only_admins} <- boolean_attr(attrs, "only_admins_can_send") do
+      if conversation_persistence_enabled?() do
+        with {:ok, _conversation} <- fetch_active_conversation(conversation_id),
+             {:ok, _actor} <- require_owner_or_admin(conversation_id, actor_user_id),
+             {:ok, _settings} <- upsert_settings(conversation_id, only_admins) do
+          {:ok, %{conversation_id: conversation_id, only_admins_can_send: only_admins}}
+        end
+      else
+        {:ok, %{conversation_id: conversation_id, only_admins_can_send: only_admins}}
+      end
+    end
+  rescue
+    _ -> {:error, :participant_invalid}
+  end
+
+  @doc """
+  SEND authorization for the enforced only-admins-can-send mode. :ok unless the conversation is a group
+  with only_admins_can_send = true AND the sender's role is "member" (or not an active participant).
+  Non-groups / flag off → always :ok. Called by BOTH the REST and realtime send paths.
+  """
+  def authorize_send(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, user_id} <- required_attr(attrs, "user_id") do
+      if conversation_persistence_enabled?() do
+        case fetch_active_conversation(conversation_id) do
+          {:ok, %{type: "group"}} ->
+            if only_admins_can_send?(conversation_id) do
+              case fetch_active_participant(conversation_id, user_id) do
+                {:ok, %{role: role}} when role in ["owner", "admin"] -> {:ok, %{authorized: true}}
+                _ -> {:error, :only_admins_can_send}
+              end
+            else
+              {:ok, %{authorized: true}}
+            end
+
+          _ ->
+            {:ok, %{authorized: true}}
+        end
+      else
+        {:ok, %{authorized: true}}
+      end
+    end
+  rescue
+    # Fail OPEN on a malformed id / transient error — never block a legitimate send on a check glitch.
+    _ -> {:ok, %{authorized: true}}
+  end
+
+  defp validate_settable_role(role) when role in ["admin", "member"], do: {:ok, role}
+  defp validate_settable_role(_), do: {:error, :invalid_request}
+
+  defp ensure_not_owner_target(%{role: "owner"}), do: {:error, :participant_forbidden}
+  defp ensure_not_owner_target(_), do: :ok
+
+  defp boolean_attr(attrs, key) do
+    case Map.get(attrs, key) do
+      v when v in [true, "true", "1", "yes"] -> {:ok, true}
+      v when v in [false, "false", "0", "no", nil] -> {:ok, false}
+      _ -> {:error, :invalid_request}
+    end
+  end
+
+  defp upsert_settings(conversation_id, only_admins) do
+    case ConversationSettingsStore.get_settings(conversation_id) do
+      nil ->
+        ConversationSettingsStore.create_settings(%{
+          "conversation_id" => conversation_id,
+          "only_admins_can_send" => only_admins
+        })
+
+      settings ->
+        ConversationSettingsStore.update_settings(settings, %{"only_admins_can_send" => only_admins})
+    end
+  end
+
+  defp only_admins_can_send?(conversation_id) do
+    case ConversationSettingsStore.get_settings(conversation_id) do
+      %{only_admins_can_send: true} -> true
+      _ -> false
     end
   end
 
@@ -173,9 +297,12 @@ defmodule ConversationService.Participants do
          {:ok, target_user_id} <- required_attr(attrs, "user_id"),
          {:ok, actor_user_id} <- required_attr(attrs, "actor_user_id"),
          {:ok, _conversation} <- fetch_active_conversation(conversation_id),
-         {:ok, _actor_participant} <- require_owner(conversation_id, actor_user_id),
+         {:ok, actor_participant} <- require_owner_or_admin(conversation_id, actor_user_id),
          {:ok, target_participant} <- fetch_active_participant(conversation_id, target_user_id),
          :ok <- ensure_not_owner(target_participant),
+         # An ADMIN may remove members only (not the owner — covered above — nor another admin). The
+         # OWNER may remove anyone. Enforced server-side; a member never reaches here (gate above).
+         :ok <- ensure_can_remove(actor_participant, target_participant),
          {:ok, removed_participant} <-
            ParticipantStore.remove_participant(target_participant, %{
              "left_at" => now()
@@ -218,6 +345,21 @@ defmodule ConversationService.Participants do
       end
     end
   end
+
+  defp require_owner_or_admin(conversation_id, actor_user_id) do
+    with {:ok, participant} <- fetch_active_participant(conversation_id, actor_user_id) do
+      if participant.role in ["owner", "admin"] do
+        {:ok, participant}
+      else
+        {:error, :participant_forbidden}
+      end
+    end
+  end
+
+  # Owner removes anyone (owner-self already blocked upstream). Admin removes MEMBERS only.
+  defp ensure_can_remove(%{role: "owner"}, _target), do: :ok
+  defp ensure_can_remove(%{role: "admin"}, %{role: "member"}), do: :ok
+  defp ensure_can_remove(_actor, _target), do: {:error, :participant_forbidden}
 
   defp fetch_active_participant(conversation_id, user_id) do
     case ParticipantStore.get_participant(conversation_id, user_id) do

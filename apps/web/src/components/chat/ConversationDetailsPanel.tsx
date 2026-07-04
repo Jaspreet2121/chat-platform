@@ -12,6 +12,10 @@ import {
   BellOff,
   Camera,
   Loader2,
+  Lock,
+  MoreVertical,
+  ShieldCheck,
+  UserMinus,
   Star,
   Timer,
   Users,
@@ -28,7 +32,10 @@ import {
   listStarred,
   setConversationAutoDelete,
   setConversationMute,
-  setGroupProfile
+  setGroupOnlyAdminsCanSend,
+  setGroupProfile,
+  setParticipantRole,
+  removeParticipant
 } from "@/lib/api";
 import imageCompression from "browser-image-compression";
 import { Avatar, IconButton } from "@/components";
@@ -130,6 +137,9 @@ export function ConversationDetailsPanel({
   const [groupAvatarUrl, setGroupAvatarUrl] = useState<string | null>(null);
   const [isSavingGroupPhoto, setIsSavingGroupPhoto] = useState(false);
   const groupPhotoInputRef = useRef<HTMLInputElement>(null);
+  // "Only admins can send" — local reflection; server value comes from the conversation detail.
+  const [onlyAdmins, setOnlyAdmins] = useState(false);
+  const [isSavingOnlyAdmins, setIsSavingOnlyAdmins] = useState(false);
   const [autoDelete, setAutoDelete] = useState<AutoDeleteMode | null>(null);
   const [isSavingAutoDelete, setIsSavingAutoDelete] = useState(false);
   // Notification mute (per-conversation; suppresses web-push). Unknown until the user sets it — the
@@ -214,6 +224,14 @@ export function ConversationDetailsPanel({
   const peerOnline = Boolean(peer && online.has(peer.user_id));
   const heroBio = isDirect ? peerProfile?.bio?.trim() || null : null;
 
+  // Keep the toggle reflecting the server value once the conversation detail is present. Deferred so
+  // no setState runs synchronously in the effect body.
+  const serverOnlyAdmins = Boolean(conversation?.only_admins_can_send);
+  useEffect(() => {
+    const handle = setTimeout(() => setOnlyAdmins(serverOnlyAdmins), 0);
+    return () => clearTimeout(handle);
+  }, [serverOnlyAdmins]);
+
   // Group photo: owner-only edit (owner = the creator). Display uses the local override, else server.
   const isGroupOwner =
     !isDirect && Boolean(createdBy && currentUserId && createdBy === currentUserId);
@@ -256,6 +274,42 @@ export function ConversationDetailsPanel({
       setActionError(uploadError instanceof Error ? uploadError.message : "Could not set the photo.");
     } finally {
       setIsSavingGroupPhoto(false);
+    }
+  }
+
+  async function handleToggleOnlyAdmins() {
+    if (isSavingOnlyAdmins) return;
+    const next = !onlyAdmins;
+    setIsSavingOnlyAdmins(true);
+    setActionError("");
+    try {
+      await setGroupOnlyAdminsCanSend(conversationId, next);
+      setOnlyAdmins(next);
+      onGroupUpdated?.();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not update.");
+    } finally {
+      setIsSavingOnlyAdmins(false);
+    }
+  }
+
+  async function handleSetRole(userId: string, role: "admin" | "member") {
+    setActionError("");
+    try {
+      await setParticipantRole(conversationId, userId, role);
+      onGroupUpdated?.();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not update the role.");
+    }
+  }
+
+  async function handleRemoveMember(userId: string) {
+    setActionError("");
+    try {
+      await removeParticipant(conversationId, userId);
+      onGroupUpdated?.();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "Could not remove the member.");
     }
   }
 
@@ -323,6 +377,8 @@ export function ConversationDetailsPanel({
   const viewerRole = !isDirect
     ? participants.find((p) => p.user_id === currentUserId)?.role
     : undefined;
+  const viewerIsOwner = viewerRole === "owner";
+  const viewerCanManage = viewerRole === "owner" || viewerRole === "admin";
 
   function jump(message: Message) {
     if (!onJumpToMessage) return;
@@ -729,6 +785,41 @@ export function ConversationDetailsPanel({
             </div>
           ) : null}
 
+          {/* SECTION — group admin toggle (owner/admin only). */}
+          {viewerCanManage ? (
+            <div className="border-b border-border px-5 py-3">
+              <button
+                type="button"
+                onClick={() => void handleToggleOnlyAdmins()}
+                disabled={isSavingOnlyAdmins}
+                className="flex min-h-11 w-full items-center gap-3 text-left disabled:opacity-60"
+              >
+                <Lock className="h-4 w-4 shrink-0 text-muted" aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm text-fg">Only admins can send messages</span>
+                  <span className="block text-xs text-muted">
+                    Members can read but not send when on.
+                  </span>
+                </span>
+                <span
+                  className={cn(
+                    "relative h-6 w-11 shrink-0 rounded-full transition-colors",
+                    onlyAdmins ? "accent-gradient" : "bg-border-strong"
+                  )}
+                  aria-hidden
+                >
+                  <span
+                    className={cn(
+                      "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-subtle transition-all",
+                      onlyAdmins ? "left-[22px]" : "left-0.5"
+                    )}
+                  />
+                </span>
+              </button>
+              {actionError ? <p className="pt-1 text-xs text-danger">{actionError}</p> : null}
+            </div>
+          ) : null}
+
           {/* SECTION — Participants (group chats only). */}
           {showParticipants ? (
             <div className="px-4 py-4">
@@ -750,7 +841,13 @@ export function ConversationDetailsPanel({
                           role={participant.role}
                           online={isOnline}
                           isOwner={Boolean(createdBy && participant.user_id === createdBy)}
+                          isSelf={participant.user_id === currentUserId}
+                          viewerCanManage={viewerCanManage}
+                          viewerIsOwner={viewerIsOwner}
                           onOpen={() => setProfileUserId(participant.user_id)}
+                          onMakeAdmin={() => void handleSetRole(participant.user_id, "admin")}
+                          onRemoveAdmin={() => void handleSetRole(participant.user_id, "member")}
+                          onRemove={() => void handleRemoveMember(participant.user_id)}
                         />
                       </li>
                     );
@@ -787,43 +884,146 @@ function ParticipantRow({
   role,
   online,
   isOwner,
-  onOpen
+  isSelf,
+  viewerCanManage,
+  viewerIsOwner,
+  onOpen,
+  onMakeAdmin,
+  onRemoveAdmin,
+  onRemove
 }: {
   userId: string;
   role: string;
   online: boolean;
   isOwner: boolean;
+  isSelf: boolean;
+  viewerCanManage: boolean;
+  viewerIsOwner: boolean;
   onOpen: () => void;
+  onMakeAdmin: () => void;
+  onRemoveAdmin: () => void;
+  onRemove: () => void;
 }) {
   const profile = useUserProfile(userId);
   const name = profile?.display_name?.trim() || shortId(userId);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onDown(event: MouseEvent | TouchEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [menuOpen]);
+
+  // Management is shown for owner/admin viewers, never on the owner or yourself. Promote/demote is
+  // owner-only; an admin can remove members but not other admins (mirrors the server rules).
+  const canManage = viewerCanManage && !isOwner && !isSelf;
+  const canRemove = viewerIsOwner || role === "member";
 
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      title="View profile"
-      className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-elevated"
-    >
-      <Avatar
-        id={userId}
-        name={profile?.display_name ?? undefined}
-        imageUrl={profile?.avatar_url}
-        size="sm"
-        online={online}
-      />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-fg">{name}</p>
-        <p className={cn("truncate text-xs capitalize", online ? "text-success" : "text-faint")}>
-          {online ? "online" : role}
-        </p>
-      </div>
+    <div className="flex items-center gap-1 rounded-xl transition-colors hover:bg-elevated">
+      <button
+        type="button"
+        onClick={onOpen}
+        title="View profile"
+        className="flex min-w-0 flex-1 items-center gap-3 px-2.5 py-2 text-left"
+      >
+        <Avatar
+          id={userId}
+          name={profile?.display_name ?? undefined}
+          imageUrl={profile?.avatar_url}
+          size="sm"
+          online={online}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-fg">{name}</p>
+          <p className={cn("truncate text-xs capitalize", online ? "text-success" : "text-faint")}>
+            {online ? "online" : role}
+          </p>
+        </div>
+      </button>
+
       {isOwner ? (
-        <span className="rounded-full bg-brand-subtle/60 px-2 py-0.5 text-[11px] font-medium text-brand-hover">
+        <span className="mr-2 shrink-0 rounded-full bg-brand-subtle/60 px-2 py-0.5 text-[11px] font-medium text-brand-hover">
           owner
         </span>
+      ) : role === "admin" ? (
+        <span className="shrink-0 rounded-full bg-elevated px-2 py-0.5 text-[11px] font-medium text-muted">
+          admin
+        </span>
       ) : null}
-    </button>
+
+      {canManage ? (
+        <div ref={menuRef} className="relative mr-1 shrink-0">
+          <button
+            type="button"
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-label="Manage participant"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-faint transition-colors hover:bg-border/50 hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
+          >
+            <MoreVertical className="h-4 w-4" aria-hidden />
+          </button>
+          {menuOpen ? (
+            <div
+              role="menu"
+              className="absolute right-0 top-full z-40 mt-1 w-44 overflow-hidden rounded-xl border border-border bg-surface p-1 shadow-elevated animate-scale-in"
+            >
+              {viewerIsOwner && role === "member" ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onMakeAdmin();
+                  }}
+                  className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
+                >
+                  <ShieldCheck className="h-4 w-4 text-muted" aria-hidden />
+                  Make admin
+                </button>
+              ) : null}
+              {viewerIsOwner && role === "admin" ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onRemoveAdmin();
+                  }}
+                  className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
+                >
+                  <ShieldCheck className="h-4 w-4 text-muted" aria-hidden />
+                  Remove admin
+                </button>
+              ) : null}
+              {canRemove ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onRemove();
+                  }}
+                  className="flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-danger transition-colors hover:bg-danger/10"
+                >
+                  <UserMinus className="h-4 w-4" aria-hidden />
+                  Remove from group
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

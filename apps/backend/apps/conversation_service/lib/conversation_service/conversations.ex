@@ -3,6 +3,7 @@ defmodule ConversationService.Conversations do
   Conversation metadata boundary.
   """
 
+  alias ConversationService.ConversationSettingsStore
   alias ConversationService.ConversationStore
   alias ConversationService.GroupProfileStore
   alias ConversationService.ParticipantEvents
@@ -245,7 +246,13 @@ defmodule ConversationService.Conversations do
         |> ParticipantStore.list_active_participants()
         |> Enum.map(&participant_response/1)
 
-      {:ok, conversation_detail_response(conversation, participants, group_avatar(conversation))}
+      {:ok,
+       conversation_detail_response(
+         conversation,
+         participants,
+         group_avatar(conversation),
+         only_admins_can_send(conversation)
+       )}
     end
   rescue
     Ecto.Query.CastError -> {:error, :conversation_invalid}
@@ -280,7 +287,16 @@ defmodule ConversationService.Conversations do
     end
   end
 
-  defp conversation_detail_response(conversation, participants, group_avatar) do
+  defp only_admins_can_send(%{type: "group", id: id}) do
+    case ConversationSettingsStore.get_settings(id) do
+      %{only_admins_can_send: true} -> true
+      _ -> false
+    end
+  end
+
+  defp only_admins_can_send(_), do: false
+
+  defp conversation_detail_response(conversation, participants, group_avatar, only_admins_can_send) do
     %{
       conversation_id: conversation.id,
       tenant_id: conversation.tenant_id,
@@ -293,7 +309,9 @@ defmodule ConversationService.Conversations do
       participants: participants,
       # Group photo id/key (nil for DMs / no photo) — the gateway presigns into group_avatar_url.
       group_avatar_media_id: group_avatar && group_avatar.avatar_media_id,
-      group_avatar_object_key: group_avatar && group_avatar.avatar_object_key
+      group_avatar_object_key: group_avatar && group_avatar.avatar_object_key,
+      # Group admin setting — the client locks the composer for non-admins when true.
+      only_admins_can_send: only_admins_can_send
     }
   end
 

@@ -10,6 +10,8 @@ export type ComposerProps = {
   onDraftChange: (value: string) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   hasConversation: boolean;
+  /** When set, the composer is replaced by a note (e.g. "Only admins can send messages"). */
+  lockedNote?: string | null;
   isSending: boolean;
   selectedFile: File | null;
   onPickFile: () => void;
@@ -30,6 +32,7 @@ export function Composer({
   onDraftChange,
   onSubmit,
   hasConversation,
+  lockedNote,
   isSending,
   selectedFile,
   onPickFile,
@@ -109,6 +112,14 @@ export function Composer({
     } finally {
       setIsSendingVoice(false);
     }
+  }
+
+  if (lockedNote) {
+    return (
+      <div className="border-t border-border bg-surface px-4 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-center text-sm text-muted">
+        {lockedNote}
+      </div>
+    );
   }
 
   return (

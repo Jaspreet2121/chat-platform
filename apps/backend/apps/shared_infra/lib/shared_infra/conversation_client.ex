@@ -26,6 +26,9 @@ defmodule SharedInfra.ConversationClient do
   @callback set_auto_delete(attrs()) :: result()
   @callback set_mute(attrs()) :: result()
   @callback set_group_profile(attrs()) :: result()
+  @callback set_participant_role(attrs()) :: result()
+  @callback set_group_settings(attrs()) :: result()
+  @callback authorize_send(attrs()) :: result()
   @callback get_call_conversation(attrs()) :: result()
   @callback admin_list_conversations(attrs()) :: result()
   @callback admin_user_conversations(attrs()) :: result()
@@ -48,6 +51,9 @@ defmodule SharedInfra.ConversationClient do
   def set_auto_delete(attrs), do: adapter().set_auto_delete(attrs)
   def set_mute(attrs), do: adapter().set_mute(attrs)
   def set_group_profile(attrs), do: adapter().set_group_profile(attrs)
+  def set_participant_role(attrs), do: adapter().set_participant_role(attrs)
+  def set_group_settings(attrs), do: adapter().set_group_settings(attrs)
+  def authorize_send(attrs), do: adapter().authorize_send(attrs)
   def get_call_conversation(attrs), do: adapter().get_call_conversation(attrs)
 
   @doc "The configured Conversation client adapter (default `ConversationService.ConversationClientInProcess`)."

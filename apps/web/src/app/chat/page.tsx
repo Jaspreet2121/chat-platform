@@ -893,6 +893,16 @@ export default function ChatPage() {
   const headerAvatarUrl = selectedIsDirect
     ? directPeerProfile?.avatar_url ?? null
     : selectedConversation?.group_avatar_url ?? null;
+
+  // Composer lock: in a group with only_admins_can_send on, a plain member can't send (the server
+  // enforces it too — this just reflects it in the UI). Owner/admin are unaffected.
+  const viewerRole = selectedConversation?.participants?.find(
+    (p) => p.user_id === session?.user_id
+  )?.role;
+  const composerLockedNote =
+    !selectedIsDirect && selectedConversation?.only_admins_can_send && viewerRole === "member"
+      ? "Only admins can send messages"
+      : null;
   // The signed-in identity now lives in the sidebar; the "Opened …" line is implicit in the header.
   // Surface only transient, actionable status (sends, errors) as a subtle banner.
   const showBanner = Boolean(
@@ -1177,6 +1187,7 @@ export default function ChatPage() {
           onDraftChange={handleDraftChange}
           onSubmit={handleSend}
           hasConversation={Boolean(selectedConversationId)}
+          lockedNote={composerLockedNote}
           isSending={isSending}
           selectedFile={selectedFile}
           onPickFile={() => fileInputRef.current?.click()}

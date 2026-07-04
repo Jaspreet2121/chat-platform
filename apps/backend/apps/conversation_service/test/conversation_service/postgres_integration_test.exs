@@ -102,6 +102,87 @@ defmodule ConversationService.PostgresIntegrationTest do
   end
 
   @tag :postgres_integration
+  test "group admin: owner promotes/demotes, admin-only-send enforced, owner/admin removal rules" do
+    alias ConversationService.Participants
+
+    owner = Ecto.UUID.generate()
+    member = Ecto.UUID.generate()
+    member2 = Ecto.UUID.generate()
+    for u <- [owner, member, member2], do: insert_user_auth_parent!(u)
+
+    {:ok, conv} =
+      Conversations.create_conversation(%{
+        "type" => "group",
+        "title" => "Team",
+        "created_by" => owner,
+        "participant_user_ids" => [member, member2]
+      })
+
+    cid = conv.conversation_id
+
+    # Promote/demote is OWNER-only.
+    assert {:error, :participant_forbidden} =
+             Participants.set_participant_role(%{
+               "conversation_id" => cid,
+               "user_id" => member2,
+               "actor_user_id" => member,
+               "role" => "admin"
+             })
+
+    assert {:ok, %{role: "admin"}} =
+             Participants.set_participant_role(%{
+               "conversation_id" => cid,
+               "user_id" => member,
+               "actor_user_id" => owner,
+               "role" => "admin"
+             })
+
+    # Can't set/target the owner.
+    assert {:error, :participant_forbidden} =
+             Participants.set_participant_role(%{
+               "conversation_id" => cid,
+               "user_id" => owner,
+               "actor_user_id" => owner,
+               "role" => "member"
+             })
+
+    # only_admins_can_send: toggle (owner/admin) + ENFORCEMENT via authorize_send.
+    assert {:ok, %{only_admins_can_send: true}} =
+             Participants.set_group_settings(%{
+               "conversation_id" => cid,
+               "actor_user_id" => owner,
+               "only_admins_can_send" => true
+             })
+
+    assert {:ok, _} =
+             Participants.authorize_send(%{"conversation_id" => cid, "user_id" => owner})
+
+    assert {:ok, _} =
+             Participants.authorize_send(%{"conversation_id" => cid, "user_id" => member}),
+           "the promoted admin can send"
+
+    assert {:error, :only_admins_can_send} =
+             Participants.authorize_send(%{"conversation_id" => cid, "user_id" => member2}),
+           "a plain member cannot send in a locked group"
+
+    # Removal: an admin (member, promoted above) can remove a MEMBER (member2)...
+    assert {:ok, %{removed: true}} =
+             Participants.remove_participant(%{
+               "conversation_id" => cid,
+               "user_id" => member2,
+               "actor_user_id" => member
+             })
+
+    # ...but an admin cannot remove the OWNER.
+    assert {:error, _} =
+             Participants.remove_participant(%{
+               "conversation_id" => cid,
+               "user_id" => owner,
+               "actor_user_id" => member
+             })
+  end
+
+  @tag :postgres_integration
   test "create_conversation rejects missing participants" do
     creator_id = Ecto.UUID.generate()
     insert_user_auth_parent!(creator_id)

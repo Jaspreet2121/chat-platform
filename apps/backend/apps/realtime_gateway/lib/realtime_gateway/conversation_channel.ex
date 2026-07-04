@@ -193,6 +193,13 @@ defmodule RealtimeGateway.ConversationChannel do
   defp create_message(payload, socket) do
     with :ok <- validate_message_payload(payload),
          {:ok, sender_user_id} <- current_user_id(socket),
+         # SERVER-SIDE only-admins-can-send enforcement on the realtime path too — a plain member in a
+         # locked group can't send even by pushing the socket event directly.
+         {:ok, _} <-
+           SharedInfra.ConversationClient.authorize_send(%{
+             "conversation_id" => socket.assigns.conversation_id,
+             "user_id" => sender_user_id
+           }),
          {:ok, response} <-
            payload
            |> Map.put("conversation_id", socket.assigns.conversation_id)
@@ -207,6 +214,11 @@ defmodule RealtimeGateway.ConversationChannel do
          {:error,
           %{code: "realtime.unauthorized", message: "Missing or invalid socket authentication"}},
          socket}
+
+      {:error, :only_admins_can_send} ->
+        {:reply,
+         {:error,
+          %{code: "group.only_admins_can_send", message: "Only admins can send messages"}}, socket}
 
       {:error, :message_unavailable} ->
         unavailable_reply(socket)
