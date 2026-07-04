@@ -91,7 +91,12 @@ defmodule ConversationService.ParticipantEvents do
   defp do_publish(event_type, conversation_id, payload, correlation_id) do
     case build_envelope(event_type, payload, correlation_id) do
       {:ok, envelope} ->
-        Producer.produce(@topic, conversation_id, envelope, client: @client)
+        # Surface a produce failure instead of silently discarding it (same baked-NoopProducer trap
+        # the message service hit). Still fire-and-forget: this runs in an unlinked Task.
+        case Producer.produce(@topic, conversation_id, envelope, client: @client) do
+          {:ok, _} -> :ok
+          {:error, reason} -> Logger.warning("#{event_type} publish failed: #{inspect(reason)}")
+        end
 
       {:error, reason} ->
         Logger.warning("#{event_type} envelope invalid, skipping publish: #{inspect(reason)}")

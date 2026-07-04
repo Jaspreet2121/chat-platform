@@ -3,6 +3,8 @@ defmodule MessageService.Application do
 
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
     Supervisor.start_link(children(), strategy: :one_for_one, name: MessageService.Supervisor)
@@ -22,6 +24,14 @@ defmodule MessageService.Application do
         else: []
 
     client = if kafka_client_needed?(), do: [brod_client_child_spec()], else: []
+
+    # Make the Kafka wiring auditable at boot — a silent supervision tree masked the baked-
+    # NoopProducer trap (KAFKA_PRODUCER_ADAPTER read at compile time, not runtime).
+    Logger.info(
+      "kafka producer: #{inspect(Application.get_env(:shared_infra, :kafka_producer_adapter))}, " <>
+        "brod client #{if client == [], do: "OFF", else: "ON"}"
+    )
+
     log_consumer = if kafka_consumer_enabled?(), do: [kafka_consumer_child_spec()], else: []
 
     projection_consumer =

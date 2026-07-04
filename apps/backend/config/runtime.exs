@@ -232,4 +232,13 @@ if config_env() == :prod do
     config :notification_service, :kafka, brokers: brokers, client_id: "notification-service"
     config :realtime_gateway, :kafka, brokers: brokers, client_id: "realtime-gateway"
   end
+
+  # Kafka producer adapter — selected at RUNTIME (config.exs bakes NoopProducer at build time, so a
+  # release ignores KAFKA_PRODUCER_ADAPTER=brod and never starts the brod client / never publishes).
+  # Same baked-at-build trap as message_store_adapter / media_storage_adapter above. Fixes BOTH the
+  # supervision-tree gate (brod client starts) AND the Producer.produce dispatch, for the message and
+  # conversation services. Only overrides when set → dev/test keep the compile-time NoopProducer.
+  if System.get_env("KAFKA_PRODUCER_ADAPTER") == "brod" do
+    config :shared_infra, kafka_producer_adapter: SharedInfra.Kafka.BrodProducer
+  end
 end

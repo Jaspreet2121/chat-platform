@@ -186,7 +186,13 @@ defmodule MessageService.Messages do
   defp do_publish_message_created(response, correlation_id) do
     case build_message_created_envelope(response, correlation_id) do
       {:ok, envelope} ->
-        Producer.produce(@message_topic, response.conversation_id, envelope)
+        # Surface a produce failure (e.g. NoopProducer's {:error, :kafka_unavailable}, or a real
+        # broker error) instead of silently discarding it — a swallowed error here masked the
+        # baked-NoopProducer trap in prod. Still fire-and-forget: this runs in an unlinked Task.
+        case Producer.produce(@message_topic, response.conversation_id, envelope) do
+          {:ok, _} -> :ok
+          {:error, reason} -> Logger.warning("message.created publish failed: #{inspect(reason)}")
+        end
 
       {:error, reason} ->
         Logger.warning("message.created envelope invalid, skipping publish: #{inspect(reason)}")

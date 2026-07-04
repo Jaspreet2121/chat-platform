@@ -3,6 +3,8 @@ defmodule ConversationService.Application do
 
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
     Supervisor.start_link(children(),
@@ -24,6 +26,12 @@ defmodule ConversationService.Application do
         else: []
 
     client = if kafka_client_needed?(), do: [brod_client_child_spec()], else: []
+
+    # Make the Kafka wiring auditable at boot (same baked-NoopProducer trap the message service hit).
+    Logger.info(
+      "kafka producer: #{inspect(Application.get_env(:shared_infra, :kafka_producer_adapter))}, " <>
+        "brod client #{if client == [], do: "OFF", else: "ON"}"
+    )
 
     repo ++ client ++ http_children()
   end
