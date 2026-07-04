@@ -238,17 +238,20 @@ function MobileTabBar({
         className={tabClass(activeView === "profile")}
       >
         {activeView === "profile" ? activePill : null}
-        {session ? (
-          <Avatar
-            id={session.user_id}
-            name={currentProfile?.display_name ?? undefined}
-            imageUrl={currentProfile?.avatar_url}
-            size="sm"
-            className="h-6 w-6 text-[9px]"
-          />
-        ) : (
-          <UserPlus className="h-5 w-5" aria-hidden />
-        )}
+        {/* Match the other tabs' 20px icon slot exactly so the avatar/label rhythm lines up. */}
+        <span className="flex h-5 w-5 items-center justify-center">
+          {session ? (
+            <Avatar
+              id={session.user_id}
+              name={currentProfile?.display_name ?? undefined}
+              imageUrl={currentProfile?.avatar_url}
+              size="sm"
+              className="h-5 w-5 text-[8px]"
+            />
+          ) : (
+            <UserPlus className="h-5 w-5" aria-hidden />
+          )}
+        </span>
         <span className="max-w-full truncate">You</span>
       </button>
     </nav>

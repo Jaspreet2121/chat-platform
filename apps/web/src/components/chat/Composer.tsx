@@ -1,6 +1,7 @@
 import { FormEvent, RefObject, useEffect, useRef, useState } from "react";
-import { CornerUpLeft, Mic, Paperclip, Send, Smile, Square, X } from "lucide-react";
+import { Camera, CornerUpLeft, FileText, Image as ImageIcon, Mic, Plus, Send, Smile, Square, X } from "lucide-react";
 import { Button, IconButton } from "@/components";
+import { cn } from "@/lib/cn";
 import { formatFileSize } from "./format";
 import { useVoiceRecorder } from "./useVoiceRecorder";
 
@@ -48,6 +49,38 @@ export function Composer({
   // Quick emoji tray (inserts into the draft — a lightweight picker, not a decoration).
   const [emojiOpen, setEmojiOpen] = useState(false);
   const emojiRef = useRef<HTMLDivElement>(null);
+  // "+" attachment menu — ONLY the capabilities the upload flow really supports (no dead buttons):
+  // gallery media, camera capture (mobile; desktop falls back to the picker), PDF documents.
+  const [attachOpen, setAttachOpen] = useState(false);
+  const attachRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!attachOpen) return;
+    function onDown(event: MouseEvent | TouchEvent) {
+      if (attachRef.current && !attachRef.current.contains(event.target as Node)) {
+        setAttachOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [attachOpen]);
+
+  // Re-point the ONE hidden input (accept + camera capture) for the chosen source, then open it —
+  // the existing upload flow (validation, compression, presign) is untouched.
+  function pickWith(accept: string, capture?: string) {
+    const input = fileInputRef.current;
+    if (input) {
+      input.setAttribute("accept", accept);
+      if (capture) input.setAttribute("capture", capture);
+      else input.removeAttribute("capture");
+    }
+    setAttachOpen(false);
+    onPickFile();
+  }
 
   useEffect(() => {
     if (!emojiOpen) return;
@@ -209,15 +242,46 @@ export function Composer({
             ) : null}
           </div>
 
-          <IconButton
-            label="Attach a file"
-            variant="ghost"
-            disabled={!hasConversation || isSending}
-            onClick={onPickFile}
-            type="button"
-          >
-            <Paperclip className="h-5 w-5" aria-hidden />
-          </IconButton>
+          {/* "+" attachment menu (replaces the bare paperclip) */}
+          <div ref={attachRef} className="relative">
+            <IconButton
+              label="Add an attachment"
+              variant="ghost"
+              disabled={!hasConversation || isSending}
+              onClick={() => setAttachOpen((v) => !v)}
+              type="button"
+              aria-expanded={attachOpen}
+              aria-haspopup="menu"
+            >
+              <Plus
+                className={cn("h-5 w-5 transition-transform duration-200", attachOpen && "rotate-45")}
+                aria-hidden
+              />
+            </IconButton>
+
+            {attachOpen ? (
+              <div
+                role="menu"
+                className="absolute bottom-full left-0 z-30 mb-2 w-56 overflow-hidden rounded-2xl border border-border bg-surface p-1.5 shadow-elevated animate-scale-in"
+              >
+                <AttachItem
+                  icon={<ImageIcon className="h-[18px] w-[18px]" aria-hidden />}
+                  label="Photos & videos"
+                  onClick={() => pickWith("image/*,video/*")}
+                />
+                <AttachItem
+                  icon={<Camera className="h-[18px] w-[18px]" aria-hidden />}
+                  label="Camera"
+                  onClick={() => pickWith("image/*", "environment")}
+                />
+                <AttachItem
+                  icon={<FileText className="h-[18px] w-[18px]" aria-hidden />}
+                  label="Document"
+                  onClick={() => pickWith("application/pdf,audio/*")}
+                />
+              </div>
+            ) : null}
+          </div>
 
           <input
             className="h-11 min-w-0 flex-1 rounded-full border border-border bg-elevated px-4 text-[15px] text-fg placeholder:text-faint outline-none transition-colors focus:border-brand focus:ring-2 focus:ring-brand-ring disabled:opacity-60"
@@ -260,6 +324,30 @@ export function Composer({
         </div>
       )}
     </form>
+  );
+}
+
+function AttachItem({
+  icon,
+  label,
+  onClick
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      className="flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated outline-none focus-visible:bg-elevated"
+    >
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand-hover">
+        {icon}
+      </span>
+      {label}
+    </button>
   );
 }
 

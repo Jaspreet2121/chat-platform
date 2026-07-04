@@ -162,6 +162,25 @@ export function MessageBubble({
 
   const time = formatTime(message.created_at);
 
+  // WhatsApp-style IN-BUBBLE stamp: time (+ edited) and, on own messages, the read-ticks — floated to
+  // the bubble's bottom-right so text wraps around it. Seamless media gets an overlay pill instead.
+  const stamp = !isDeleted && !isEditing ? (
+    <span
+      className={cn(
+        "pointer-events-none float-right ml-2 mt-1.5 flex translate-y-0.5 items-center gap-1 text-[10px] leading-none",
+        seamlessMedia
+          ? "absolute bottom-2 right-2 float-none mt-0 rounded-full bg-black/45 px-1.5 py-1 text-white backdrop-blur-sm"
+          : isOwn
+            ? "text-white/75"
+            : "text-faint"
+      )}
+    >
+      {time}
+      {isEdited ? <span className="italic">· edited</span> : null}
+      {isOwn ? <ReadTicks message={message} inline /> : null}
+    </span>
+  ) : null;
+
   return (
     <div
       id={`msg-${message.message_id}`}
@@ -188,7 +207,8 @@ export function MessageBubble({
             "text-sm leading-relaxed",
             seamlessMedia
               ? // Seamless photo/video: no bubble surface — only the media's own rounded box shows.
-                "max-w-full text-fg"
+                // (relative so the overlay time/ticks pill can sit on the media's corner.)
+                "relative max-w-full text-fg"
               : cn(
                   // Locked periwinkle bubbles: OUTGOING = accent gradient with white text and a soft
                   // glow; INCOMING = periwinkle-tinted surface with dark text. 18px radius, 5px tail
@@ -257,7 +277,10 @@ export function MessageBubble({
               </div>
             </div>
           ) : isMedia ? (
-            <MediaMessageContent message={message} isOwn={isOwn} />
+            <>
+              <MediaMessageContent message={message} isOwn={isOwn} />
+              {stamp}
+            </>
           ) : (
             <p
               className={cn(
@@ -267,6 +290,7 @@ export function MessageBubble({
               onClick={hasActions ? () => setMenuOpen((open) => !open) : undefined}
             >
               {message.body || message.message_type}
+              {stamp}
             </p>
           )}
         </div>
@@ -299,18 +323,13 @@ export function MessageBubble({
         )}
 
         <div className={cn("flex items-center gap-2 px-1", isOwn ? "flex-row-reverse" : "flex-row")}>
-          <span className="text-[11px] text-faint">
-            {time}
-            {isEdited && !isDeleted ? " · edited" : ""}
-          </span>
+          {isDeleted ? <span className="text-[11px] text-faint">{time}</span> : null}
 
           {isStarred ? (
             <span title="Starred" aria-label="Starred">
               <Star className="h-3 w-3 text-amber-400" fill="currentColor" aria-hidden />
             </span>
           ) : null}
-
-          {isOwn && !isDeleted ? <ReadTicks message={message} /> : null}
 
           {hasActions && (
             <div className="relative" ref={menuRef}>
@@ -460,27 +479,33 @@ function messageSnippet(m: Message): string {
 // Read-receipt ticks for own messages: single check = sent, double = delivered, blue double = read.
 // Counts come from the timeline projection (durable across reloads) + live receipt_updated events.
 // 1:1 exact; in groups "read" means at least one other participant has read it.
-function ReadTicks({ message }: { message: Message }) {
+function ReadTicks({ message, inline }: { message: Message; inline?: boolean }) {
   const read = (message.read_by_count ?? 0) > 0;
   const delivered = (message.delivered_by_count ?? 0) > 0;
 
   if (read) {
     return (
       <span title="Read" aria-label="Read">
-        <CheckCheck className="h-3.5 w-3.5 text-brand-hover" aria-hidden />
+        <CheckCheck
+          className={cn("h-3.5 w-3.5", inline ? "text-white" : "text-brand-hover")}
+          aria-hidden
+        />
       </span>
     );
   }
   if (delivered) {
     return (
       <span title="Delivered" aria-label="Delivered">
-        <CheckCheck className="h-3.5 w-3.5 text-faint" aria-hidden />
+        <CheckCheck
+          className={cn("h-3.5 w-3.5", inline ? "text-white/60" : "text-faint")}
+          aria-hidden
+        />
       </span>
     );
   }
   return (
     <span title="Sent" aria-label="Sent">
-      <Check className="h-3.5 w-3.5 text-faint" aria-hidden />
+      <Check className={cn("h-3.5 w-3.5", inline ? "text-white/60" : "text-faint")} aria-hidden />
     </span>
   );
 }

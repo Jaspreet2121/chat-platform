@@ -5,7 +5,7 @@ import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { EmptyState } from "./EmptyState";
 import { MessageBubble } from "./MessageBubble";
-import { formatTime, senderDisplayName } from "./format";
+import { senderDisplayName } from "./format";
 import { useUserProfile } from "./useUserProfile";
 
 // Consecutive messages from the same sender within this window collapse into one group (one
@@ -66,6 +66,8 @@ function dayKey(iso: string): string {
 
 export type MessageListProps = {
   messages: Message[];
+  /** Direct (1:1) chat → sender names/avatars are hidden entirely (you know who it is). */
+  isDirect?: boolean;
   currentUserId?: string;
   isLoading: boolean;
   hasConversation: boolean;
@@ -83,6 +85,7 @@ export type MessageListProps = {
 
 export function MessageList({
   messages,
+  isDirect,
   currentUserId,
   isLoading,
   hasConversation,
@@ -220,6 +223,7 @@ export function MessageList({
             ) : null}
             <MessageGroup
               group={group}
+              isDirect={isDirect}
               currentUserId={currentUserId}
               highlightedId={highlightedId}
               byId={byId}
@@ -241,6 +245,7 @@ export function MessageList({
 
 type MessageGroupProps = {
   group: Message[];
+  isDirect?: boolean;
   currentUserId?: string;
   highlightedId: string | null;
   byId: Map<string, Message>;
@@ -249,10 +254,12 @@ type MessageGroupProps = {
   "onEdit" | "onDelete" | "onReply" | "onForward" | "onReact" | "onRemoveReaction" | "onStar" | "onUnstar"
 >;
 
-// One run of consecutive same-sender messages: for others, a single avatar + name + time header, then a
-// tight stack of that sender's bubbles (avatars hidden on the bubbles); own groups are just the stack.
+// One run of consecutive same-sender messages (WhatsApp grouping): in GROUP chats, others' runs get a
+// single avatar + name header on the FIRST bubble only, then a tight stack; in DIRECT chats the header
+// and avatar gutter are dropped entirely (the peer's identity is the chat itself). Own runs = stack.
 function MessageGroup({
   group,
+  isDirect,
   currentUserId,
   highlightedId,
   byId,
@@ -270,9 +277,12 @@ function MessageGroup({
   const profile = useUserProfile(isOwn ? null : first.sender_user_id);
   const name = senderDisplayName(profile?.display_name);
 
+  // Group chats only: the run's header (avatar + name, once). Direct chats show neither.
+  const showHeader = !isOwn && !isDirect;
+
   return (
     <div className={cn("flex flex-col", isOwn ? "items-end" : "items-start")}>
-      {!isOwn ? (
+      {showHeader ? (
         <div className="mb-1 flex items-center gap-2 pl-1">
           <Avatar
             id={first.sender_user_id}
@@ -281,11 +291,15 @@ function MessageGroup({
             size="sm"
           />
           <span className="text-xs font-semibold text-fg">{name}</span>
-          <span className="text-[11px] text-faint">{formatTime(first.created_at)}</span>
         </div>
       ) : null}
 
-      <div className={cn("flex w-full flex-col gap-0.5", isOwn ? "items-end" : "items-start pl-10")}>
+      <div
+        className={cn(
+          "flex w-full flex-col gap-0.5",
+          isOwn ? "items-end" : cn("items-start", showHeader && "pl-10")
+        )}
+      >
         {group.map((message) => (
           <MessageBubble
             key={message.message_id}

@@ -1126,6 +1126,7 @@ export default function ChatPage() {
 
         <MessageList
           messages={messages}
+          isDirect={selectedIsDirect}
           currentUserId={session?.user_id}
           isLoading={isLoading}
           hasConversation={Boolean(selectedConversationId)}
