@@ -39,6 +39,18 @@ defmodule SharedInfra.RedisKV do
 
   def get(_key), do: {:error, :invalid_args}
 
+  @doc "DEL key. :ok (whether or not it existed) | {:error, reason}."
+  def del(key) when is_binary(key) and key != "" do
+    with_connection(fn conn ->
+      case command(conn, ["DEL", key]) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end)
+  end
+
+  def del(_key), do: {:error, :invalid_args}
+
   # --- connection ------------------------------------------------------------------------------
 
   defp with_connection(fun) do

@@ -20,6 +20,10 @@ defmodule RealtimeGateway.ConversationChannel do
     end
   end
 
+  # Refresh the Redis presence marker well inside its TTL (45s) so it stays live while the user has the
+  # conversation open — the notification service reads it to suppress web-push for the active viewer.
+  @presence_heartbeat_ms 20_000
+
   @impl true
   def handle_info(:after_join, socket) do
     with {:ok, user_id} <- current_user_id(socket),
@@ -29,9 +33,50 @@ defmodule RealtimeGateway.ConversationChannel do
              online_at: now_iso8601()
            }) do
       push(socket, "presence_state", Presence.list(socket))
+      # Bridge presence to Redis for the (separate-node) notification service. Best-effort, non-
+      # blocking — never slows or breaks presence tracking; the TTL self-heals a missed cleanup.
+      write_presence_marker(user_id, socket.assigns.conversation_id)
+      Process.send_after(self(), :presence_heartbeat, @presence_heartbeat_ms)
     end
 
     {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info(:presence_heartbeat, socket) do
+    with {:ok, user_id} <- current_user_id(socket) do
+      write_presence_marker(user_id, socket.assigns.conversation_id)
+    end
+
+    Process.send_after(self(), :presence_heartbeat, @presence_heartbeat_ms)
+    {:noreply, socket}
+  end
+
+  # On leave (tab close / navigate away / socket drop) clear the marker so pushes resume immediately;
+  # the TTL is the fallback if this doesn't run. Phoenix auto-untracks Presence on process death.
+  @impl true
+  def terminate(_reason, socket) do
+    with {:ok, user_id} <- current_user_id(socket),
+         conversation_id when is_binary(conversation_id) <-
+           Map.get(socket.assigns, :conversation_id) do
+      clear_presence_marker(user_id, conversation_id)
+    end
+
+    :ok
+  end
+
+  # Redis I/O off the channel process so a slow/broken Redis never blocks realtime; fully fail-open.
+  defp write_presence_marker(user_id, conversation_id)
+       when is_binary(user_id) and is_binary(conversation_id) do
+    Task.start(fn -> SharedInfra.PresenceMarker.mark(user_id, conversation_id) end)
+    :ok
+  end
+
+  defp write_presence_marker(_user_id, _conversation_id), do: :ok
+
+  defp clear_presence_marker(user_id, conversation_id) do
+    Task.start(fn -> SharedInfra.PresenceMarker.clear(user_id, conversation_id) end)
+    :ok
   end
 
   @impl true

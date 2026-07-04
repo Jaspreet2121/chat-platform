@@ -33,7 +33,13 @@ defmodule NotificationService.PushSender do
     # GROUP — the group name. Per-recipient bits (mute, unread count) are resolved in the loop.
     context = message_context(attrs)
 
-    for recipient <- recipients, not muted?(attrs.conversation_id, recipient) do
+    for recipient <- recipients,
+        not muted?(attrs.conversation_id, recipient),
+        # Presence-aware suppression: skip a recipient currently VIEWING this conversation (app open +
+        # chat active — the realtime gateway keeps a short-TTL Redis marker). The in-app path already
+        # updates them, so a push would be redundant. FAIL-OPEN: any Redis miss/error → present?=false
+        # → we SEND (a redundant push beats a missed one; never suppressed by a Redis hiccup).
+        not SharedInfra.PresenceMarker.present?(recipient, attrs.conversation_id) do
       payload =
         build_payload(
           context,
