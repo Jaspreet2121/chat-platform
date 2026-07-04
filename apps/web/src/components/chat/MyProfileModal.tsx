@@ -123,6 +123,24 @@ export function MyProfileModal({ onClose, profile, userId, onSaved }: MyProfileM
 
   const busy = isUploading || isSaving;
   const previewUrl = pending?.previewUrl ?? profile?.avatar_url ?? null;
+  // A photo is removable when one is currently set (server avatar or a just-picked one).
+  const hasPhoto = Boolean(previewUrl);
+
+  // Remove the avatar → revert to the gradient initials. Sends empty-string avatar fields, which the
+  // profile update path treats as an explicit clear (nulls the columns). Saves immediately.
+  async function handleRemovePhoto() {
+    setIsSaving(true);
+    setError("");
+    try {
+      const updated = await updateMe({ avatar_media_id: "", avatar_object_key: "" });
+      setPending(null);
+      onSaved(updated);
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : "Could not remove photo.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm animate-fade-in">
@@ -164,14 +182,26 @@ export function MyProfileModal({ onClose, profile, userId, onSaved }: MyProfileM
               )}
             </span>
           </button>
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            disabled={busy}
-            className="text-xs font-medium text-brand-hover transition-colors hover:text-brand disabled:opacity-60"
-          >
-            {isUploading ? "Uploading…" : "Change photo"}
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={busy}
+              className="text-xs font-medium text-brand-hover transition-colors hover:text-brand disabled:opacity-60"
+            >
+              {isUploading ? "Uploading…" : hasPhoto ? "Change photo" : "Add photo"}
+            </button>
+            {hasPhoto ? (
+              <button
+                type="button"
+                onClick={() => void handleRemovePhoto()}
+                disabled={busy}
+                className="text-xs font-medium text-danger transition-colors hover:opacity-80 disabled:opacity-60"
+              >
+                Remove photo
+              </button>
+            ) : null}
+          </div>
           <input
             ref={fileRef}
             type="file"

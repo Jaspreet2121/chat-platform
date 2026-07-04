@@ -256,6 +256,8 @@ export function getMe() {
 export type UpdateProfileInput = {
   display_name?: string;
   bio?: string;
+  // "" on the avatar fields = REMOVE the photo (the update path treats empty-string as an explicit
+  // clear → nulls the columns). A normal id sets it; omitted = unchanged.
   avatar_media_id?: string;
   avatar_object_key?: string;
 };

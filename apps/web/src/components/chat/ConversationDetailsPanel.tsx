@@ -613,32 +613,13 @@ export function ConversationDetailsPanel({
                     const isOnline = online.has(participant.user_id);
                     return (
                       <li key={participant.user_id}>
-                        <button
-                          type="button"
-                          onClick={() => setProfileUserId(participant.user_id)}
-                          title="View profile"
-                          className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-elevated"
-                        >
-                          <ParticipantAvatar userId={participant.user_id} online={isOnline} />
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm font-medium text-fg">
-                              {shortId(participant.user_id)}
-                            </p>
-                            <p
-                              className={cn(
-                                "truncate text-xs capitalize",
-                                isOnline ? "text-success" : "text-faint"
-                              )}
-                            >
-                              {isOnline ? "online" : participant.role}
-                            </p>
-                          </div>
-                          {createdBy && participant.user_id === createdBy ? (
-                            <span className="rounded-full bg-brand-subtle/60 px-2 py-0.5 text-[11px] font-medium text-brand-hover">
-                              owner
-                            </span>
-                          ) : null}
-                        </button>
+                        <ParticipantRow
+                          userId={participant.user_id}
+                          role={participant.role}
+                          online={isOnline}
+                          isOwner={Boolean(createdBy && participant.user_id === createdBy)}
+                          onOpen={() => setProfileUserId(participant.user_id)}
+                        />
                       </li>
                     );
                   })}
@@ -666,18 +647,51 @@ export function ConversationDetailsPanel({
   );
 }
 
-// A participant's avatar that resolves their real image (cached) with an initials fallback. A separate
-// component so the cached profile hook can run per participant (hooks can't be called inside a .map).
-function ParticipantAvatar({ userId, online }: { userId: string; online: boolean }) {
+// One participant row: resolves the member's real profile (cached) and shows their display NAME +
+// avatar — never the raw id hash. A separate component so the cached profile hook runs per participant
+// (hooks can't be called inside a .map). Falls back to a short handle only when the name is unknown.
+function ParticipantRow({
+  userId,
+  role,
+  online,
+  isOwner,
+  onOpen
+}: {
+  userId: string;
+  role: string;
+  online: boolean;
+  isOwner: boolean;
+  onOpen: () => void;
+}) {
   const profile = useUserProfile(userId);
+  const name = profile?.display_name?.trim() || shortId(userId);
+
   return (
-    <Avatar
-      id={userId}
-      name={profile?.display_name ?? undefined}
-      imageUrl={profile?.avatar_url}
-      size="sm"
-      online={online}
-    />
+    <button
+      type="button"
+      onClick={onOpen}
+      title="View profile"
+      className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-elevated"
+    >
+      <Avatar
+        id={userId}
+        name={profile?.display_name ?? undefined}
+        imageUrl={profile?.avatar_url}
+        size="sm"
+        online={online}
+      />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-fg">{name}</p>
+        <p className={cn("truncate text-xs capitalize", online ? "text-success" : "text-faint")}>
+          {online ? "online" : role}
+        </p>
+      </div>
+      {isOwner ? (
+        <span className="rounded-full bg-brand-subtle/60 px-2 py-0.5 text-[11px] font-medium text-brand-hover">
+          owner
+        </span>
+      ) : null}
+    </button>
   );
 }
 

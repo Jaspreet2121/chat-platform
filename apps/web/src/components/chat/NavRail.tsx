@@ -154,9 +154,7 @@ function MobileTabBar({
   unreadCount = 0,
   mobileHidden,
   activeView = "chats",
-  onSelectView,
-  onNewGroup,
-  onInvite
+  onSelectView
 }: NavRailProps) {
   if (mobileHidden) return null;
 
@@ -210,11 +208,6 @@ function MobileTabBar({
         <span className="max-w-full truncate">Messages</span>
       </button>
 
-      <button type="button" onClick={onNewGroup} className={tabClass(false)}>
-        <Users className="h-5 w-5" aria-hidden />
-        <span className="max-w-full truncate">Groups</span>
-      </button>
-
       <button
         type="button"
         onClick={() => onSelectView?.("calls")}
@@ -226,33 +219,31 @@ function MobileTabBar({
         <span className="max-w-full truncate">Calls</span>
       </button>
 
-      <button type="button" onClick={onInvite} className={tabClass(false)}>
-        <UserPlus className="h-5 w-5" aria-hidden />
-        <span className="max-w-full truncate">Invite</span>
-      </button>
-
+      {/* You — the profile PHOTO only (no label). Centered in the same slot as the labelled tabs so
+          it lines up; the active pill hugs the avatar. New chat is via the header search; New group +
+          Search messages live in the list's 3-dot menu. */}
       <button
         type="button"
         onClick={() => onSelectView?.("profile")}
         aria-current={activeView === "profile" ? "page" : undefined}
+        aria-label="Your profile"
         className={tabClass(activeView === "profile")}
       >
         {activeView === "profile" ? activePill : null}
-        {/* Match the other tabs' 20px icon slot exactly so the avatar/label rhythm lines up. */}
-        <span className="flex h-5 w-5 items-center justify-center">
-          {session ? (
-            <Avatar
-              id={session.user_id}
-              name={currentProfile?.display_name ?? undefined}
-              imageUrl={currentProfile?.avatar_url}
-              size="sm"
-              className="h-5 w-5 text-[8px]"
-            />
-          ) : (
-            <UserPlus className="h-5 w-5" aria-hidden />
-          )}
-        </span>
-        <span className="max-w-full truncate">You</span>
+        {session ? (
+          <Avatar
+            id={session.user_id}
+            name={currentProfile?.display_name ?? undefined}
+            imageUrl={currentProfile?.avatar_url}
+            size="sm"
+            className={cn(
+              "h-7 w-7 text-[10px] ring-2 transition-all",
+              activeView === "profile" ? "ring-white/80" : "ring-transparent"
+            )}
+          />
+        ) : (
+          <UserPlus className="h-6 w-6" aria-hidden />
+        )}
       </button>
     </nav>
   );

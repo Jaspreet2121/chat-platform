@@ -80,11 +80,20 @@ defmodule UserService.Profiles do
     end
   end
 
+  # Build the update attrs. A nil value means "field not provided" (skip — keep existing). But an
+  # explicit EMPTY STRING on an avatar field means "REMOVE the photo" → we set it to nil in the
+  # changeset (so the column is cleared) rather than dropping it. This is the clear-avatar path (the
+  # frontend sends avatar_media_id="" + avatar_object_key="" to revert to initials).
+  @avatar_fields ["avatar_media_id", "avatar_object_key"]
+
   defp allowed_profile_update_attrs(attrs) do
     attrs
     |> Map.take(["display_name", "avatar_media_id", "avatar_object_key", "bio"])
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
-    |> Map.new()
+    |> Enum.reduce(%{}, fn
+      {key, ""}, acc when key in @avatar_fields -> Map.put(acc, key, nil)
+      {_key, nil}, acc -> acc
+      {key, value}, acc -> Map.put(acc, key, value)
+    end)
   end
 
   defp updated_profile_response(user_id, profile) do

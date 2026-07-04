@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { MessagesSquare, MoreVertical, Search, SquarePen } from "lucide-react";
+import { MessagesSquare, MoreVertical, Search } from "lucide-react";
 import type {
   ConversationListItem as ConversationListItemData,
   Session,
@@ -77,18 +77,26 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     onJumpToMessage,
     isLoading,
     openNewConvNonce,
-    searchFocusNonce,
-    fabHidden
+    searchFocusNonce
   } = props;
 
   // Local UI state: new-group modal + message-search sheet (header actions), and a local bump for
   // focusing the phone search (the edit button/FAB start a DM there — no type-picker step).
   const [isNewConvOpen, setIsNewConvOpen] = useState(false);
-  const [localFocusNonce, setLocalFocusNonce] = useState(0);
   const [isMsgSearchOpen, setIsMsgSearchOpen] = useState(false);
   // Header 3-dot dropdown (list-level actions; entries open their own UI).
   const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
   const headerMenuRef = useRef<HTMLDivElement>(null);
+  // Phone-number search is now revealed by the header search icon (Fix 2) — the entry point for a new
+  // DM + invite. Rail/parent "Invite" or "New chat" nudges (searchFocusNonce/localFocusNonce) open it.
+  const [searchOpen, setSearchOpen] = useState(false);
+  // Parent/rail "New chat" or "Invite" nudge (searchFocusNonce) reveals the phone search. Deferred
+  // (timer) so setState never runs synchronously in the effect body.
+  useEffect(() => {
+    if (!searchFocusNonce) return;
+    const handle = setTimeout(() => setSearchOpen(true), 0);
+    return () => clearTimeout(handle);
+  }, [searchFocusNonce]);
 
   useEffect(() => {
     if (!isHeaderMenuOpen) return;
@@ -137,12 +145,19 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
-            onClick={() => setLocalFocusNonce((n) => n + 1)}
-            aria-label="New chat"
-            title="New chat — search a number"
-            className="flex h-11 w-11 items-center justify-center rounded-xl bg-brand-subtle text-brand-hover md:h-9 md:w-9 transition-colors hover:bg-brand-subtle/70 outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
+            onClick={() => setSearchOpen((v) => !v)}
+            aria-label="Search a number to start a chat"
+            aria-expanded={searchOpen}
+            title="Search a number — new chat or invite"
+            className={cn(
+              "flex h-11 w-11 items-center justify-center rounded-xl transition-colors md:h-9 md:w-9",
+              "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring",
+              searchOpen
+                ? "bg-brand-subtle text-brand-hover"
+                : "text-muted hover:bg-elevated hover:text-fg"
+            )}
           >
-            <SquarePen className="h-[18px] w-[18px]" aria-hidden />
+            <Search className="h-[18px] w-[18px]" aria-hidden />
           </button>
           <div ref={headerMenuRef} className="relative">
             <button
@@ -192,11 +207,18 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         </div>
       </div>
 
-      {/* PRIMARY search (find by phone → chat/invite). Desktop: on top of the list. Mobile: moved to
-          the BOTTOM of the pane (thumb reach) via order — the flex column reorders, nothing remounts. */}
-      <div className="max-md:order-last max-md:border-t max-md:border-border">
-        <ContactSearch onStartDirectChat={onStartDirectChat} focusNonce={(searchFocusNonce ?? 0) + localFocusNonce} />
-      </div>
+      {/* PRIMARY search (find by phone → chat/invite) — revealed by the header search icon. */}
+      {searchOpen ? (
+        <div className="border-b border-border animate-slide-up">
+          <ContactSearch
+            onStartDirectChat={async (profile) => {
+              await onStartDirectChat(profile);
+              setSearchOpen(false);
+            }}
+            focusNonce={searchFocusNonce}
+          />
+        </div>
+      ) : null}
 
       {/* Filter chips — active chip carries the accent gradient. */}
       <div className="flex gap-1.5 px-4 py-2" role="tablist" aria-label="Filter conversations">
@@ -253,19 +275,6 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
             ))}
           </motion.div>
         )}
-
-        {/* Mobile floating compose — sits above the bottom search bar, thumb-side. */}
-        <button
-          type="button"
-          onClick={() => setLocalFocusNonce((n) => n + 1)}
-          aria-label="New chat"
-          className={cn(
-            "accent-gradient fixed bottom-[calc(168px+env(safe-area-inset-bottom))] right-4 z-30 flex h-[52px] w-[52px] items-center justify-center rounded-full text-white shadow-accent-glow transition-transform active:scale-95 md:hidden",
-            fabHidden && "hidden"
-          )}
-        >
-          <SquarePen className="h-5 w-5" aria-hidden />
-        </button>
       </div>
 
       {/* New-group popup (participants added by phone number). */}
