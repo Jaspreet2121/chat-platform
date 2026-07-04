@@ -126,6 +126,12 @@ defmodule AuthService.AuthClientInProcess do
   @impl true
   def create_invite(attrs), do: AuthService.Invites.create_invite(attrs)
 
+  @impl true
+  def save_push_subscription(attrs), do: AuthService.PushSubscriptions.save_subscription(attrs)
+
+  @impl true
+  def delete_push_subscription(attrs), do: AuthService.PushSubscriptions.delete_subscription(attrs)
+
   # Minimal identity read for the DIRECT-PEER contact card. The GATEWAY enforces the privacy scope
   # (caller must share a direct conversation with this user) before calling; this just resolves the
   # number for an active account.

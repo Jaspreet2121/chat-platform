@@ -29,7 +29,9 @@ defmodule NotificationService.MixProject do
       {:ecto_sql, "~> 3.12"},
       {:postgrex, ">= 0.0.0"},
       {:brod, "~> 4.0"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      # VAPID web-push (RFC 8291 encryption + RFC 8292 signing) — the sender leg for message pushes.
+      {:web_push_encryption, "~> 0.3"}
     ]
   end
 

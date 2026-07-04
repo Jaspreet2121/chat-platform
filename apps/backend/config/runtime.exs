@@ -196,6 +196,15 @@ if config_env() == :prod do
       path_style: System.get_env("MINIO_PATH_STYLE", "true") in ["true", "1", "yes"]
   end
 
+  # Web-push VAPID keys (notification service's sender leg). Absent keys = push disabled cleanly
+  # (subscriptions still register; nothing sends). NEVER ship the private key to any client build.
+  if System.get_env("VAPID_PUBLIC_KEY") && System.get_env("VAPID_PRIVATE_KEY") do
+    config :web_push_encryption, :vapid_details,
+      subject: System.get_env("VAPID_SUBJECT") || "mailto:admin@growblic.com",
+      public_key: System.get_env("VAPID_PUBLIC_KEY"),
+      private_key: System.get_env("VAPID_PRIVATE_KEY")
+  end
+
   if port = System.get_env("AUTH_HTTP_PORT") do
     config :auth_service, http_port: String.to_integer(port)
   end

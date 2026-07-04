@@ -110,6 +110,14 @@ defmodule ApiGatewayWeb.Router do
     post "/", InviteController, :create
   end
 
+  # Web-push subscription registration (session-gated; upsert/delete the caller's own browser).
+  scope "/api/v1/push", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/subscriptions", PushController, :create
+    delete "/subscriptions", PushController, :delete
+  end
+
   scope "/api/v1/conversations", ApiGatewayWeb do
     pipe_through :api
 

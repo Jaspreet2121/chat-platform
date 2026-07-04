@@ -276,6 +276,10 @@ services:
     environment:
       <<: *secrets
       KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      # Web-push sender (Phase 1). Empty keys = push disabled cleanly (fan-out rows still written).
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@growblic.com}
       NOTIFICATION_CONSUMER_ENABLED: "true"
       NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED: "true"
     depends_on:
@@ -427,6 +431,8 @@ services:
       args:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-https://api.growblic.com}
         NEXT_PUBLIC_REALTIME_URL: ${NEXT_PUBLIC_REALTIME_URL:-wss://api.growblic.com/socket}
+        # PUBLIC key only — the private key must never reach any client build.
+        NEXT_PUBLIC_VAPID_PUBLIC_KEY: ${NEXT_PUBLIC_VAPID_PUBLIC_KEY:-}
     restart: unless-stopped
     networks: [chatnet]
     mem_limit: 512m

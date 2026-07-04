@@ -41,29 +41,43 @@ defmodule NotificationService.Notifications do
       now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
       created_at = parse_timestamp(Map.get(payload, "created_at"), now)
 
-      Repo.transaction(fn ->
-        {dedupe_count, _} =
-          Repo.insert_all(
-            ProcessedEvent,
-            [%{consumer: @consumer, event_id: event_id, inserted_at: now}],
-            on_conflict: :nothing
-          )
+      attrs = %{
+        event_id: event_id,
+        conversation_id: conversation_id,
+        message_id: message_id,
+        sender_user_id: sender_user_id,
+        created_at: created_at,
+        now: now
+      }
 
-        if dedupe_count == 1 do
-          fan_out(%{
-            event_id: event_id,
-            conversation_id: conversation_id,
-            message_id: message_id,
-            sender_user_id: sender_user_id,
-            created_at: created_at,
-            now: now
-          })
+      result =
+        Repo.transaction(fn ->
+          {dedupe_count, _} =
+            Repo.insert_all(
+              ProcessedEvent,
+              [%{consumer: @consumer, event_id: event_id, inserted_at: now}],
+              on_conflict: :nothing
+            )
 
-          :applied
-        else
-          :duplicate
-        end
-      end)
+          if dedupe_count == 1 do
+            recipients = active_recipients(conversation_id, sender_user_id)
+            fan_out(attrs, recipients)
+            {:applied, recipients}
+          else
+            :duplicate
+          end
+        end)
+
+      # Web-push sender leg (Phase 1) — AFTER the commit, never inside the transaction, and only for
+      # the FIRST application of the event (dedupe means retries/redeliveries don't re-push).
+      case result do
+        {:ok, {:applied, recipients}} ->
+          NotificationService.PushSender.push_message_created(attrs, recipients)
+          {:ok, :applied}
+
+        other ->
+          other
+      end
     else
       _ -> {:error, :invalid_event}
     end
@@ -74,9 +88,7 @@ defmodule NotificationService.Notifications do
   # One notification per active participant, EXCLUDING the sender. Empty set (cold-start) →
   # no rows, no error. on_conflict :nothing on the unique (source_event_id, recipient_user_id)
   # index makes this idempotent per recipient.
-  defp fan_out(attrs) do
-    recipients = active_recipients(attrs.conversation_id, attrs.sender_user_id)
-
+  defp fan_out(attrs, recipients) do
     rows =
       Enum.map(recipients, fn recipient_user_id ->
         %{

@@ -176,6 +176,14 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Invites.create_invite(body(conn)))
   end
 
+  post "/internal/push/subscriptions/save" do
+    send_result(conn, AuthService.PushSubscriptions.save_subscription(body(conn)))
+  end
+
+  post "/internal/push/subscriptions/delete" do
+    send_result(conn, AuthService.PushSubscriptions.delete_subscription(body(conn)))
+  end
+
   post "/internal/users/phone" do
     send_result(conn, AuthService.AuthClientInProcess.get_user_phone(body(conn)))
   end
