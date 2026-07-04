@@ -70,4 +70,7 @@ defmodule MessageService.MessageClientInProcess do
 
   @impl true
   def search_messages(attrs), do: Search.search_messages(attrs)
+
+  @impl true
+  def list_media(attrs), do: MessageService.MessageStore.list_media(attrs)
 end

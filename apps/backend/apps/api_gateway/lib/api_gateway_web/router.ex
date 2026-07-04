@@ -98,6 +98,8 @@ defmodule ApiGatewayWeb.Router do
     # path, so it never collides with the two-segment "/:user_id/profile" below.
     get "/by-phone", UserController, :by_phone
     get "/:user_id/profile", UserController, :profile
+    # Direct-peer contact info (phone) — server-verified shared-direct-conversation scope.
+    get "/:user_id/peer-contact", UserController, :peer_contact
   end
 
   # WhatsApp-style invites: mint an invite code for a non-platform phone number (session-authed).
@@ -117,6 +119,8 @@ defmodule ApiGatewayWeb.Router do
     post "/:conversation_id/participants", ConversationController, :add_participant
     # User-scoped soft-hides (nothing deleted; admin content viewer unaffected).
     post "/:conversation_id/clear", ConversationController, :clear
+    # Shared-media gallery (membership-gated filtered read).
+    get "/:conversation_id/media", MessageController, :media
     put "/:conversation_id/auto-delete", ConversationController, :auto_delete
     delete "/:conversation_id/participants/:user_id", ConversationController, :remove_participant
   end

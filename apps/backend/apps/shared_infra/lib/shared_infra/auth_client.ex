@@ -39,6 +39,7 @@ defmodule SharedInfra.AuthClient do
   @callback list_audit(attrs()) :: result()
 
   @callback create_invite(attrs()) :: result()
+  @callback get_user_phone(attrs()) :: result()
 
   @callback create_api_key(attrs()) :: result()
   @callback list_api_keys(attrs()) :: result()
@@ -118,6 +119,7 @@ defmodule SharedInfra.AuthClient do
   def list_audit(attrs), do: adapter().list_audit(attrs)
 
   def create_invite(attrs), do: adapter().create_invite(attrs)
+  def get_user_phone(attrs), do: adapter().get_user_phone(attrs)
 
   @doc "The configured Auth client adapter (default `AuthService.AuthClientInProcess`)."
   def adapter do

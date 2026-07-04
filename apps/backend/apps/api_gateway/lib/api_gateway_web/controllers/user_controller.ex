@@ -32,6 +32,71 @@ defmodule ApiGatewayWeb.UserController do
   end
 
   @doc """
+  DIRECT-PEER contact info (phone number) — the ONLY place a user's phone is exposed to another user.
+
+  Privacy scope, verified SERVER-SIDE before any phone read:
+    1. session → the caller;
+    2. `ConversationClient.get_conversation(conversation_id, user_id: CALLER)` — this call itself
+       403s unless the CALLER is an ACTIVE participant of the conversation (fetch_active_participant
+       in the conversation service), so membership can't be spoofed client-side;
+    3. the conversation must be type "direct", and :user_id must be the OTHER active participant.
+  Only then is the phone joined from auth. The general public profile NEVER includes a phone, and
+  group members / non-peers get 403 here.
+  """
+  def peer_contact(conn, %{"user_id" => target_user_id, "conversation_id" => conversation_id})
+      when is_binary(conversation_id) and conversation_id != "" do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, conversation} <-
+           SharedInfra.ConversationClient.get_conversation(%{
+             "conversation_id" => conversation_id,
+             "user_id" => session.user_id
+           }),
+         :ok <- verify_direct_peer(conversation, session.user_id, target_user_id),
+         {:ok, contact} <- SharedInfra.AuthClient.get_user_phone(%{"user_id" => target_user_id}) do
+      json(conn, %{
+        user_id: target_user_id,
+        phone_number: Map.get(contact, :phone_number) || Map.get(contact, "phone_number")
+      })
+    else
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :not_direct_peer} -> not_direct_peer(conn)
+      {:error, :not_found} -> phone_not_found(conn)
+      # Conversation lookup rejections (non-member, unknown id) collapse to the same 403.
+      _ -> not_direct_peer(conn)
+    end
+  end
+
+  def peer_contact(conn, _params), do: invalid_request(conn)
+
+  # Direct type + the target is the OTHER active participant (never the caller, never a group member).
+  defp verify_direct_peer(conversation, caller_user_id, target_user_id) do
+    type = Map.get(conversation, :type) || Map.get(conversation, "type")
+    participants = Map.get(conversation, :participants) || Map.get(conversation, "participants") || []
+
+    participant_ids =
+      Enum.map(participants, fn p -> Map.get(p, :user_id) || Map.get(p, "user_id") end)
+
+    if type == "direct" and target_user_id != caller_user_id and
+         caller_user_id in participant_ids and target_user_id in participant_ids do
+      :ok
+    else
+      {:error, :not_direct_peer}
+    end
+  end
+
+  defp not_direct_peer(conn),
+    do:
+      ErrorResponse.forbidden(
+        conn,
+        "user.not_direct_peer",
+        "Contact info is only visible to a direct-chat peer"
+      )
+
+  @doc """
   Resolve a phone number (E.164) → a public profile, for starting a WhatsApp-style direct chat.
 
   Unlike `profile/2`, this is SESSION-GATED: only a logged-in caller may probe whether a number is

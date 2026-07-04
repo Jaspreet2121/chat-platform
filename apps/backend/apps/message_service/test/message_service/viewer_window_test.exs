@@ -176,6 +176,57 @@ defmodule MessageService.ViewerWindowTest do
   end
 
   @tag :postgres_integration
+  test "list_media returns only media messages, honors the viewer window, never deletes" do
+    seed_membership!()
+    send_message!("plain text")
+
+    {:ok, media} =
+      Messages.create_message(%{
+        "conversation_id" => @conversation_id,
+        "sender_user_id" => @sender_user_id,
+        "message_type" => "media",
+        "media_id" => "44444444-4444-4444-8444-444444444444",
+        "metadata" => %{"object_key" => "media/x/photo.png", "content_type" => "image/png"}
+      })
+
+    {:ok, gallery} =
+      MessageStore.list_media(%{
+        "conversation_id" => @conversation_id,
+        "viewer_user_id" => @viewer_user_id
+      })
+
+    assert [item] = gallery.items
+    assert item.message_id == media.message_id
+    assert item.message_type == "media"
+
+    rows_before = messages_row_count()
+
+    # Viewer clears → their gallery empties; the rows stay (and a viewer-less call still sees it).
+    Repo.query!(
+      "UPDATE conversation_participants SET cleared_before = now() " <>
+        "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+      [@conversation_id, @viewer_user_id]
+    )
+
+    Repo.query!(
+      "UPDATE messages SET created_at = now() - interval '1 hour' WHERE message_id = $1",
+      [uuid!(media.message_id)]
+    )
+
+    {:ok, cleared_gallery} =
+      MessageStore.list_media(%{
+        "conversation_id" => @conversation_id,
+        "viewer_user_id" => @viewer_user_id
+      })
+
+    assert cleared_gallery.items == []
+
+    {:ok, unscoped} = MessageStore.list_media(%{"conversation_id" => @conversation_id})
+    assert length(unscoped.items) == 1
+    assert messages_row_count() == rows_before
+  end
+
+  @tag :postgres_integration
   test "viewer with NO prefs and absent membership row are never narrowed" do
     seed_membership!()
     send_message!("hello")

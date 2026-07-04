@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Eraser,
   FileText,
+  Phone,
   Image as ImageIcon,
   Link2,
   Play,
@@ -17,6 +18,8 @@ import type { AutoDeleteMode, ConversationDetail, Message } from "@/lib/api";
 import {
   clearConversation,
   getMediaDownloadUrl,
+  getPeerContact,
+  listConversationMedia,
   listStarred,
   setConversationAutoDelete
 } from "@/lib/api";
@@ -70,6 +73,24 @@ type MediaItem = {
 
 type LinkItem = { message: Message; url: string; host: string };
 
+// Server gallery item → the strip's MediaItem shape (so MediaThumb + its lazy presign are reused).
+function toMediaItem(message: Message): MediaItem {
+  const contentType = metadataString(message.metadata, "content_type") ?? "";
+  const kind = contentType.startsWith("image/")
+    ? "image"
+    : contentType.startsWith("video/")
+      ? "video"
+      : "file";
+  return {
+    message,
+    kind,
+    objectKey: metadataString(message.metadata, "object_key"),
+    label:
+      metadataString(message.metadata, "filename") ||
+      (kind === "video" ? "Video" : kind === "image" ? "Photo" : "File")
+  };
+}
+
 export function ConversationDetailsPanel({
   conversation,
   conversationId,
@@ -86,6 +107,12 @@ export function ConversationDetailsPanel({
   const [starred, setStarred] = useState<Message[] | null>(null);
   const [starredOpen, setStarredOpen] = useState(false);
   // Message-visibility actions (user-scoped soft-hides — server-side; per-session display state).
+  // Direct-peer contact (phone) — server-verified: only returns for the DM's other participant.
+  const [peerPhone, setPeerPhone] = useState<string | null>(null);
+  // Shared-media gallery (server query; the viewer's clear/auto-delete window applies).
+  const [gallery, setGallery] = useState<Message[] | null>(null);
+  const [galleryCursor, setGalleryCursor] = useState<string | null>(null);
+  const [galleryLoading, setGalleryLoading] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [autoDelete, setAutoDelete] = useState<AutoDeleteMode | null>(null);
@@ -122,6 +149,32 @@ export function ConversationDetailsPanel({
     };
   }, [isOpen, conversationId]);
 
+  // Fetch the first shared-media page whenever the panel opens (fresh per conversation).
+  useEffect(() => {
+    if (!isOpen || !conversationId) return;
+    let active = true;
+    // Reset deferred (timer) so no setState runs synchronously in the effect body.
+    const reset = setTimeout(() => {
+      if (active) {
+        setGallery(null);
+        setGalleryCursor(null);
+      }
+    }, 0);
+    listConversationMedia(conversationId, { limit: 18 })
+      .then((page) => {
+        if (!active) return;
+        setGallery(page.items ?? []);
+        setGalleryCursor(page.next_cursor ?? null);
+      })
+      .catch(() => {
+        if (active) setGallery([]);
+      });
+    return () => {
+      active = false;
+      clearTimeout(reset);
+    };
+  }, [isOpen, conversationId]);
+
   const type = conversation?.type ?? "conversation";
   const isDirect = type === "direct";
   const participants = useMemo(() => conversation?.participants ?? [], [conversation?.participants]);
@@ -139,48 +192,48 @@ export function ConversationDetailsPanel({
   const peerOnline = Boolean(peer && online.has(peer.user_id));
   const heroBio = isDirect ? peerProfile?.bio?.trim() || null : null;
 
-  // Recent media + links, classified from the ALREADY-LOADED timeline (newest first). Full history
-  // needs a backend filtered endpoint — deliberately out of scope; the section says "recent".
-  const { mediaItems, linkItems } = useMemo(() => {
-    const media: MediaItem[] = [];
+  // Direct-peer phone: fetched only for a DM (the endpoint 403s for anyone but the verified peer).
+  const peerUserId = peer?.user_id ?? null;
+  useEffect(() => {
+    if (!isOpen || !isDirect || !peerUserId || !conversationId) return;
+    let active = true;
+    const reset = setTimeout(() => {
+      if (active) setPeerPhone(null);
+    }, 0);
+    getPeerContact(peerUserId, conversationId)
+      .then((contact) => {
+        if (active) setPeerPhone(contact.phone_number ?? null);
+      })
+      .catch(() => {
+        if (active) setPeerPhone(null);
+      });
+    return () => {
+      active = false;
+      clearTimeout(reset);
+    };
+  }, [isOpen, isDirect, peerUserId, conversationId]);
+
+  // Recent links from the ALREADY-LOADED timeline (media moved to the server-backed gallery above).
+  const linkItems = useMemo(() => {
     const links: LinkItem[] = [];
     for (const message of messages) {
-      if (message.deleted_at) continue;
-      if (message.media_id) {
-        const contentType = metadataString(message.metadata, "content_type") ?? "";
-        const kind = contentType.startsWith("image/")
-          ? "image"
-          : contentType.startsWith("video/")
-            ? "video"
-            : "file";
-        media.push({
-          message,
-          kind,
-          objectKey: metadataString(message.metadata, "object_key"),
-          label: metadataString(message.metadata, "filename") || (kind === "video" ? "Video" : "File")
-        });
-      } else if (message.body) {
-        const match = message.body.match(URL_PATTERN);
-        if (match) {
-          let host = "";
-          try {
-            host = new URL(match[0]).hostname.replace(/^www\./, "");
-          } catch {
-            host = match[0];
-          }
-          links.push({ message, url: match[0], host });
-        }
+      if (message.deleted_at || message.media_id || !message.body) continue;
+      const match = message.body.match(URL_PATTERN);
+      if (!match) continue;
+      let host = "";
+      try {
+        host = new URL(match[0]).hostname.replace(/^www\./, "");
+      } catch {
+        host = match[0];
       }
+      links.push({ message, url: match[0], host });
     }
-    // Newest first, capped — this is a "recent items" strip, not a gallery.
-    media.reverse();
     links.reverse();
-    return { mediaItems: media.slice(0, MAX_STRIP_ITEMS), linkItems: links.slice(0, MAX_STRIP_ITEMS) };
+    return links.slice(0, MAX_STRIP_ITEMS);
   }, [messages]);
 
   if (!isOpen) return null;
 
-  const mediaCount = mediaItems.length + linkItems.length;
   const starredCount = starred?.length ?? 0;
   // Member since: for a direct chat, the peer's joined_at; for a group, the viewer's own row.
   const memberSince = isDirect
@@ -255,67 +308,94 @@ export function ConversationDetailsPanel({
                   </p>
                 )}
                 {heroBio ? <p className="mx-auto mt-2 max-w-64 text-sm text-muted">{heroBio}</p> : null}
+                {isDirect && peerPhone ? (
+                  <p className="mt-2 inline-flex items-center gap-1.5 text-sm font-medium text-brand-hover">
+                    <Phone className="h-3.5 w-3.5" aria-hidden />
+                    {peerPhone}
+                  </p>
+                ) : null}
               </div>
             </div>
           </div>
 
-          {/* SECTION — Media, links and docs (recent, from the loaded timeline). Hidden when empty. */}
-          {mediaCount > 0 ? (
+          {/* SECTION — Shared media (SERVER gallery: the conversation's full media history, newest
+              first, paginated; thumbnails presign lazily like chat bubbles). Hidden when empty. */}
+          {gallery && gallery.length > 0 ? (
             <div className="border-b border-border py-2">
               <div className="flex min-h-11 w-full items-center gap-3 px-5 py-2 text-left">
                 <ImageIcon className="h-4 w-4 shrink-0 text-muted" aria-hidden />
                 <span className="min-w-0 flex-1">
-                  <span className="block text-sm font-medium text-fg">Media, links and docs</span>
+                  <span className="block text-sm font-medium text-fg">Shared media</span>
+                </span>
+                <span className="text-sm tabular-nums text-muted">
+                  {gallery.length}
+                  {galleryCursor ? "+" : ""}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-4 gap-1.5 px-5 pb-2 pt-1 sm:grid-cols-4" role="list" aria-label="Shared media">
+                {gallery.map((message) => (
+                  <GalleryThumb
+                    key={message.message_id}
+                    item={toMediaItem(message)}
+                    onJump={onJumpToMessage ? jump : undefined}
+                  />
+                ))}
+              </div>
+
+              {galleryCursor ? (
+                <div className="px-5 pb-3">
+                  <button
+                    type="button"
+                    disabled={galleryLoading}
+                    onClick={() => {
+                      if (!galleryCursor) return;
+                      setGalleryLoading(true);
+                      listConversationMedia(conversationId, { before: galleryCursor, limit: 24 })
+                        .then((page) => {
+                          setGallery((current) => [...(current ?? []), ...(page.items ?? [])]);
+                          setGalleryCursor(page.next_cursor ?? null);
+                        })
+                        .catch(() => undefined)
+                        .finally(() => setGalleryLoading(false));
+                    }}
+                    className="w-full rounded-xl bg-brand-subtle py-2 text-xs font-medium text-brand-hover transition-colors hover:bg-brand-subtle/70 disabled:opacity-50"
+                  >
+                    {galleryLoading ? "Loading…" : "Show more"}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* SECTION — Links (recent, from the loaded timeline). Hidden when empty. */}
+          {linkItems.length > 0 ? (
+            <div className="border-b border-border py-2">
+              <div className="flex min-h-11 w-full items-center gap-3 px-5 py-2 text-left">
+                <Link2 className="h-4 w-4 shrink-0 text-muted" aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium text-fg">Links</span>
                   <span className="block text-[11px] text-faint">Recent · from loaded messages</span>
                 </span>
-                <span className="text-sm tabular-nums text-muted">{mediaCount}</span>
+                <span className="text-sm tabular-nums text-muted">{linkItems.length}</span>
                 <ChevronRight className="h-4 w-4 text-faint" aria-hidden />
               </div>
 
-              <div className="flex gap-2 overflow-x-auto px-5 pb-3 pt-1" role="list" aria-label="Recent media and links">
-                {mediaItems.map((item) => (
-                  <MediaThumb key={item.message.message_id} item={item} onJump={onJumpToMessage ? jump : undefined} />
+              <div className="flex gap-2 overflow-x-auto px-5 pb-3 pt-1" role="list" aria-label="Recent links">
+                {linkItems.map((item) => (
+                  <button
+                    key={item.message.message_id}
+                    type="button"
+                    role="listitem"
+                    onClick={() => jump(item.message)}
+                    title={item.url}
+                    className="flex h-20 w-24 shrink-0 flex-col items-center justify-center gap-1.5 rounded-xl border border-border bg-elevated px-2 transition-colors hover:bg-border/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
+                  >
+                    <Link2 className="h-5 w-5 text-brand-hover" aria-hidden />
+                    <span className="w-full truncate text-center text-[11px] text-muted">{item.host}</span>
+                  </button>
                 ))}
-                {mediaItems.length === 0
-                  ? linkItems.map((item) => (
-                      <button
-                        key={item.message.message_id}
-                        type="button"
-                        role="listitem"
-                        onClick={() => jump(item.message)}
-                        title={item.url}
-                        className="flex h-20 w-24 shrink-0 flex-col items-center justify-center gap-1.5 rounded-xl border border-border bg-elevated px-2 transition-colors hover:bg-border/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
-                      >
-                        <Link2 className="h-5 w-5 text-brand-hover" aria-hidden />
-                        <span className="w-full truncate text-center text-[11px] text-muted">{item.host}</span>
-                      </button>
-                    ))
-                  : null}
               </div>
-
-              {/* Links still get their own quiet rows when media occupies the strip. */}
-              {mediaItems.length > 0 && linkItems.length > 0 ? (
-                <ul className="px-5 pb-3">
-                  {linkItems.slice(0, 3).map((item) => (
-                    <li key={item.message.message_id}>
-                      <button
-                        type="button"
-                        onClick={() => jump(item.message)}
-                        title={item.url}
-                        className="flex min-h-11 w-full items-center gap-2.5 rounded-xl px-2 py-1.5 text-left transition-colors hover:bg-elevated focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
-                      >
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-subtle/60">
-                          <Link2 className="h-4 w-4 text-brand-hover" aria-hidden />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-xs font-medium text-fg">{item.host}</span>
-                          <span className="block truncate text-[11px] text-faint">{item.url}</span>
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
             </div>
           ) : null}
 
@@ -560,7 +640,20 @@ function ParticipantAvatar({ userId, online }: { userId: string; online: boolean
 
 // One tile in the media strip. Images resolve their signed URL (same flow as MessageBubble) and render
 // as a true thumbnail; video/file render as quiet typed tiles — no heavy media loads in a strip.
-function MediaThumb({ item, onJump }: { item: MediaItem; onJump?: (message: Message) => void }) {
+// Grid tile for the shared-media gallery — same lazy presign as the strip thumb, square + fluid.
+function GalleryThumb(props: { item: MediaItem; onJump?: (message: Message) => void }) {
+  return <MediaThumb {...props} square />;
+}
+
+function MediaThumb({
+  item,
+  onJump,
+  square
+}: {
+  item: MediaItem;
+  onJump?: (message: Message) => void;
+  square?: boolean;
+}) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const { message, kind, objectKey, label } = item;
@@ -611,7 +704,8 @@ function MediaThumb({ item, onJump }: { item: MediaItem; onJump?: (message: Mess
       title={clickable ? "Show in chat" : label}
       tabIndex={clickable ? 0 : -1}
       className={cn(
-        "h-20 w-20 shrink-0 overflow-hidden rounded-xl border border-border bg-elevated transition-colors",
+        "shrink-0 overflow-hidden rounded-xl border border-border bg-elevated transition-colors",
+        square ? "aspect-square w-full" : "h-20 w-20",
         clickable && "hover:bg-border/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
       )}
     >

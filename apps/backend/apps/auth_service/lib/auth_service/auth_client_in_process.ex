@@ -125,4 +125,19 @@ defmodule AuthService.AuthClientInProcess do
 
   @impl true
   def create_invite(attrs), do: AuthService.Invites.create_invite(attrs)
+
+  # Minimal identity read for the DIRECT-PEER contact card. The GATEWAY enforces the privacy scope
+  # (caller must share a direct conversation with this user) before calling; this just resolves the
+  # number for an active account.
+  @impl true
+  def get_user_phone(attrs) do
+    with user_id when is_binary(user_id) and user_id != "" <- attrs["user_id"] || :error,
+         %{status: "active"} = user <- AuthService.Accounts.get_user(user_id) || :error do
+      {:ok, %{user_id: user_id, phone_number: user.phone_number}}
+    else
+      _ -> {:error, :not_found}
+    end
+  rescue
+    _ -> {:error, :not_found}
+  end
 end

@@ -25,10 +25,24 @@ defmodule MessageService.MessageStore do
   @callback unstar_message(message_attrs()) :: message_result()
   @callback list_starred(message_attrs()) :: timeline_result()
   @callback search_messages(message_attrs()) :: timeline_result()
+  @callback list_media(message_attrs()) :: timeline_result()
+  @optional_callbacks list_media: 1
 
   def put_message(attrs), do: adapter().put_message(attrs)
   def get_message(attrs), do: adapter().get_message(attrs)
   def list_messages(attrs), do: adapter().list_messages(attrs)
+
+  # Shared-media gallery (optional callback — only the Postgres adapter implements it).
+  def list_media(attrs) do
+    store = adapter()
+
+    if function_exported?(store, :list_media, 1) do
+      store.list_media(attrs)
+    else
+      {:error, :message_unavailable}
+    end
+  end
+
   def update_message(attrs), do: adapter().update_message(attrs)
   def delete_message(attrs), do: adapter().delete_message(attrs)
   def mark_delivered(attrs), do: adapter().mark_delivered(attrs)
@@ -879,6 +893,61 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   rescue
     Ecto.Query.CastError -> {:error, :message_invalid}
   end
+
+  # Shared-media gallery: the conversation's media messages, newest first, paginated by created_at
+  # cursor. A pure filtered READ of messages (no migration, nothing written); the caller's viewer
+  # window (clear-chat / auto-delete) applies exactly like the timeline, and the admin path is
+  # untouched (it doesn't call this).
+  @impl true
+  def list_media(attrs) do
+    conversation_id = attr(attrs, "conversation_id")
+    limit = attrs |> attr("limit") |> coerce_limit()
+    viewer = attr(attrs, "viewer_user_id")
+    before = attr(attrs, "before")
+
+    rows =
+      Message
+      |> where([m], m.conversation_id == ^conversation_id)
+      |> where([m], m.message_type == "media")
+      |> where([m], is_nil(m.deleted_at))
+      |> apply_viewer_window(conversation_id, viewer)
+      |> maybe_before(before)
+      |> order_by([m], desc: m.created_at)
+      |> limit(^limit)
+      |> Repo.all()
+
+    items = Enum.map(rows, &message_response/1)
+    oldest = List.last(items)
+
+    {:ok,
+     %{
+       conversation_id: conversation_id,
+       items: items,
+       next_cursor: if(length(items) == limit, do: oldest && oldest.created_at, else: nil)
+     }}
+  rescue
+    Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  defp maybe_before(query, before) when is_binary(before) and before != "" do
+    case DateTime.from_iso8601(before) do
+      {:ok, cutoff, _offset} -> where(query, [m], m.created_at < ^cutoff)
+      _ -> query
+    end
+  end
+
+  defp maybe_before(query, _), do: query
+
+  defp coerce_limit(value) when is_integer(value), do: min(max(value, 1), 100)
+
+  defp coerce_limit(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {n, _} -> coerce_limit(n)
+      :error -> 30
+    end
+  end
+
+  defp coerce_limit(_), do: 30
 
   # USER-SCOPED soft-hide window ("clear chat" + "auto-delete") — applies ONLY when a viewer is
   # present. The admin content viewer calls list_messages WITHOUT viewer_user_id, so it can never be

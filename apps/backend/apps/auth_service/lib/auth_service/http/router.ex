@@ -176,6 +176,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Invites.create_invite(body(conn)))
   end
 
+  post "/internal/users/phone" do
+    send_result(conn, AuthService.AuthClientInProcess.get_user_phone(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "auth", status: "ok", deps: %{}}})
   end

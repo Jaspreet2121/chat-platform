@@ -623,6 +623,35 @@ export function setConversationAutoDelete(conversationId: string, mode: AutoDele
   );
 }
 
+// Direct-peer contact info (phone). SERVER-VERIFIED scope: only returns when the caller shares the
+// given DIRECT conversation with this user — groups/non-peers get 403. Never on the public profile.
+export function getPeerContact(userId: string, conversationId: string) {
+  return request<{ user_id: string; phone_number: string | null }>(
+    `/api/v1/users/${encodeURIComponent(userId)}/peer-contact?conversation_id=${encodeURIComponent(conversationId)}`
+  );
+}
+
+// Shared-media gallery for a conversation (membership-gated; the viewer's clear-chat/auto-delete
+// window applies). Presigned URLs resolve client-side per item, same as chat bubbles.
+export type ConversationMediaPage = {
+  conversation_id: string;
+  items: Message[];
+  next_cursor?: string | null;
+};
+
+export function listConversationMedia(
+  conversationId: string,
+  opts: { before?: string; limit?: number } = {}
+) {
+  const qs = new URLSearchParams();
+  if (opts.before) qs.set("before", opts.before);
+  if (opts.limit) qs.set("limit", String(opts.limit));
+  const suffix = qs.toString();
+  return request<ConversationMediaPage>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/media${suffix ? `?${suffix}` : ""}`
+  );
+}
+
 export function getConversation(conversationId: string) {
   return request<ConversationDetail>(
     `/api/v1/conversations/${encodeURIComponent(conversationId)}`

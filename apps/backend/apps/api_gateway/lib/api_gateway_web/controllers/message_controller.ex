@@ -87,6 +87,32 @@ defmodule ApiGatewayWeb.MessageController do
     end
   end
 
+  # Shared-media gallery: the conversation's media messages (newest first, cursor-paginated).
+  # Membership-gated EXACTLY like the timeline; the viewer's clear-chat/auto-delete window applies
+  # (viewer_user_id passed); presigned URLs are resolved client-side per item (same as chat bubbles).
+  def media(conn, %{"conversation_id" => conversation_id} = params) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- authorize_membership(conversation_id, session.user_id),
+         {:ok, response} <-
+           SharedInfra.MessageClient.list_media(%{
+             "conversation_id" => conversation_id,
+             "viewer_user_id" => session.user_id,
+             "limit" => params["limit"],
+             "before" => params["before"]
+           }) do
+      json(conn, response)
+    else
+      {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_membership_forbidden} -> forbidden(conn)
+      _ -> invalid_request(conn)
+    end
+  end
+
   # Set/change the caller's reaction on a message (WhatsApp one-per-user). Members only.
   def react(conn, %{"conversation_id" => conversation_id, "message_id" => message_id} = params) do
     with {:ok, emoji} <- require_emoji(params),

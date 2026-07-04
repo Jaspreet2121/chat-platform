@@ -36,6 +36,7 @@ defmodule SharedInfra.MessageClient do
   @callback unstar_message(attrs()) :: result()
   @callback list_starred(attrs()) :: result()
   @callback search_messages(attrs()) :: result()
+  @callback list_media(attrs()) :: result()
 
   def create_message(attrs), do: adapter().create_message(attrs)
   def send_message(attrs), do: adapter().send_message(attrs)
@@ -55,6 +56,7 @@ defmodule SharedInfra.MessageClient do
   def unstar_message(attrs), do: adapter().unstar_message(attrs)
   def list_starred(attrs), do: adapter().list_starred(attrs)
   def search_messages(attrs), do: adapter().search_messages(attrs)
+  def list_media(attrs), do: adapter().list_media(attrs)
 
   @doc "The configured Message client adapter (default `MessageService.MessageClientInProcess`)."
   def adapter do
