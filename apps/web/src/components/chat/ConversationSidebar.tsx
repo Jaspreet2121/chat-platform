@@ -56,6 +56,8 @@ export type ConversationSidebarProps = {
   openNewConvNonce?: number;
   /** Bumped by the rail's "Invite" — focuses the phone-number search (its empty state invites). */
   searchFocusNonce?: number;
+  /** Hide the floating compose FAB (mobile keyboard open — it would ride up mid-screen otherwise). */
+  fabHidden?: boolean;
 };
 
 export function ConversationSidebar(props: ConversationSidebarProps) {
@@ -75,7 +77,8 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     onJumpToMessage,
     isLoading,
     openNewConvNonce,
-    searchFocusNonce
+    searchFocusNonce,
+    fabHidden
   } = props;
 
   // Local UI state: new-group modal + message-search sheet (header actions), and a local bump for
@@ -256,7 +259,10 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
           type="button"
           onClick={() => setLocalFocusNonce((n) => n + 1)}
           aria-label="New chat"
-          className="accent-gradient fixed bottom-[calc(168px+env(safe-area-inset-bottom))] right-4 z-30 flex h-[52px] w-[52px] items-center justify-center rounded-full text-white shadow-accent-glow transition-transform active:scale-95 md:hidden"
+          className={cn(
+            "accent-gradient fixed bottom-[calc(168px+env(safe-area-inset-bottom))] right-4 z-30 flex h-[52px] w-[52px] items-center justify-center rounded-full text-white shadow-accent-glow transition-transform active:scale-95 md:hidden",
+            fabHidden && "hidden"
+          )}
         >
           <SquarePen className="h-5 w-5" aria-hidden />
         </button>

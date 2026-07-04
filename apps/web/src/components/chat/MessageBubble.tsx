@@ -175,6 +175,9 @@ export function MessageBubble({
             : "text-faint"
       )}
     >
+      {isStarred ? (
+        <Star className="h-2.5 w-2.5 text-amber-400" fill="currentColor" aria-hidden />
+      ) : null}
       {time}
       {isEdited ? <span className="italic">· edited</span> : null}
       {isOwn ? <ReadTicks message={message} inline /> : null}
@@ -201,10 +204,10 @@ export function MessageBubble({
         />
       )}
 
-      <div className={cn("flex max-w-[78%] flex-col gap-1", isOwn ? "items-end" : "items-start")}>
+      <div className={cn("flex max-w-[78%] flex-col", isOwn ? "items-end" : "items-start")}>
         <div
           className={cn(
-            "text-sm leading-relaxed",
+            "text-sm leading-snug",
             seamlessMedia
               ? // Seamless photo/video: no bubble surface — only the media's own rounded box shows.
                 // (relative so the overlay time/ticks pill can sit on the media's corner.)
@@ -213,7 +216,7 @@ export function MessageBubble({
                   // Locked periwinkle bubbles: OUTGOING = accent gradient with white text and a soft
                   // glow; INCOMING = periwinkle-tinted surface with dark text. 18px radius, 5px tail
                   // corner on the sender's side.
-                  "rounded-[18px] px-3.5 py-2.5 transition-shadow",
+                  "rounded-[18px] px-3 py-1.5 transition-shadow",
                   isOwn
                     ? "bubble-own-gradient rounded-br-[5px] text-white shadow-accent-glow"
                     : "rounded-bl-[5px] bg-[var(--bubble-other-bg)] text-[var(--bubble-other-fg)] shadow-subtle hover:bg-[var(--bubble-other-bg-hover)]"
@@ -296,7 +299,12 @@ export function MessageBubble({
         </div>
 
         {reactions.length > 0 && (
-          <div className={cn("flex flex-wrap gap-1", isOwn ? "justify-end" : "justify-start")}>
+          <div
+            className={cn(
+              "z-[1] -mt-1.5 flex flex-wrap gap-1 px-1.5",
+              isOwn ? "justify-end" : "justify-start"
+            )}
+          >
             {reactions.map((reaction) => {
               const mine = myReaction === reaction.emoji;
               return (
@@ -308,7 +316,7 @@ export function MessageBubble({
                   aria-pressed={mine}
                   aria-label={`${reaction.emoji} ${reaction.count}${mine ? ", your reaction — tap to remove" : ""}`}
                   className={cn(
-                    "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs backdrop-blur-sm transition-all disabled:cursor-default enabled:hover:scale-105",
+                    "inline-flex items-center gap-0.5 rounded-full border px-1.5 py-0 text-[11px] backdrop-blur-sm transition-all disabled:cursor-default enabled:hover:scale-105",
                     mine
                       ? "border-brand/60 bg-brand/15 text-fg shadow-glow-sm"
                       : "border-border/70 bg-surface/70 text-muted enabled:hover:bg-elevated"
@@ -322,24 +330,19 @@ export function MessageBubble({
           </div>
         )}
 
-        <div className={cn("flex items-center gap-2 px-1", isOwn ? "flex-row-reverse" : "flex-row")}>
-          {isDeleted ? <span className="text-[11px] text-faint">{time}</span> : null}
+      </div>
 
-          {isStarred ? (
-            <span title="Starred" aria-label="Starred">
-              <Star className="h-3 w-3 text-amber-400" fill="currentColor" aria-hidden />
-            </span>
-          ) : null}
-
-          {hasActions && (
-            <div className="relative" ref={menuRef}>
+      {/* Actions trigger — a ROW sibling of the bubble (WhatsApp-chevron style): no vertical space.
+          Desktop: appears on hover. Mobile: faint but always tappable (bubble text-tap also opens it). */}
+      {hasActions && (
+        <div className="relative self-center" ref={menuRef}>
               <button
                 type="button"
                 onClick={() => setMenuOpen((open) => !open)}
                 aria-label="Message actions"
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
-                className="rounded-md p-1 text-faint transition-colors hover:bg-elevated hover:text-fg"
+                className="rounded-md p-1 text-faint transition-all hover:bg-elevated hover:text-fg max-md:opacity-50 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
               >
                 <MoreHorizontal className="h-4 w-4" aria-hidden />
               </button>
@@ -455,10 +458,8 @@ export function MessageBubble({
                   )}
                 </div>
               )}
-            </div>
-          )}
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -963,6 +963,10 @@ export default function ChatPage() {
   //   * focus assist — nudge the focused text input into view once the keyboard has settled;
   //   * blur cleanup — after the LAST input blurs (keyboard closing), clear any residual document pan
   //     so the header can't end up clipped (the reset can never fire mid-typing: an input is focused).
+  // True while any text input is focused (mobile keyboard likely open) — used to hide the floating
+  // bottom tab bar + compose FAB, which iOS would otherwise pin above the keyboard mid-screen.
+  const [inputFocused, setInputFocused] = useState(false);
+
   useEffect(() => {
     let assistTimer: ReturnType<typeof setTimeout> | undefined;
     let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
@@ -976,6 +980,7 @@ export default function ChatPage() {
 
     function onFocusIn(event: FocusEvent) {
       if (!isTextInput(event.target)) return;
+      setInputFocused(true);
       const input = event.target;
       clearTimeout(assistTimer);
       // After the keyboard animation (~250ms), gently ensure the input is visible. block:"nearest"
@@ -990,6 +995,7 @@ export default function ChatPage() {
       cleanupTimer = setTimeout(() => {
         // Only when focus really left all inputs (not moved between them) and the pan lingered.
         if (isTextInput(document.activeElement)) return;
+        setInputFocused(false);
         if (window.scrollY !== 0 || document.documentElement.scrollTop !== 0) {
           window.scrollTo(0, 0);
           document.documentElement.scrollTop = 0;
@@ -1033,7 +1039,7 @@ export default function ChatPage() {
         currentProfile={currentProfile}
         hasUnread={hasUnread}
         unreadCount={unreadTotal}
-        mobileHidden={Boolean(selectedConversationId)}
+        mobileHidden={Boolean(selectedConversationId) || inputFocused}
         activeView={mobileView}
         onSelectView={setMobileView}
         onNewGroup={() => {
@@ -1082,6 +1088,7 @@ export default function ChatPage() {
         <ConversationSidebar
           openNewConvNonce={newConvNonce}
           searchFocusNonce={searchFocusNonce}
+          fabHidden={inputFocused}
           session={session}
           currentProfile={currentProfile}
           onLogout={handleLogout}

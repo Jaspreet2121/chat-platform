@@ -205,14 +205,14 @@ export function MessageList({
   return (
     <div
       ref={containerRef}
-      className="chat-ambient min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6"
+      className="chat-ambient min-h-0 flex-1 space-y-1.5 overflow-y-auto px-3 py-3 sm:px-6"
     >
       {groups.map((group, index) => {
         const previous = groups[index - 1];
         const newDay =
           !previous || dayKey(previous[0].created_at) !== dayKey(group[0].created_at);
         return (
-          <div key={group[0].message_id} className="space-y-4">
+          <div key={group[0].message_id} className="space-y-1.5">
             {newDay ? (
               // Date-divider pill (Today / Yesterday / date) — quiet periwinkle-tinted chip.
               <div className="flex justify-center">
@@ -283,7 +283,7 @@ function MessageGroup({
   return (
     <div className={cn("flex flex-col", isOwn ? "items-end" : "items-start")}>
       {showHeader ? (
-        <div className="mb-1 flex items-center gap-2 pl-1">
+        <div className="mb-0.5 flex items-center gap-2 pl-1">
           <Avatar
             id={first.sender_user_id}
             name={profile?.display_name ?? undefined}
