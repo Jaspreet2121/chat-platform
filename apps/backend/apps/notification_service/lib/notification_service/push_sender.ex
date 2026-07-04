@@ -35,10 +35,12 @@ defmodule NotificationService.PushSender do
 
     for recipient <- recipients,
         not muted?(attrs.conversation_id, recipient),
-        # Presence-aware suppression: skip a recipient currently VIEWING this conversation (app open +
-        # chat active — the realtime gateway keeps a short-TTL Redis marker). The in-app path already
-        # updates them, so a push would be redundant. FAIL-OPEN: any Redis miss/error → present?=false
-        # → we SEND (a redundant push beats a missed one; never suppressed by a Redis hiccup).
+        # Presence-aware suppression. MAIN gate: the recipient's app is open/foreground ANYWHERE (any
+        # chat or the list) → skip the web-push, the in-app toast covers them. Plus the narrower
+        # "viewing THIS conversation" marker (harmless overlap). Both are short-TTL Redis markers the
+        # realtime gateway maintains. FAIL-OPEN: any Redis miss/error → present?=false → we SEND (a
+        # redundant push beats a missed one; a Redis hiccup never silently drops a push).
+        not SharedInfra.PresenceMarker.app_present?(recipient),
         not SharedInfra.PresenceMarker.present?(recipient, attrs.conversation_id) do
       payload =
         build_payload(

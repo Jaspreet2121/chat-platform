@@ -22,6 +22,35 @@ defmodule SharedInfra.PresenceMarker do
   @doc ~S|Marker key for a (user, conversation): "presence:<user_id>:<conversation_id>".|
   def key(user_id, conversation_id), do: "presence:#{user_id}:#{conversation_id}"
 
+  @doc ~S|App-level marker key: "presence:<user_id>:app" — the app is open/foreground ANYWHERE.|
+  def app_key(user_id), do: "presence:#{user_id}:app"
+
+  @doc "Mark the user's app foreground (write/refresh the TTL). Best-effort → :ok always."
+  def mark_app(user_id) do
+    SharedInfra.RedisKV.put(app_key(user_id), "1", @ttl_seconds)
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  @doc "Clear the app-level marker (backgrounded/closed). Best-effort → :ok always."
+  def clear_app(user_id) do
+    SharedInfra.RedisKV.del(app_key(user_id))
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  @doc "Whether the user's app is open/foreground right now. FAIL-OPEN: miss/error → false (SEND)."
+  def app_present?(user_id) do
+    case SharedInfra.RedisKV.get(app_key(user_id)) do
+      {:ok, _} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
   @doc "Mark the user present in the conversation (write/refresh the TTL). Best-effort → :ok always."
   def mark(user_id, conversation_id) do
     SharedInfra.RedisKV.put(key(user_id, conversation_id), "1", @ttl_seconds)

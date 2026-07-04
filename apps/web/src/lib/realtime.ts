@@ -98,13 +98,61 @@ export function joinUserChannel(socket: Socket, userId: string): Promise<UserCha
 
   const channel = socket.channel(`user:${userId}`, {});
 
+  // App-level foreground presence: while the tab is VISIBLE, heartbeat "app:foreground" to the user
+  // channel (the gateway refreshes a short-TTL Redis marker); on hidden/close, send "app:background".
+  // The notification service reads this to SKIP web-push while the app is open anywhere (in-app covers
+  // it). Server-side decision — the SW is untouched. Best-effort; the marker TTL self-heals.
+  const HEARTBEAT_MS = 20_000;
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+  function sendForeground() {
+    channel.push("app:foreground", {});
+  }
+  function startHeartbeat() {
+    sendForeground();
+    if (!heartbeat) heartbeat = setInterval(sendForeground, HEARTBEAT_MS);
+  }
+  function stopHeartbeat() {
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+  }
+  function onVisibility() {
+    if (typeof document === "undefined") return;
+    if (document.visibilityState === "visible") {
+      startHeartbeat();
+    } else {
+      stopHeartbeat();
+      channel.push("app:background", {});
+    }
+  }
+  function onPageHide() {
+    stopHeartbeat();
+    channel.push("app:background", {});
+  }
+
   return new Promise((resolve, reject) => {
     channel
       .join()
       .receive("ok", () => {
+        if (typeof document !== "undefined") {
+          // Mark foreground now if visible, then follow visibility changes.
+          if (document.visibilityState === "visible") startHeartbeat();
+          document.addEventListener("visibilitychange", onVisibility);
+          window.addEventListener("pagehide", onPageHide);
+        }
         resolve({
           onMessageCreated: (callback) => subscribe(channel, "message_created", callback),
-          leave: () => channel.leave()
+          leave: () => {
+            stopHeartbeat();
+            if (typeof document !== "undefined") {
+              document.removeEventListener("visibilitychange", onVisibility);
+              window.removeEventListener("pagehide", onPageHide);
+            }
+            channel.push("app:background", {});
+            channel.leave();
+          }
         });
       })
       .receive("error", (error) => reject(new Error(`user channel join failed: ${JSON.stringify(error)}`)))

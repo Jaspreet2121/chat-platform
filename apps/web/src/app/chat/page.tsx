@@ -958,10 +958,8 @@ export default function ChatPage() {
             );
           });
 
-          // Toast stack: newest first, capped at 3 (older ones drop — no toast pileups).
-          setToasts((current) =>
-            [{ id: `${message.message_id}:${Date.now()}`, message }, ...current].slice(0, 3)
-          );
+          // Show ONLY the latest in-app toast — a new message replaces the current one (no pileup).
+          setToasts([{ id: `${message.message_id}:${Date.now()}`, message }]);
           if (notificationSoundEnabled()) playNotificationBlip();
         });
       } catch {
