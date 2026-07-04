@@ -27,6 +27,7 @@ import {
   unstarMessage
 } from "@/lib/api";
 import { clearSessionTokens } from "@/lib/session";
+import { disablePush } from "@/lib/push";
 import {
   ConversationChannel,
   createSocket,
@@ -176,11 +177,17 @@ export default function ChatPage() {
         const response = await listConversations();
         const loadedConversations = response.conversations ?? [];
         setConversations(loadedConversations);
-        // Desktop: auto-open the first conversation (three-pane layout wants content in the chat
-        // pane). Mobile: land on the Messages LIST — the user taps a chat to open it.
-        setSelectedConversationId(
-          isDesktopViewport() ? loadedConversations[0]?.conversation_id ?? "" : ""
-        );
+        // Deep link (?conversation=<id> — push-notification taps land here): open that chat.
+        // Otherwise: desktop auto-opens the first conversation; mobile lands on the Messages LIST.
+        const linked = new URLSearchParams(window.location.search).get("conversation");
+        if (linked && loadedConversations.some((c) => c.conversation_id === linked)) {
+          setSelectedConversationId(linked);
+          window.history.replaceState(null, "", "/chat");
+        } else {
+          setSelectedConversationId(
+            isDesktopViewport() ? loadedConversations[0]?.conversation_id ?? "" : ""
+          );
+        }
       } catch (error) {
         setStatus(error instanceof Error ? error.message : "Open /login first.");
         // Clear the (likely stale/expired) token BEFORE redirecting so the /login presence-guard
@@ -845,6 +852,9 @@ export default function ChatPage() {
   }
 
   function handleLogout() {
+    // Best-effort: unsubscribe this browser + delete the stored subscription while the session token
+    // is still valid — a logged-out device must stop receiving message pushes.
+    void disablePush();
     clearSessionTokens();
     socketRef.current?.disconnect();
     router.replace("/login");

@@ -170,7 +170,8 @@ function destinationPayload(destination: string) {
   return value.includes("@") ? { email: value } : { phone_number: value };
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+// Exported for sibling client libs (push.ts) — same auth/error handling everywhere.
+export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
 

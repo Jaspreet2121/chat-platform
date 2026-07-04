@@ -1,12 +1,25 @@
 "use client";
 
-import { useState } from "react";
-import { Bell, ChevronRight, LogOut, Moon, Pencil, Shield, Star, Sun, UserPlus } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  Bell,
+  BellRing,
+  ChevronRight,
+  LogOut,
+  Moon,
+  Pencil,
+  Share,
+  Shield,
+  Star,
+  Sun,
+  UserPlus
+} from "lucide-react";
 import { useTheme } from "next-themes";
 import {
   notificationSoundEnabled,
   setNotificationSoundEnabled
 } from "./NotificationToasts";
+import { enablePush, disablePush, getPushStatus, type PushStatus } from "@/lib/push";
 import type { Session, UserProfile } from "@/lib/api";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
@@ -40,6 +53,36 @@ export function ProfileTab({
   const { resolvedTheme, setTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
   const [soundOn, setSoundOn] = useState(() => notificationSoundEnabled());
+  // Web-push state (Phase 2). Resolved async on mount; every transition is user-gesture-driven.
+  const [pushStatus, setPushStatus] = useState<PushStatus | null>(null);
+  const [pushBusy, setPushBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void getPushStatus().then((status) => {
+      if (active) setPushStatus(status);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function togglePush() {
+    if (pushBusy || !pushStatus) return;
+    setPushBusy(true);
+    try {
+      if (pushStatus === "enabled") {
+        await disablePush();
+        setPushStatus(await getPushStatus());
+      } else {
+        setPushStatus(await enablePush());
+      }
+    } catch {
+      setPushStatus(await getPushStatus());
+    } finally {
+      setPushBusy(false);
+    }
+  }
   const name = currentProfile?.display_name?.trim() || "Set up your profile";
 
   return (
@@ -117,6 +160,85 @@ export function ProfileTab({
             </span>
             <span className="sr-only">{isDark ? "Switch to light mode" : "Switch to dark mode"}</span>
           </button>
+          <div className="mx-4 h-px bg-border/60" aria-hidden />
+
+          {/* Push notifications (app closed). States: toggle / blocked hint / iOS install hint /
+              unsupported note. Never triggers a permission prompt without this tap. */}
+          {pushStatus === "ios-needs-install" ? (
+            <div className="flex items-start gap-3 px-4 py-3">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand-hover">
+                <Share className="h-[18px] w-[18px]" aria-hidden />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-fg">Notifications on iPhone</p>
+                <p className="mt-0.5 text-xs text-muted">
+                  Add Growblic to your Home Screen to enable notifications: tap the Share button, then
+                  &ldquo;Add to Home Screen&rdquo;, and open the app from there.
+                </p>
+              </div>
+            </div>
+          ) : pushStatus === "unsupported" ? (
+            <div className="flex items-center gap-3 px-4 py-3">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand-hover">
+                <Bell className="h-[18px] w-[18px]" aria-hidden />
+              </span>
+              <p className="text-sm text-muted">Notifications aren&apos;t supported on this browser.</p>
+            </div>
+          ) : pushStatus === "blocked" ? (
+            <div className="flex items-start gap-3 px-4 py-3">
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand-hover">
+                <Bell className="h-[18px] w-[18px]" aria-hidden />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-fg">Notifications blocked</p>
+                <p className="mt-0.5 text-xs text-muted">
+                  You&apos;ve blocked notifications for this site. Re-enable them in your browser&apos;s
+                  site settings, then come back here.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void togglePush()}
+              disabled={pushBusy || pushStatus === null}
+              className="flex min-h-12 w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-elevated outline-none focus-visible:bg-elevated disabled:opacity-60"
+            >
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand-hover">
+                {pushStatus === "enabled" ? (
+                  <BellRing className="h-[18px] w-[18px]" aria-hidden />
+                ) : (
+                  <Bell className="h-[18px] w-[18px]" aria-hidden />
+                )}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium text-fg">Notifications</span>
+                <span className="block text-xs text-muted">
+                  {pushStatus === "enabled"
+                    ? "On — you'll get message alerts even when the app is closed"
+                    : "Get message alerts even when the app is closed"}
+                </span>
+              </span>
+              <span
+                className={cn(
+                  "relative h-6 w-11 shrink-0 rounded-full transition-colors",
+                  pushStatus === "enabled" ? "accent-gradient" : "bg-border-strong"
+                )}
+                aria-hidden
+              >
+                <span
+                  className={cn(
+                    "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-subtle transition-all",
+                    pushStatus === "enabled" ? "left-[22px]" : "left-0.5"
+                  )}
+                />
+              </span>
+              <span className="sr-only">
+                {pushStatus === "enabled" ? "Turn notifications off" : "Turn notifications on"}
+              </span>
+            </button>
+          )}
+
           <div className="mx-4 h-px bg-border/60" aria-hidden />
           <button
             type="button"

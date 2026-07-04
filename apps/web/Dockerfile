@@ -40,7 +40,8 @@ ENV NODE_ENV=production \
 RUN addgroup -S nextjs && adduser -S nextjs -G nextjs
 COPY --from=build --chown=nextjs:nextjs /app/.next/standalone ./
 COPY --from=build --chown=nextjs:nextjs /app/.next/static ./.next/static
-# (no public/ dir in this app — add a COPY for it here if one is created later)
+# PWA assets (sw.js, manifest, icons) — served from root scope.
+COPY --from=build --chown=nextjs:nextjs /app/public ./public
 USER nextjs
 
 EXPOSE 3000

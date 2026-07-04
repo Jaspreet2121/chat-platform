@@ -23,7 +23,19 @@ const spaceGrotesk = Space_Grotesk({
 
 export const metadata: Metadata = {
   title: "Chat Platform",
-  description: "Chat Platform web MVP"
+  description: "Chat Platform web MVP",
+  // PWA (web-push phase 2): installable manifest + iOS home-screen metadata. iOS Safari only allows
+  // web-push AFTER Add-to-Home-Screen, and reads these to install cleanly.
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: "Growblic"
+  },
+  icons: {
+    icon: "/icon-192.png",
+    apple: "/apple-touch-icon.png"
+  }
 };
 
 // viewport-fit=cover is REQUIRED for env(safe-area-inset-*) to be non-zero on notched phones — the
@@ -32,7 +44,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  viewportFit: "cover"
+  viewportFit: "cover",
+  themeColor: "#7a73e0"
 };
 
 export default function RootLayout({
