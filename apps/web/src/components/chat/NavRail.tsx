@@ -24,6 +24,8 @@ export type NavRailProps = {
   currentProfile: UserProfile | null;
   /** Any conversation carries unread messages → notification dot on the Messages icon. */
   hasUnread: boolean;
+  /** Total unread messages across conversations → count pill on the mobile Messages tab. */
+  unreadCount?: number;
   /** The mobile screen currently shown (Messages / Calls-placeholder / Profile). */
   activeView?: MobileView;
   /** Switch the mobile screen (view tabs: Messages, Calls, You). */
@@ -149,6 +151,7 @@ function MobileTabBar({
   session,
   currentProfile,
   hasUnread,
+  unreadCount = 0,
   mobileHidden,
   activeView = "chats",
   onSelectView,
@@ -193,7 +196,14 @@ function MobileTabBar({
         {activeView === "chats" ? activePill : null}
         <span className="relative">
           <MessageCircle className="h-5 w-5" aria-hidden />
-          {hasUnread ? (
+          {unreadCount > 0 ? (
+            <span
+              className="accent-gradient absolute -right-2.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none text-white shadow-accent-glow ring-2 ring-white/70 dark:ring-surface/70"
+              aria-label={`${unreadCount} unread`}
+            >
+              {unreadCount > 99 ? "99+" : unreadCount}
+            </span>
+          ) : hasUnread ? (
             <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-[#8de08a]" aria-hidden />
           ) : null}
         </span>

@@ -30,8 +30,10 @@ import { clearSessionTokens } from "@/lib/session";
 import {
   ConversationChannel,
   createSocket,
-  joinConversationChannel
+  joinConversationChannel,
+  joinUserChannel
 } from "@/lib/realtime";
+import type { MessageToast } from "@/components/chat";
 import type { Socket } from "phoenix";
 import {
   ChatHeader,
@@ -42,6 +44,9 @@ import {
   MyProfileModal,
   CallsComingSoon,
   NavRail,
+  NotificationToasts,
+  notificationSoundEnabled,
+  playNotificationBlip,
   ProfileTab,
   StarredPanel,
   StatusBanner
@@ -110,6 +115,13 @@ export default function ChatPage() {
   const [searchFocusNonce, setSearchFocusNonce] = useState(0);
   // Mobile screen behind the tab bar: Messages (the list) / Calls placeholder / the "You" profile tab.
   const [mobileView, setMobileView] = useState<"chats" | "calls" | "profile">("chats");
+  // In-app notification toasts (new messages in conversations the user is NOT viewing).
+  const [toasts, setToasts] = useState<MessageToast[]>([]);
+  // The open conversation, readable from the long-lived user-channel handler (no stale closure).
+  const selectedConversationRef = useRef("");
+  useEffect(() => {
+    selectedConversationRef.current = selectedConversationId;
+  }, [selectedConversationId]);
   const [status, setStatus] = useState("Loading session...");
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -857,6 +869,68 @@ export default function ChatPage() {
     ? "error"
     : "neutral";
 
+  // IN-APP notifications: join MY OWN user topic once per session. The backend mirrors
+  // message_created for every conversation I participate in onto it — so messages in chats I'm NOT
+  // viewing produce a toast + a live unread bump (never for my own sends; never for the open chat,
+  // whose conversation channel already renders the message inline).
+  useEffect(() => {
+    if (!session?.user_id) return;
+    let isActive = true;
+    let unsubscribe: (() => void) | null = null;
+    let leave: (() => void) | null = null;
+
+    (async () => {
+      try {
+        if (!socketRef.current) socketRef.current = createSocket();
+        const userChannel = await joinUserChannel(socketRef.current, session.user_id);
+        if (!isActive) {
+          userChannel.leave();
+          return;
+        }
+        leave = userChannel.leave;
+        unsubscribe = userChannel.onMessageCreated((message) => {
+          if (!message?.conversation_id) return;
+          if (message.sender_user_id === session.user_id) return;
+          if (message.conversation_id === selectedConversationRef.current) return;
+
+          // Live unread bump + fresh preview on the list row (server remains the source of truth on
+          // the next list fetch). Unknown conversation (brand-new chat) → refetch the list.
+          setConversations((current) => {
+            if (!current.some((c) => c.conversation_id === message.conversation_id)) {
+              void refreshConversationList();
+              return current;
+            }
+            return current.map((c) =>
+              c.conversation_id === message.conversation_id
+                ? {
+                    ...c,
+                    unread_count: (c.unread_count ?? 0) + 1,
+                    last_message_preview: message.body?.trim() || "Media",
+                    updated_at: message.created_at
+                  }
+                : c
+            );
+          });
+
+          // Toast stack: newest first, capped at 3 (older ones drop — no toast pileups).
+          setToasts((current) =>
+            [{ id: `${message.message_id}:${Date.now()}`, message }, ...current].slice(0, 3)
+          );
+          if (notificationSoundEnabled()) playNotificationBlip();
+        });
+      } catch {
+        // Notifications are best-effort — chat works without the user topic.
+      }
+    })();
+
+    return () => {
+      isActive = false;
+      unsubscribe?.();
+      leave?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- join once per signed-in user
+  }, [session?.user_id]);
+
   // Keyboard handling — VISUAL-VIEWPORT TRACKING. iOS Safari overlays the keyboard and PANS the
   // visual viewport (it also clamps/ignores window.scrollTo while an input is focused, which is why
   // a height-only pin fails on device). The battle-tested fix: while the keyboard is up, glue the app
@@ -896,7 +970,20 @@ export default function ChatPage() {
     };
   }, []);
 
+  // Open a conversation from anywhere (row tap, toast tap): select it, surface the chats view, and
+  // optimistically zero its unread badge (the server resets it authoritatively via read receipts).
+  function openConversation(conversationId: string) {
+    setMobileView("chats");
+    setSelectedConversationId(conversationId);
+    setConversations((current) =>
+      current.map((c) =>
+        c.conversation_id === conversationId ? { ...c, unread_count: 0 } : c
+      )
+    );
+  }
+
   const hasUnread = conversations.some((c) => (c.unread_count ?? 0) > 0);
+  const unreadTotal = conversations.reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
 
   return (
     // The app floats as one rounded card on a soft periwinkle page from xl up (the mock's depth);
@@ -915,6 +1002,7 @@ export default function ChatPage() {
         session={session}
         currentProfile={currentProfile}
         hasUnread={hasUnread}
+        unreadCount={unreadTotal}
         mobileHidden={Boolean(selectedConversationId)}
         activeView={mobileView}
         onSelectView={setMobileView}
@@ -979,7 +1067,7 @@ export default function ChatPage() {
           onStartDirectChat={handleStartDirectChat}
           conversations={conversations}
           selectedConversationId={selectedConversationId}
-          onSelectConversation={setSelectedConversationId}
+          onSelectConversation={openConversation}
           onJumpToMessage={handleJumpToMessage}
           isLoading={isLoading}
         />
@@ -1080,6 +1168,13 @@ export default function ChatPage() {
           />
         ) : null}
       </section>
+
+      {/* In-app notification toasts (new messages in other conversations). */}
+      <NotificationToasts
+        toasts={toasts}
+        onOpen={openConversation}
+        onDismiss={(id) => setToasts((current) => current.filter((t) => t.id !== id))}
+      />
 
       <StarredPanel
         isOpen={isStarredOpen}

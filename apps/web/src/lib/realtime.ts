@@ -83,6 +83,35 @@ function push(channel: Channel, event: string, payload: object) {
   });
 }
 
+// The caller's OWN `user:<id>` topic — the backend fans message_created for conversations the user
+// does NOT have open onto it (in-app notifications: toasts + live unread badges). Identity-pinned
+// server-side; joining someone else's topic is rejected.
+export type UserChannel = {
+  onMessageCreated: (callback: (message: Message) => void) => () => void;
+  leave: () => void;
+};
+
+export function joinUserChannel(socket: Socket, userId: string): Promise<UserChannel> {
+  if (socket.isConnected() === false) {
+    socket.connect();
+  }
+
+  const channel = socket.channel(`user:${userId}`, {});
+
+  return new Promise((resolve, reject) => {
+    channel
+      .join()
+      .receive("ok", () => {
+        resolve({
+          onMessageCreated: (callback) => subscribe(channel, "message_created", callback),
+          leave: () => channel.leave()
+        });
+      })
+      .receive("error", (error) => reject(new Error(`user channel join failed: ${JSON.stringify(error)}`)))
+      .receive("timeout", () => reject(new Error(`user:${userId} join timed out`)));
+  });
+}
+
 export function joinConversationChannel(
   socket: Socket,
   conversationId: string

@@ -154,6 +154,7 @@ defmodule RealtimeGateway.ConversationChannel do
            |> Map.put("sender_user_id", sender_user_id)
            |> SharedInfra.MessageClient.create_message() do
       broadcast_from(socket, "message_created", response)
+      notify_user_topics(socket, sender_user_id, response)
       {:reply, {:ok, response}, socket}
     else
       {:error, :missing_user} ->
@@ -170,6 +171,38 @@ defmodule RealtimeGateway.ConversationChannel do
          {:error, %{code: "realtime.invalid_event", message: "Message event payload is invalid"}},
          socket}
     end
+  end
+
+  # IN-APP notification fan-out: mirror message_created onto each OTHER participant's `user:<id>`
+  # topic (identity-pinned channel that already exists) so clients get live unread badges/toasts for
+  # conversations they DON'T have open — joining every conversation channel instead would falsely mark
+  # them present ("Active now") everywhere. Fire-and-forget: never blocks or fails the send. This is
+  # the existing websocket, NOT push infra (no service worker / web-push).
+  defp notify_user_topics(socket, sender_user_id, response) do
+    endpoint = socket.endpoint
+    conversation_id = socket.assigns.conversation_id
+
+    Task.start(fn ->
+      case SharedInfra.ConversationClient.get_conversation(%{
+             "conversation_id" => conversation_id,
+             "user_id" => sender_user_id
+           }) do
+        {:ok, conversation} ->
+          (Map.get(conversation, :participants) || Map.get(conversation, "participants") || [])
+          |> Enum.map(fn p -> Map.get(p, :user_id) || Map.get(p, "user_id") end)
+          |> Enum.reject(&(&1 in [nil, sender_user_id]))
+          |> Enum.each(fn user_id ->
+            endpoint.broadcast("user:" <> user_id, "message_created", response)
+          end)
+
+        _ ->
+          :ok
+      end
+    end)
+
+    :ok
+  rescue
+    _ -> :ok
   end
 
   defp update_message(payload, socket) do

@@ -1,7 +1,12 @@
 "use client";
 
-import { ChevronRight, LogOut, Moon, Pencil, Shield, Star, Sun, UserPlus } from "lucide-react";
+import { useState } from "react";
+import { Bell, ChevronRight, LogOut, Moon, Pencil, Shield, Star, Sun, UserPlus } from "lucide-react";
 import { useTheme } from "next-themes";
+import {
+  notificationSoundEnabled,
+  setNotificationSoundEnabled
+} from "./NotificationToasts";
 import type { Session, UserProfile } from "@/lib/api";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
@@ -34,6 +39,7 @@ export function ProfileTab({
 }: ProfileTabProps) {
   const { resolvedTheme, setTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
+  const [soundOn, setSoundOn] = useState(() => notificationSoundEnabled());
   const name = currentProfile?.display_name?.trim() || "Set up your profile";
 
   return (
@@ -110,6 +116,36 @@ export function ProfileTab({
               />
             </span>
             <span className="sr-only">{isDark ? "Switch to light mode" : "Switch to dark mode"}</span>
+          </button>
+          <div className="mx-4 h-px bg-border/60" aria-hidden />
+          <button
+            type="button"
+            onClick={() => {
+              const next = !soundOn;
+              setNotificationSoundEnabled(next);
+              setSoundOn(next);
+            }}
+            className="flex min-h-12 w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-elevated outline-none focus-visible:bg-elevated"
+          >
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand-hover">
+              <Bell className="h-[18px] w-[18px]" aria-hidden />
+            </span>
+            <span className="flex-1 text-sm font-medium text-fg">Notification sound</span>
+            <span
+              className={cn(
+                "relative h-6 w-11 shrink-0 rounded-full transition-colors",
+                soundOn ? "accent-gradient" : "bg-border-strong"
+              )}
+              aria-hidden
+            >
+              <span
+                className={cn(
+                  "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-subtle transition-all",
+                  soundOn ? "left-[22px]" : "left-0.5"
+                )}
+              />
+            </span>
+            <span className="sr-only">{soundOn ? "Turn sound off" : "Turn sound on"}</span>
           </button>
         </section>
 

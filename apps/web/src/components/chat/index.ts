@@ -28,3 +28,5 @@ export { NavRail } from "./NavRail";
 export type { NavRailProps } from "./NavRail";
 export { ProfileTab, CallsComingSoon } from "./ProfileTab";
 export type { ProfileTabProps } from "./ProfileTab";
+export { NotificationToasts, notificationSoundEnabled, setNotificationSoundEnabled, playNotificationBlip } from "./NotificationToasts";
+export type { MessageToast } from "./NotificationToasts";
