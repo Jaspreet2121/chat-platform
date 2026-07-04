@@ -953,42 +953,57 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- join once per signed-in user
   }, [session?.user_id]);
 
-  // Keyboard handling — VISUAL-VIEWPORT TRACKING. iOS Safari overlays the keyboard and PANS the
-  // visual viewport (it also clamps/ignores window.scrollTo while an input is focused, which is why
-  // a height-only pin fails on device). The battle-tested fix: while the keyboard is up, glue the app
-  // to the visible area with BOTH height = visualViewport.height AND translateY(visualViewport.
-  // offsetTop), re-synced on every vv resize/scroll — wherever Safari pans, the app (composer, search
-  // bars, and fixed overlays inside it) always fills exactly the area above the keyboard. On close,
-  // release and zero any residual pan (the top-clip guard).
-  const [vvPin, setVvPin] = useState<{ height: number; offsetTop: number } | null>(null);
+  // Keyboard handling — LET SAFARI DO IT. The composer/search inputs live in NORMAL flow (nothing
+  // fixed/transformed above them), and iOS Safari natively pans the focused input above the keyboard.
+  // Two previous "clever" fixes failed on device because window.innerHeight ALSO shrinks with the
+  // keyboard on modern iOS, so the `innerHeight - vv.height` keyboard detector never fired — and its
+  // "closed" branch ran window.scrollTo(0,0) on every viewport event, actively CANCELLING Safari's
+  // native reveal (that was the hidden-composer bug). So: no pinning, no transforms, no scroll resets
+  // while an input is focused. Just:
+  //   * focus assist — nudge the focused text input into view once the keyboard has settled;
+  //   * blur cleanup — after the LAST input blurs (keyboard closing), clear any residual document pan
+  //     so the header can't end up clipped (the reset can never fire mid-typing: an input is focused).
   useEffect(() => {
-    const viewport = window.visualViewport;
-    if (!viewport) return;
-    let raf = 0;
-    function sync() {
-      if (!viewport) return;
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        const keyboardOpen = window.innerHeight - viewport.height > 80;
-        if (keyboardOpen) {
-          setVvPin({ height: viewport.height, offsetTop: viewport.offsetTop });
-        } else {
-          setVvPin(null);
-          if (window.scrollY !== 0 || document.documentElement.scrollTop !== 0) {
-            window.scrollTo(0, 0);
-            document.documentElement.scrollTop = 0;
-          }
-        }
-      });
+    let assistTimer: ReturnType<typeof setTimeout> | undefined;
+    let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+
+    function isTextInput(target: EventTarget | null): target is HTMLElement {
+      return (
+        target instanceof HTMLElement &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA")
+      );
     }
-    viewport.addEventListener("resize", sync);
-    viewport.addEventListener("scroll", sync);
-    window.addEventListener("scroll", sync);
+
+    function onFocusIn(event: FocusEvent) {
+      if (!isTextInput(event.target)) return;
+      const input = event.target;
+      clearTimeout(assistTimer);
+      // After the keyboard animation (~250ms), gently ensure the input is visible. block:"nearest"
+      // is a no-op when Safari's own reveal already did the job.
+      assistTimer = setTimeout(() => {
+        input.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }, 300);
+    }
+
+    function onFocusOut() {
+      clearTimeout(cleanupTimer);
+      cleanupTimer = setTimeout(() => {
+        // Only when focus really left all inputs (not moved between them) and the pan lingered.
+        if (isTextInput(document.activeElement)) return;
+        if (window.scrollY !== 0 || document.documentElement.scrollTop !== 0) {
+          window.scrollTo(0, 0);
+          document.documentElement.scrollTop = 0;
+        }
+      }, 350);
+    }
+
+    document.addEventListener("focusin", onFocusIn);
+    document.addEventListener("focusout", onFocusOut);
     return () => {
-      cancelAnimationFrame(raf);
-      viewport.removeEventListener("resize", sync);
-      viewport.removeEventListener("scroll", sync);
-      window.removeEventListener("scroll", sync);
+      clearTimeout(assistTimer);
+      clearTimeout(cleanupTimer);
+      document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener("focusout", onFocusOut);
     };
   }, []);
 
@@ -1010,14 +1025,7 @@ export default function ChatPage() {
   return (
     // The app floats as one rounded card on a soft periwinkle page from xl up (the mock's depth);
     // below xl it fills the viewport edge-to-edge.
-    <main
-      className="flex h-dvh overflow-hidden bg-bg xl:items-center xl:justify-center xl:p-5"
-      style={
-        vvPin
-          ? { height: vvPin.height, transform: `translateY(${vvPin.offsetTop}px)` }
-          : undefined
-      }
-    >
+    <main className="flex h-dvh overflow-hidden bg-bg xl:items-center xl:justify-center xl:p-5">
       <div className="flex h-full w-full overflow-hidden max-md:pt-[env(safe-area-inset-top)] xl:max-w-[1440px] xl:rounded-2xl xl:border xl:border-border xl:shadow-elevated">
       {/* Desktop: thin indigo rail. Mobile: bottom tab bar (hidden while a chat is open full-screen). */}
       <NavRail
