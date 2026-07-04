@@ -122,6 +122,23 @@ export default function ChatPage() {
   useEffect(() => {
     selectedConversationRef.current = selectedConversationId;
   }, [selectedConversationId]);
+
+  // Float a conversation to the top with a fresh preview when a message is sent/received in the OPEN
+  // chat (the user-channel handler covers the not-open ones). Unread stays as-is (the chat is open).
+  function bumpConversationActivity(message: Message) {
+    setConversations((current) =>
+      current.map((c) =>
+        c.conversation_id === message.conversation_id
+          ? {
+              ...c,
+              last_message_preview: message.body?.trim() || null,
+              last_message_kind: message.media_id ? mediaKind(message) : "text",
+              updated_at: message.created_at
+            }
+          : c
+      )
+    );
+  }
   const [status, setStatus] = useState("Loading session...");
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -255,6 +272,7 @@ export default function ChatPage() {
         cleanupEvents = [
           joinedChannel.onMessageCreated((message) => {
             setMessages((current) => mergeMessage(current, message));
+            bumpConversationActivity(message);
           }),
           joinedChannel.onMessageUpdated((message) => {
             setMessages((current) => patchMessage(current, message));
@@ -459,6 +477,7 @@ export default function ChatPage() {
           });
 
       setMessages((current) => mergeMessage(current, message));
+      bumpConversationActivity(message);
       setDraft("");
       setSelectedFile(null);
       setReplyingTo(null);
@@ -485,6 +504,7 @@ export default function ChatPage() {
     try {
       const message = await uploadAndSendMediaMessage(file, "", replyToId);
       setMessages((current) => mergeMessage(current, message));
+      bumpConversationActivity(message);
       setReplyingTo(null);
       setMediaStatus("");
       setStatus("Voice message sent.");
@@ -517,6 +537,7 @@ export default function ChatPage() {
       if (target.conversation_id === selectedConversationId) {
         const message = await sendCreate(input);
         setMessages((current) => mergeMessage(current, message));
+      bumpConversationActivity(message);
       } else {
         await createMessage(input);
       }
@@ -905,7 +926,8 @@ export default function ChatPage() {
                 ? {
                     ...c,
                     unread_count: (c.unread_count ?? 0) + 1,
-                    last_message_preview: message.body?.trim() || "Media",
+                    last_message_preview: message.body?.trim() || null,
+                    last_message_kind: message.media_id ? mediaKind(message) : "text",
                     updated_at: message.created_at
                   }
                 : c
@@ -1195,6 +1217,17 @@ export default function ChatPage() {
       </div>
     </main>
   );
+}
+
+// Row-preview kind for a live media message (mirrors the server's last_message_kind mapping).
+function mediaKind(message: Message): string {
+  const contentType = String(
+    (message.metadata as Record<string, unknown> | null | undefined)?.content_type ?? ""
+  );
+  if (contentType.startsWith("image/")) return "image";
+  if (contentType.startsWith("video/")) return "video";
+  if (contentType.startsWith("audio/")) return "audio";
+  return "file";
 }
 
 // md breakpoint — the same 768px the layout splits panes on. Guarded for SSR.

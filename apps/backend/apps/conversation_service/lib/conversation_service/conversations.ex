@@ -302,27 +302,98 @@ defmodule ConversationService.Conversations do
 
   defp list_conversations_from_db(attrs) do
     with {:ok, user_id} <- required_attr(attrs, "user_id") do
-      conversations =
-        user_id
-        |> ConversationStore.list_conversations_for_user()
-        |> Enum.map(&conversation_list_item/1)
-
-      {:ok, %{conversations: conversations}}
+      {:ok, %{conversations: list_rows_with_activity(user_id)}}
     end
   rescue
     Ecto.Query.CastError -> {:error, :conversation_invalid}
   end
 
-  defp conversation_list_item(conversation) do
-    %{
-      conversation_id: conversation.id,
-      type: conversation.type,
-      title: conversation.title,
-      last_message_preview: nil,
-      unread_count: 0,
-      updated_at: iso8601(conversation.updated_at)
-    }
+  # WhatsApp-style list rows straight from the shared store (one query, lateral joins):
+  #   * last VISIBLE message (body/type/content-type) — the caller's clear-chat / auto-delete window
+  #     applies, so previews agree with their timeline;
+  #   * unread = others' visible messages without the caller's read receipt;
+  #   * ordered by last activity (last message, else conversation update) DESC.
+  # The messages/receipts tables live in the same Postgres (same precedent as the message service
+  # reading conversation_participants). READ-only.
+  defp list_rows_with_activity(user_id) do
+    {:ok, user_uuid} = Ecto.UUID.dump(user_id)
+
+    %Postgrex.Result{rows: rows} =
+      ConversationService.Repo.query!(
+        """
+        SELECT c.id::text, c.type, c.title,
+               lm.body, lm.message_type, lm.metadata->>'content_type',
+               to_char(COALESCE(lm.created_at, c.updated_at) AT TIME ZONE 'UTC',
+                       'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+               COALESCE(un.unread, 0)::int
+        FROM conversations c
+        JOIN conversation_participants cp
+          ON cp.conversation_id = c.id AND cp.user_id = $1 AND cp.left_at IS NULL
+        LEFT JOIN LATERAL (
+          SELECT m.body, m.message_type, m.metadata, m.created_at
+          FROM messages m
+          WHERE m.conversation_id = c.id
+            AND m.deleted_at IS NULL
+            AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before)
+            AND (cp.auto_delete_seconds IS NULL
+                 OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds))
+          ORDER BY m.created_at DESC
+          LIMIT 1
+        ) lm ON true
+        LEFT JOIN LATERAL (
+          SELECT count(*) AS unread
+          FROM messages m
+          WHERE m.conversation_id = c.id
+            AND m.deleted_at IS NULL
+            AND m.sender_user_id <> $1
+            AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before)
+            AND (cp.auto_delete_seconds IS NULL
+                 OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds))
+            AND NOT EXISTS (
+              SELECT 1 FROM message_receipts r
+              WHERE r.conversation_id = c.id AND r.message_id = m.message_id
+                AND r.user_id = $1 AND (r.status = 'read' OR r.read_at IS NOT NULL)
+            )
+        ) un ON true
+        WHERE c.status = 'active'
+        ORDER BY COALESCE(lm.created_at, c.updated_at) DESC
+        """,
+        [user_uuid]
+      )
+
+    Enum.map(rows, fn [id, type, title, body, message_type, content_type, activity_at, unread] ->
+      %{
+        conversation_id: id,
+        type: type,
+        title: title,
+        last_message_preview: preview_text(body, message_type),
+        last_message_kind: message_kind(message_type, content_type),
+        unread_count: unread,
+        updated_at: activity_at
+      }
+    end)
   end
+
+  # The row subtitle text: a text message's body; nil for media (the client renders a kind label).
+  defp preview_text(body, "text") when is_binary(body) and body != "", do: body
+  defp preview_text(body, nil) when is_binary(body) and body != "", do: body
+  defp preview_text(_body, _type), do: nil
+
+  defp message_kind(nil, _content_type), do: nil
+  defp message_kind("text", _content_type), do: "text"
+
+  defp message_kind("media", content_type) do
+    ct = to_string(content_type)
+
+    cond do
+      String.starts_with?(ct, "image/") -> "image"
+      String.starts_with?(ct, "video/") -> "video"
+      String.starts_with?(ct, "audio/") -> "audio"
+      true -> "file"
+    end
+  end
+
+  defp message_kind(other, _content_type), do: other
 
   defp placeholder_list_conversations do
     {:ok,

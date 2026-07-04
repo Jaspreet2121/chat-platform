@@ -1,8 +1,8 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { MessagesSquare, MoreVertical, SquarePen } from "lucide-react";
+import { MessagesSquare, MoreVertical, Search, SquarePen } from "lucide-react";
 import type {
   ConversationListItem as ConversationListItemData,
   Session,
@@ -83,13 +83,40 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
   const [isNewConvOpen, setIsNewConvOpen] = useState(false);
   const [localFocusNonce, setLocalFocusNonce] = useState(0);
   const [isMsgSearchOpen, setIsMsgSearchOpen] = useState(false);
+  // Header 3-dot dropdown (list-level actions; entries open their own UI).
+  const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
+  const headerMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isHeaderMenuOpen) return;
+    function onDown(event: MouseEvent | TouchEvent) {
+      if (headerMenuRef.current && !headerMenuRef.current.contains(event.target as Node)) {
+        setIsHeaderMenuOpen(false);
+      }
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setIsHeaderMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [isHeaderMenuOpen]);
   // Client-side filter by conversation state/type (a UI view of the existing list — no fetch).
   const [filter, setFilter] = useState<ConversationFilter>("all");
-  const filteredConversations = conversations.filter((conversation) => {
-    if (filter === "unread") return (conversation.unread_count ?? 0) > 0;
-    if (filter === "groups") return conversation.type !== "direct";
-    return true;
-  });
+  const filteredConversations = conversations
+    .filter((conversation) => {
+      if (filter === "unread") return (conversation.unread_count ?? 0) > 0;
+      if (filter === "groups") return conversation.type !== "direct";
+      return true;
+    })
+    // Most-recent activity first, LIVE: updated_at is the last-message time (server) and is bumped
+    // client-side on send/incoming events, so a new message floats its conversation to the top.
+    .sort((a, b) => Date.parse(b.updated_at ?? "") - Date.parse(a.updated_at ?? ""));
 
   // Rail → open the new-conversation modal (e.g. in group mode; the parent set the mode first).
   // Deferred (timer) so setState never runs synchronously in the effect body.
@@ -114,15 +141,51 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
           >
             <SquarePen className="h-[18px] w-[18px]" aria-hidden />
           </button>
-          <button
-            type="button"
-            onClick={() => setIsMsgSearchOpen(true)}
-            aria-label="Search messages"
-            title="Search messages"
-            className="flex h-11 w-11 items-center justify-center rounded-xl text-muted md:h-9 md:w-9 transition-colors hover:bg-elevated hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
-          >
-            <MoreVertical className="h-[18px] w-[18px]" aria-hidden />
-          </button>
+          <div ref={headerMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setIsHeaderMenuOpen((v) => !v)}
+              aria-label="More options"
+              aria-haspopup="menu"
+              aria-expanded={isHeaderMenuOpen}
+              title="More options"
+              className="flex h-11 w-11 items-center justify-center rounded-xl text-muted md:h-9 md:w-9 transition-colors hover:bg-elevated hover:text-fg outline-none focus-visible:ring-2 focus-visible:ring-brand-ring"
+            >
+              <MoreVertical className="h-[18px] w-[18px]" aria-hidden />
+            </button>
+
+            {isHeaderMenuOpen ? (
+              <div
+                role="menu"
+                className="absolute right-0 top-full z-40 mt-1 w-48 overflow-hidden rounded-xl border border-border bg-surface p-1 shadow-elevated animate-scale-in"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsHeaderMenuOpen(false);
+                    setIsMsgSearchOpen(true);
+                  }}
+                  className="flex min-h-11 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
+                >
+                  <Search className="h-4 w-4 text-muted" aria-hidden />
+                  Search messages
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsHeaderMenuOpen(false);
+                    setIsNewConvOpen(true);
+                  }}
+                  className="flex min-h-11 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
+                >
+                  <MessagesSquare className="h-4 w-4 text-muted" aria-hidden />
+                  New group
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
 

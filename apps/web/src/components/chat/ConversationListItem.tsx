@@ -16,6 +16,22 @@ export type ConversationListItemProps = {
   onSelect: (conversationId: string) => void;
 };
 
+// Media/non-text last messages show a simple label instead of blank text (WhatsApp-style).
+function kindLabel(kind?: string | null): string | null {
+  switch (kind) {
+    case "image":
+      return "📷 Photo";
+    case "video":
+      return "🎥 Video";
+    case "audio":
+      return "🎤 Voice message";
+    case "file":
+      return "📎 File";
+    default:
+      return null;
+  }
+}
+
 // Compact time for the row's right edge: today → clock time, else a short date (WhatsApp-style).
 function listTime(iso?: string): string | null {
   if (!iso) return null;
@@ -47,7 +63,9 @@ export function ConversationListItem({
     ? peer.name || conversation.title || "Direct message"
     : conversation.title || conversation.conversation_id;
   const subtitle =
-    conversation.last_message_preview || (isDirect ? "Direct message" : "Group chat");
+    conversation.last_message_preview ||
+    kindLabel(conversation.last_message_kind) ||
+    (isDirect ? "Direct message" : "Group chat");
   const time = listTime(conversation.updated_at);
   const unread = conversation.unread_count ?? 0;
 

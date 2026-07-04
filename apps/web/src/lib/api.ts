@@ -60,8 +60,13 @@ export type ConversationListItem = {
   conversation_id: string;
   type: string;
   title?: string | null;
+  // The last VISIBLE message for this caller (their clear/auto-delete window applies server-side):
+  // text body in `last_message_preview`; media carries a kind ("image"|"video"|"audio"|"file") and a
+  // null preview — the row renders a label from the kind.
   last_message_preview?: string | null;
+  last_message_kind?: string | null;
   unread_count?: number;
+  // Last ACTIVITY (last message time, else conversation update) — the list sorts by this, live.
   updated_at?: string;
 };
 
