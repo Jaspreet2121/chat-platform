@@ -958,45 +958,74 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   defp apply_viewer_window(query, _conversation_id, ""), do: query
 
   defp apply_viewer_window(query, conversation_id, viewer) do
-    {cutoff, after_viewing_since} = viewer_window(conversation_id, viewer)
+    prefs = viewer_prefs(conversation_id, viewer)
 
-    query =
-      case cutoff do
-        nil -> query
-        c -> where(query, [m], m.created_at > ^c)
-      end
+    # DISAPPEARING (rolling window + after-viewing) is PERMANENT: any message that meets the disappear
+    # condition NOW is materialized into user_hidden_messages (idempotent). Once a marker exists it stays,
+    # so turning the setting OFF only stops hiding FUTURE messages — already-gone messages never return.
+    materialize_hidden_messages(conversation_id, viewer, prefs)
 
-    if after_viewing_since do
-      # "After viewing" (disappearing messages): hide a message from THIS viewer only when it was created
-      # AFTER they enabled the setting (created_at > since — so pre-existing history is never hidden) AND
-      # they've SEEN it. "Seen" = the viewer's own sent messages (they authored them) OR a peer message
-      # with the viewer's read receipt. The kept-set is the negation of that. Still a pure soft-hide read
-      # filter — no messages row is touched, and the admin path (no viewer_user_id) never reaches here.
-      where(
-        query,
-        [m],
-        fragment(
-          "(? <= ? OR (? <> ?::text::uuid AND NOT EXISTS (SELECT 1 FROM message_receipts r WHERE r.message_id = ? AND r.user_id = ?::text::uuid AND r.read_at IS NOT NULL)))",
-          m.created_at,
-          ^after_viewing_since,
-          m.sender_user_id,
-          ^viewer,
-          m.message_id,
-          ^viewer
-        )
+    query
+    # "Clear chat" stays a live cutoff (a one-way action, never toggled): hide messages at/before it.
+    |> maybe_cleared_before(prefs.cleared_before)
+    # Permanent per-user hidden markers: once hidden for this viewer, always hidden. Admin path (no
+    # viewer) never reaches here, so admins always see every message; the messages row is never touched.
+    |> where(
+      [m],
+      fragment(
+        "NOT EXISTS (SELECT 1 FROM user_hidden_messages h WHERE h.user_id = ?::text::uuid AND h.message_id = ?)",
+        ^viewer,
+        m.message_id
       )
-    else
-      query
-    end
+    )
   rescue
-    # Malformed ids → no narrowing (matches the permissive read path; membership is gated upstream).
+    # Malformed ids -> no narrowing (matches the permissive read path; membership is gated upstream).
     _ -> query
   end
 
-  # The viewer's soft-hide prefs → {cutoff, after_viewing_since}. cutoff = LATER of cleared_before and the
-  # rolling auto-delete window (NULL-safe). after_viewing_since (non-nil = enabled) is the instant the
-  # "after viewing" rule was turned on; only messages created after it can disappear for this viewer.
-  defp viewer_window(conversation_id, viewer) do
+  defp maybe_cleared_before(query, nil), do: query
+  defp maybe_cleared_before(query, cleared_before),
+    do: where(query, [m], m.created_at > ^cleared_before)
+
+  # Insert permanent hidden markers for every message in this conversation that should disappear NOW for
+  # the viewer under their CURRENT settings. ON CONFLICT DO NOTHING keeps it idempotent + cheap (only new
+  # crossings insert). Runs only when a disappearing setting is active; best-effort (never blocks a read).
+  defp materialize_hidden_messages(conversation_id, viewer, prefs) do
+    if is_integer(prefs.auto_delete_seconds) and prefs.auto_delete_seconds > 0 do
+      # Rolling auto-delete window: mark messages older than now() - N seconds.
+      Repo.query(
+        "INSERT INTO user_hidden_messages (user_id, message_id, hidden_at) " <>
+          "SELECT $1::text::uuid, m.message_id, now() FROM messages m " <>
+          "WHERE m.conversation_id = $2::text::uuid " <>
+          "AND m.created_at <= now() - ($3 * interval '1 second') " <>
+          "ON CONFLICT DO NOTHING",
+        [viewer, conversation_id, prefs.auto_delete_seconds]
+      )
+    end
+
+    if prefs.after_viewing_since do
+      # After-viewing: mark messages created after the enable instant that the viewer has SEEN — their own
+      # sent messages (authored) or a peer message they have a read receipt for.
+      Repo.query(
+        "INSERT INTO user_hidden_messages (user_id, message_id, hidden_at) " <>
+          "SELECT $1::text::uuid, m.message_id, now() FROM messages m " <>
+          "WHERE m.conversation_id = $2::text::uuid AND m.created_at > $3 " <>
+          "AND (m.sender_user_id = $1::text::uuid OR EXISTS (" <>
+          "  SELECT 1 FROM message_receipts r WHERE r.message_id = m.message_id " <>
+          "  AND r.user_id = $1::text::uuid AND r.read_at IS NOT NULL)) " <>
+          "ON CONFLICT DO NOTHING",
+        [viewer, conversation_id, prefs.after_viewing_since]
+      )
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  # The viewer's soft-hide prefs (raw). cleared_before drives a live cutoff; auto_delete_seconds +
+  # after_viewing_since drive permanent-marker materialization.
+  defp viewer_prefs(conversation_id, viewer) do
     case Repo.query(
            "SELECT cleared_before, auto_delete_seconds, disappear_after_viewing_since " <>
              "FROM conversation_participants " <>
@@ -1004,23 +1033,14 @@ defmodule MessageService.MessageStore.PostgresAdapter do
            [conversation_id, viewer]
          ) do
       {:ok, %{rows: [[cleared_before, auto_delete_seconds, after_viewing_since]]}} ->
-        auto_cutoff =
-          if is_integer(auto_delete_seconds) and auto_delete_seconds > 0 do
-            DateTime.add(DateTime.utc_now(), -auto_delete_seconds, :second)
-          end
-
-        cutoff =
-          [cleared_before, auto_cutoff]
-          |> Enum.reject(&is_nil/1)
-          |> case do
-            [] -> nil
-            cutoffs -> Enum.max(cutoffs, DateTime)
-          end
-
-        {cutoff, after_viewing_since}
+        %{
+          cleared_before: cleared_before,
+          auto_delete_seconds: auto_delete_seconds,
+          after_viewing_since: after_viewing_since
+        }
 
       _ ->
-        {nil, nil}
+        %{cleared_before: nil, auto_delete_seconds: nil, after_viewing_since: nil}
     end
   end
 

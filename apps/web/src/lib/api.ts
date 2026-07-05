@@ -336,6 +336,11 @@ export type AdminReport = {
   id: string;
   reporter_user_id?: string | null;
   reported_user_id?: string | null;
+  // Resolved by the backend (batched) — name/phone for the reporter + reported user.
+  reporter_name?: string | null;
+  reporter_phone?: string | null;
+  reported_name?: string | null;
+  reported_phone?: string | null;
   conversation_id?: string | null;
   reported_message_id?: string | null;
   reason: string;
@@ -348,6 +353,9 @@ export type AdminReportsPage = { page: number; page_size: number; reports: Admin
 
 export type AuditEntry = {
   actor_user_id?: string | null;
+  // Resolved by the backend (batched) — the acting user's name/phone.
+  actor_name?: string | null;
+  actor_phone?: string | null;
   action: string;
   target_type: string;
   target_id?: string | null;
@@ -499,6 +507,9 @@ export function deleteUser(userId: string) {
 export type AdminMessage = {
   message_id: string;
   sender_user_id?: string | null;
+  // Resolved by the backend (batched) so the admin viewer shows WHO sent it, not a raw id.
+  sender_display_name?: string | null;
+  sender_phone?: string | null;
   message_type?: string | null;
   status?: string | null;
   created_at?: string | null;

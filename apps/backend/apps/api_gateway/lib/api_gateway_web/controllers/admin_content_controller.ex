@@ -89,7 +89,7 @@ defmodule ApiGatewayWeb.AdminContentController do
       app_id: app_id,
       masked: false,
       message_count: length(messages),
-      messages: enrich_all(messages)
+      messages: messages |> enrich_all() |> with_sender_identities()
     })
   end
 
@@ -115,7 +115,7 @@ defmodule ApiGatewayWeb.AdminContentController do
 
   # No content.read → masked metadata only + a lighter oversight row. Text is dropped before serialize.
   defp respond(conn, session, conversation_id, app_id, messages, false) do
-    masked = Enum.map(messages, &mask/1)
+    masked = messages |> Enum.map(&mask/1) |> with_sender_identities()
     audit(session, conversation_id, app_id, length(masked), "content.view.masked", true)
 
     json(conn, %{
@@ -125,6 +125,37 @@ defmodule ApiGatewayWeb.AdminContentController do
       message_count: length(masked),
       messages: masked
     })
+  end
+
+  # Attach the sender's display_name + phone to each message (ONE batched auth lookup — no N+1) so the
+  # admin viewer can show WHO sent it instead of a raw id. Best-effort: a lookup failure leaves ids only.
+  # Applied to both masked and unmasked responses (the sender id is already exposed in both).
+  defp with_sender_identities(messages) do
+    ids = messages |> Enum.map(&mget(&1, :sender_user_id)) |> Enum.filter(&is_binary/1) |> Enum.uniq()
+
+    lookup =
+      case SharedInfra.AuthClient.list_user_summaries(%{"user_ids" => ids}) do
+        {:ok, result} ->
+          (Map.get(result, :summaries) || Map.get(result, "summaries") || [])
+          |> Map.new(fn s -> {mget(s, :user_id), s} end)
+
+        _ ->
+          %{}
+      end
+
+    Enum.map(messages, fn m ->
+      case Map.get(lookup, mget(m, :sender_user_id)) do
+        nil ->
+          m
+
+        s ->
+          m
+          |> Map.put(:sender_display_name, mget(s, :display_name))
+          |> Map.put(:sender_phone, mget(s, :phone_number))
+      end
+    end)
+  rescue
+    _ -> messages
   end
 
   # WHITELIST: only safe metadata is copied out; body/caption/media_id/metadata are never included.
@@ -146,18 +177,28 @@ defmodule ApiGatewayWeb.AdminContentController do
   end
 
   defp masked_label(m) do
-    if mget(m, :message_type) == "media" do
-      metadata = mget(m, :metadata) || %{}
-      content_type = to_string(Map.get(metadata, "content_type") || Map.get(metadata, :content_type))
+    case mget(m, :message_type) do
+      "media" ->
+        metadata = mget(m, :metadata) || %{}
 
-      cond do
-        String.starts_with?(content_type, "image/") -> "[image hidden]"
-        String.starts_with?(content_type, "audio/") -> "[voice message hidden]"
-        String.starts_with?(content_type, "video/") -> "[video hidden]"
-        true -> "[media hidden]"
-      end
-    else
-      "[content hidden]"
+        content_type =
+          to_string(Map.get(metadata, "content_type") || Map.get(metadata, :content_type))
+
+        cond do
+          String.starts_with?(content_type, "image/") -> "[image hidden]"
+          String.starts_with?(content_type, "audio/") -> "[voice message hidden]"
+          String.starts_with?(content_type, "video/") -> "[video hidden]"
+          true -> "[media hidden]"
+        end
+
+      "location" ->
+        "[location hidden]"
+
+      "live_location" ->
+        "[live location hidden]"
+
+      _ ->
+        "[content hidden]"
     end
   end
 

@@ -848,6 +848,9 @@ export default function ChatPage() {
   }
 
   async function handleDeleteMessage(messageId: string) {
+    // Deleting an active live_location also ends the live share (stop the watch; no ended broadcast —
+    // the message itself is going away).
+    if (liveShareRef.current?.messageId === messageId) endLiveShare(false);
     try {
       const result = (
         channel

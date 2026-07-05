@@ -167,6 +167,7 @@ defmodule MessageService.ViewerWindowTest do
       [@conversation_id, @viewer_user_id]
     )
 
+    # Fetching materializes a PERMANENT hidden marker for "old message" (it crossed the 24h window).
     assert [visible] = user_list()
     assert visible.body == "fresh message"
 
@@ -175,14 +176,21 @@ defmodule MessageService.ViewerWindowTest do
     assert admin_bodies == ["fresh message", "old message"]
     assert messages_row_count() == rows_before
 
-    # Off restores the viewer's full (unclamped) view.
+    # Turn OFF → the already-hidden "old message" STAYS gone (off is future-only); a NEW message shows.
     Repo.query!(
       "UPDATE conversation_participants SET auto_delete_seconds = NULL " <>
         "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
       [@conversation_id, @viewer_user_id]
     )
+    send_message!("after off")
 
-    assert length(user_list()) == 2
+    viewer_bodies = user_list() |> Enum.map(& &1.body) |> Enum.sort()
+    assert viewer_bodies == ["after off", "fresh message"]
+
+    # The permanent marker exists; admin still sees everything; nothing was ever deleted (row count is the
+    # 2 originals + the "after off" message — no message row was removed).
+    assert length(admin_list()) == 3
+    assert messages_row_count() == rows_before + 1
   end
 
   @tag :postgres_integration
@@ -224,15 +232,21 @@ defmodule MessageService.ViewerWindowTest do
     assert length(admin_list()) == 4
     assert messages_row_count() == rows_before
 
-    # Off restores the viewer's full view.
+    # Turn OFF → the two already-disappeared messages STAY gone (permanent); a NEW post-off message shows.
     Repo.query!(
       "UPDATE conversation_participants " <>
         "SET disappear_after_viewing = false, disappear_after_viewing_since = NULL " <>
         "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
       [@conversation_id, @viewer_user_id]
     )
+    send_message!("after off")
 
-    assert length(user_list()) == 4
+    viewer_bodies2 = user_list() |> Enum.map(& &1.body) |> Enum.sort()
+    assert viewer_bodies2 == ["after off", "new peer (unread)", "old peer (read before enabling)"]
+
+    # Admin still sees everything (5 now); nothing deleted (4 originals + "after off").
+    assert length(admin_list()) == 5
+    assert messages_row_count() == rows_before + 1
   end
 
   @tag :postgres_integration

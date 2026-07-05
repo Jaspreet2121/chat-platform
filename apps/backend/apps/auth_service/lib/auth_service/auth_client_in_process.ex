@@ -94,6 +94,9 @@ defmodule AuthService.AuthClientInProcess do
   def list_users(attrs), do: {:ok, Accounts.list_users(attrs)}
 
   @impl true
+  def list_user_summaries(attrs), do: {:ok, Accounts.list_user_summaries(attrs)}
+
+  @impl true
   def get_user_detail(attrs), do: Moderation.user_detail(attrs)
 
   @impl true

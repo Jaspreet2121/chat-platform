@@ -147,6 +147,36 @@ defmodule AuthService.Accounts do
     }
   end
 
+  # Batched user summaries by id — {user_id, display_name, phone_number} for admin views that only have
+  # raw ids (message senders, report/audit actors). ONE query (no N+1); admin-gated at the gateway. Phone
+  # is included because the admin context is allowed to see it.
+  def list_user_summaries(attrs \\ %{}) do
+    ids =
+      (Map.get(attrs, "user_ids") || Map.get(attrs, :user_ids) || [])
+      |> Enum.filter(&is_binary/1)
+      |> Enum.uniq()
+
+    if ids == [] do
+      %{summaries: []}
+    else
+      sql =
+        "SELECT ua.id::text, up.display_name, ua.phone_number " <>
+          "FROM users_auth ua LEFT JOIN user_profiles up ON up.user_id = ua.id " <>
+          "WHERE ua.id::text = ANY($1)"
+
+      %Postgrex.Result{rows: rows} = Repo.query!(sql, [ids])
+
+      %{
+        summaries:
+          Enum.map(rows, fn [id, display_name, phone] ->
+            %{user_id: id, display_name: display_name, phone_number: phone}
+          end)
+      }
+    end
+  rescue
+    _ -> %{summaries: []}
+  end
+
   # Builds the WHERE clause + positional params for the optional status filter and phone/email search.
   defp list_filters(opts) do
     acc0 = {[], [], 1}

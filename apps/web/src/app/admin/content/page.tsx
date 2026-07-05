@@ -115,6 +115,46 @@ function MediaContent({ m }: { m: AdminMessage }) {
   );
 }
 
+// Location / live-location: metadata stores lat/lng (+ accuracy, live) as strings. Show the coordinates,
+// a live badge, and an "Open in Maps" link (keyless https URL — Apple Maps on iOS, Google Maps elsewhere).
+function AdminLocation({ m }: { m: AdminMessage }) {
+  const meta = (m.metadata ?? {}) as Record<string, unknown>;
+  const lat = Number(meta.lat);
+  const lng = Number(meta.lng);
+  const isLive = m.message_type === "live_location" && String(meta.live ?? "true") !== "false";
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return <p className="text-sm text-faint">— (location data unavailable)</p>;
+  }
+
+  const accuracy = Number(meta.accuracy);
+  return (
+    <div className="space-y-1">
+      <p className="flex flex-wrap items-center gap-2 text-sm text-fg">
+        <span className="tabular-nums">
+          {lat.toFixed(6)}, {lng.toFixed(6)}
+        </span>
+        {Number.isFinite(accuracy) ? (
+          <span className="text-xs text-faint">±{Math.round(accuracy)}m</span>
+        ) : null}
+        {isLive ? (
+          <span className="rounded-full bg-danger/15 px-2 py-0.5 text-[11px] font-medium text-danger">
+            Live
+          </span>
+        ) : null}
+      </p>
+      <a
+        href={`https://www.google.com/maps?q=${lat},${lng}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-sm text-brand underline underline-offset-2"
+      >
+        Open in Maps
+      </a>
+    </div>
+  );
+}
+
 export default function AdminContentPage() {
   // Drill-down: users (L1) → the selected user's conversations (L2) → a conversation's messages (L3).
   const [user, setUser] = useState<AdminUser | null>(null);
@@ -398,7 +438,14 @@ function MessagesView({
             {data.messages.map((m) => (
               <div key={m.message_id} className="p-3">
                 <div className="mb-1 flex items-center gap-2 text-xs text-faint">
-                  <span className="font-medium text-muted">{shortId(m.sender_user_id)}</span>
+                  <span
+                    className="font-medium text-muted"
+                    title={m.sender_user_id ?? undefined}
+                  >
+                    {m.sender_display_name?.trim() ||
+                      formatPhone(m.sender_phone) ||
+                      shortId(m.sender_user_id)}
+                  </span>
                   {m.message_type ? <span>{m.message_type}</span> : null}
                   <span className="ml-auto tabular-nums">{fmt(m.created_at)}</span>
                 </div>
@@ -409,6 +456,8 @@ function MessagesView({
                       ? ` · ${m.content_length} chars`
                       : ""}
                   </p>
+                ) : m.message_type === "location" || m.message_type === "live_location" ? (
+                  <AdminLocation m={m} />
                 ) : m.message_type === "media" ? (
                   <MediaContent m={m} />
                 ) : m.body || m.content ? (

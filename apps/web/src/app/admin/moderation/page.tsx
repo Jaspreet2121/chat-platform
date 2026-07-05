@@ -17,7 +17,7 @@ import {
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
 import { cn } from "@/lib/cn";
-import { roleLabel, roleRank, userTitle } from "@/lib/adminUser";
+import { formatPhone, roleLabel, roleRank, userTitle } from "@/lib/adminUser";
 import { UserDetailDrawer } from "./UserDetailDrawer";
 
 // A viewer may moderate a target only if strictly higher-ranked, and never themselves (backend enforces).
@@ -394,7 +394,18 @@ function ReportsTab({ flash }: { flash: Flash }) {
                 <StatusBadge status={r.status} />
               </div>
               <p className="mt-1 text-xs text-muted">
-                reporter {shortId(r.reporter_user_id)} → target {shortId(r.reported_user_id)}
+                reporter{" "}
+                <span title={r.reporter_user_id ?? undefined}>
+                  {r.reporter_name?.trim() ||
+                    formatPhone(r.reporter_phone) ||
+                    shortId(r.reporter_user_id)}
+                </span>{" "}
+                → target{" "}
+                <span title={r.reported_user_id ?? undefined}>
+                  {r.reported_name?.trim() ||
+                    formatPhone(r.reported_phone) ||
+                    shortId(r.reported_user_id)}
+                </span>
               </p>
               {r.details ? <p className="mt-1 text-sm text-muted">{r.details}</p> : null}
               <div className="mt-2 flex gap-1">
@@ -448,7 +459,9 @@ function AuditTab() {
                 {e.target_type} {shortId(e.target_id)}
               </span>
             </p>
-            <p className="truncate text-xs text-faint">by {shortId(e.actor_user_id)}</p>
+            <p className="truncate text-xs text-faint" title={e.actor_user_id ?? undefined}>
+              by {e.actor_name?.trim() || formatPhone(e.actor_phone) || shortId(e.actor_user_id)}
+            </p>
           </div>
           <span className="shrink-0 text-xs text-faint">{e.created_at}</span>
         </div>

@@ -91,7 +91,13 @@ defmodule ApiGatewayWeb.AdminModerationController do
 
   # --- Reports --------------------------------------------------------------------------------
   def list_reports(conn, params) do
-    forward(conn, SharedInfra.AuthClient.list_reports(take_paging(params)))
+    result =
+      enrich_rows(SharedInfra.AuthClient.list_reports(take_paging(params)), :reports, %{
+        reporter_user_id: :reporter,
+        reported_user_id: :reported
+      })
+
+    forward(conn, result)
   end
 
   def update_report(conn, %{"id" => report_id} = params) do
@@ -131,8 +137,57 @@ defmodule ApiGatewayWeb.AdminModerationController do
 
   # --- Audit ----------------------------------------------------------------------------------
   def list_audit(conn, params) do
-    forward(conn, SharedInfra.AuthClient.list_audit(take_paging(params)))
+    result =
+      enrich_rows(SharedInfra.AuthClient.list_audit(take_paging(params)), :entries, %{
+        actor_user_id: :actor
+      })
+
+    forward(conn, result)
   end
+
+  # Resolve the raw user-id fields in a list response to display_name + phone (ONE batched auth lookup —
+  # no N+1) so the admin panel shows WHO, not a hash. `id_fields` maps an id field → a name prefix, so
+  # e.g. reporter_user_id → reporter_name / reporter_phone. Best-effort: any failure returns the response
+  # unchanged (ids only).
+  defp enrich_rows({:ok, %{} = data}, list_key, id_fields) do
+    rows = mfetch(data, list_key) || []
+
+    ids =
+      for row <- rows, {id_field, _prefix} <- id_fields, v = mfetch(row, id_field), is_binary(v), do: v
+
+    lookup =
+      case SharedInfra.AuthClient.list_user_summaries(%{"user_ids" => Enum.uniq(ids)}) do
+        {:ok, res} ->
+          (mfetch(res, :summaries) || []) |> Map.new(fn s -> {mfetch(s, :user_id), s} end)
+
+        _ ->
+          %{}
+      end
+
+    enriched =
+      Enum.map(rows, fn row ->
+        Enum.reduce(id_fields, row, fn {id_field, prefix}, acc ->
+          case Map.get(lookup, mfetch(row, id_field)) do
+            nil ->
+              acc
+
+            s ->
+              acc
+              |> Map.put(:"#{prefix}_name", mfetch(s, :display_name))
+              |> Map.put(:"#{prefix}_phone", mfetch(s, :phone_number))
+          end
+        end)
+      end)
+
+    {:ok, Map.put(data, list_key, enriched)}
+  rescue
+    _ -> {:ok, data}
+  end
+
+  defp enrich_rows(other, _list_key, _id_fields), do: other
+
+  defp mfetch(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
+  defp mfetch(_map, _key), do: nil
 
   # --- helpers --------------------------------------------------------------------------------
   defp forward(conn, {:ok, data}), do: json(conn, data)

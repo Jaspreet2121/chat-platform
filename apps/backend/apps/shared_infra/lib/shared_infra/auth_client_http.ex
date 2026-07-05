@@ -90,6 +90,9 @@ defmodule SharedInfra.AuthClientHttp do
   def list_users(attrs), do: post("/internal/admin/users/list", attrs)
 
   @impl true
+  def list_user_summaries(attrs), do: post("/internal/admin/users/summaries", attrs)
+
+  @impl true
   def get_user_detail(attrs), do: post("/internal/admin/users/get", attrs)
 
   @impl true
