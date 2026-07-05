@@ -258,6 +258,10 @@ defmodule NotificationService.PushSender do
   # Same media labels the chat list/toasts use.
   defp preview(body, "text", _content_type) when is_binary(body) and body != "", do: body
 
+  defp preview(_body, "location", _content_type), do: "📍 Location"
+
+  defp preview(_body, "live_location", _content_type), do: "📍 Live location"
+
   defp preview(_body, "media", content_type) do
     ct = to_string(content_type)
 

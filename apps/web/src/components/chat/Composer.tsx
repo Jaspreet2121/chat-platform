@@ -1,5 +1,5 @@
 import { FormEvent, RefObject, useEffect, useRef, useState } from "react";
-import { Camera, CornerUpLeft, FileText, Image as ImageIcon, Mic, Plus, Send, Smile, Square, X } from "lucide-react";
+import { Camera, CornerUpLeft, FileText, Image as ImageIcon, MapPin, Mic, Plus, Send, Smile, Square, X } from "lucide-react";
 import { Button, IconButton } from "@/components";
 import { cn } from "@/lib/cn";
 import { formatFileSize } from "./format";
@@ -25,6 +25,8 @@ export type ComposerProps = {
   onCancelReply?: () => void;
   /** Upload + send a recorded voice message. Should reject on failure (preview is kept for retry). */
   onSendVoice: (file: File) => Promise<void>;
+  /** Share the user's current location as a location message (geolocation → lat/lng). */
+  onShareLocation?: () => void;
 };
 
 export function Composer({
@@ -43,7 +45,8 @@ export function Composer({
   acceptTypes,
   replyPreview,
   onCancelReply,
-  onSendVoice
+  onSendVoice,
+  onShareLocation
 }: ComposerProps) {
   const canSend = hasConversation && (Boolean(draft.trim()) || Boolean(selectedFile)) && !isSending;
 
@@ -290,6 +293,16 @@ export function Composer({
                   label="Document"
                   onClick={() => pickWith("application/pdf,audio/*")}
                 />
+                {onShareLocation ? (
+                  <AttachItem
+                    icon={<MapPin className="h-[18px] w-[18px]" aria-hidden />}
+                    label="Location"
+                    onClick={() => {
+                      setAttachOpen(false);
+                      onShareLocation();
+                    }}
+                  />
+                ) : null}
               </div>
             ) : null}
           </div>

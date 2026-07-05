@@ -9,8 +9,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@types/leaflet": "^1.9.21",
     "browser-image-compression": "^2.0.2",
     "framer-motion": "^11.18.2",
+    "leaflet": "^1.9.4",
     "libphonenumber-js": "^1.13.7",
     "lucide-react": "^1.21.0",
     "next": "16.2.9",
@@ -18,6 +20,7 @@
     "phoenix": "1.7.21",
     "react": "18.3.1",
     "react-dom": "18.3.1",
+    "react-leaflet": "^4.2.1",
     "recharts": "^3.9.0"
   },
   "devDependencies": {

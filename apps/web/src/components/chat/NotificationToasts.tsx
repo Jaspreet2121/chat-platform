@@ -51,6 +51,8 @@ export function playNotificationBlip(): void {
 }
 
 function preview(message: Message): string {
+  if (message.message_type === "live_location") return "📍 Live location";
+  if (message.message_type === "location") return "📍 Location";
   if (message.media_id) {
     const contentType = String(
       (message.metadata as Record<string, unknown> | null | undefined)?.content_type ?? ""

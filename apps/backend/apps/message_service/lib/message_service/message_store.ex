@@ -1091,12 +1091,24 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         {:error, :message_not_found}
 
       message ->
+        # Two modes: a metadata patch (e.g. live-location latest position) leaves body/status/edited_at
+        # untouched; otherwise it's a body edit (marks the message "edited"). The caller has already
+        # merged the patch into the full metadata map, so we just persist it.
+        changes =
+          case attr(attrs, "metadata") do
+            metadata when is_map(metadata) ->
+              %{"metadata" => metadata}
+
+            _ ->
+              %{
+                "body" => attr(attrs, "body"),
+                "status" => "edited",
+                "edited_at" => attr(attrs, "edited_at")
+              }
+          end
+
         message
-        |> Message.changeset(%{
-          "body" => attr(attrs, "body"),
-          "status" => "edited",
-          "edited_at" => attr(attrs, "edited_at")
-        })
+        |> Message.changeset(changes)
         |> Repo.update()
         |> case do
           {:ok, updated} -> {:ok, message_response(updated)}

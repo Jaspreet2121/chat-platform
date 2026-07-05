@@ -27,6 +27,10 @@ function kindLabel(kind?: string | null): string | null {
       return "🎤 Voice message";
     case "file":
       return "📎 File";
+    case "location":
+      return "📍 Location";
+    case "live_location":
+      return "📍 Live location";
     default:
       return null;
   }

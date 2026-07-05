@@ -144,6 +144,10 @@ defmodule RealtimeGateway.ConversationChannel do
     remove_reaction(payload, socket)
   end
 
+  def handle_in("live_location:update", payload, socket) do
+    update_live_location(payload, socket)
+  end
+
   defp set_reaction(payload, socket) do
     with :ok <- validate_reaction_set_payload(payload),
          {:ok, user_id} <- current_user_id(socket),
@@ -279,6 +283,65 @@ defmodule RealtimeGateway.ConversationChannel do
       _ -> invalid_event_reply(socket)
     end
   end
+
+  # Live location: the sharer streams throttled position updates. We persist the latest position to the
+  # message metadata (so late joiners / refetch see it + the live/ended flag) via the author-gated
+  # update path, then broadcast a lightweight update to the OTHER participants (their bubble moves the
+  # marker). NOT sent to user topics — it's high-frequency and only relevant to those viewing the chat.
+  defp update_live_location(payload, socket) do
+    with :ok <- validate_live_location_payload(payload),
+         {:ok, actor_user_id} <- current_user_id(socket),
+         {:ok, _response} <-
+           SharedInfra.MessageClient.update_message(%{
+             "conversation_id" => socket.assigns.conversation_id,
+             "message_id" => payload["message_id"],
+             "actor_user_id" => actor_user_id,
+             "metadata_patch" => live_location_patch(payload)
+           }) do
+      broadcast_from(socket, "live_location_updated", %{
+        message_id: payload["message_id"],
+        lat: payload["lat"],
+        lng: payload["lng"],
+        accuracy: Map.get(payload, "accuracy"),
+        at: Map.get(payload, "at") || now_iso8601(),
+        live: live_flag(payload)
+      })
+
+      {:reply, {:ok, %{status: "ok"}}, socket}
+    else
+      {:error, :missing_user} -> unauthorized_reply(socket)
+      {:error, :message_forbidden} -> forbidden_reply(socket)
+      {:error, :message_unavailable} -> unavailable_reply(socket)
+      _ -> invalid_event_reply(socket)
+    end
+  end
+
+  # Metadata patch merged into the live_location message. All values stringified downstream; here we set
+  # the latest position, a timestamp, and the live/ended flag (stop sends live:false).
+  defp live_location_patch(payload) do
+    ended? = live_flag(payload) == false
+
+    %{
+      "lat" => to_string(payload["lat"]),
+      "lng" => to_string(payload["lng"]),
+      "accuracy" => to_string(Map.get(payload, "accuracy", "")),
+      "live_at" => Map.get(payload, "at") || now_iso8601(),
+      "live" => if(ended?, do: "false", else: "true")
+    }
+    |> then(fn m -> if ended?, do: Map.put(m, "ended_at", now_iso8601()), else: m end)
+  end
+
+  # A live-location update is "ended" when the client explicitly sends live=false; otherwise it's live.
+  defp live_flag(%{"live" => false}), do: false
+  defp live_flag(%{"live" => "false"}), do: false
+  defp live_flag(_), do: true
+
+  defp validate_live_location_payload(%{"message_id" => id, "lat" => lat, "lng" => lng})
+       when is_binary(id) and id != "" and (is_number(lat) or is_binary(lat)) and
+              (is_number(lng) or is_binary(lng)),
+       do: :ok
+
+  defp validate_live_location_payload(_payload), do: {:error, :invalid_event}
 
   defp delete_message(payload, socket) do
     with :ok <- validate_delete_payload(payload),

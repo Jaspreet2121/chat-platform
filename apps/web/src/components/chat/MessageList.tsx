@@ -79,6 +79,7 @@ export type MessageListProps = {
   onRemoveReaction?: (messageId: string) => void;
   onStar?: (messageId: string) => void;
   onUnstar?: (messageId: string) => void;
+  onStopLiveLocation?: (messageId: string) => void;
   /** A message to scroll to + highlight (from a search / starred result). The nonce re-triggers. */
   scrollTarget?: { id: string; n: number } | null;
 };
@@ -97,6 +98,7 @@ export function MessageList({
   onRemoveReaction,
   onStar,
   onUnstar,
+  onStopLiveLocation,
   scrollTarget
 }: MessageListProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -235,6 +237,7 @@ export function MessageList({
               onRemoveReaction={onRemoveReaction}
               onStar={onStar}
               onUnstar={onUnstar}
+              onStopLiveLocation={onStopLiveLocation}
             />
           </div>
         );
@@ -251,7 +254,15 @@ type MessageGroupProps = {
   byId: Map<string, Message>;
 } & Pick<
   MessageListProps,
-  "onEdit" | "onDelete" | "onReply" | "onForward" | "onReact" | "onRemoveReaction" | "onStar" | "onUnstar"
+  | "onEdit"
+  | "onDelete"
+  | "onReply"
+  | "onForward"
+  | "onReact"
+  | "onRemoveReaction"
+  | "onStar"
+  | "onUnstar"
+  | "onStopLiveLocation"
 >;
 
 // One run of consecutive same-sender messages (WhatsApp grouping): in GROUP chats, others' runs get a
@@ -270,7 +281,8 @@ function MessageGroup({
   onReact,
   onRemoveReaction,
   onStar,
-  onUnstar
+  onUnstar,
+  onStopLiveLocation
 }: MessageGroupProps) {
   const first = group[0];
   const isOwn = first.sender_user_id === currentUserId;
@@ -319,6 +331,7 @@ function MessageGroup({
             onRemoveReaction={onRemoveReaction}
             onStar={onStar}
             onUnstar={onUnstar}
+            onStopLiveLocation={onStopLiveLocation}
           />
         ))}
       </div>

@@ -1,3 +1,6 @@
+"use client";
+
+import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
 import {
   Check,
@@ -6,6 +9,7 @@ import {
   Download,
   FileText,
   Forward,
+  MapPin,
   MoreHorizontal,
   Pencil,
   Star,
@@ -18,6 +22,13 @@ import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { formatTime, metadataString, senderDisplayName } from "./format";
 import { VoiceMessagePlayer } from "./VoiceMessagePlayer";
+
+// Leaflet needs `window` — load the interactive map client-side only (no SSR) so the build/SSR never
+// touch it. A neutral skeleton reserves the space while the chunk loads.
+const LeafletMap = dynamic(() => import("./LeafletMap"), {
+  ssr: false,
+  loading: () => <div className="bg-elevated" style={{ height: 150 }} aria-hidden />
+});
 import { useUserProfile } from "./useUserProfile";
 
 // WhatsApp-style quick reactions, shown as a bar at the top of the ⋯ menu.
@@ -45,6 +56,8 @@ export type MessageBubbleProps = {
   onStar?: (messageId: string) => void;
   /** Unstar this message. */
   onUnstar?: (messageId: string) => void;
+  /** Stop an active live-location share (own live_location bubble only). */
+  onStopLiveLocation?: (messageId: string) => void;
 };
 
 export function MessageBubble({
@@ -61,11 +74,14 @@ export function MessageBubble({
   onReact,
   onRemoveReaction,
   onStar,
-  onUnstar
+  onUnstar,
+  onStopLiveLocation
 }: MessageBubbleProps) {
   // Resolve the sender's profile (cached, deduped) to show their real avatar on others' messages.
   const senderProfile = useUserProfile(isOwn ? null : message.sender_user_id);
   const isMedia = Boolean(message.media_id);
+  const isLocation = message.message_type === "location" && !isMedia;
+  const isLiveLocation = message.message_type === "live_location" && !isMedia;
   const isDeleted = message.status === "deleted";
   // Photo/video render seamlessly (no surrounding bubble) — only the media's own rounded surface shows.
   // Voice + files keep the bubble. A deleted media message falls back to the text "deleted" bubble.
@@ -279,6 +295,20 @@ export function MessageBubble({
                 </button>
               </div>
             </div>
+          ) : isLiveLocation ? (
+            <>
+              <LiveLocationMessageContent
+                message={message}
+                isOwn={isOwn}
+                onStop={onStopLiveLocation}
+              />
+              {stamp}
+            </>
+          ) : isLocation ? (
+            <>
+              <LocationMessageContent message={message} />
+              {stamp}
+            </>
           ) : isMedia ? (
             <>
               <MediaMessageContent message={message} isOwn={isOwn} />
@@ -467,6 +497,8 @@ export function MessageBubble({
 // A one-line preview of a message for the reply quote block (text body, or a media-type label).
 function messageSnippet(m: Message): string {
   if (m.status === "deleted") return "Message deleted";
+  if (m.message_type === "live_location" && !m.media_id) return "📍 Live location";
+  if (m.message_type === "location" && !m.media_id) return "📍 Location";
   if (m.media_id) {
     const contentType = (m.metadata?.content_type as string) || "";
     if (contentType.startsWith("image/")) return "📷 Photo";
@@ -508,6 +540,137 @@ function ReadTicks({ message, inline }: { message: Message; inline?: boolean }) 
     <span title="Sent" aria-label="Sent">
       <Check className={cn("h-3.5 w-3.5", inline ? "text-white/60" : "text-faint")} aria-hidden />
     </span>
+  );
+}
+
+// A shared CURRENT-location message: an interactive Leaflet/OpenStreetMap map (no API key) centered on
+// the point with a pin, plus an "Open in Maps" action. Tapping "Open in Maps" opens the device's maps
+// app via a geo/https URL (Apple Maps on iOS, Google Maps on Android/desktop).
+function LocationMessageContent({ message }: { message: Message }) {
+  const lat = Number(metadataString(message.metadata, "lat"));
+  const lng = Number(metadataString(message.metadata, "lng"));
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return <p className="flex items-center gap-1.5">📍 Location</p>;
+  }
+
+  const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+  const coords = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+
+  return (
+    <div className="-mx-1 my-0.5 w-[240px] max-w-full overflow-hidden rounded-xl border border-black/10 dark:border-white/15">
+      <LeafletMap lat={lat} lng={lng} height={150} />
+      <a
+        href={mapsUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex items-center gap-2 bg-surface px-2.5 py-2 no-underline"
+      >
+        <MapPin className="h-4 w-4 shrink-0 text-brand-hover" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-xs font-medium text-fg">Shared location</p>
+          <p className="truncate text-[11px] tabular-nums text-muted">{coords}</p>
+        </div>
+        <span className="shrink-0 text-[11px] font-medium text-brand-hover">Open in Maps</span>
+      </a>
+    </div>
+  );
+}
+
+// A LIVE-location message: the same interactive Leaflet map, but the marker pulses and follows the
+// sharer's latest position (patched into the message metadata live, so this bubble re-renders as new
+// coords arrive). Shows "live until HH:MM" while active (+ an honest note that updates only flow while
+// the app is open), a "Stop sharing" control on the sharer's own bubble, and "Live location ended" after.
+function LiveLocationMessageContent({
+  message,
+  isOwn,
+  onStop
+}: {
+  message: Message;
+  isOwn: boolean;
+  onStop?: (messageId: string) => void;
+}) {
+  // A ticking clock so the bubble flips to "ended" once the window passes, even if no final broadcast
+  // arrived (e.g. the sharer's app was backgrounded at expiry). Reads the clock off render (impure).
+  const [now, setNow] = useState(0);
+  useEffect(() => {
+    const tick = () => setNow(Date.now());
+    const first = setTimeout(tick, 0);
+    const id = setInterval(tick, 30000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(id);
+    };
+  }, []);
+
+  const lat = Number(metadataString(message.metadata, "lat"));
+  const lng = Number(metadataString(message.metadata, "lng"));
+  const expiresAt = Date.parse(metadataString(message.metadata, "expires_at") ?? "");
+  const liveFlag = metadataString(message.metadata, "live") !== "false";
+  const notExpired = !Number.isFinite(expiresAt) || now === 0 || now < expiresAt;
+  const isLive = liveFlag && notExpired;
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return <p className="flex items-center gap-1.5">📍 Live location</p>;
+  }
+
+  const mapsUrl = `https://www.google.com/maps?q=${lat},${lng}`;
+  const untilLabel = Number.isFinite(expiresAt)
+    ? new Date(expiresAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    : null;
+
+  return (
+    <div className="-mx-1 my-0.5 w-[240px] max-w-full overflow-hidden rounded-xl border border-black/10 dark:border-white/15">
+      <LeafletMap lat={lat} lng={lng} live={isLive} height={150} />
+      <div className="space-y-1.5 bg-surface px-2.5 py-2">
+        <a
+          href={mapsUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-2 no-underline"
+        >
+          <span className="relative flex h-2.5 w-2.5 shrink-0" aria-hidden>
+            {isLive ? (
+              <>
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
+                <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-success" />
+              </>
+            ) : (
+              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-faint" />
+            )}
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs font-medium text-fg">
+              {isLive ? "Live location" : "Live location ended"}
+            </p>
+            <p className="truncate text-[11px] text-muted">
+              {isLive
+                ? untilLabel
+                  ? `Shared until ${untilLabel}`
+                  : "Sharing now"
+                : `${lat.toFixed(5)}, ${lng.toFixed(5)}`}
+            </p>
+          </div>
+          <span className="shrink-0 text-[11px] font-medium text-brand-hover">Open in Maps</span>
+        </a>
+
+        {isLive ? (
+          <p className="text-[10px] leading-tight text-faint">
+            Live location updates while the app is open.
+          </p>
+        ) : null}
+
+        {isLive && isOwn && onStop ? (
+          <button
+            type="button"
+            onClick={() => onStop(message.message_id)}
+            className="w-full rounded-lg bg-danger/10 px-2 py-1 text-[11px] font-medium text-danger transition-colors hover:bg-danger/15"
+          >
+            Stop sharing
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

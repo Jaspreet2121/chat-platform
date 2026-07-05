@@ -22,7 +22,7 @@ export type OtpVerifyInput = {
 
 export type CreateMessageInput = {
   conversationId: string;
-  messageType: "text" | "media";
+  messageType: "text" | "media" | "location" | "live_location";
   body?: string;
   mediaId?: string;
   caption?: string;

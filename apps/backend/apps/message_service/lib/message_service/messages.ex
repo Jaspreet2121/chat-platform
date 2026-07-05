@@ -234,23 +234,77 @@ defmodule MessageService.Messages do
     with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
          {:ok, message_id} <- required_attr(attrs, "message_id"),
          {:ok, actor_user_id} <- required_attr(attrs, "actor_user_id"),
-         {:ok, body} <- required_attr(attrs, "body"),
-         edited_at = now(),
-         bucket_date = get_attr(attrs, "bucket_date") || bucket_date(edited_at),
-         :ok <- authorize_author(conversation_id, bucket_date, message_id, actor_user_id) do
-      message_attrs = %{
-        "conversation_id" => conversation_id,
-        "bucket_date" => bucket_date,
-        "message_id" => message_id,
-        "body" => body,
-        "status" => "edited",
-        "edited_at" => edited_at
-      }
+         {:ok, mode} <- update_mode(attrs),
+         updated_at = now(),
+         bucket_date = get_attr(attrs, "bucket_date") || bucket_date(updated_at),
+         {:ok, existing} <-
+           fetch_own_message(conversation_id, bucket_date, message_id, actor_user_id) do
+      apply_message_update(mode, attrs, existing, conversation_id, bucket_date, message_id, updated_at)
+    end
+  end
 
-      case MessageStore.update_message(message_attrs) do
-        {:ok, message} -> {:ok, edited_message_response(message)}
-        {:error, reason} -> {:error, reason}
-      end
+  # Decide the update shape BEFORE fetching (so a payload with neither a metadata patch nor a body is
+  # rejected as invalid up front, matching the original edit validation): a non-empty metadata_patch is
+  # a live-location update; a non-empty body is an edit; otherwise invalid.
+  defp update_mode(attrs) do
+    patch = get_attr(attrs, "metadata_patch")
+    body = get_attr(attrs, "body")
+
+    cond do
+      is_map(patch) and map_size(patch) > 0 -> {:ok, :metadata}
+      is_binary(body) and body != "" -> {:ok, :body}
+      true -> {:error, :message_invalid}
+    end
+  end
+
+  # Live-location: a metadata PATCH (latest position / live flag). Merges into the message's existing
+  # metadata and leaves body/status/edited_at intact (it is not an "edit"). Author-gated above.
+  defp apply_message_update(:metadata, attrs, existing, conversation_id, bucket_date, message_id, _updated_at) do
+    merged = Map.merge(existing.metadata || %{}, stringify_metadata(get_attr(attrs, "metadata_patch")))
+
+    message_attrs = %{
+      "conversation_id" => conversation_id,
+      "bucket_date" => bucket_date,
+      "message_id" => message_id,
+      "metadata" => merged
+    }
+
+    case MessageStore.update_message(message_attrs) do
+      {:ok, message} -> {:ok, message_response(message)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Body edit (existing behavior): marks the message "edited".
+  defp apply_message_update(:body, attrs, _existing, conversation_id, bucket_date, message_id, updated_at) do
+    message_attrs = %{
+      "conversation_id" => conversation_id,
+      "bucket_date" => bucket_date,
+      "message_id" => message_id,
+      "body" => get_attr(attrs, "body"),
+      "status" => "edited",
+      "edited_at" => updated_at
+    }
+
+    case MessageStore.update_message(message_attrs) do
+      {:ok, message} -> {:ok, edited_message_response(message)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Author-only: fetch the message and confirm the caller is its sender (returns the row so callers can
+  # merge onto its existing metadata). Mirrors authorize_author/4 but yields the message.
+  defp fetch_own_message(conversation_id, bucket_date, message_id, actor_user_id) do
+    fetch_attrs = %{
+      "conversation_id" => conversation_id,
+      "bucket_date" => bucket_date,
+      "message_id" => message_id
+    }
+
+    case MessageStore.get_message(fetch_attrs) do
+      {:ok, %{sender_user_id: ^actor_user_id} = message} -> {:ok, message}
+      {:ok, _message} -> {:error, :message_forbidden}
+      {:error, reason} -> {:error, reason}
     end
   end
 

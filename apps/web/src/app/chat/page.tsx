@@ -57,6 +57,7 @@ import { pickDirectPeer, primeConversationDetail } from "@/components/chat/useDi
 import { cn } from "@/lib/cn";
 import imageCompression from "browser-image-compression";
 import { ForwardPicker } from "./ForwardPicker";
+import { LocationShareSheet } from "@/components/chat/LocationShareSheet";
 
 // Kept in sync with the backend allow-list (MediaService.Media @allowed_content_types). The file
 // picker's accept attribute is intentionally broader (image/*,video/*,…) so valid files aren't greyed
@@ -102,6 +103,23 @@ export default function ChatPage() {
     useState<ConversationDetail | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [channel, setChannel] = useState<ConversationChannel | null>(null);
+  // Stable handle to the current channel for long-lived callbacks (the live-location watch outlives a
+  // single render). Updated in the channel effect (not during render).
+  const channelRef = useRef<ConversationChannel | null>(null);
+  // The "Share location" chooser (current vs live).
+  const [locationSheetOpen, setLocationSheetOpen] = useState(false);
+  // The single active live-location share, if any (see the live-location controller below).
+  const liveShareRef = useRef<{
+    messageId: string;
+    expiresAt: number;
+    watchId: number | null;
+    lastSentAt: number;
+    lastLat: number;
+    lastLng: number;
+    stopTimer: ReturnType<typeof setTimeout> | null;
+    visHandler: () => void;
+    hideHandler: () => void;
+  } | null>(null);
   const [draft, setDraft] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   // The message currently being replied to (quoted), and the one being forwarded (picker target).
@@ -330,9 +348,30 @@ export default function ChatPage() {
                   : item
               )
             );
+          }),
+          joinedChannel.onLiveLocationUpdate((data) => {
+            // A peer moved: patch their live_location bubble's metadata (its Leaflet marker follows).
+            const id = data?.message_id;
+            if (!id || data.lat == null || data.lng == null) return;
+            setMessages((current) =>
+              current.map((item) =>
+                item.message_id === id
+                  ? {
+                      ...item,
+                      metadata: {
+                        ...(item.metadata ?? {}),
+                        lat: String(data.lat),
+                        lng: String(data.lng),
+                        live: data.live === false ? "false" : "true"
+                      }
+                    }
+                  : item
+              )
+            );
           })
         ];
 
+        channelRef.current = joinedChannel;
         setChannel(joinedChannel);
       } catch {
         if (isActive) {
@@ -345,12 +384,17 @@ export default function ChatPage() {
 
     return () => {
       isActive = false;
+      // End any active live share for this conversation before we leave the channel (best-effort ended
+      // broadcast goes out over the still-open socket). Live sharing is scoped to the open conversation.
+      endLiveShare(true);
       cleanupEvents.forEach((cleanup) => cleanup());
       joinedChannel?.leave();
+      channelRef.current = null;
       setChannel(null);
       setTypingUser(null);
       setOnlineUserIds([]);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedConversationId, session?.user_id]);
 
   // Reset the per-conversation "already marked read" set when switching conversations.
@@ -499,6 +543,229 @@ export default function ChatPage() {
     } finally {
       setIsSending(false);
     }
+  }
+
+  // Share CURRENT location (Phase 1): request the browser geolocation, then send a "location" message
+  // carrying lat/lng (+ accuracy) in metadata — no file upload, no map API key. Permission-denied /
+  // unavailable are surfaced as a status message (never crashes).
+  function handleShareLocation() {
+    if (!selectedConversationId) return;
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setStatus("Location sharing isn't supported on this device.");
+      return;
+    }
+
+    setStatus("Getting your location…");
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude, accuracy } = position.coords;
+        setIsSending(true);
+        try {
+          const message = await sendCreate({
+            conversationId: selectedConversationId,
+            messageType: "location",
+            metadata: {
+              lat: latitude,
+              lng: longitude,
+              accuracy: Math.round(accuracy)
+            }
+          });
+          setMessages((current) => mergeMessage(current, message));
+          bumpConversationActivity(message);
+          setStatus("Location shared.");
+        } catch (error) {
+          setStatus(error instanceof Error ? error.message : "Could not share location.");
+        } finally {
+          setIsSending(false);
+        }
+      },
+      (error) => {
+        setStatus(
+          error.code === error.PERMISSION_DENIED
+            ? "Location permission denied — enable it in your browser settings to share your location."
+            : "Couldn't get your location. Please try again."
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  }
+
+  // --- Live location (Phase 2) --------------------------------------------------------------------
+  // ONE active share at a time. While FOREGROUND, watchPosition streams; we throttle outbound to ~12s
+  // or ~20m of movement, patch our own bubble locally, broadcast to peers, and persist the latest
+  // position to the message metadata (via the channel). Backgrounding pauses the watch (honest — the
+  // bubble says so). Auto-stops at expiry; manual "Stop sharing" ends it. All refs so it survives renders.
+  function metersBetween(aLat: number, aLng: number, bLat: number, bLng: number) {
+    const R = 6371000;
+    const dLat = ((bLat - aLat) * Math.PI) / 180;
+    const dLng = ((bLng - aLng) * Math.PI) / 180;
+    const h =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos((aLat * Math.PI) / 180) * Math.cos((bLat * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  function patchLivePosition(messageId: string, lat: number, lng: number, live: boolean) {
+    setMessages((current) =>
+      current.map((m) =>
+        m.message_id === messageId
+          ? {
+              ...m,
+              metadata: {
+                ...(m.metadata ?? {}),
+                lat: String(lat),
+                lng: String(lng),
+                live: live ? "true" : "false"
+              }
+            }
+          : m
+      )
+    );
+  }
+
+  function sendLivePosition(lat: number, lng: number, accuracy: number | undefined, live: boolean) {
+    const session = liveShareRef.current;
+    if (!session) return;
+    patchLivePosition(session.messageId, lat, lng, live);
+    void channelRef.current
+      ?.sendLiveLocationUpdate({
+        message_id: session.messageId,
+        lat,
+        lng,
+        accuracy: accuracy != null ? Math.round(accuracy) : undefined,
+        at: new Date().toISOString(),
+        live
+      })
+      .catch(() => undefined);
+    session.lastSentAt = Date.now();
+    session.lastLat = lat;
+    session.lastLng = lng;
+  }
+
+  function onLivePosition(position: GeolocationPosition) {
+    const session = liveShareRef.current;
+    if (!session) return;
+    const { latitude, longitude, accuracy } = position.coords;
+    const movedEnough = metersBetween(session.lastLat, session.lastLng, latitude, longitude) >= 20;
+    const dueByTime = Date.now() - session.lastSentAt >= 12000;
+    if (movedEnough || dueByTime) sendLivePosition(latitude, longitude, accuracy, true);
+  }
+
+  function beginLiveWatch() {
+    const session = liveShareRef.current;
+    if (!session || session.watchId !== null || !navigator.geolocation) return;
+    session.watchId = navigator.geolocation.watchPosition(onLivePosition, () => undefined, {
+      enableHighAccuracy: true,
+      maximumAge: 5000,
+      timeout: 20000
+    });
+  }
+
+  function pauseLiveWatch() {
+    const session = liveShareRef.current;
+    if (session && session.watchId !== null) {
+      navigator.geolocation.clearWatch(session.watchId);
+      session.watchId = null;
+    }
+  }
+
+  // Tear down the active share. `broadcastEnded` sends a final live:false so peers see "ended".
+  function endLiveShare(broadcastEnded: boolean) {
+    const session = liveShareRef.current;
+    if (!session) return;
+    pauseLiveWatch();
+    if (session.stopTimer) clearTimeout(session.stopTimer);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", session.visHandler);
+      window.removeEventListener("pagehide", session.hideHandler);
+    }
+    if (broadcastEnded) sendLivePosition(session.lastLat, session.lastLng, undefined, false);
+    liveShareRef.current = null;
+  }
+
+  function handleStopLiveLocation(messageId: string) {
+    const session = liveShareRef.current;
+    if (session && session.messageId === messageId) {
+      endLiveShare(true);
+      setStatus("Live location stopped.");
+    }
+  }
+
+  function handleStartLiveLocation(durationMs: number) {
+    if (!selectedConversationId) return;
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setStatus("Location sharing isn't supported on this device.");
+      return;
+    }
+
+    setStatus("Getting your location…");
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude, accuracy } = position.coords;
+        const startedAt = new Date();
+        const expiresAt = new Date(startedAt.getTime() + durationMs);
+        setIsSending(true);
+        try {
+          const message = await sendCreate({
+            conversationId: selectedConversationId,
+            messageType: "live_location",
+            metadata: {
+              lat: latitude,
+              lng: longitude,
+              accuracy: Math.round(accuracy),
+              started_at: startedAt.toISOString(),
+              expires_at: expiresAt.toISOString(),
+              live: true
+            }
+          });
+          setMessages((current) => mergeMessage(current, message));
+          bumpConversationActivity(message);
+
+          // Replace any prior share, then start the watch for this one.
+          endLiveShare(true);
+          const visHandler = () => {
+            if (typeof document === "undefined") return;
+            const active = liveShareRef.current;
+            if (document.visibilityState === "visible") {
+              if (active && Date.now() < active.expiresAt) beginLiveWatch();
+            } else {
+              pauseLiveWatch();
+            }
+          };
+          const hideHandler = () => pauseLiveWatch();
+          liveShareRef.current = {
+            messageId: message.message_id,
+            expiresAt: expiresAt.getTime(),
+            watchId: null,
+            lastSentAt: Date.now(),
+            lastLat: latitude,
+            lastLng: longitude,
+            stopTimer: setTimeout(() => {
+              endLiveShare(true);
+              setStatus("Live location ended.");
+            }, Math.max(0, durationMs)),
+            visHandler,
+            hideHandler
+          };
+          document.addEventListener("visibilitychange", visHandler);
+          window.addEventListener("pagehide", hideHandler);
+          beginLiveWatch();
+          setStatus("Sharing live location.");
+        } catch (error) {
+          setStatus(error instanceof Error ? error.message : "Could not start live location.");
+        } finally {
+          setIsSending(false);
+        }
+      },
+      (error) => {
+        setStatus(
+          error.code === error.PERMISSION_DENIED
+            ? "Location permission denied — enable it in your browser settings to share your location."
+            : "Couldn't get your location. Please try again."
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
   }
 
   // Send a recorded voice message: feed the blob (as a File) through the existing media upload+send flow
@@ -1215,6 +1482,7 @@ export default function ChatPage() {
           onRemoveReaction={handleRemoveReaction}
           onStar={handleStar}
           onUnstar={handleUnstar}
+          onStopLiveLocation={handleStopLiveLocation}
         />
 
         <Composer
@@ -1238,12 +1506,26 @@ export default function ChatPage() {
                     replyingTo.sender_user_id === session?.user_id
                       ? "You"
                       : `#${replyingTo.sender_user_id.slice(0, 8)}`,
-                  snippet: replyingTo.media_id ? "Media" : replyingTo.body || "Message"
+                  snippet: replyingTo.media_id
+                    ? "Media"
+                    : replyingTo.message_type === "live_location"
+                      ? "📍 Live location"
+                      : replyingTo.message_type === "location"
+                        ? "📍 Location"
+                        : replyingTo.body || "Message"
                 }
               : null
           }
           onCancelReply={() => setReplyingTo(null)}
           onSendVoice={handleSendVoice}
+          onShareLocation={() => setLocationSheetOpen(true)}
+        />
+
+        <LocationShareSheet
+          open={locationSheetOpen}
+          onClose={() => setLocationSheetOpen(false)}
+          onSendCurrent={handleShareLocation}
+          onShareLive={handleStartLiveLocation}
         />
 
         <ConversationDetailsPanel

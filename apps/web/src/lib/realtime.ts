@@ -7,7 +7,7 @@ const defaultRealtimeUrl = "ws://localhost:4000/socket";
 export type ConversationChannel = {
   channel: Channel;
   sendMessage: (payload: {
-    message_type: "text" | "media";
+    message_type: "text" | "media" | "location" | "live_location";
     body?: string;
     media_id?: string;
     caption?: string;
@@ -40,7 +40,27 @@ export type ConversationChannel = {
   onReceipt: (callback: (payload: ReceiptPayload) => void) => () => void;
   /** Live reaction aggregate updates broadcast when another participant reacts/unreacts. */
   onReactionUpdated: (callback: (payload: ReactionUpdatedPayload) => void) => () => void;
+  /** Stream a throttled live-location position for one of the caller's own live_location messages. */
+  sendLiveLocationUpdate: (payload: {
+    message_id: string;
+    lat: number;
+    lng: number;
+    accuracy?: number;
+    at?: string;
+    live?: boolean;
+  }) => Promise<unknown>;
+  /** A peer's live-location position update (moves their live bubble's marker). */
+  onLiveLocationUpdate: (callback: (payload: LiveLocationUpdatePayload) => void) => () => void;
   leave: () => void;
+};
+
+export type LiveLocationUpdatePayload = {
+  message_id?: string;
+  lat?: number | string;
+  lng?: number | string;
+  accuracy?: number | string | null;
+  at?: string;
+  live?: boolean;
 };
 
 export type ReactionUpdatedPayload = {
@@ -209,6 +229,9 @@ export function joinConversationChannel(
           onReceipt: (callback) => subscribe(channel, "receipt_updated", callback),
           onReactionUpdated: (callback) =>
             subscribe(channel, "reaction_updated", callback),
+          sendLiveLocationUpdate: (payload) => push(channel, "live_location:update", payload),
+          onLiveLocationUpdate: (callback) =>
+            subscribe(channel, "live_location_updated", callback),
           leave: () => channel.leave()
         });
       })

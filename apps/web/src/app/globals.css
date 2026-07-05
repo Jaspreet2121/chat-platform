@@ -204,6 +204,51 @@ body {
   background-image: var(--accent-gradient);
 }
 
+/* Leaflet (live/current location maps): keep the tiled map contained (below app chrome), and style the
+   custom divIcon marker + the pulsing "live" ring. Leaflet's own CSS handles tile/pane layout. */
+.ll-container {
+  z-index: 0;
+  background: rgb(var(--color-elevated));
+}
+.ll-container .leaflet-control-attribution {
+  font-size: 9px;
+  background: rgba(255, 255, 255, 0.7);
+}
+.ll-pin-wrap {
+  position: relative;
+  display: block;
+  width: 26px;
+  height: 34px;
+}
+.ll-pin-wrap svg {
+  position: relative;
+  z-index: 1;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
+}
+/* Pulsing halo under a live marker (anchored at the pin tip). */
+.ll-pulse {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  transform: translate(-50%, 50%);
+  border-radius: 9999px;
+  background: var(--ll-pulse, #22c55e);
+  opacity: 0.5;
+  animation: ll-pulse 1.8s ease-out infinite;
+}
+@keyframes ll-pulse {
+  0% {
+    transform: translate(-50%, 50%) scale(0.6);
+    opacity: 0.55;
+  }
+  100% {
+    transform: translate(-50%, 50%) scale(2.6);
+    opacity: 0;
+  }
+}
+
 /* Reduced-motion: collapse all animations/transitions to near-instant (honors the OS preference). */
 @media (prefers-reduced-motion: reduce) {
   *,
