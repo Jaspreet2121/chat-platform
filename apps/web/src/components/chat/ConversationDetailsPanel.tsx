@@ -140,7 +140,9 @@ export function ConversationDetailsPanel({
   // "Only admins can send" — local reflection; server value comes from the conversation detail.
   const [onlyAdmins, setOnlyAdmins] = useState(false);
   const [isSavingOnlyAdmins, setIsSavingOnlyAdmins] = useState(false);
-  const [autoDelete, setAutoDelete] = useState<AutoDeleteMode | null>(null);
+  // Default "off" (auto_delete_seconds is NULL by default) so the Off chip reads selected until the
+  // user picks a window — mirrors mute below, which also resets to "off" per conversation.
+  const [autoDelete, setAutoDelete] = useState<AutoDeleteMode>("off");
   const [isSavingAutoDelete, setIsSavingAutoDelete] = useState(false);
   // Notification mute (per-conversation; suppresses web-push). Unknown until the user sets it — the
   // control reflects the last choice made this session (server state isn't surfaced in the panel yet).
@@ -189,6 +191,7 @@ export function ConversationDetailsPanel({
         setGallery(null);
         setGalleryCursor(null);
         setMute("off");
+        setAutoDelete("off");
         setGroupAvatarUrl(null);
       }
     }, 0);

@@ -1,18 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import {
-  LogOut,
   MessageCircle,
   MessagesSquare,
   Phone,
-  Settings,
-  Star,
   UserPlus,
   Users
 } from "lucide-react";
 import type { Session, UserProfile } from "@/lib/api";
-import { Avatar, ThemeToggle } from "@/components";
+import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 
 export type MobileView = "chats" | "calls" | "profile";
@@ -78,11 +74,10 @@ function DesktopRail({
   session,
   currentProfile,
   hasUnread,
+  activeView = "chats",
+  onSelectView,
   onNewGroup,
-  onInvite,
-  onOpenStarred,
-  onOpenProfile,
-  onLogout
+  onInvite
 }: NavRailProps) {
   return (
     <nav
@@ -99,11 +94,17 @@ function DesktopRail({
       <div className="mb-1 h-px w-8 bg-white/15" aria-hidden />
 
       {/* Primary destinations, grouped near the top */}
-      <span className={railItemClass(true)} aria-current="page" title="Messages">
+      <button
+        type="button"
+        onClick={() => onSelectView?.("chats")}
+        className={railItemClass(activeView === "chats")}
+        aria-current={activeView === "chats" ? "page" : undefined}
+        title="Messages"
+      >
         <MessageCircle className="h-5 w-5" aria-hidden />
         {hasUnread ? <UnreadDot /> : null}
         <span className="sr-only">Messages</span>
-      </span>
+      </button>
       <button
         type="button"
         className={cn(railItemClass(false), "cursor-not-allowed opacity-50")}
@@ -124,15 +125,20 @@ function DesktopRail({
 
       <div className="flex-1" aria-hidden />
 
-      {/* Bottom: settings menu · divider · profile */}
-      <SettingsMenu onOpenStarred={onOpenStarred} onLogout={onLogout} direction="up" />
-      <div className="my-1 h-px w-8 bg-white/15" aria-hidden />
+      {/* Bottom: "You" — the profile avatar opens the Profile screen (which now holds Starred, Appearance,
+          Notification sound, Privacy and Log out). This replaces the old standalone Settings icon + menu. */}
+      <div className="mb-1 h-px w-8 bg-white/15" aria-hidden />
       {session ? (
         <button
           type="button"
-          onClick={onOpenProfile}
-          className="rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-white/60"
-          title="My profile"
+          onClick={() => onSelectView?.("profile")}
+          aria-current={activeView === "profile" ? "page" : undefined}
+          className={cn(
+            "rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-white/60",
+            "ring-2 ring-offset-2 ring-offset-transparent",
+            activeView === "profile" ? "ring-white/80" : "ring-transparent"
+          )}
+          title="You"
         >
           <Avatar
             id={session.user_id}
@@ -140,7 +146,7 @@ function DesktopRail({
             imageUrl={currentProfile?.avatar_url}
             size="sm"
           />
-          <span className="sr-only">My profile</span>
+          <span className="sr-only">You — profile &amp; settings</span>
         </button>
       ) : null}
     </nav>
@@ -192,20 +198,20 @@ function MobileTabBar({
         className={tabClass(activeView === "chats")}
       >
         {activeView === "chats" ? activePill : null}
-        <span className="relative">
+        <span className="relative flex h-6 w-6 items-center justify-center">
           <MessageCircle className="h-5 w-5" aria-hidden />
           {unreadCount > 0 ? (
             <span
-              className="accent-gradient absolute -right-2.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none text-white shadow-accent-glow ring-2 ring-white/70 dark:ring-surface/70"
+              className="accent-gradient absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[9px] font-semibold leading-none text-white shadow-accent-glow ring-2 ring-white/70 dark:ring-surface/70"
               aria-label={`${unreadCount} unread`}
             >
               {unreadCount > 99 ? "99+" : unreadCount}
             </span>
           ) : hasUnread ? (
-            <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-[#8de08a]" aria-hidden />
+            <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-[#8de08a]" aria-hidden />
           ) : null}
         </span>
-        <span className="max-w-full truncate">Messages</span>
+        <span className="max-w-full truncate leading-none">Messages</span>
       </button>
 
       <button
@@ -215,13 +221,17 @@ function MobileTabBar({
         className={tabClass(activeView === "calls")}
       >
         {activeView === "calls" ? activePill : null}
-        <Phone className="h-5 w-5" aria-hidden />
-        <span className="max-w-full truncate">Calls</span>
+        <span className="flex h-6 w-6 items-center justify-center">
+          <Phone className="h-5 w-5" aria-hidden />
+        </span>
+        <span className="max-w-full truncate leading-none">Calls</span>
       </button>
 
-      {/* You — the profile PHOTO only (no label). Centered in the same slot as the labelled tabs so
-          it lines up; the active pill hugs the avatar. New chat is via the header search; New group +
-          Search messages live in the list's 3-dot menu. */}
+      {/* You — the profile PHOTO only, no visible label. To stay pixel-aligned with the labelled tabs
+          we keep the SAME two-part structure (24px icon slot + a label line), but the label is an
+          invisible, aria-hidden placeholder — it reserves the exact label height so the avatar sits in
+          the identical icon-slot position as the Messages/Calls icons (no ~8px drop) while showing no
+          "You" text. The active pill hugs the column. */}
       <button
         type="button"
         onClick={() => onSelectView?.("profile")}
@@ -230,114 +240,26 @@ function MobileTabBar({
         className={tabClass(activeView === "profile")}
       >
         {activeView === "profile" ? activePill : null}
-        {session ? (
-          <Avatar
-            id={session.user_id}
-            name={currentProfile?.display_name ?? undefined}
-            imageUrl={currentProfile?.avatar_url}
-            size="sm"
-            className={cn(
-              "h-7 w-7 text-[10px] ring-2 transition-all",
-              activeView === "profile" ? "ring-white/80" : "ring-transparent"
-            )}
-          />
-        ) : (
-          <UserPlus className="h-6 w-6" aria-hidden />
-        )}
+        <span className="flex h-6 w-6 items-center justify-center">
+          {session ? (
+            <Avatar
+              id={session.user_id}
+              name={currentProfile?.display_name ?? undefined}
+              imageUrl={currentProfile?.avatar_url}
+              size="sm"
+              className={cn(
+                "h-6 w-6 text-[9px] ring-2 transition-all",
+                activeView === "profile" ? "ring-white/80" : "ring-transparent"
+              )}
+            />
+          ) : (
+            <UserPlus className="h-5 w-5" aria-hidden />
+          )}
+        </span>
+        <span aria-hidden className="select-none leading-none opacity-0">
+          You
+        </span>
       </button>
     </nav>
-  );
-}
-
-// Small anchored menu for the secondary actions (theme toggle · starred · log out).
-function SettingsMenu({
-  onOpenStarred,
-  onLogout,
-  direction,
-  bare
-}: {
-  onOpenStarred: () => void;
-  onLogout: () => void;
-  direction: "up" | "down";
-  bare?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    function onDown(event: MouseEvent | TouchEvent) {
-      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("touchstart", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("touchstart", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div ref={ref} className="relative flex flex-col items-center">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        aria-haspopup="menu"
-        className={
-          bare
-            ? "flex flex-col items-center gap-0.5 outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-            : railItemClass(open)
-        }
-      >
-        <Settings className="h-5 w-5" aria-hidden />
-        {bare ? <span className="max-w-full truncate">Settings</span> : <span className="sr-only">Settings</span>}
-      </button>
-
-      {open ? (
-        <div
-          role="menu"
-          className={cn(
-            "absolute z-40 w-44 overflow-hidden rounded-xl border border-border bg-surface p-1 shadow-elevated animate-scale-in",
-            direction === "up" ? "bottom-full mb-2" : "top-full mt-2",
-            "left-1/2 -translate-x-1/2 sm:left-full sm:ml-2 sm:translate-x-0 md:bottom-0 md:left-full md:mb-0"
-          )}
-        >
-          <div className="flex items-center justify-between rounded-lg px-3 py-2 text-sm text-fg">
-            Theme
-            <ThemeToggle />
-          </div>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onOpenStarred();
-            }}
-            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
-          >
-            <Star className="h-4 w-4 text-muted" aria-hidden />
-            Starred messages
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onLogout();
-            }}
-            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-danger transition-colors hover:bg-danger/10"
-          >
-            <LogOut className="h-4 w-4" aria-hidden />
-            Log out
-          </button>
-        </div>
-      ) : null}
-    </div>
   );
 }

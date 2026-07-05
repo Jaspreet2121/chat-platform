@@ -838,9 +838,17 @@ export default function ChatPage() {
 
   // After saving My Profile: merge the returned profile (incl. fresh avatar_url) into local state and
   // prime the shared cache so the new avatar/name show immediately wherever the user is rendered.
+  // A REMOVED photo comes back with no avatar_url (object key cleared) — coalesce it (and the id/key)
+  // to null so the stale URL can't survive the spread merge and revert to the old photo.
   function handleProfileSaved(updated: UserProfile) {
-    setCurrentProfile((current) => ({ ...(current ?? {}), ...updated }));
-    primeUserProfile(updated);
+    const normalized: UserProfile = {
+      ...updated,
+      avatar_url: updated.avatar_url ?? null,
+      avatar_media_id: updated.avatar_media_id ?? null,
+      avatar_object_key: updated.avatar_object_key ?? null
+    };
+    setCurrentProfile((current) => ({ ...(current ?? {}), ...normalized }));
+    primeUserProfile(normalized);
     setStatus("Profile updated.");
   }
 
@@ -851,10 +859,12 @@ export default function ChatPage() {
     setScrollTarget((prev) => ({ id: messageId, n: (prev?.n ?? 0) + 1 }));
   }
 
-  function handleLogout() {
-    // Best-effort: unsubscribe this browser + delete the stored subscription while the session token
-    // is still valid — a logged-out device must stop receiving message pushes.
-    void disablePush();
+  async function handleLogout() {
+    // Unsubscribe this browser + delete the stored subscription BEFORE clearing the session, so the
+    // DELETE is still authenticated AND the local subscription is actually torn down. If it lingered,
+    // the next session on this device would read the notifications toggle as ON without the user ever
+    // enabling it. Best-effort — a cleanup failure never blocks logout.
+    await disablePush().catch(() => undefined);
     clearSessionTokens();
     socketRef.current?.disconnect();
     router.replace("/login");
@@ -1144,11 +1154,36 @@ export default function ChatPage() {
         />
       </div>
 
-      {/* Chat pane — on mobile it slides in full-screen over the list. */}
+      {/* Desktop "You" — the same Profile screen the mobile tab shows, rendered in the main pane so the
+          rail + conversation list stay visible. Opened from the rail avatar; picking a conversation
+          (openConversation resets the view to "chats") returns to the chat. Mobile uses the md:hidden
+          block above instead. */}
+      {mobileView === "profile" ? (
+        <div className="hidden min-w-0 flex-1 md:block">
+          <ProfileTab
+            session={session}
+            currentProfile={currentProfile}
+            onEditProfile={() => setIsProfileOpen(true)}
+            onOpenStarred={() => setIsStarredOpen(true)}
+            onInvite={() => {
+              setMobileView("chats");
+              setSearchFocusNonce((n) => n + 1);
+            }}
+            onLogout={handleLogout}
+          />
+        </div>
+      ) : null}
+
+      {/* Chat pane — on mobile it slides in full-screen over the list. Hidden while the profile ("You")
+          view is active so the ProfileTab above owns the pane. */}
       <section
         className={cn(
           "relative min-w-0 flex-1 flex-col bg-surface",
-          selectedConversationId ? "flex max-md:animate-slide-in-right" : "hidden md:flex"
+          mobileView === "profile"
+            ? "hidden"
+            : selectedConversationId
+              ? "flex max-md:animate-slide-in-right"
+              : "hidden md:flex"
         )}
       >
         {showBanner && <StatusBanner message={status} tone={bannerTone} />}

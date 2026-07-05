@@ -213,19 +213,28 @@ defmodule ApiGatewayWeb.UserController do
   # NOTE: not yet gated by `profile_photo_visibility` (the privacy module is a placeholder today) —
   # avatar visibility gating is a tracked follow-up.
   defp with_avatar_url(profile) when is_map(profile) do
-    with media_id when is_binary(media_id) <- Map.get(profile, :avatar_media_id),
-         object_key when is_binary(object_key) <- Map.get(profile, :avatar_object_key),
-         owner_user_id when is_binary(owner_user_id) <- Map.get(profile, :user_id),
-         {:ok, download} <-
-           SharedInfra.MediaClient.get_download_url(%{
-             "media_id" => media_id,
-             "owner_user_id" => owner_user_id,
-             "object_key" => object_key
-           }),
-         url when is_binary(url) <- Map.get(download, :download_url) do
-      Map.put(profile, :avatar_url, url)
+    media_id = Map.get(profile, :avatar_media_id)
+    object_key = Map.get(profile, :avatar_object_key)
+
+    if is_binary(media_id) and is_binary(object_key) do
+      # An avatar is set → presign a download URL. On any media error, leave the profile unchanged
+      # (fail-open) so a transient glitch never wipes a valid avatar.
+      with owner_user_id when is_binary(owner_user_id) <- Map.get(profile, :user_id),
+           {:ok, download} <-
+             SharedInfra.MediaClient.get_download_url(%{
+               "media_id" => media_id,
+               "owner_user_id" => owner_user_id,
+               "object_key" => object_key
+             }),
+           url when is_binary(url) <- Map.get(download, :download_url) do
+        Map.put(profile, :avatar_url, url)
+      else
+        _ -> profile
+      end
     else
-      _ -> profile
+      # No avatar (never set, or just cleared) → return avatar_url: nil EXPLICITLY so clients drop any
+      # stale URL and revert to initials instead of retaining the previous photo.
+      Map.put(profile, :avatar_url, nil)
     end
   end
 

@@ -14,6 +14,7 @@ export type MessageToast = {
 const AUTO_DISMISS_MS = 4500;
 const SOUND_KEY = "chat.notification_sound";
 
+// Default ON: notification sound plays unless the user has explicitly turned it off.
 export function notificationSoundEnabled(): boolean {
   if (typeof window === "undefined") return true;
   return window.localStorage.getItem(SOUND_KEY) !== "off";
