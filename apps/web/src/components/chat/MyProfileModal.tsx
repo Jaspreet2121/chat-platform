@@ -10,6 +10,7 @@ import {
   updateMe
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
+import { ImageCropModal } from "./ImageCropModal";
 
 const BIO_MAX = 240;
 
@@ -39,6 +40,8 @@ export function MyProfileModal({ onClose, profile, userId, onSaved }: MyProfileM
   const [isUploading, setIsUploading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState("");
+  // A just-picked file waiting to be cropped (opens the square crop step before upload).
+  const [cropFile, setCropFile] = useState<File | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -209,7 +212,10 @@ export function MyProfileModal({ onClose, profile, userId, onSaved }: MyProfileM
             className="hidden"
             onChange={(event) => {
               const file = event.target.files?.[0];
-              if (file) void handleFile(file);
+              if (file) {
+                if (file.type.startsWith("image/")) setCropFile(file);
+                else setError("Please choose an image file.");
+              }
               event.target.value = "";
             }}
           />
@@ -264,6 +270,18 @@ export function MyProfileModal({ onClose, profile, userId, onSaved }: MyProfileM
           </div>
         </div>
       </Card>
+
+      {cropFile ? (
+        <ImageCropModal
+          file={cropFile}
+          title="Crop profile photo"
+          onCancel={() => setCropFile(null)}
+          onCropped={(cropped) => {
+            setCropFile(null);
+            void handleFile(cropped);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

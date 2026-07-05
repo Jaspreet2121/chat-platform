@@ -43,6 +43,7 @@ import { cn } from "@/lib/cn";
 import { PublicProfileCard } from "./PublicProfileCard";
 import { formatTime, metadataString } from "./format";
 import { useUserProfile } from "./useUserProfile";
+import { ImageCropModal } from "./ImageCropModal";
 
 export type ConversationDetailsPanelProps = {
   conversation: ConversationDetail | null;
@@ -137,6 +138,8 @@ export function ConversationDetailsPanel({
   const [groupAvatarUrl, setGroupAvatarUrl] = useState<string | null>(null);
   const [isSavingGroupPhoto, setIsSavingGroupPhoto] = useState(false);
   const groupPhotoInputRef = useRef<HTMLInputElement>(null);
+  // A just-picked group photo awaiting the square crop step before upload.
+  const [groupCropFile, setGroupCropFile] = useState<File | null>(null);
   // "Only admins can send" — local reflection; server value comes from the conversation detail.
   const [onlyAdmins, setOnlyAdmins] = useState(false);
   const [isSavingOnlyAdmins, setIsSavingOnlyAdmins] = useState(false);
@@ -466,7 +469,10 @@ export function ConversationDetailsPanel({
                     className="hidden"
                     onChange={(event) => {
                       const file = event.target.files?.[0];
-                      if (file) void handleGroupPhotoFile(file);
+                      if (file) {
+                        if (file.type.startsWith("image/")) setGroupCropFile(file);
+                        else setActionError("Please choose an image file.");
+                      }
                       event.target.value = "";
                     }}
                   />
@@ -873,6 +879,18 @@ export function ConversationDetailsPanel({
           online={online.has(profileUserId)}
           isSelf={profileUserId === currentUserId}
           onClose={() => setProfileUserId(null)}
+        />
+      ) : null}
+
+      {groupCropFile ? (
+        <ImageCropModal
+          file={groupCropFile}
+          title="Crop group photo"
+          onCancel={() => setGroupCropFile(null)}
+          onCropped={(cropped) => {
+            setGroupCropFile(null);
+            void handleGroupPhotoFile(cropped);
+          }}
         />
       ) : null}
     </div>
