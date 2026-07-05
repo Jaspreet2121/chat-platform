@@ -21,7 +21,13 @@ import {
   Users,
   X
 } from "lucide-react";
-import type { AutoDeleteMode, ConversationDetail, Message, MuteMode } from "@/lib/api";
+import type {
+  AutoDeleteMode,
+  ConversationDetail,
+  DisappearScope,
+  Message,
+  MuteMode
+} from "@/lib/api";
 import {
   clearConversation,
   completeMediaUpload,
@@ -146,6 +152,7 @@ export function ConversationDetailsPanel({
   // Default "off" (auto_delete_seconds is NULL by default) so the Off chip reads selected until the
   // user picks a window — mirrors mute below, which also resets to "off" per conversation.
   const [autoDelete, setAutoDelete] = useState<AutoDeleteMode>("off");
+  const [autoDeleteScope, setAutoDeleteScope] = useState<DisappearScope>("mine");
   const [isSavingAutoDelete, setIsSavingAutoDelete] = useState(false);
   // Notification mute (per-conversation; suppresses web-push). Unknown until the user sets it — the
   // control reflects the last choice made this session (server state isn't surfaced in the panel yet).
@@ -195,6 +202,7 @@ export function ConversationDetailsPanel({
         setGalleryCursor(null);
         setMute("off");
         setAutoDelete("off");
+        setAutoDeleteScope("mine");
         setGroupAvatarUrl(null);
       }
     }, 0);
@@ -281,6 +289,19 @@ export function ConversationDetailsPanel({
     } finally {
       setIsSavingGroupPhoto(false);
     }
+  }
+
+  // Apply a disappearing-messages timing + scope. "off" ignores scope. Soft-hide only (server-enforced).
+  function applyDisappear(mode: AutoDeleteMode, scope: DisappearScope) {
+    setActionError("");
+    setIsSavingAutoDelete(true);
+    setConversationAutoDelete(conversationId, mode, mode === "off" ? "mine" : scope)
+      .then(() => {
+        setAutoDelete(mode);
+        if (mode !== "off") setAutoDeleteScope(scope);
+      })
+      .catch((e) => setActionError(e instanceof Error ? e.message : "Could not update."))
+      .finally(() => setIsSavingAutoDelete(false));
   }
 
   async function handleToggleOnlyAdmins() {
@@ -685,27 +706,34 @@ export function ConversationDetailsPanel({
               </div>
             </div>
 
-            <div className="flex min-h-11 items-center gap-3 py-1">
-              <Timer className="h-4 w-4 shrink-0 text-muted" aria-hidden />
-              <span className="flex-1 text-sm text-muted">Auto-delete messages</span>
-              <div className="flex gap-1" role="radiogroup" aria-label="Auto-delete messages">
-                {(["off", "24h", "7d"] as const).map((mode) => (
+            <div className="py-1">
+              <div className="flex min-h-11 items-center gap-3">
+                <Timer className="h-4 w-4 shrink-0 text-muted" aria-hidden />
+                <span className="flex-1 text-sm text-muted">Disappearing messages</span>
+              </div>
+
+              {/* Timing — soft-hide only (nothing is deleted; admins always see everything). */}
+              <div
+                className="mt-1 flex flex-wrap gap-1 pl-7"
+                role="radiogroup"
+                aria-label="Disappearing messages timing"
+              >
+                {(
+                  [
+                    ["off", "Off"],
+                    ["after_viewing", "After viewing"],
+                    ["8h", "8h"],
+                    ["24h", "24h"],
+                    ["7d", "7d"]
+                  ] as [AutoDeleteMode, string][]
+                ).map(([mode, label]) => (
                   <button
                     key={mode}
                     type="button"
                     role="radio"
                     aria-checked={autoDelete === mode}
                     disabled={isSavingAutoDelete}
-                    onClick={() => {
-                      setActionError("");
-                      setIsSavingAutoDelete(true);
-                      setConversationAutoDelete(conversationId, mode)
-                        .then(() => setAutoDelete(mode))
-                        .catch((e) =>
-                          setActionError(e instanceof Error ? e.message : "Could not update.")
-                        )
-                        .finally(() => setIsSavingAutoDelete(false));
-                    }}
+                    onClick={() => applyDisappear(mode, autoDeleteScope)}
                     className={cn(
                       "rounded-full px-2.5 py-1 text-xs transition-all duration-150",
                       "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring disabled:opacity-50",
@@ -714,10 +742,51 @@ export function ConversationDetailsPanel({
                         : "bg-elevated text-muted hover:text-fg"
                     )}
                   >
-                    {mode === "off" ? "Off" : mode === "24h" ? "24 hours" : "7 days"}
+                    {label}
                   </button>
                 ))}
               </div>
+
+              {/* Scope — who the window hides messages from. Both are soft-hide (server-enforced). */}
+              {autoDelete !== "off" ? (
+                <div className="mt-2 pl-7">
+                  <div
+                    className="flex flex-wrap gap-1"
+                    role="radiogroup"
+                    aria-label="Disappearing messages scope"
+                  >
+                    {(
+                      [
+                        ["mine", "My side only"],
+                        ["both", "Both sides"]
+                      ] as [DisappearScope, string][]
+                    ).map(([scope, label]) => (
+                      <button
+                        key={scope}
+                        type="button"
+                        role="radio"
+                        aria-checked={autoDeleteScope === scope}
+                        disabled={isSavingAutoDelete}
+                        onClick={() => applyDisappear(autoDelete, scope)}
+                        className={cn(
+                          "rounded-full px-2.5 py-1 text-xs transition-all duration-150",
+                          "outline-none focus-visible:ring-2 focus-visible:ring-brand-ring disabled:opacity-50",
+                          autoDeleteScope === scope
+                            ? "accent-gradient font-medium text-white shadow-accent-glow"
+                            : "bg-elevated text-muted hover:text-fg"
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[11px] text-faint">
+                    {autoDeleteScope === "both"
+                      ? "Hidden from everyone's view. Messages stay in the database; admins still see them."
+                      : "Hidden from your view only."}
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             {confirmClear ? (

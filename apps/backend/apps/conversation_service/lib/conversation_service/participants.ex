@@ -172,26 +172,56 @@ defmodule ConversationService.Participants do
     end
   end
 
-  @auto_delete_modes %{"off" => nil, "24h" => 86_400, "7d" => 604_800}
+  # "Disappearing messages" modes → {auto_delete_seconds, disappear_after_viewing}. All soft-hides:
+  #   off           → no window
+  #   after_viewing → hide messages this user has already read (message_receipts.read_at)
+  #   8h/24h/7d     → rolling created_at window
+  @disappear_modes %{
+    "off" => {nil, false},
+    "after_viewing" => {nil, true},
+    "8h" => {28_800, false},
+    "24h" => {86_400, false},
+    "7d" => {604_800, false}
+  }
 
-  # "Auto-delete messages": set the CALLER's rolling window (off/24h/7d). Read marker only, as above.
+  # "Disappearing messages" (extends the old auto-delete): set the rolling window / after-viewing flag.
+  # SCOPE: "mine" (default) writes only the CALLER's row (their own view narrows); "both" writes EVERY
+  # active participant's row so it hides from everyone's view. Both are SOFT-HIDE — nothing is deleted
+  # and the admin path (no viewer_user_id) is never filtered. Any active participant may set either scope.
   def set_auto_delete(attrs) do
     with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
          {:ok, user_id} <- required_attr(attrs, "user_id"),
-         {:ok, seconds} <- auto_delete_seconds(attrs) do
-      if conversation_persistence_enabled?() do
-        set_clause =
-          if is_nil(seconds),
-            do: "auto_delete_seconds = NULL",
-            else: "auto_delete_seconds = #{seconds}"
+         {:ok, {seconds, after_viewing?}} <- disappear_setting(attrs) do
+      scope = disappear_scope(attrs)
 
-        update_own_participant(set_clause, conversation_id, user_id, fn ->
-          %{conversation_id: conversation_id, user_id: user_id, auto_delete_seconds: seconds}
-        end)
+      response = %{
+        conversation_id: conversation_id,
+        user_id: user_id,
+        auto_delete_seconds: seconds,
+        after_viewing: after_viewing?,
+        scope: scope
+      }
+
+      if conversation_persistence_enabled?() do
+        seconds_clause =
+          if is_nil(seconds), do: "auto_delete_seconds = NULL", else: "auto_delete_seconds = #{seconds}"
+
+        # seconds is a fixed integer or NULL and after_viewing? is a boolean — both compile-side
+        # constants from the mode map, never interpolated user input.
+        set_clause = seconds_clause <> ", disappear_after_viewing = #{after_viewing?}"
+
+        case scope do
+          "both" -> update_all_participants(set_clause, conversation_id, user_id, fn -> response end)
+          _ -> update_own_participant(set_clause, conversation_id, user_id, fn -> response end)
+        end
       else
-        {:ok, %{conversation_id: conversation_id, user_id: user_id, auto_delete_seconds: seconds}}
+        {:ok, response}
       end
     end
+  end
+
+  defp disappear_scope(attrs) do
+    if to_string(attrs["scope"]) == "both", do: "both", else: "mine"
   end
 
   # Mute modes → the `muted_until` SET clause. "always" = 'infinity' (never < now()); off = NULL.
@@ -226,10 +256,10 @@ defmodule ConversationService.Participants do
     end
   end
 
-  # seconds comes ONLY from the fixed mode map (never interpolated user input).
-  defp auto_delete_seconds(attrs) do
-    case Map.fetch(@auto_delete_modes, to_string(attrs["mode"])) do
-      {:ok, seconds} -> {:ok, seconds}
+  # {seconds, after_viewing?} comes ONLY from the fixed mode map (never interpolated user input).
+  defp disappear_setting(attrs) do
+    case Map.fetch(@disappear_modes, to_string(attrs["mode"])) do
+      {:ok, setting} -> {:ok, setting}
       :error -> {:error, :invalid_request}
     end
   end
@@ -246,6 +276,31 @@ defmodule ConversationService.Participants do
       {:ok, %{num_rows: 1}} -> {:ok, ok_response.()}
       {:ok, _} -> {:error, :not_participant}
       {:error, _} -> {:error, :conversation_invalid}
+    end
+  rescue
+    _ -> {:error, :conversation_invalid}
+  end
+
+  # "Both sides" scope: apply the window to EVERY active participant's row so messages disappear from
+  # everyone's own view. Guarded — the caller must be an active participant first (else forbidden). Still
+  # a soft-hide (no messages deleted; admin path unfiltered). set_clause is a compile-side constant.
+  defp update_all_participants(set_clause, conversation_id, user_id, ok_response) do
+    with {:ok, %{num_rows: 1}} <-
+           ConversationService.Repo.query(
+             "SELECT 1 FROM conversation_participants " <>
+               "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid AND left_at IS NULL",
+             [conversation_id, user_id]
+           ),
+         {:ok, _} <-
+           ConversationService.Repo.query(
+             "UPDATE conversation_participants SET #{set_clause} " <>
+               "WHERE conversation_id = $1::text::uuid AND left_at IS NULL",
+             [conversation_id]
+           ) do
+      {:ok, ok_response.()}
+    else
+      {:ok, %{num_rows: 0}} -> {:error, :not_participant}
+      _ -> {:error, :conversation_invalid}
     end
   rescue
     _ -> {:error, :conversation_invalid}

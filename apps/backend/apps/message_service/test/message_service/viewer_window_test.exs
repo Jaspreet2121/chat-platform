@@ -176,6 +176,47 @@ defmodule MessageService.ViewerWindowTest do
   end
 
   @tag :postgres_integration
+  test "after-viewing hides messages the VIEWER has READ; admin unfiltered; nothing deleted" do
+    seed_membership!()
+    read_msg = send_message!("read me")
+    send_message!("still unread")
+
+    # Mark the first message READ by the viewer (a receipt row with read_at — exactly what mark_read writes).
+    Repo.query!(
+      "INSERT INTO message_receipts (conversation_id, message_id, user_id, status, read_at, updated_at) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, 'read', now(), now())",
+      [@conversation_id, read_msg.message_id, @viewer_user_id]
+    )
+
+    rows_before = messages_row_count()
+
+    # Enable "After viewing" on the viewer's own row (what the endpoint does for mode=after_viewing).
+    Repo.query!(
+      "UPDATE conversation_participants SET disappear_after_viewing = true " <>
+        "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+      [@conversation_id, @viewer_user_id]
+    )
+
+    # Viewer: only the UNREAD message remains (the read one disappeared from their view).
+    assert [visible] = user_list()
+    assert visible.body == "still unread"
+
+    # Admin (no viewer_user_id): BOTH messages, unfiltered; DB row count unchanged (nothing deleted).
+    admin_bodies = admin_list() |> Enum.map(& &1.body) |> Enum.sort()
+    assert admin_bodies == ["read me", "still unread"]
+    assert messages_row_count() == rows_before
+
+    # Off restores the viewer's full view.
+    Repo.query!(
+      "UPDATE conversation_participants SET disappear_after_viewing = false " <>
+        "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+      [@conversation_id, @viewer_user_id]
+    )
+
+    assert length(user_list()) == 2
+  end
+
+  @tag :postgres_integration
   test "list_media returns only media messages, honors the viewer window, never deletes" do
     seed_membership!()
     send_message!("plain text")

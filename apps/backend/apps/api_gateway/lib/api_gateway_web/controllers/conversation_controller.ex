@@ -123,13 +123,15 @@ defmodule ApiGatewayWeb.ConversationController do
     end)
   end
 
-  # "Auto-delete messages" (off / 24h / 7d): sets the caller's rolling view window.
+  # "Disappearing messages" (off / after_viewing / 8h / 24h / 7d): sets the rolling view window (or
+  # after-viewing flag). scope "mine" narrows only the caller's view; "both" narrows every participant's.
   def auto_delete(conn, %{"conversation_id" => conversation_id} = params) do
     with_own_participant(conn, fn user_id ->
       SharedInfra.ConversationClient.set_auto_delete(%{
         "conversation_id" => conversation_id,
         "user_id" => user_id,
-        "mode" => params["mode"]
+        "mode" => params["mode"],
+        "scope" => params["scope"]
       })
     end)
   end

@@ -958,36 +958,62 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   defp apply_viewer_window(query, _conversation_id, ""), do: query
 
   defp apply_viewer_window(query, conversation_id, viewer) do
-    case viewer_window_cutoff(conversation_id, viewer) do
-      nil -> query
-      cutoff -> where(query, [m], m.created_at > ^cutoff)
+    {cutoff, after_viewing?} = viewer_window(conversation_id, viewer)
+
+    query =
+      case cutoff do
+        nil -> query
+        c -> where(query, [m], m.created_at > ^c)
+      end
+
+    if after_viewing? do
+      # "After viewing" (disappearing messages): hide messages this viewer has already READ
+      # (message_receipts.read_at set). Still a pure soft-hide read filter — the messages row is never
+      # touched, and the admin path (no viewer_user_id) never reaches this clause.
+      where(
+        query,
+        [m],
+        fragment(
+          "NOT EXISTS (SELECT 1 FROM message_receipts r WHERE r.message_id = ? AND r.user_id = ?::text::uuid AND r.read_at IS NOT NULL)",
+          m.message_id,
+          ^viewer
+        )
+      )
+    else
+      query
     end
   rescue
     # Malformed ids → no narrowing (matches the permissive read path; membership is gated upstream).
     _ -> query
   end
 
-  defp viewer_window_cutoff(conversation_id, viewer) do
+  # The viewer's soft-hide prefs → {cutoff, after_viewing?}. cutoff = LATER of cleared_before and the
+  # rolling auto-delete window (NULL-safe). after_viewing? drives the read-receipt exclusion above.
+  defp viewer_window(conversation_id, viewer) do
     case Repo.query(
-           "SELECT cleared_before, auto_delete_seconds FROM conversation_participants " <>
+           "SELECT cleared_before, auto_delete_seconds, disappear_after_viewing " <>
+             "FROM conversation_participants " <>
              "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
            [conversation_id, viewer]
          ) do
-      {:ok, %{rows: [[cleared_before, auto_delete_seconds]]}} ->
+      {:ok, %{rows: [[cleared_before, auto_delete_seconds, after_viewing]]}} ->
         auto_cutoff =
           if is_integer(auto_delete_seconds) and auto_delete_seconds > 0 do
             DateTime.add(DateTime.utc_now(), -auto_delete_seconds, :second)
           end
 
-        [cleared_before, auto_cutoff]
-        |> Enum.reject(&is_nil/1)
-        |> case do
-          [] -> nil
-          cutoffs -> Enum.max(cutoffs, DateTime)
-        end
+        cutoff =
+          [cleared_before, auto_cutoff]
+          |> Enum.reject(&is_nil/1)
+          |> case do
+            [] -> nil
+            cutoffs -> Enum.max(cutoffs, DateTime)
+          end
+
+        {cutoff, after_viewing == true}
 
       _ ->
-        nil
+        {nil, false}
     end
   end
 

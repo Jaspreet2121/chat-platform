@@ -681,12 +681,20 @@ export function setGroupProfile(conversationId: string, input: GroupProfileInput
   );
 }
 
-export type AutoDeleteMode = "off" | "24h" | "7d";
+// "Disappearing messages" timing. All soft-hide (server-enforced viewer filter; nothing deleted).
+export type AutoDeleteMode = "off" | "after_viewing" | "8h" | "24h" | "7d";
+// "mine" narrows only the caller's view; "both" writes the window to every participant's row so it
+// hides from everyone's view. Both are soft-hide — admin content is never filtered.
+export type DisappearScope = "mine" | "both";
 
-export function setConversationAutoDelete(conversationId: string, mode: AutoDeleteMode) {
-  return request<{ auto_delete_seconds: number | null }>(
+export function setConversationAutoDelete(
+  conversationId: string,
+  mode: AutoDeleteMode,
+  scope: DisappearScope = "mine"
+) {
+  return request<{ auto_delete_seconds: number | null; after_viewing?: boolean; scope?: string }>(
     `/api/v1/conversations/${encodeURIComponent(conversationId)}/auto-delete`,
-    { method: "PUT", body: JSON.stringify({ mode }) }
+    { method: "PUT", body: JSON.stringify({ mode, scope }) }
   );
 }
 
