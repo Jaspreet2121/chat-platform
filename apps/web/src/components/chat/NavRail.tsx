@@ -246,7 +246,7 @@ function MobileTabBar({
               imageUrl={currentProfile?.avatar_url}
               size="sm"
               className={cn(
-                "h-6 w-6 text-[9px] ring-2 transition-all",
+                "h-5 w-5 text-[8px] ring-2 transition-all",
                 activeView === "profile" ? "ring-white/80" : "ring-transparent"
               )}
             />

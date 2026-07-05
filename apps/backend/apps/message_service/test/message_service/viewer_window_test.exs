@@ -56,16 +56,26 @@ defmodule MessageService.ViewerWindowTest do
     )
   end
 
-  defp send_message!(body) do
+  defp send_message!(body), do: send_from!(@sender_user_id, body)
+
+  defp send_from!(sender_user_id, body) do
     {:ok, message} =
       Messages.create_message(%{
         "conversation_id" => @conversation_id,
-        "sender_user_id" => @sender_user_id,
+        "sender_user_id" => sender_user_id,
         "message_type" => "text",
         "body" => body
       })
 
     message
+  end
+
+  defp mark_read!(message) do
+    Repo.query!(
+      "INSERT INTO message_receipts (conversation_id, message_id, user_id, status, read_at, updated_at) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, 'read', now(), now())",
+      [@conversation_id, message.message_id, @viewer_user_id]
+    )
   end
 
   # messages.message_id is uuid — Postgrex wants the 16-byte binary for a bare $N param.
@@ -176,44 +186,53 @@ defmodule MessageService.ViewerWindowTest do
   end
 
   @tag :postgres_integration
-  test "after-viewing hides messages the VIEWER has READ; admin unfiltered; nothing deleted" do
+  test "after-viewing: only POST-enable messages I've SEEN disappear (own count as seen); old stays; admin unfiltered; nothing deleted" do
     seed_membership!()
-    read_msg = send_message!("read me")
-    send_message!("still unread")
 
-    # Mark the first message READ by the viewer (a receipt row with read_at — exactly what mark_read writes).
+    # OLD history — a peer message the viewer already READ, created BEFORE enabling. Must STAY (Bug 1:
+    # after-viewing must not retroactively hide pre-existing messages). Backdate it + enable-instant.
+    old_peer = send_message!("old peer (read before enabling)")
+    mark_read!(old_peer)
+
     Repo.query!(
-      "INSERT INTO message_receipts (conversation_id, message_id, user_id, status, read_at, updated_at) " <>
-        "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, 'read', now(), now())",
-      [@conversation_id, read_msg.message_id, @viewer_user_id]
+      "UPDATE messages SET created_at = now() - interval '2 hours' WHERE message_id = $1",
+      [uuid!(old_peer.message_id)]
     )
 
-    rows_before = messages_row_count()
-
-    # Enable "After viewing" on the viewer's own row (what the endpoint does for mode=after_viewing).
+    # Enable "after viewing" with the since-cutoff 1h ago (endpoint stamps disappear_after_viewing_since).
     Repo.query!(
-      "UPDATE conversation_participants SET disappear_after_viewing = true " <>
+      "UPDATE conversation_participants " <>
+        "SET disappear_after_viewing = true, disappear_after_viewing_since = now() - interval '1 hour' " <>
         "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
       [@conversation_id, @viewer_user_id]
     )
 
-    # Viewer: only the UNREAD message remains (the read one disappeared from their view).
-    assert [visible] = user_list()
-    assert visible.body == "still unread"
+    # NEW messages (created now — after the cutoff):
+    new_peer_read = send_message!("new peer (read after enabling)") # peer + read  → hidden
+    _new_own = send_from!(@viewer_user_id, "new own (I sent it)") #   own          → seen → hidden (Bug 2)
+    send_message!("new peer (unread)") #                              peer + unread → stays
+    mark_read!(new_peer_read)
 
-    # Admin (no viewer_user_id): BOTH messages, unfiltered; DB row count unchanged (nothing deleted).
-    admin_bodies = admin_list() |> Enum.map(& &1.body) |> Enum.sort()
-    assert admin_bodies == ["read me", "still unread"]
+    rows_before = messages_row_count()
+
+    # Viewer sees: the OLD message (pre-enable, even though read) + the NEW UNREAD peer message. The
+    # read new peer message AND the viewer's own new message have both disappeared (symmetric).
+    viewer_bodies = user_list() |> Enum.map(& &1.body) |> Enum.sort()
+    assert viewer_bodies == ["new peer (unread)", "old peer (read before enabling)"]
+
+    # Admin (no viewer_user_id): ALL FOUR messages, unfiltered; DB row count unchanged (nothing deleted).
+    assert length(admin_list()) == 4
     assert messages_row_count() == rows_before
 
     # Off restores the viewer's full view.
     Repo.query!(
-      "UPDATE conversation_participants SET disappear_after_viewing = false " <>
+      "UPDATE conversation_participants " <>
+        "SET disappear_after_viewing = false, disappear_after_viewing_since = NULL " <>
         "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
       [@conversation_id, @viewer_user_id]
     )
 
-    assert length(user_list()) == 2
+    assert length(user_list()) == 4
   end
 
   @tag :postgres_integration

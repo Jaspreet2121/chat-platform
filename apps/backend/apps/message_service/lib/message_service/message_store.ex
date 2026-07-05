@@ -958,7 +958,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   defp apply_viewer_window(query, _conversation_id, ""), do: query
 
   defp apply_viewer_window(query, conversation_id, viewer) do
-    {cutoff, after_viewing?} = viewer_window(conversation_id, viewer)
+    {cutoff, after_viewing_since} = viewer_window(conversation_id, viewer)
 
     query =
       case cutoff do
@@ -966,15 +966,21 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         c -> where(query, [m], m.created_at > ^c)
       end
 
-    if after_viewing? do
-      # "After viewing" (disappearing messages): hide messages this viewer has already READ
-      # (message_receipts.read_at set). Still a pure soft-hide read filter — the messages row is never
-      # touched, and the admin path (no viewer_user_id) never reaches this clause.
+    if after_viewing_since do
+      # "After viewing" (disappearing messages): hide a message from THIS viewer only when it was created
+      # AFTER they enabled the setting (created_at > since — so pre-existing history is never hidden) AND
+      # they've SEEN it. "Seen" = the viewer's own sent messages (they authored them) OR a peer message
+      # with the viewer's read receipt. The kept-set is the negation of that. Still a pure soft-hide read
+      # filter — no messages row is touched, and the admin path (no viewer_user_id) never reaches here.
       where(
         query,
         [m],
         fragment(
-          "NOT EXISTS (SELECT 1 FROM message_receipts r WHERE r.message_id = ? AND r.user_id = ?::text::uuid AND r.read_at IS NOT NULL)",
+          "(? <= ? OR (? <> ?::text::uuid AND NOT EXISTS (SELECT 1 FROM message_receipts r WHERE r.message_id = ? AND r.user_id = ?::text::uuid AND r.read_at IS NOT NULL)))",
+          m.created_at,
+          ^after_viewing_since,
+          m.sender_user_id,
+          ^viewer,
           m.message_id,
           ^viewer
         )
@@ -987,16 +993,17 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     _ -> query
   end
 
-  # The viewer's soft-hide prefs → {cutoff, after_viewing?}. cutoff = LATER of cleared_before and the
-  # rolling auto-delete window (NULL-safe). after_viewing? drives the read-receipt exclusion above.
+  # The viewer's soft-hide prefs → {cutoff, after_viewing_since}. cutoff = LATER of cleared_before and the
+  # rolling auto-delete window (NULL-safe). after_viewing_since (non-nil = enabled) is the instant the
+  # "after viewing" rule was turned on; only messages created after it can disappear for this viewer.
   defp viewer_window(conversation_id, viewer) do
     case Repo.query(
-           "SELECT cleared_before, auto_delete_seconds, disappear_after_viewing " <>
+           "SELECT cleared_before, auto_delete_seconds, disappear_after_viewing_since " <>
              "FROM conversation_participants " <>
              "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
            [conversation_id, viewer]
          ) do
-      {:ok, %{rows: [[cleared_before, auto_delete_seconds, after_viewing]]}} ->
+      {:ok, %{rows: [[cleared_before, auto_delete_seconds, after_viewing_since]]}} ->
         auto_cutoff =
           if is_integer(auto_delete_seconds) and auto_delete_seconds > 0 do
             DateTime.add(DateTime.utc_now(), -auto_delete_seconds, :second)
@@ -1010,10 +1017,10 @@ defmodule MessageService.MessageStore.PostgresAdapter do
             cutoffs -> Enum.max(cutoffs, DateTime)
           end
 
-        {cutoff, after_viewing == true}
+        {cutoff, after_viewing_since}
 
       _ ->
-        {nil, false}
+        {nil, nil}
     end
   end
 

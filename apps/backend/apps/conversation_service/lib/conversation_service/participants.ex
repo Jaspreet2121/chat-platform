@@ -207,8 +207,15 @@ defmodule ConversationService.Participants do
           if is_nil(seconds), do: "auto_delete_seconds = NULL", else: "auto_delete_seconds = #{seconds}"
 
         # seconds is a fixed integer or NULL and after_viewing? is a boolean — both compile-side
-        # constants from the mode map, never interpolated user input.
-        set_clause = seconds_clause <> ", disappear_after_viewing = #{after_viewing?}"
+        # constants from the mode map, never interpolated user input. Enabling "after viewing" stamps
+        # disappear_after_viewing_since = now() so the filter only hides messages sent AFTER this point
+        # (old history stays); disabling clears it.
+        after_viewing_clause =
+          if after_viewing?,
+            do: "disappear_after_viewing = true, disappear_after_viewing_since = now()",
+            else: "disappear_after_viewing = false, disappear_after_viewing_since = NULL"
+
+        set_clause = seconds_clause <> ", " <> after_viewing_clause
 
         case scope do
           "both" -> update_all_participants(set_clause, conversation_id, user_id, fn -> response end)
