@@ -358,6 +358,28 @@ services:
       timeout: 3s
       retries: 5
 
+  # --- Calling (Phase 1, Slice 0) — LiveKit SFU. OFF by default (profiles: ["calls"]); a plain `up -d`
+  # does NOT start it and the running stack is unchanged. Bring up with `--profile calls up -d livekit`.
+  #
+  # HOST networking (NOT chatnet): the WebRTC media UDP range (50000-60000) binds the host directly —
+  # Docker's userland proxy chokes on a 10k-port UDP publish, and LiveKit media must reach the host
+  # anyway. So there is NO `ports:` mapping here; every port in livekit.yaml binds the EC2 host. Open the
+  # media ports in the security group (see the deliverable). The 7880 CONTROL plane is fronted by Caddy
+  # (reached via host-gateway) and is NOT opened in the security group. Secrets come from LIVEKIT_KEYS.
+  livekit:
+    image: livekit/livekit-server:v1.8.0
+    restart: unless-stopped
+    profiles: ["calls"]
+    network_mode: host
+    mem_limit: 256m
+    command: --config /etc/livekit/livekit.yaml
+    environment:
+      # API key/secret pair (space after the colon, per LiveKit's LIVEKIT_KEYS format). From .env; kept
+      # OUT of the mounted yaml so the config file carries no secret.
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}"
+    volumes:
+      - ./infra/livekit/livekit.yaml:/etc/livekit/livekit.yaml:ro
+
   gateway:
     build:
       context: ./apps/backend
@@ -454,6 +476,11 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    # Lets the livekit.growblic.com block reach LiveKit's HOST-networked control plane (127.0.0.1:7880
+    # on the box) from inside this bridge container. Harmless when the `calls` profile is down (that one
+    # subdomain simply 502s; every existing subdomain is unaffected).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

@@ -28,3 +28,12 @@ web.growblic.com {
 admin.growblic.com {
 	reverse_proxy web:3000
 }
+
+# --- LiveKit CONTROL plane (Phase-1 calling) — WSS signaling only. The media plane (WebRTC UDP
+# 50000-60000 + 7881/TCP + 3478/UDP TURN) does NOT pass through Caddy; it hits the EC2 host directly
+# (see infra/livekit/livekit.yaml + the security-group rules). LiveKit runs with host networking, so it
+# is reached via the docker host-gateway (extra_hosts on the caddy service). This block is only live
+# while the `calls` compose profile is running; otherwise this one host 502s (other sites unaffected).
+livekit.growblic.com {
+	reverse_proxy host.docker.internal:7880
+}
