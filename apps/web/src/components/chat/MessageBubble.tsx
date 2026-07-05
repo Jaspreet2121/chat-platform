@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Check,
   CheckCheck,
@@ -146,6 +146,26 @@ export function MessageBubble({
     };
   }, [menuOpen]);
 
+  // Position the actions/reaction menu so it always stays fully within the viewport — no matter the
+  // bubble size (a wide map bubble pushes the ⋯ trigger far to one side, which a static right/left
+  // anchor would clip off-screen). We measure the trigger on open and clamp the menu's left edge to
+  // [8px, viewport − menuWidth − 8px], then express it relative to the trigger (its containing block).
+  const MENU_WIDTH = 208; // w-48 (192px) + a little breathing room
+  const [menuLeft, setMenuLeft] = useState(0);
+  useLayoutEffect(() => {
+    if (!menuOpen || !menuRef.current) return;
+    const rect = menuRef.current.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const margin = 8;
+    // Preferred anchor: own (right-aligned) → menu's right edge at the trigger; others → left edge.
+    const preferredAbsLeft = isOwn ? rect.right - MENU_WIDTH : rect.left;
+    const clampedAbsLeft = Math.min(
+      Math.max(preferredAbsLeft, margin),
+      Math.max(margin, vw - MENU_WIDTH - margin)
+    );
+    setMenuLeft(clampedAbsLeft - rect.left);
+  }, [menuOpen, isOwn]);
+
   function startEdit() {
     setEditDraft(message.body ?? "");
     setIsEditing(true);
@@ -220,7 +240,7 @@ export function MessageBubble({
         />
       )}
 
-      <div className={cn("flex max-w-[78%] flex-col", isOwn ? "items-end" : "items-start")}>
+      <div className={cn("flex min-w-0 max-w-[78%] flex-col", isOwn ? "items-end" : "items-start")}>
         <div
           className={cn(
             "text-sm leading-snug",
@@ -365,7 +385,7 @@ export function MessageBubble({
       {/* Actions trigger — a ROW sibling of the bubble (WhatsApp-chevron style): no vertical space.
           Desktop: appears on hover. Mobile: faint but always tappable (bubble text-tap also opens it). */}
       {hasActions && (
-        <div className="relative self-center" ref={menuRef}>
+        <div className="relative shrink-0 self-center" ref={menuRef}>
               <button
                 type="button"
                 onClick={() => setMenuOpen((open) => !open)}
@@ -380,13 +400,8 @@ export function MessageBubble({
               {menuOpen && (
                 <div
                   role="menu"
-                  className={cn(
-                    "absolute top-full z-30 mt-1 w-48 overflow-hidden rounded-xl border border-border/70 bg-surface/90 shadow-elevated backdrop-blur-xl animate-scale-in",
-                    // Open toward the screen interior so the menu never clips the edge: own messages sit
-                    // on the right (anchor right, extend left); others sit on the left (anchor left,
-                    // extend right).
-                    isOwn ? "right-0" : "left-0"
-                  )}
+                  style={{ left: menuLeft }}
+                  className="absolute top-full z-30 mt-1 w-48 overflow-hidden rounded-xl border border-border/70 bg-surface/90 shadow-elevated backdrop-blur-xl animate-scale-in"
                 >
                   {canReact && (
                     <div className="flex items-center justify-between gap-0.5 border-b border-border px-1.5 py-1.5">
@@ -558,7 +573,7 @@ function LocationMessageContent({ message }: { message: Message }) {
   const coords = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
 
   return (
-    <div className="-mx-1 my-0.5 w-[240px] max-w-full overflow-hidden rounded-xl border border-black/10 dark:border-white/15">
+    <div className="my-0.5 w-[min(240px,62vw)] max-w-full overflow-hidden rounded-xl border border-black/10 dark:border-white/15">
       <LeafletMap lat={lat} lng={lng} height={150} />
       <a
         href={mapsUrl}
@@ -620,7 +635,7 @@ function LiveLocationMessageContent({
     : null;
 
   return (
-    <div className="-mx-1 my-0.5 w-[240px] max-w-full overflow-hidden rounded-xl border border-black/10 dark:border-white/15">
+    <div className="my-0.5 w-[min(240px,62vw)] max-w-full overflow-hidden rounded-xl border border-black/10 dark:border-white/15">
       <LeafletMap lat={lat} lng={lng} live={isLive} height={150} />
       <div className="space-y-1.5 bg-surface px-2.5 py-2">
         <a
