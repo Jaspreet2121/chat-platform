@@ -227,11 +227,9 @@ function MobileTabBar({
         <span className="max-w-full truncate leading-none">Calls</span>
       </button>
 
-      {/* You — the profile PHOTO only, no visible label. To stay pixel-aligned with the labelled tabs
-          we keep the SAME two-part structure (24px icon slot + a label line), but the label is an
-          invisible, aria-hidden placeholder — it reserves the exact label height so the avatar sits in
-          the identical icon-slot position as the Messages/Calls icons (no ~8px drop) while showing no
-          "You" text. The active pill hugs the column. */}
+      {/* You — WhatsApp-style: profile photo in the same 24px icon slot + a "You" label on the same
+          baseline as Messages/Calls, so all three tabs share one column structure and vertical
+          baseline (no floating-high avatar). The active pill hugs the column. */}
       <button
         type="button"
         onClick={() => onSelectView?.("profile")}
@@ -256,9 +254,7 @@ function MobileTabBar({
             <UserPlus className="h-5 w-5" aria-hidden />
           )}
         </span>
-        <span aria-hidden className="select-none leading-none opacity-0">
-          You
-        </span>
+        <span className="max-w-full truncate leading-none">You</span>
       </button>
     </nav>
   );
