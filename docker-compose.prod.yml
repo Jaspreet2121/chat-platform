@@ -368,7 +368,11 @@ services:
   # 10 000-port range — this avoids the docker-proxy large-range problem AND fixes reachability. LiveKit
   # advertises the EC2 public IP via rtc.node_ip (bridge can't STUN-detect it). Secrets via LIVEKIT_KEYS.
   livekit:
-    image: livekit/livekit-server:v1.8.0
+    # v1.9.0+ serves the /rtc/v1 signaling path that livekit-client 2.x (2.20) requests. v1.8.0 404s it
+    # ("v1 RTC path not found") → the client falls back to legacy /rtc and CONNECTS, but the post-connect
+    # mic-publish renegotiation then times out ("negotiation timed out") and audio drops at in-call. The
+    # config schema is unchanged from 1.8 (rtc.udp_port/tcp_port/use_external_ip/node_ip, turn.* all valid).
+    image: livekit/livekit-server:v1.9.0
     restart: unless-stopped
     profiles: ["calls"]
     networks: [chatnet]
