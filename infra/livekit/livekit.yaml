@@ -17,6 +17,14 @@
 port: 7880
 log_level: info
 
+# On-demand call rooms: our rooms (`call-<id>`) are NEVER pre-created via LiveKit's server API — the first
+# participant creates the room by joining with a valid join token. auto_create lets that happen; with it OFF
+# (or unset, which v1.9 treats strictly), the first joiner is denied "no permission to access this room" even
+# though the token grant carries roomJoin+roomCreate. This is the server-side switch that permits create-on-
+# join. Key is top-level `room.auto_create` (livekit-server v1.9 config schema).
+room:
+  auto_create: true
+
 rtc:
   # ICE/TCP fallback for clients that can't do UDP at all.
   tcp_port: 7881
