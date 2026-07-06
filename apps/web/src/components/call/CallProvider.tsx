@@ -76,6 +76,9 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
   }, [call]);
 
   const connectionRef = useRef<CallConnection | null>(null);
+  // The ONE remote-audio sink for the whole app lifetime — rendered once below, never conditionally
+  // unmounted, so the remote track stays attached across the connecting→in-call view swap.
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const ringTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Suppresses the LiveKit "disconnected" callback while WE are tearing the call down (avoids a loop).
@@ -117,8 +120,13 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
       clearRingTimer();
       endingRef.current = false;
       setStatus("connecting");
+      const audioEl = remoteAudioRef.current;
+      if (!audioEl) {
+        reset("Couldn't connect the call");
+        return;
+      }
       try {
-        connectionRef.current = await connectToRoom(active.room, {
+        connectionRef.current = await connectToRoom(active.room, audioEl, {
           onDisconnected: () => {
             // Peer dropped / network loss (not our own teardown) → end the call.
             if (!endingRef.current) reset();
@@ -256,6 +264,10 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
   return (
     <CallContext.Provider value={value}>
       {children}
+
+      {/* The single persistent remote-audio sink — mounted for the provider's whole lifetime (NOT inside
+          any call-status view), so the attached remote track survives the connecting→in-call swap. */}
+      <audio ref={remoteAudioRef} autoPlay hidden />
 
       {status === "incoming" && call && (
         <IncomingCallModal
