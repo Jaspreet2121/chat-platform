@@ -358,19 +358,20 @@ services:
       timeout: 3s
       retries: 5
 
-  # --- Calling (Phase 1, Slice 0) — LiveKit SFU. OFF by default (profiles: ["calls"]); a plain `up -d`
-  # does NOT start it and the running stack is unchanged. Bring up with `--profile calls up -d livekit`.
+  # --- Calling (Phase 1) — LiveKit SFU. OFF by default (profiles: ["calls"]); a plain `up -d` does NOT
+  # start it and the running stack is unchanged. Bring up with `--profile calls up -d livekit`.
   #
-  # HOST networking (NOT chatnet): the WebRTC media UDP range (50000-60000) binds the host directly —
-  # Docker's userland proxy chokes on a 10k-port UDP publish, and LiveKit media must reach the host
-  # anyway. So there is NO `ports:` mapping here; every port in livekit.yaml binds the EC2 host. Open the
-  # media ports in the security group (see the deliverable). The 7880 CONTROL plane is fronted by Caddy
-  # (reached via host-gateway) and is NOT opened in the security group. Secrets come from LIVEKIT_KEYS.
+  # BRIDGE networking (chatnet) so Caddy reaches the control port by SERVICE NAME (reverse_proxy
+  # livekit:7880) — no host-net↔bridge isolation, no IPs. 7880 stays INTERNAL (Caddy fronts it; not in the
+  # security group). Media/TURN are host-published as a SMALL set: all WebRTC media is muxed over a SINGLE
+  # UDP port (rtc.udp_port 7882 in livekit.yaml), so we publish just one UDP media port instead of a
+  # 10 000-port range — this avoids the docker-proxy large-range problem AND fixes reachability. LiveKit
+  # advertises the EC2 public IP via rtc.node_ip (bridge can't STUN-detect it). Secrets via LIVEKIT_KEYS.
   livekit:
     image: livekit/livekit-server:v1.8.0
     restart: unless-stopped
     profiles: ["calls"]
-    network_mode: host
+    networks: [chatnet]
     mem_limit: 256m
     command: --config /etc/livekit/livekit.yaml
     environment:
@@ -379,6 +380,12 @@ services:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}"
     volumes:
       - ./infra/livekit/livekit.yaml:/etc/livekit/livekit.yaml:ro
+    # Host-published media/TURN (OPEN these in the security group). 7880 is deliberately NOT published —
+    # Caddy reaches it internally over chatnet as livekit:7880.
+    ports:
+      - "7881:7881"          # ICE/TCP fallback
+      - "7882:7882/udp"      # WebRTC media (single UDP mux port) — carries the audio
+      - "3478:3478/udp"      # built-in TURN (UDP)
 
   gateway:
     build:
@@ -476,11 +483,6 @@ services:
     ports:
       - "80:80"
       - "443:443"
-    # Lets the livekit.growblic.com block reach LiveKit's HOST-networked control plane (127.0.0.1:7880
-    # on the box) from inside this bridge container. Harmless when the `calls` profile is down (that one
-    # subdomain simply 502s; every existing subdomain is unaffected).
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

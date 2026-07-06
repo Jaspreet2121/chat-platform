@@ -1,14 +1,18 @@
-# LiveKit SFU config — Phase-1 calling (Slice 0). Mounted read-only into the livekit container.
+# LiveKit SFU config — Phase-1 calling. Mounted read-only into the livekit container.
 #
 # SECRETS ARE NOT HERE. The API key/secret pair comes from the LIVEKIT_KEYS env var (set from .env by
-# docker-compose), so this file is safe to commit. The livekit container runs with HOST networking, so
-# every port below binds the EC2 host directly (see docker-compose.prod.yml + the security-group notes).
+# docker-compose), so this file is safe to commit.
 #
-# Ports:
-#   7880  HTTP + WebSocket control/signaling  — fronted by Caddy → wss://livekit.growblic.com (NOT public).
-#   7881  ICE/TCP fallback                    — host-published; OPEN in the security group.
-#   50000-60000/udp  WebRTC media (RTP)        — host-bound; OPEN in the security group (THIS is the audio).
-#   3478/udp  built-in TURN (UDP fallback)     — host-bound; OPEN in the security group.
+# NETWORKING: the livekit container is on the `chatnet` BRIDGE (not host networking) so Caddy can reach
+# the control port by SERVICE NAME (reverse_proxy livekit:7880). Media/TURN ports are published on the
+# host. To avoid docker-proxy on a 10 000-port UDP range, ALL WebRTC media is muxed over a SINGLE UDP
+# port (rtc.udp_port) — one published UDP port, one security-group rule.
+#
+# Ports (host-published in docker-compose.prod.yml unless noted):
+#   7880  HTTP + WebSocket control/signaling  — INTERNAL only; Caddy reaches it as livekit:7880 (NOT public).
+#   7881/tcp  ICE/TCP fallback                — published; OPEN in the security group.
+#   7882/udp  WebRTC media (RTP), single mux  — published; OPEN in the security group (THIS carries the audio).
+#   3478/udp  built-in TURN (UDP fallback)    — published; OPEN in the security group.
 
 port: 7880
 log_level: info
@@ -16,16 +20,17 @@ log_level: info
 rtc:
   # ICE/TCP fallback for clients that can't do UDP at all.
   tcp_port: 7881
-  # WebRTC media (RTP) UDP range. With host networking these bind the EC2 host directly (no docker-proxy).
-  port_range_start: 50000
-  port_range_end: 60000
-  # REQUIRED on a cloud/NAT box: advertise the EC2 PUBLIC IP (auto-detected via STUN) to clients, not the
-  # private/container IP — otherwise clients send media to an unreachable address and there's no audio.
-  use_external_ip: true
+  # SINGLE UDP media port — all participants' RTP is multiplexed over this one port (rather than a
+  # 50000-60000 range), so only ONE UDP port is published/opened. This is the production-recommended setup
+  # for a bridge-networked container and removes the docker-proxy large-range problem entirely.
+  udp_port: 7882
+  # On the BRIDGE the container can't STUN-detect the host's public IP, so advertise it explicitly. This
+  # is the address clients send media to; it MUST be the EC2 public IP (change if the box/IP changes).
+  use_external_ip: false
+  node_ip: 13.127.78.122
 
-# Built-in TURN — restrictive-NAT fallback. Slice 0 enables UDP-only TURN on 3478 (no TLS, no cert), which
-# deliberately AVOIDS the :443 clash with Caddy (see the "TURN on 443" note in the deliverable). TURN/TLS on
-# 443 or 5349 is a later slice.
+# Built-in TURN — restrictive-NAT fallback. UDP-only on 3478 (no TLS, no cert), which deliberately AVOIDS
+# the :443 clash with Caddy (see the "TURN on 443" note). TURN/TLS on 443 or 5349 is a later slice.
 turn:
   enabled: true
   domain: livekit.growblic.com
