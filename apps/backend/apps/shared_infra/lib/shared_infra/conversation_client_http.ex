@@ -58,6 +58,24 @@ defmodule SharedInfra.ConversationClientHttp do
   def list_calls_for_user(attrs), do: post("/internal/calls/list", attrs)
 
   @impl true
+  def create_group_call(attrs), do: post("/internal/calls/group/create", attrs)
+
+  @impl true
+  def join_group_call(attrs), do: post("/internal/calls/group/join", attrs)
+
+  @impl true
+  def decline_group_call(attrs), do: post("/internal/calls/group/decline", attrs)
+
+  @impl true
+  def leave_group_call(attrs), do: post("/internal/calls/group/leave", attrs)
+
+  @impl true
+  def mark_group_participants_missed(attrs), do: post("/internal/calls/group/miss", attrs)
+
+  @impl true
+  def get_call_with_participants(attrs), do: post("/internal/calls/group/get", attrs)
+
+  @impl true
   def add_participant(attrs), do: post("/internal/participants/add", attrs)
 
   @impl true

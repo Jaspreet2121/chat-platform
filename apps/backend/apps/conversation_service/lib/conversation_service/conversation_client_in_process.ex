@@ -79,4 +79,24 @@ defmodule ConversationService.ConversationClientInProcess do
 
   @impl true
   def list_calls_for_user(attrs), do: ConversationService.CallStore.list_calls_for_user(attrs)
+
+  @impl true
+  def create_group_call(attrs), do: ConversationService.CallStore.create_group_call(attrs)
+
+  @impl true
+  def join_group_call(attrs), do: ConversationService.CallStore.join_group_call(attrs)
+
+  @impl true
+  def decline_group_call(attrs), do: ConversationService.CallStore.decline_group_call(attrs)
+
+  @impl true
+  def leave_group_call(attrs), do: ConversationService.CallStore.leave_group_call(attrs)
+
+  @impl true
+  def mark_group_participants_missed(attrs),
+    do: ConversationService.CallStore.mark_group_participants_missed(attrs)
+
+  @impl true
+  def get_call_with_participants(attrs),
+    do: ConversationService.CallStore.get_call_with_participants(attrs)
 end

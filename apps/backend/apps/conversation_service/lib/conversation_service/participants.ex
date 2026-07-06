@@ -72,15 +72,16 @@ defmodule ConversationService.Participants do
   def set_group_settings(attrs) do
     with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
          {:ok, actor_user_id} <- required_attr(attrs, "actor_user_id"),
-         {:ok, only_admins} <- boolean_attr(attrs, "only_admins_can_send") do
+         {:ok, only_admins} <- boolean_attr(attrs, "only_admins_can_send"),
+         {:ok, call_permission} <- call_permission_attr(attrs) do
       if conversation_persistence_enabled?() do
         with {:ok, _conversation} <- fetch_active_conversation(conversation_id),
              {:ok, _actor} <- require_owner_or_admin(conversation_id, actor_user_id),
-             {:ok, _settings} <- upsert_settings(conversation_id, only_admins) do
-          {:ok, %{conversation_id: conversation_id, only_admins_can_send: only_admins}}
+             {:ok, _settings} <- upsert_settings(conversation_id, only_admins, call_permission) do
+          {:ok, settings_result(conversation_id, only_admins, call_permission)}
         end
       else
-        {:ok, %{conversation_id: conversation_id, only_admins_can_send: only_admins}}
+        {:ok, settings_result(conversation_id, only_admins, call_permission)}
       end
     end
   rescue
@@ -133,18 +134,36 @@ defmodule ConversationService.Participants do
     end
   end
 
-  defp upsert_settings(conversation_id, only_admins) do
-    case ConversationSettingsStore.get_settings(conversation_id) do
-      nil ->
-        ConversationSettingsStore.create_settings(%{
-          "conversation_id" => conversation_id,
-          "only_admins_can_send" => only_admins
-        })
-
-      settings ->
-        ConversationSettingsStore.update_settings(settings, %{"only_admins_can_send" => only_admins})
+  # Optional call_start_permission ("everyone"|"admins_only"); nil = not provided → don't change it.
+  defp call_permission_attr(attrs) do
+    case Map.get(attrs, "call_start_permission") do
+      v when v in ["everyone", "admins_only"] -> {:ok, v}
+      nil -> {:ok, nil}
+      _ -> {:error, :invalid_request}
     end
   end
+
+  defp settings_result(conversation_id, only_admins, call_permission) do
+    base = %{conversation_id: conversation_id, only_admins_can_send: only_admins}
+    if is_nil(call_permission), do: base, else: Map.put(base, :call_start_permission, call_permission)
+  end
+
+  defp upsert_settings(conversation_id, only_admins, call_permission) do
+    patch =
+      %{"only_admins_can_send" => only_admins}
+      |> maybe_put("call_start_permission", call_permission)
+
+    case ConversationSettingsStore.get_settings(conversation_id) do
+      nil ->
+        ConversationSettingsStore.create_settings(Map.put(patch, "conversation_id", conversation_id))
+
+      settings ->
+        ConversationSettingsStore.update_settings(settings, patch)
+    end
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp only_admins_can_send?(conversation_id) do
     case ConversationSettingsStore.get_settings(conversation_id) do

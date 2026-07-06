@@ -40,6 +40,13 @@ defmodule SharedInfra.ConversationClient do
   @callback mark_call_ended(attrs()) :: result()
   @callback get_call(attrs()) :: result()
   @callback list_calls_for_user(attrs()) :: result()
+  # Phase-3 group calling — group lifecycle (CallStore).
+  @callback create_group_call(attrs()) :: result()
+  @callback join_group_call(attrs()) :: result()
+  @callback decline_group_call(attrs()) :: result()
+  @callback leave_group_call(attrs()) :: result()
+  @callback mark_group_participants_missed(attrs()) :: result()
+  @callback get_call_with_participants(attrs()) :: result()
 
   # Optional so existing test stubs of this behaviour don't all need it; the real adapters implement it.
   @optional_callbacks get_conversation_app: 1,
@@ -52,7 +59,13 @@ defmodule SharedInfra.ConversationClient do
                       mark_call_missed: 1,
                       mark_call_ended: 1,
                       get_call: 1,
-                      list_calls_for_user: 1
+                      list_calls_for_user: 1,
+                      create_group_call: 1,
+                      join_group_call: 1,
+                      decline_group_call: 1,
+                      leave_group_call: 1,
+                      mark_group_participants_missed: 1,
+                      get_call_with_participants: 1
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
@@ -77,6 +90,12 @@ defmodule SharedInfra.ConversationClient do
   def mark_call_ended(attrs), do: adapter().mark_call_ended(attrs)
   def get_call(attrs), do: adapter().get_call(attrs)
   def list_calls_for_user(attrs), do: adapter().list_calls_for_user(attrs)
+  def create_group_call(attrs), do: adapter().create_group_call(attrs)
+  def join_group_call(attrs), do: adapter().join_group_call(attrs)
+  def decline_group_call(attrs), do: adapter().decline_group_call(attrs)
+  def leave_group_call(attrs), do: adapter().leave_group_call(attrs)
+  def mark_group_participants_missed(attrs), do: adapter().mark_group_participants_missed(attrs)
+  def get_call_with_participants(attrs), do: adapter().get_call_with_participants(attrs)
 
   @doc "The configured Conversation client adapter (default `ConversationService.ConversationClientInProcess`)."
   def adapter do

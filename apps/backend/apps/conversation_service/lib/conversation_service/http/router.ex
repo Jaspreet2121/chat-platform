@@ -111,6 +111,31 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.CallStore.list_calls_for_user(body(conn)))
   end
 
+  # Phase-3 group calling — group lifecycle (CallStore).
+  post "/internal/calls/group/create" do
+    send_result(conn, ConversationService.CallStore.create_group_call(body(conn)))
+  end
+
+  post "/internal/calls/group/join" do
+    send_result(conn, ConversationService.CallStore.join_group_call(body(conn)))
+  end
+
+  post "/internal/calls/group/decline" do
+    send_result(conn, ConversationService.CallStore.decline_group_call(body(conn)))
+  end
+
+  post "/internal/calls/group/leave" do
+    send_result(conn, ConversationService.CallStore.leave_group_call(body(conn)))
+  end
+
+  post "/internal/calls/group/miss" do
+    send_result(conn, ConversationService.CallStore.mark_group_participants_missed(body(conn)))
+  end
+
+  post "/internal/calls/group/get" do
+    send_result(conn, ConversationService.CallStore.get_call_with_participants(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "conversation", status: "ok", deps: %{}}})
   end

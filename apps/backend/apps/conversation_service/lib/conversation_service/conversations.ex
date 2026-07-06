@@ -251,7 +251,8 @@ defmodule ConversationService.Conversations do
          conversation,
          participants,
          group_avatar(conversation),
-         only_admins_can_send(conversation)
+         only_admins_can_send(conversation),
+         call_start_permission(conversation)
        )}
     end
   rescue
@@ -296,7 +297,24 @@ defmodule ConversationService.Conversations do
 
   defp only_admins_can_send(_), do: false
 
-  defp conversation_detail_response(conversation, participants, group_avatar, only_admins_can_send) do
+  # Who may start a group call — "everyone" (default) or "admins_only" (Phase-3). Non-groups / no settings
+  # row → "everyone".
+  defp call_start_permission(%{type: "group", id: id}) do
+    case ConversationSettingsStore.get_settings(id) do
+      %{call_start_permission: perm} when is_binary(perm) -> perm
+      _ -> "everyone"
+    end
+  end
+
+  defp call_start_permission(_), do: "everyone"
+
+  defp conversation_detail_response(
+         conversation,
+         participants,
+         group_avatar,
+         only_admins_can_send,
+         call_start_permission
+       ) do
     %{
       conversation_id: conversation.id,
       tenant_id: conversation.tenant_id,
@@ -311,7 +329,9 @@ defmodule ConversationService.Conversations do
       group_avatar_media_id: group_avatar && group_avatar.avatar_media_id,
       group_avatar_object_key: group_avatar && group_avatar.avatar_object_key,
       # Group admin setting — the client locks the composer for non-admins when true.
-      only_admins_can_send: only_admins_can_send
+      only_admins_can_send: only_admins_can_send,
+      # Group-call permission — the client gates the "start call" button (Phase-3).
+      call_start_permission: call_start_permission
     }
   end
 
