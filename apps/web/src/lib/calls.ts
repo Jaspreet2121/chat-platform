@@ -81,6 +81,19 @@ export async function connectToRoom(
     }
   });
 
+  // Camera-switch state, tracked BY US for the connection's life. The bug fix: cycling reads OUR
+  // currentCameraId / currentFacing rather than re-reading room.getActiveDevice() each time (which stops
+  // matching the enumerated device list after the first switch on mobile → the switch got stuck).
+  let currentCameraId: string | undefined;
+  let currentFacing: "user" | "environment" = "user";
+
+  const cameraTrack = () =>
+    room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack as
+      | LocalVideoTrack
+      | undefined;
+
+  const refireLocalVideo = () => opts.onLocalVideo?.(cameraTrack() ?? null);
+
   const attach = (track: RemoteTrack) => {
     if (track.kind !== "audio") return;
     // Attach to THE persistent element (sets its srcObject + plays). Idempotent — no new node.
@@ -138,8 +151,12 @@ export async function connectToRoom(
     if (opts.video) {
       try {
         await room.localParticipant.setCameraEnabled(true);
-        const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack;
-        opts.onLocalVideo?.((camTrack as LocalVideoTrack | undefined) ?? null);
+        const camTrack = cameraTrack();
+        // Seed the tracked id from the real published track (most reliable), else the room's active device.
+        currentCameraId =
+          camTrack?.mediaStreamTrack?.getSettings?.().deviceId ??
+          room.getActiveDevice?.("videoinput");
+        opts.onLocalVideo?.(camTrack ?? null);
       } catch (err) {
         console.warn(TAG, "camera enable failed — continuing audio-only", err);
         opts.onLocalVideo?.(null);
@@ -167,21 +184,49 @@ export async function connectToRoom(
     },
     getCameraDevices: listCameras,
     switchCamera: async (deviceId) => {
+      // Flip the camera by facingMode (front↔back) — restarts the SAME track with the new constraint.
+      // Repeatable because we track currentFacing ourselves. This is the reliable path on phones.
+      const flipFacing = async () => {
+        const camTrack = cameraTrack();
+        if (!camTrack) return;
+        const nextFacing = currentFacing === "user" ? "environment" : "user";
+        await camTrack.restartTrack({ facingMode: nextFacing });
+        currentFacing = nextFacing;
+        currentCameraId = camTrack.mediaStreamTrack?.getSettings?.().deviceId ?? currentCameraId;
+        opts.onLocalVideo?.(camTrack);
+      };
+
       try {
-        let target = deviceId;
-        if (!target) {
-          // Cycle to the NEXT camera relative to the currently-active one (wraps around).
-          const cams = await listCameras();
-          if (cams.length <= 1) return; // nothing to switch to
-          const current = room.getActiveDevice?.("videoinput");
-          const idx = cams.findIndex((d) => d.deviceId === current);
-          target = cams[idx < 0 ? 0 : (idx + 1) % cams.length]?.deviceId;
+        const cams = await listCameras();
+        if (cams.length <= 1) return; // nothing to switch to
+
+        // Explicit device request → switch straight to it.
+        if (deviceId) {
+          await room.switchActiveDevice("videoinput", deviceId);
+          currentCameraId = deviceId;
+          refireLocalVideo();
+          return;
         }
-        if (!target) return;
-        await room.switchActiveDevice("videoinput", target);
-        // Re-fire onLocalVideo so the self-view picks up the new camera's track.
-        const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack;
-        opts.onLocalVideo?.((camTrack as LocalVideoTrack | undefined) ?? null);
+
+        // Exactly 2 cameras = a front/back phone → facingMode is the primary, most reliable path.
+        if (cams.length === 2) {
+          await flipFacing();
+          return;
+        }
+
+        // >2 named cameras (desktop) → cycle by deviceId from OUR tracked id (NOT getActiveDevice, which
+        // stops matching the list after the first switch). Fall back to facingMode if the cycle throws.
+        try {
+          let idx = cams.findIndex((c) => c.deviceId === currentCameraId);
+          if (idx === -1) idx = 0;
+          const target = cams[(idx + 1) % cams.length].deviceId;
+          await room.switchActiveDevice("videoinput", target);
+          currentCameraId = target; // <-- the key fix: track the new camera ourselves
+          refireLocalVideo();
+        } catch (cycleErr) {
+          console.warn(TAG, "deviceId cycle failed — falling back to facingMode", cycleErr);
+          await flipFacing();
+        }
       } catch (err) {
         console.warn(TAG, "camera switch failed — keeping current camera", err);
       }
@@ -191,8 +236,12 @@ export async function connectToRoom(
       // self-view, and swallow. The call (audio) stays up; re-tapping camera retries.
       try {
         await room.localParticipant.setCameraEnabled(enabled);
-        const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack;
-        opts.onLocalVideo?.(enabled ? ((camTrack as LocalVideoTrack | undefined) ?? null) : null);
+        const camTrack = cameraTrack();
+        // Re-seed the tracked id so a switch after an off→on toggle still cycles from the right camera.
+        if (enabled) {
+          currentCameraId = camTrack?.mediaStreamTrack?.getSettings?.().deviceId ?? currentCameraId;
+        }
+        opts.onLocalVideo?.(enabled ? (camTrack ?? null) : null);
       } catch (err) {
         console.warn(TAG, "camera toggle failed — call continues audio-only", err);
         opts.onLocalVideo?.(null);
