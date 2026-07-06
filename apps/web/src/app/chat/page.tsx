@@ -32,8 +32,10 @@ import {
   ConversationChannel,
   createSocket,
   joinConversationChannel,
-  joinUserChannel
+  joinUserChannel,
+  type UserChannel
 } from "@/lib/realtime";
+import { CallProvider, type CallController } from "@/components/call";
 import type { MessageToast } from "@/components/chat";
 import type { Socket } from "phoenix";
 import {
@@ -87,6 +89,11 @@ const compressibleImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]
 export default function ChatPage() {
   const router = useRouter();
   const socketRef = useRef<Socket | null>(null);
+  // The joined user:<id> channel, lifted to state so the CallProvider can ride its call:* plane (Slice 3/4).
+  const [userChannel, setUserChannel] = useState<UserChannel | null>(null);
+  // Imperative handle into the CallProvider (which renders below this component) so the DM call button here
+  // can trigger an outbound call without needing the provider's React context.
+  const callControllerRef = useRef<CallController | null>(null);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // One-shot guard: a redirect to /login fires at most once per mount, so no re-trigger can hammer
@@ -1219,13 +1226,15 @@ export default function ChatPage() {
     (async () => {
       try {
         if (!socketRef.current) socketRef.current = createSocket();
-        const userChannel = await joinUserChannel(socketRef.current, session.user_id);
+        const joined = await joinUserChannel(socketRef.current, session.user_id);
         if (!isActive) {
-          userChannel.leave();
+          joined.leave();
           return;
         }
-        leave = userChannel.leave;
-        unsubscribe = userChannel.onMessageCreated((message) => {
+        leave = joined.leave;
+        // Publish the channel so the CallProvider can subscribe to call:* on it.
+        setUserChannel(joined);
+        unsubscribe = joined.onMessageCreated((message) => {
           if (!message?.conversation_id) return;
           if (message.sender_user_id === session.user_id) return;
           if (message.conversation_id === selectedConversationRef.current) return;
@@ -1263,6 +1272,7 @@ export default function ChatPage() {
       isActive = false;
       unsubscribe?.();
       leave?.();
+      setUserChannel(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- join once per signed-in user
   }, [session?.user_id]);
@@ -1343,8 +1353,11 @@ export default function ChatPage() {
   const unreadTotal = conversations.reduce((sum, c) => sum + (c.unread_count ?? 0), 0);
 
   return (
-    // The app floats as one rounded card on a soft periwinkle page from xl up (the mock's depth);
-    // below xl it fills the viewport edge-to-edge.
+    // Calls can arrive on any chat screen → the CallProvider wraps the whole shell and renders its ring /
+    // in-call overlays above everything. It rides the already-joined user:<id> channel (no 2nd socket).
+    <CallProvider userChannel={userChannel} controllerRef={callControllerRef}>
+    {/* The app floats as one rounded card on a soft periwinkle page from xl up (the mock's depth);
+        below xl it fills the viewport edge-to-edge. */}
     <main className="flex h-dvh overflow-hidden bg-bg xl:items-center xl:justify-center xl:p-5">
       <div className="flex h-full w-full overflow-hidden max-md:pt-[env(safe-area-inset-top)] xl:max-w-[1440px] xl:rounded-2xl xl:border xl:border-border xl:shadow-elevated">
       {/* Desktop: thin indigo rail. Mobile: bottom tab bar (hidden while a chat is open full-screen). */}
@@ -1468,6 +1481,11 @@ export default function ChatPage() {
           online={othersOnline}
           onBack={() => setSelectedConversationId("")}
           onOpenDetails={() => setIsDetailsOpen(true)}
+          onStartCall={
+            selectedIsDirect && directPeerId && userChannel
+              ? () => callControllerRef.current?.startCall(directPeerId, headerTitle)
+              : undefined
+          }
         />
 
         <MessageList
@@ -1600,6 +1618,7 @@ export default function ChatPage() {
       ) : null}
       </div>
     </main>
+    </CallProvider>
   );
 }
 

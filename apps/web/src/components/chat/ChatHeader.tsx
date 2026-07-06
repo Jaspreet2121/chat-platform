@@ -16,6 +16,8 @@ export type ChatHeaderProps = {
   onOpenDetails?: () => void;
   /** True when someone else is present in this conversation (has it open). */
   online?: boolean;
+  /** DM-only: start a 1:1 voice call with the peer. When set, the phone icon becomes a live call button. */
+  onStartCall?: () => void;
 };
 
 export function ChatHeader({
@@ -27,7 +29,8 @@ export function ChatHeader({
   typingUser,
   onBack,
   onOpenDetails,
-  online
+  online,
+  onStartCall
 }: ChatHeaderProps) {
   return (
     <header className="flex items-center gap-1.5 border-b border-border bg-surface px-2 py-2.5 sm:px-4">
@@ -65,17 +68,23 @@ export function ChatHeader({
         </div>
       </button>
 
-      {/* Right-side actions: calls are visual-parity placeholders (coming soon); the menu opens the
-          real details panel. Hidden entirely with no conversation. */}
+      {/* Right-side actions. Voice call is live for DMs (onStartCall set); video stays a placeholder
+          (Phase 2). The menu opens the details panel. Hidden entirely with no conversation. */}
       {conversationId ? (
         <div className="flex shrink-0 items-center gap-0.5">
-          <span
-            className="hidden h-10 w-10 cursor-not-allowed items-center justify-center rounded-xl text-faint sm:flex"
-            title="Voice call — coming soon"
-            aria-hidden
-          >
-            <Phone className="h-[18px] w-[18px]" />
-          </span>
+          {onStartCall ? (
+            <IconButton label="Start voice call" variant="ghost" onClick={onStartCall} type="button">
+              <Phone className="h-[18px] w-[18px]" aria-hidden />
+            </IconButton>
+          ) : (
+            <span
+              className="hidden h-10 w-10 cursor-not-allowed items-center justify-center rounded-xl text-faint sm:flex"
+              title="Voice call — coming soon"
+              aria-hidden
+            >
+              <Phone className="h-[18px] w-[18px]" />
+            </span>
+          )}
           <span
             className="hidden h-10 w-10 cursor-not-allowed items-center justify-center rounded-xl text-faint sm:flex"
             title="Video call — coming soon"

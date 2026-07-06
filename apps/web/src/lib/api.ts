@@ -211,6 +211,15 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   return data as T;
 }
 
+// Phase-1 calling: mint a room-scoped LiveKit access token for the current user (Slice 1 endpoint).
+// Returns the SFU url + a short-lived JWT that livekit-client uses to join the room.
+export function createCallToken(room: string) {
+  return request<{ url: string; token: string }>("/api/v1/calls/token", {
+    method: "POST",
+    body: JSON.stringify({ room })
+  });
+}
+
 export function requestOtp(input: OtpRequestInput) {
   return request<{
     otp_request_id: string;

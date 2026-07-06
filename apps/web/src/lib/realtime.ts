@@ -103,11 +103,45 @@ function push(channel: Channel, event: string, payload: object) {
   });
 }
 
+// ---- Phase-1 calling (Slice 4) --------------------------------------------------------------------
+// The call ring control plane rides the SAME user:<id> topic (Slice 3). Outgoing pushes and incoming
+// broadcasts are plain channel events; LiveKit carries the media (see lib/calls.ts).
+export type CallType = "voice" | "video";
+/** Broadcasts the server fans to MY user topic. */
+export type CallServerEvent =
+  | "call:incoming"
+  | "call:accepted"
+  | "call:rejected"
+  | "call:cancelled"
+  | "call:ended"
+  | "call:missed";
+/** Control events I push (the server validates ownership against the persisted call row). */
+export type CallClientEvent =
+  | "call:invite"
+  | "call:accept"
+  | "call:reject"
+  | "call:cancel"
+  | "call:hangup";
+export type CallEventPayload = {
+  call_id?: string;
+  room?: string;
+  caller_id?: string;
+  caller_name?: string;
+  type?: CallType;
+  conversation_id?: string;
+};
+/** The `ok` reply to `call:invite` — the created call's id + the LiveKit room to join. */
+export type CallInviteAck = { call_id: string; room: string };
+
 // The caller's OWN `user:<id>` topic — the backend fans message_created for conversations the user
 // does NOT have open onto it (in-app notifications: toasts + live unread badges). Identity-pinned
-// server-side; joining someone else's topic is rejected.
+// server-side; joining someone else's topic is rejected. Also carries the call:* ring plane (Slice 3).
 export type UserChannel = {
   onMessageCreated: (callback: (message: Message) => void) => () => void;
+  /** Subscribe to a server-fanned call:* broadcast (returns an unsubscribe fn). */
+  onCall: (event: CallServerEvent, callback: (payload: CallEventPayload) => void) => () => void;
+  /** Push a call:* control event; `call:invite` resolves with the `{ call_id, room }` ack. */
+  pushCall: (event: CallClientEvent, payload: Record<string, unknown>) => Promise<unknown>;
   leave: () => void;
 };
 
@@ -164,6 +198,8 @@ export function joinUserChannel(socket: Socket, userId: string): Promise<UserCha
         }
         resolve({
           onMessageCreated: (callback) => subscribe(channel, "message_created", callback),
+          onCall: (event, callback) => subscribe(channel, event, callback),
+          pushCall: (event, payload) => push(channel, event, payload),
           leave: () => {
             stopHeartbeat();
             if (typeof document !== "undefined") {
