@@ -30,8 +30,9 @@ type ActiveCall = {
 };
 
 type CallContextValue = {
-  /** Start a 1:1 voice call to `peerId` (no-op unless idle). */
-  startCall: (peerId: string, peerName: string) => void;
+  /** Start a 1:1 voice call to `peerId` (no-op unless idle). `conversationId` (the DM) is carried on the
+   *  invite so a missed call can drop an entry into that thread (Slice-5b). */
+  startCall: (peerId: string, peerName: string, conversationId?: string) => void;
   /** True when a new call can be started (nothing in progress). */
   isIdle: boolean;
 };
@@ -49,7 +50,9 @@ const RING_TIMEOUT_MS = 40_000;
 const NOTE_MS = 4_000;
 
 /** Imperative handle for callers that live ABOVE the provider (e.g. the page that owns the user channel). */
-export type CallController = { startCall: (peerId: string, peerName: string) => void };
+export type CallController = {
+  startCall: (peerId: string, peerName: string, conversationId?: string) => void;
+};
 
 export type CallProviderProps = {
   /** The joined user:<id> channel (call:* ride on it). Null until it connects — calling is disabled then. */
@@ -165,11 +168,15 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
 
   // ---- outbound: start a call -------------------------------------------------------------------
   const startCall = useCallback(
-    (peerId: string, peerName: string) => {
+    (peerId: string, peerName: string, conversationId?: string) => {
       if (!userChannel || statusRef.current !== "idle" || !peerId) return;
       setNote(null);
+      const invite: Record<string, unknown> = { callee_id: peerId, type: "voice" };
+      // Carry the DM id so the server can post a "missed call" entry to this thread (Slice-5b). Omitted
+      // (undefined) when unknown → the call still works; only the in-thread missed entry is skipped.
+      if (conversationId) invite.conversation_id = conversationId;
       userChannel
-        .pushCall("call:invite", { callee_id: peerId, type: "voice" })
+        .pushCall("call:invite", invite)
         .then((ack) => {
           const { call_id, room } = ack as CallInviteAck;
           if (!call_id || !room) throw new Error("bad invite ack");

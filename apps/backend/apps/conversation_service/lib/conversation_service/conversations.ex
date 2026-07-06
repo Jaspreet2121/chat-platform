@@ -414,9 +414,12 @@ defmodule ConversationService.Conversations do
     end)
   end
 
-  # The row subtitle text: a text message's body; nil for media (the client renders a kind label).
+  # The row subtitle text: a text message's body; nil for media (the client renders a kind label). A
+  # "call" (missed-call) message carries a short human body ("Missed voice call") — surface it verbatim so
+  # the list preview matches the in-thread entry (client has no separate call-kind label).
   defp preview_text(body, "text") when is_binary(body) and body != "", do: body
   defp preview_text(body, nil) when is_binary(body) and body != "", do: body
+  defp preview_text(body, "call") when is_binary(body) and body != "", do: body
   defp preview_text(_body, _type), do: nil
 
   defp message_kind(nil, _content_type), do: nil

@@ -14,6 +14,8 @@ defmodule RealtimeGateway.CallSignaling do
   A best-effort incoming-call web-push is emitted for a backgrounded callee (see `emit_incoming_push/4`).
   """
 
+  require Logger
+
   alias SharedInfra.ConversationClient
 
   @ring_timeout_ms 35_000
@@ -107,6 +109,7 @@ defmodule RealtimeGateway.CallSignaling do
   defp cancel(%{"call_id" => call_id}, socket) do
     with_call(call_id, socket, [:caller], fn call, _role ->
       _ = ConversationClient.mark_call_missed(%{"call_id" => call_id})
+      write_missed_message(call, socket)
       broadcast(socket, cget(call, :callee_id), "call:cancelled", %{call_id: call_id})
       {:reply, {:ok, %{call_id: call_id}}, socket}
     end)
@@ -135,6 +138,7 @@ defmodule RealtimeGateway.CallSignaling do
       {:ok, call} ->
         if cget(call, :status) == "ringing" do
           _ = ConversationClient.mark_call_missed(%{"call_id" => call_id})
+          write_missed_message(call, socket)
           broadcast(socket, cget(call, :caller_id), "call:missed", %{call_id: call_id})
           broadcast(socket, cget(call, :callee_id), "call:missed", %{call_id: call_id})
         end
@@ -199,6 +203,52 @@ defmodule RealtimeGateway.CallSignaling do
 
   defp short(user_id) when is_binary(user_id), do: "#" <> String.slice(user_id, 0, 8)
   defp short(_), do: "Someone"
+
+  # Drop a "missed call" entry into the DM thread (Slice-5b). Best-effort + fire-and-forget: the call is
+  # ALREADY marked missed by the caller — a failed chat write must never crash signaling. Goes through the
+  # SAME create+broadcast path as a normal message (MessageClient.create_message → message_created fan-out to
+  # the conversation topic + both parties' user:<id>), so open clients get it live and the conversation row's
+  # last-message/re-sort updates. sender = caller (so the existing own/other bubble alignment reads correct).
+  # Requires the call row's conversation_id; if absent (call not tied to a conversation) we SKIP — the call
+  # still shows in the Calls tab regardless.
+  defp write_missed_message(call, socket) do
+    conversation_id = cget(call, :conversation_id)
+    caller_id = cget(call, :caller_id)
+    callee_id = cget(call, :callee_id)
+
+    if is_binary(conversation_id) and conversation_id != "" and is_binary(caller_id) do
+      endpoint = socket.endpoint
+      call_type = if cget(call, :type) == "video", do: "video", else: "voice"
+
+      attrs = %{
+        "conversation_id" => conversation_id,
+        "sender_user_id" => caller_id,
+        "message_type" => "call",
+        # Short human body — powers the conversation-list preview + a11y fallback; the bubble itself renders
+        # from metadata. metadata carries the structured detail for the client's styled "call" pill.
+        "body" => "Missed #{call_type} call",
+        "metadata" => %{"call_id" => cget(call, :id), "call_type" => call_type, "status" => "missed"}
+      }
+
+      Task.start(fn ->
+        case SharedInfra.MessageClient.create_message(attrs) do
+          {:ok, response} ->
+            # Same fan-out a live message gets: conversation topic (open clients append) + each party's user
+            # topic (unread/toast when closed). The frontend already dedupes (skips own-sender / open chat).
+            endpoint.broadcast("conversation:" <> conversation_id, "message_created", response)
+            if is_binary(callee_id), do: endpoint.broadcast("user:" <> callee_id, "message_created", response)
+            endpoint.broadcast("user:" <> caller_id, "message_created", response)
+
+          other ->
+            Logger.warning("missed-call chat write failed for call #{cget(call, :id)}: #{inspect(other)}")
+        end
+      end)
+    end
+
+    :ok
+  rescue
+    error -> Logger.warning("missed-call chat write raised, ignored: #{inspect(error)}")
+  end
 
   # Best-effort incoming-call push for a backgrounded callee. Reuses the message-push path: fire-and-forget
   # produce onto the Kafka bus (gated by CALL_PUSH_ENABLED); notification_service's CallIncomingConsumer

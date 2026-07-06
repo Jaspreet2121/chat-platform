@@ -1483,7 +1483,8 @@ export default function ChatPage() {
           onOpenDetails={() => setIsDetailsOpen(true)}
           onStartCall={
             selectedIsDirect && directPeerId && userChannel
-              ? () => callControllerRef.current?.startCall(directPeerId, headerTitle)
+              ? () =>
+                  callControllerRef.current?.startCall(directPeerId, headerTitle, selectedConversationId)
               : undefined
           }
         />

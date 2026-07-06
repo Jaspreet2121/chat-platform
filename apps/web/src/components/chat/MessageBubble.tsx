@@ -12,8 +12,10 @@ import {
   MapPin,
   MoreHorizontal,
   Pencil,
+  Phone,
   Star,
   Trash2,
+  Video,
   X
 } from "lucide-react";
 import type { Message } from "@/lib/api";
@@ -219,6 +221,23 @@ export function MessageBubble({
       {isOwn ? <ReadTicks message={message} inline /> : null}
     </span>
   ) : null;
+
+  // Missed-call entry (Slice-5b): a minimal, non-interactive system pill — NO bubble chrome, reactions,
+  // edit, or read-ticks. Aligned by sender (own = right) like a normal message, red accent, phone/video
+  // icon + label from metadata. (All hooks above have already run, so this early return is hook-safe.)
+  if (message.message_type === "call") {
+    const isVideoCall = metadataString(message.metadata, "call_type") === "video";
+    const CallIcon = isVideoCall ? Video : Phone;
+    return (
+      <div className={cn("flex px-1 py-0.5", isOwn ? "justify-end" : "justify-start")}>
+        <span className="inline-flex items-center gap-2 rounded-full bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-500">
+          <CallIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          <span>Missed {isVideoCall ? "video" : "voice"} call</span>
+          <span className="tabular-nums text-red-500/60">{formatTime(message.created_at)}</span>
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div
