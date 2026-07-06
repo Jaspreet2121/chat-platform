@@ -23,6 +23,15 @@ config :shared_infra, :redis,
 config :shared_infra,
   rate_limiter_fail_open: System.get_env("RATE_LIMITER_FAIL_OPEN", "true") in ["true", "1", "yes"]
 
+# LiveKit (Phase-1 calling). Read at BOOT — never baked (same lesson as the Kafka/media adapters). The
+# API key/secret sign LiveKit access-token JWTs (SharedInfra.LiveKitToken); they are SEPARATE from the app
+# TOKEN_SECRET. Unset key/secret → the token endpoint returns 503 calls.unavailable (no crash). URL is
+# returned to the client to reach the SFU.
+config :shared_infra, :livekit,
+  api_key: System.get_env("LIVEKIT_API_KEY"),
+  api_secret: System.get_env("LIVEKIT_API_SECRET"),
+  url: System.get_env("LIVEKIT_URL") || "wss://livekit.growblic.com"
+
 # OTP SMS delivery via SMSGatewayHub (DLT). Provider-selected by SMS_PROVIDER: "console" (default →
 # no real SMS, no credits/DLT needed) or "smsgatewayhub" (real send). SMS_PROVIDER supersedes the legacy
 # OTP_SMS_DELIVERY_ENABLED flag (kept for back-compat: true → smsgatewayhub when SMS_PROVIDER is unset).

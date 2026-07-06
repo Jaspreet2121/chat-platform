@@ -120,6 +120,14 @@ defmodule ApiGatewayWeb.Router do
     delete "/subscriptions", PushController, :delete
   end
 
+  # Phase-1 calling — LiveKit access token (session-gated in the controller). Slice 1 takes a room name
+  # directly; call-row validation is a later slice.
+  scope "/api/v1/calls", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/token", CallController, :token
+  end
+
   scope "/api/v1/conversations", ApiGatewayWeb do
     pipe_through :api
 

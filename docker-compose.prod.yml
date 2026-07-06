@@ -432,6 +432,12 @@ services:
       # On a Redis blip the runtime FAILS OPEN (allows the request) rather than 500-ing /v1.
       REDIS_URL: redis://redis:6379/0
       V1_RUNTIME_BACKEND: redis
+      # LiveKit (Phase-1 calling): the gateway mints LiveKit access-token JWTs here. OPTIONAL — unset
+      # leaves POST /api/v1/calls/token returning 503 (no boot failure). Same key/secret the livekit
+      # container uses; URL is returned to the client. (Only the gateway needs these.)
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-}
+      LIVEKIT_URL: ${LIVEKIT_URL:-wss://livekit.growblic.com}
     # NOT host-published: Caddy is the only public edge and reaches the gateway at gateway:4000 over
     # chatnet. (expose is docs-only; the port is reachable on the network regardless.)
     expose: ["4000"]
