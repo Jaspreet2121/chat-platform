@@ -220,6 +220,28 @@ export function createCallToken(room: string) {
   });
 }
 
+// Phase-1 calling: one row of call history (both sides), server-shaped by CallController.index.
+// counterpart_* is the OTHER party (enriched server-side); the avatar is resolved client-side by id.
+export type CallRecord = {
+  id: string;
+  room_name: string;
+  caller_id: string;
+  callee_id: string;
+  conversation_id?: string | null;
+  type: "voice" | "video";
+  status: "ringing" | "accepted" | "declined" | "missed" | "ended";
+  created_at: string;
+  answered_at?: string | null;
+  ended_at?: string | null;
+  counterpart_id: string;
+  counterpart_name?: string | null;
+};
+
+// Call history for the current user, newest first. DB flag off → the server returns an empty list (200).
+export function fetchCallHistory() {
+  return request<{ calls: CallRecord[] }>("/api/v1/calls").then((r) => r.calls ?? []);
+}
+
 export function requestOtp(input: OtpRequestInput) {
   return request<{
     otp_request_id: string;

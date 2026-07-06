@@ -45,7 +45,7 @@ import {
   ConversationSidebar,
   MessageList,
   MyProfileModal,
-  CallsComingSoon,
+  CallHistoryList,
   NavRail,
   NotificationToasts,
   notificationSoundEnabled,
@@ -1398,7 +1398,7 @@ export default function ChatPage() {
               onLogout={handleLogout}
             />
           ) : (
-            <CallsComingSoon />
+            <CallHistoryList currentUserId={session?.user_id} />
           )}
         </div>
       ) : null}

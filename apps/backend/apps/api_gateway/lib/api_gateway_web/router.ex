@@ -125,6 +125,8 @@ defmodule ApiGatewayWeb.Router do
   scope "/api/v1/calls", ApiGatewayWeb do
     pipe_through :api
 
+    # Call history for the authenticated user (both sides), newest first — Slice-5a.
+    get "/", CallController, :index
     post "/token", CallController, :token
   end
 
