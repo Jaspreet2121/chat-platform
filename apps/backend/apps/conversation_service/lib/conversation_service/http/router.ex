@@ -82,6 +82,35 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Participants.remove_participant(body(conn)))
   end
 
+  # Phase-1 calling — call lifecycle + history (CallStore).
+  post "/internal/calls/create" do
+    send_result(conn, ConversationService.CallStore.create_call(body(conn)))
+  end
+
+  post "/internal/calls/answer" do
+    send_result(conn, ConversationService.CallStore.mark_answered(body(conn)))
+  end
+
+  post "/internal/calls/decline" do
+    send_result(conn, ConversationService.CallStore.mark_declined(body(conn)))
+  end
+
+  post "/internal/calls/miss" do
+    send_result(conn, ConversationService.CallStore.mark_missed(body(conn)))
+  end
+
+  post "/internal/calls/end" do
+    send_result(conn, ConversationService.CallStore.mark_ended(body(conn)))
+  end
+
+  post "/internal/calls/get" do
+    send_result(conn, ConversationService.CallStore.get_call(body(conn)))
+  end
+
+  post "/internal/calls/list" do
+    send_result(conn, ConversationService.CallStore.list_calls_for_user(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "conversation", status: "ok", deps: %{}}})
   end

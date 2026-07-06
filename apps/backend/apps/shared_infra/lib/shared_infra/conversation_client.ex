@@ -32,12 +32,27 @@ defmodule SharedInfra.ConversationClient do
   @callback get_call_conversation(attrs()) :: result()
   @callback admin_list_conversations(attrs()) :: result()
   @callback admin_user_conversations(attrs()) :: result()
+  # Phase-1 calling — call lifecycle + history (CallStore).
+  @callback create_call(attrs()) :: result()
+  @callback mark_call_answered(attrs()) :: result()
+  @callback mark_call_declined(attrs()) :: result()
+  @callback mark_call_missed(attrs()) :: result()
+  @callback mark_call_ended(attrs()) :: result()
+  @callback get_call(attrs()) :: result()
+  @callback list_calls_for_user(attrs()) :: result()
 
   # Optional so existing test stubs of this behaviour don't all need it; the real adapters implement it.
   @optional_callbacks get_conversation_app: 1,
                       get_call_conversation: 1,
                       admin_list_conversations: 1,
-                      admin_user_conversations: 1
+                      admin_user_conversations: 1,
+                      create_call: 1,
+                      mark_call_answered: 1,
+                      mark_call_declined: 1,
+                      mark_call_missed: 1,
+                      mark_call_ended: 1,
+                      get_call: 1,
+                      list_calls_for_user: 1
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
@@ -55,6 +70,13 @@ defmodule SharedInfra.ConversationClient do
   def set_group_settings(attrs), do: adapter().set_group_settings(attrs)
   def authorize_send(attrs), do: adapter().authorize_send(attrs)
   def get_call_conversation(attrs), do: adapter().get_call_conversation(attrs)
+  def create_call(attrs), do: adapter().create_call(attrs)
+  def mark_call_answered(attrs), do: adapter().mark_call_answered(attrs)
+  def mark_call_declined(attrs), do: adapter().mark_call_declined(attrs)
+  def mark_call_missed(attrs), do: adapter().mark_call_missed(attrs)
+  def mark_call_ended(attrs), do: adapter().mark_call_ended(attrs)
+  def get_call(attrs), do: adapter().get_call(attrs)
+  def list_calls_for_user(attrs), do: adapter().list_calls_for_user(attrs)
 
   @doc "The configured Conversation client adapter (default `ConversationService.ConversationClientInProcess`)."
   def adapter do

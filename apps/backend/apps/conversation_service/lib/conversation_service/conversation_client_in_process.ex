@@ -58,4 +58,25 @@ defmodule ConversationService.ConversationClientInProcess do
 
   @impl true
   def authorize_send(attrs), do: ConversationService.Participants.authorize_send(attrs)
+
+  @impl true
+  def create_call(attrs), do: ConversationService.CallStore.create_call(attrs)
+
+  @impl true
+  def mark_call_answered(attrs), do: ConversationService.CallStore.mark_answered(attrs)
+
+  @impl true
+  def mark_call_declined(attrs), do: ConversationService.CallStore.mark_declined(attrs)
+
+  @impl true
+  def mark_call_missed(attrs), do: ConversationService.CallStore.mark_missed(attrs)
+
+  @impl true
+  def mark_call_ended(attrs), do: ConversationService.CallStore.mark_ended(attrs)
+
+  @impl true
+  def get_call(attrs), do: ConversationService.CallStore.get_call(attrs)
+
+  @impl true
+  def list_calls_for_user(attrs), do: ConversationService.CallStore.list_calls_for_user(attrs)
 end

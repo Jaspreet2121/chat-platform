@@ -37,6 +37,27 @@ defmodule SharedInfra.ConversationClientHttp do
   def get_call_conversation(attrs), do: post("/internal/conversations/call_conversation", attrs)
 
   @impl true
+  def create_call(attrs), do: post("/internal/calls/create", attrs)
+
+  @impl true
+  def mark_call_answered(attrs), do: post("/internal/calls/answer", attrs)
+
+  @impl true
+  def mark_call_declined(attrs), do: post("/internal/calls/decline", attrs)
+
+  @impl true
+  def mark_call_missed(attrs), do: post("/internal/calls/miss", attrs)
+
+  @impl true
+  def mark_call_ended(attrs), do: post("/internal/calls/end", attrs)
+
+  @impl true
+  def get_call(attrs), do: post("/internal/calls/get", attrs)
+
+  @impl true
+  def list_calls_for_user(attrs), do: post("/internal/calls/list", attrs)
+
+  @impl true
   def add_participant(attrs), do: post("/internal/participants/add", attrs)
 
   @impl true
