@@ -1495,6 +1495,17 @@ export default function ChatPage() {
                   callControllerRef.current?.startCall(directPeerId, headerTitle, selectedConversationId)
               : undefined
           }
+          onStartVideoCall={
+            selectedIsDirect && directPeerId && userChannel
+              ? () =>
+                  callControllerRef.current?.startCall(
+                    directPeerId,
+                    headerTitle,
+                    selectedConversationId,
+                    "video"
+                  )
+              : undefined
+          }
         />
 
         <MessageList

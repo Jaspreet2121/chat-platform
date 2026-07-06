@@ -6,6 +6,9 @@ import { Avatar } from "@/components";
 export type IncomingCallModalProps = {
   callerName: string;
   callerId: string;
+  /** Phase-2: video vs voice — only changes the label. Accept is the same gesture; the provider publishes
+   *  the camera on connect because the stored ActiveCall carries type="video". */
+  video: boolean;
   onAccept: () => void;
   onReject: () => void;
 };
@@ -14,7 +17,7 @@ export type IncomingCallModalProps = {
  * The "WhatsApp ring" for an inbound call. Full-screen overlay so it can't be missed on any chat screen.
  * Accept is the required user gesture that unlocks mic + audio autoplay (the provider connects on tap).
  */
-export function IncomingCallModal({ callerName, callerId, onAccept, onReject }: IncomingCallModalProps) {
+export function IncomingCallModal({ callerName, callerId, video, onAccept, onReject }: IncomingCallModalProps) {
   return (
     <div
       role="dialog"
@@ -28,7 +31,9 @@ export function IncomingCallModal({ callerName, callerId, onAccept, onReject }: 
           <Avatar id={callerId} name={callerName} size="lg" />
         </span>
         <div>
-          <p className="text-sm font-medium uppercase tracking-wide text-white/70">Incoming voice call</p>
+          <p className="text-sm font-medium uppercase tracking-wide text-white/70">
+            Incoming {video ? "video" : "voice"} call
+          </p>
           <h2 className="mt-1 text-2xl font-semibold text-white">{callerName}</h2>
         </div>
       </div>

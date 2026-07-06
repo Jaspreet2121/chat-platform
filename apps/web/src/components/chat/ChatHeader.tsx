@@ -18,6 +18,8 @@ export type ChatHeaderProps = {
   online?: boolean;
   /** DM-only: start a 1:1 voice call with the peer. When set, the phone icon becomes a live call button. */
   onStartCall?: () => void;
+  /** DM-only: start a 1:1 video call. When set, the video icon becomes a live call button (Phase 2). */
+  onStartVideoCall?: () => void;
 };
 
 export function ChatHeader({
@@ -30,7 +32,8 @@ export function ChatHeader({
   onBack,
   onOpenDetails,
   online,
-  onStartCall
+  onStartCall,
+  onStartVideoCall
 }: ChatHeaderProps) {
   return (
     <header className="flex items-center gap-1.5 border-b border-border bg-surface px-2 py-2.5 sm:px-4">
@@ -68,8 +71,8 @@ export function ChatHeader({
         </div>
       </button>
 
-      {/* Right-side actions. Voice call is live for DMs (onStartCall set); video stays a placeholder
-          (Phase 2). The menu opens the details panel. Hidden entirely with no conversation. */}
+      {/* Right-side actions. Voice + video calls are live for DMs (onStartCall / onStartVideoCall set).
+          The menu opens the details panel. Hidden entirely with no conversation. */}
       {conversationId ? (
         <div className="flex shrink-0 items-center gap-0.5">
           {onStartCall ? (
@@ -85,13 +88,19 @@ export function ChatHeader({
               <Phone className="h-[18px] w-[18px]" />
             </span>
           )}
-          <span
-            className="hidden h-10 w-10 cursor-not-allowed items-center justify-center rounded-xl text-faint sm:flex"
-            title="Video call — coming soon"
-            aria-hidden
-          >
-            <Video className="h-[18px] w-[18px]" />
-          </span>
+          {onStartVideoCall ? (
+            <IconButton label="Start video call" variant="ghost" onClick={onStartVideoCall} type="button">
+              <Video className="h-[18px] w-[18px]" aria-hidden />
+            </IconButton>
+          ) : (
+            <span
+              className="hidden h-10 w-10 cursor-not-allowed items-center justify-center rounded-xl text-faint sm:flex"
+              title="Video call — coming soon"
+              aria-hidden
+            >
+              <Video className="h-[18px] w-[18px]" />
+            </span>
+          )}
           <IconButton
             label="Conversation details"
             variant="ghost"

@@ -11,7 +11,8 @@ import {
   type MutableRefObject,
   type ReactNode
 } from "react";
-import type { CallEventPayload, CallInviteAck, UserChannel } from "@/lib/realtime";
+import type { CallEventPayload, CallInviteAck, CallType, UserChannel } from "@/lib/realtime";
+import type { LocalVideoTrack, RemoteVideoTrack } from "livekit-client";
 import { connectToRoom, type CallConnection } from "@/lib/calls";
 import { IncomingCallModal } from "./IncomingCallModal";
 import { OutgoingCallScreen } from "./OutgoingCallScreen";
@@ -27,12 +28,14 @@ type ActiveCall = {
   room: string;
   peerId: string;
   peerName: string;
+  type: CallType;
 };
 
 type CallContextValue = {
-  /** Start a 1:1 voice call to `peerId` (no-op unless idle). `conversationId` (the DM) is carried on the
-   *  invite so a missed call can drop an entry into that thread (Slice-5b). */
-  startCall: (peerId: string, peerName: string, conversationId?: string) => void;
+  /** Start a 1:1 call to `peerId` (no-op unless idle). `conversationId` (the DM) is carried on the invite
+   *  so a missed call can drop an entry into that thread (Slice-5b). `type` chooses voice (default) or
+   *  video (Phase 2 — publishes the camera on connect). */
+  startCall: (peerId: string, peerName: string, conversationId?: string, type?: CallType) => void;
   /** True when a new call can be started (nothing in progress). */
   isIdle: boolean;
 };
@@ -51,7 +54,7 @@ const NOTE_MS = 4_000;
 
 /** Imperative handle for callers that live ABOVE the provider (e.g. the page that owns the user channel). */
 export type CallController = {
-  startCall: (peerId: string, peerName: string, conversationId?: string) => void;
+  startCall: (peerId: string, peerName: string, conversationId?: string, type?: CallType) => void;
 };
 
 export type CallProviderProps = {
@@ -67,6 +70,11 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
   const [call, setCall] = useState<ActiveCall | null>(null);
   const [muted, setMuted] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // Phase-2 video: the tracks InCallScreen attaches to its <video> elements, and the camera-on flag. Voice
+  // calls never set these (they stay null/false), so the voice UI is byte-for-byte unchanged.
+  const [localVideo, setLocalVideo] = useState<LocalVideoTrack | null>(null);
+  const [remoteVideo, setRemoteVideo] = useState<RemoteVideoTrack | null>(null);
+  const [cameraOn, setCameraOn] = useState(false);
 
   // Latest-value refs so the (once-per-channel) event handlers read current state without re-subscribing.
   const statusRef = useRef(status);
@@ -117,6 +125,11 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
       setStatus("idle");
       setCall(null);
       setMuted(false);
+      // Drop the video tracks (the room disconnect above stops them). The persistent <audio> sink is NOT
+      // touched here — only the video state is cleared.
+      setLocalVideo(null);
+      setRemoteVideo(null);
+      setCameraOn(false);
       if (message) flashNote(message);
     },
     [clearRingTimer, flashNote]
@@ -142,8 +155,13 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
         reset("no-audio-sink", "Couldn't connect the call");
         return;
       }
+      const isVideo = active.type === "video";
+      setCameraOn(isVideo);
       try {
         connectionRef.current = await connectToRoom(active.room, audioEl, {
+          video: isVideo,
+          onLocalVideo: setLocalVideo,
+          onRemoteVideo: setRemoteVideo,
           onDisconnected: (reason) => {
             // livekit-client left the room. If it wasn't OUR own disconnect() (endingRef), end the call and
             // surface WHY (media/ICE failure, duplicate identity, …) — the reason is logged in calls.ts too.
@@ -168,10 +186,10 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
 
   // ---- outbound: start a call -------------------------------------------------------------------
   const startCall = useCallback(
-    (peerId: string, peerName: string, conversationId?: string) => {
+    (peerId: string, peerName: string, conversationId?: string, type: CallType = "voice") => {
       if (!userChannel || statusRef.current !== "idle" || !peerId) return;
       setNote(null);
-      const invite: Record<string, unknown> = { callee_id: peerId, type: "voice" };
+      const invite: Record<string, unknown> = { callee_id: peerId, type };
       // Carry the DM id so the server can post a "missed call" entry to this thread (Slice-5b). Omitted
       // (undefined) when unknown → the call still works; only the in-thread missed entry is skipped.
       if (conversationId) invite.conversation_id = conversationId;
@@ -182,7 +200,7 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
           if (!call_id || !room) throw new Error("bad invite ack");
           // A late accept/reject may have arrived; only arm if we're still meant to be ringing.
           if (statusRef.current !== "idle") return;
-          const active = { callId: call_id, room, peerId, peerName };
+          const active: ActiveCall = { callId: call_id, room, peerId, peerName, type };
           setCall(active);
           setStatus("outgoing");
           clearRingTimer();
@@ -225,6 +243,13 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
     void connectionRef.current?.setMuted(next);
   }, [muted]);
 
+  const toggleCamera = useCallback(() => {
+    const next = !cameraOn;
+    setCameraOn(next);
+    // The onLocalVideo callback (passed to connectToRoom) updates the localVideo track state.
+    void connectionRef.current?.setCameraEnabled(next);
+  }, [cameraOn]);
+
   // ---- inbound: subscribe to the server's call:* broadcasts (once per channel) ------------------
   useEffect(() => {
     if (!userChannel) return;
@@ -242,7 +267,8 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
           callId: p.call_id,
           room: p.room,
           peerId: p.caller_id ?? "",
-          peerName: p.caller_name?.trim() || "Unknown caller"
+          peerName: p.caller_name?.trim() || "Unknown caller",
+          type: p.type ?? "voice"
         });
         setStatus("incoming");
         clearRingTimer();
@@ -300,6 +326,7 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
         <IncomingCallModal
           callerName={call.peerName}
           callerId={call.peerId}
+          video={call.type === "video"}
           onAccept={acceptIncoming}
           onReject={rejectIncoming}
         />
@@ -315,6 +342,11 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
           muted={muted}
           onToggleMute={toggleMute}
           onHangup={hangup}
+          video={call.type === "video"}
+          localVideoTrack={localVideo}
+          remoteVideoTrack={remoteVideo}
+          cameraOn={cameraOn}
+          onToggleCamera={toggleCamera}
         />
       )}
 
