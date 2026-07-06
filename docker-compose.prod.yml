@@ -372,7 +372,7 @@ services:
     # ("v1 RTC path not found") → the client falls back to legacy /rtc and CONNECTS, but the post-connect
     # mic-publish renegotiation then times out ("negotiation timed out") and audio drops at in-call. The
     # config schema is unchanged from 1.8 (rtc.udp_port/tcp_port/use_external_ip/node_ip, turn.* all valid).
-    image: livekit/livekit-server:v1.9.0
+    image: livekit/livekit-server:v1.13.3
     restart: unless-stopped
     profiles: ["calls"]
     networks: [chatnet]
