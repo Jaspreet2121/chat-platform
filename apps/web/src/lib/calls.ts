@@ -12,11 +12,17 @@ export type CallConnection = {
 };
 
 export type ConnectOptions = {
-  /** Fired when the room disconnects for ANY reason (peer left, network, or our own disconnect). */
-  onDisconnected?: () => void;
+  /**
+   * Fired when the LiveKit room disconnects — passes the reason so the provider (and the console) can tell
+   * an app-initiated leave from a livekit-client-initiated one (media/ICE failure, duplicate identity, …).
+   */
+  onDisconnected?: (reason?: string) => void;
   /** Fired when the remote participant's audio starts/stops (drives a "connected" indicator). */
   onRemoteAudio?: (present: boolean) => void;
 };
+
+// One tag so all call-media diagnostics are greppable in the browser console during a two-device test.
+const TAG = "[call]";
 
 /**
  * Connect to the LiveKit room for `roomName` and start a voice call: fetch a room-scoped token
@@ -25,9 +31,10 @@ export type ConnectOptions = {
  *
  * `audioElement` MUST be a stable, persistent sink that lives for the WHOLE call (the provider renders
  * one <audio> once, above the connecting/in-call view swap). The remote track is ATTACHED to it on
- * subscribe and only DETACHED on unsubscribe — the element is never created or removed here, so the
- * connecting→in-call transition (and LiveKit's post-connect renegotiation, which briefly re-subscribes
- * the remote track) can't tear the sink down. That churn is exactly what was dropping audio before.
+ * subscribe and only DETACHED on unsubscribe — the element is never created or removed here.
+ *
+ * The Room lives inside the returned CallConnection (held in a ref by the provider) and is NEVER
+ * recreated or torn down by a React render — only `disconnect()` (real hangup/ended) closes it.
  *
  * MUST be called from a user gesture (Accept, or initiating the call) — that gesture is what unlocks
  * microphone capture and audio autoplay in the browser, iOS Safari in particular. Throws on
@@ -39,31 +46,43 @@ export async function connectToRoom(
   opts: ConnectOptions = {}
 ): Promise<CallConnection> {
   const { url, token } = await createCallToken(roomName);
-  const { Room, RoomEvent } = await import("livekit-client");
+  const { Room, RoomEvent, DisconnectReason } = await import("livekit-client");
+
+  const reasonName = (reason?: number) =>
+    reason === undefined ? "unknown" : `${DisconnectReason[reason] ?? "?"}(${reason})`;
 
   const room: LiveKitRoom = new Room({ adaptiveStream: false, dynacast: false });
 
   const attach = (track: RemoteTrack) => {
     if (track.kind !== "audio") return;
-    // Attach to THE persistent element (sets its srcObject + plays). Re-attaching the same/replacement
-    // track to the same element is safe and idempotent — no new node, nothing removed.
+    // Attach to THE persistent element (sets its srcObject + plays). Idempotent — no new node.
     track.attach(audioElement);
     opts.onRemoteAudio?.(true);
   };
 
-  room.on(RoomEvent.TrackSubscribed, attach);
+  room.on(RoomEvent.TrackSubscribed, (track) => {
+    console.info(TAG, "remote track subscribed", { kind: track.kind });
+    attach(track);
+  });
   room.on(RoomEvent.TrackUnsubscribed, (track) => {
     if (track.kind !== "audio") return;
-    // Detach FROM the element only (clears srcObject); never remove the element — the provider owns it
-    // and a re-subscribe will re-attach to the very same sink.
+    console.info(TAG, "remote audio track unsubscribed");
     track.detach(audioElement);
     opts.onRemoteAudio?.(false);
   });
-  room.on(RoomEvent.Disconnected, () => {
-    opts.onDisconnected?.();
+  // Connection-lifecycle diagnostics: these tell us whether livekit-client is trying to recover
+  // (Reconnecting/Reconnected) or has given up (Disconnected — the terminal event we act on).
+  room.on(RoomEvent.Reconnecting, () => console.warn(TAG, "livekit reconnecting…"));
+  room.on(RoomEvent.Reconnected, () => console.info(TAG, "livekit reconnected"));
+  room.on(RoomEvent.Disconnected, (reason) => {
+    // If reason === CLIENT_INITIATED this was OUR disconnect() call; anything else = livekit-client left
+    // on its own (media/ICE failure, duplicate identity, server shutdown, …).
+    console.warn(TAG, "livekit Disconnected", { reason: reasonName(reason) });
+    opts.onDisconnected?.(reasonName(reason));
   });
 
   try {
+    console.info(TAG, "connecting to room", roomName);
     await room.connect(url, token);
     // Any remote audio already subscribed at connect time → attach it now (TrackSubscribed only fires
     // for tracks that arrive AFTER the listener is set).
@@ -74,7 +93,9 @@ export async function connectToRoom(
     });
     // Publish the mic (this is what actually prompts for the getUserMedia permission).
     await room.localParticipant.setMicrophoneEnabled(true);
+    console.info(TAG, "connected + mic published", roomName);
   } catch (error) {
+    console.error(TAG, "connect failed", error);
     await room.disconnect().catch(() => undefined);
     throw error;
   }
@@ -84,6 +105,9 @@ export async function connectToRoom(
       await room.localParticipant.setMicrophoneEnabled(!muted);
     },
     disconnect: async () => {
+      // The ONLY app-initiated leave. If a CLIENT_REQUEST_LEAVE shows in the server logs, this line ran
+      // (or livekit-client left on its own — the Disconnected reason above disambiguates).
+      console.warn(TAG, "app called room.disconnect()");
       await room.disconnect().catch(() => undefined);
     }
   };

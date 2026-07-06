@@ -76,6 +76,9 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
   }, [call]);
 
   const connectionRef = useRef<CallConnection | null>(null);
+  // True from the moment connect() starts until the Room is stored (or fails) — guards against a duplicate
+  // connect during the async connect window (connectionRef is still null then).
+  const connectingRef = useRef(false);
   // The ONE remote-audio sink for the whole app lifetime — rendered once below, never conditionally
   // unmounted, so the remote track stays attached across the connecting→in-call view swap.
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -97,9 +100,12 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
     noteTimerRef.current = setTimeout(() => setNote(null), NOTE_MS);
   }, []);
 
-  // Tear everything down and return to idle. `note` surfaces a transient reason (declined / missed / error).
+  // Tear everything down and return to idle. `from` tags WHO triggered the teardown (greppable as
+  // "[call] reset" in the console — pairs with the livekit Disconnected reason in calls.ts to prove
+  // whether a leave was app-initiated or livekit-client-initiated). `message` surfaces a transient note.
   const reset = useCallback(
-    (message?: string) => {
+    (from: string, message?: string) => {
+      console.warn("[call] reset", { from, message });
       clearRingTimer();
       endingRef.current = true;
       const conn = connectionRef.current;
@@ -117,30 +123,41 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
   // (callee Accept) or on the caller receiving call:accepted — both are the moment media should start.
   const connect = useCallback(
     async (active: ActiveCall) => {
+      // Idempotency: never open a SECOND Room for the same call. A duplicate connect would join the room
+      // twice with the same identity → LiveKit kicks the first with DUPLICATE_IDENTITY (a spurious drop).
+      if (connectionRef.current || connectingRef.current) {
+        console.warn("[call] connect ignored — already connecting/connected", active.callId);
+        return;
+      }
+      connectingRef.current = true;
       clearRingTimer();
       endingRef.current = false;
       setStatus("connecting");
       const audioEl = remoteAudioRef.current;
       if (!audioEl) {
-        reset("Couldn't connect the call");
+        connectingRef.current = false;
+        reset("no-audio-sink", "Couldn't connect the call");
         return;
       }
       try {
         connectionRef.current = await connectToRoom(active.room, audioEl, {
-          onDisconnected: () => {
-            // Peer dropped / network loss (not our own teardown) → end the call.
-            if (!endingRef.current) reset();
+          onDisconnected: (reason) => {
+            // livekit-client left the room. If it wasn't OUR own disconnect() (endingRef), end the call and
+            // surface WHY (media/ICE failure, duplicate identity, …) — the reason is logged in calls.ts too.
+            if (!endingRef.current) reset(`livekit-disconnected:${reason ?? "unknown"}`);
           }
         });
+        connectingRef.current = false;
         setMuted(false);
         setStatus("in-call");
       } catch (error) {
+        connectingRef.current = false;
         const denied =
           error instanceof DOMException &&
           (error.name === "NotAllowedError" || error.name === "NotFoundError");
         // Best effort: tell the peer we're gone, then reset with a reason.
         if (callRef.current) void userChannel?.pushCall("call:hangup", { call_id: callRef.current.callId });
-        reset(denied ? "Microphone access is needed for calls" : "Couldn't connect the call");
+        reset("connect-error", denied ? "Microphone access is needed for calls" : "Couldn't connect the call");
       }
     },
     [clearRingTimer, reset, userChannel]
@@ -162,7 +179,7 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
           setCall(active);
           setStatus("outgoing");
           clearRingTimer();
-          ringTimerRef.current = setTimeout(() => reset("No answer"), RING_TIMEOUT_MS);
+          ringTimerRef.current = setTimeout(() => reset("ring-timeout", "No answer"), RING_TIMEOUT_MS);
         })
         .catch(() => flashNote("Couldn't start the call"));
     },
@@ -180,19 +197,19 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
   const rejectIncoming = useCallback(() => {
     const active = callRef.current;
     if (active) void userChannel?.pushCall("call:reject", { call_id: active.callId });
-    reset();
+    reset("user-reject");
   }, [userChannel, reset]);
 
   const cancelOutgoing = useCallback(() => {
     const active = callRef.current;
     if (active) void userChannel?.pushCall("call:cancel", { call_id: active.callId });
-    reset();
+    reset("user-cancel");
   }, [userChannel, reset]);
 
   const hangup = useCallback(() => {
     const active = callRef.current;
     if (active) void userChannel?.pushCall("call:hangup", { call_id: active.callId });
-    reset();
+    reset("user-hangup");
   }, [userChannel, reset]);
 
   const toggleMute = useCallback(() => {
@@ -222,16 +239,16 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
         });
         setStatus("incoming");
         clearRingTimer();
-        ringTimerRef.current = setTimeout(() => reset("Missed call"), RING_TIMEOUT_MS);
+        ringTimerRef.current = setTimeout(() => reset("ring-timeout", "Missed call"), RING_TIMEOUT_MS);
       }),
       // The callee accepted → I'm the caller, join the room now.
       userChannel.onCall("call:accepted", (p) => {
         if (statusRef.current === "outgoing" && matches(p) && callRef.current) connect(callRef.current);
       }),
-      userChannel.onCall("call:rejected", (p) => matches(p) && reset("Call declined")),
-      userChannel.onCall("call:cancelled", (p) => matches(p) && reset()),
-      userChannel.onCall("call:ended", (p) => matches(p) && reset()),
-      userChannel.onCall("call:missed", (p) => matches(p) && reset("Missed call"))
+      userChannel.onCall("call:rejected", (p) => matches(p) && reset("peer-rejected", "Call declined")),
+      userChannel.onCall("call:cancelled", (p) => matches(p) && reset("peer-cancelled")),
+      userChannel.onCall("call:ended", (p) => matches(p) && reset("peer-ended")),
+      userChannel.onCall("call:missed", (p) => matches(p) && reset("peer-missed", "Missed call"))
     ];
 
     return () => unsubs.forEach((u) => u());
@@ -246,9 +263,12 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
     };
   }, [controllerRef, startCall]);
 
-  // Cleanup on unmount: leave any room + clear timers.
+  // Cleanup on unmount: leave any room + clear timers. This fires ONLY if the provider itself unmounts
+  // (leaving /chat) — it is NOT tied to a call's connecting→in-call transition. If a mid-call leave ever
+  // logs this, the provider is unmounting unexpectedly (that would be the bug); it hasn't in practice.
   useEffect(() => {
     return () => {
+      if (connectionRef.current) console.warn("[call] provider unmounting — disconnecting active call");
       endingRef.current = true;
       if (connectionRef.current) void connectionRef.current.disconnect();
       if (ringTimerRef.current) clearTimeout(ringTimerRef.current);
