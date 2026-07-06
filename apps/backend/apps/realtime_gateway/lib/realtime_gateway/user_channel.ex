@@ -36,6 +36,22 @@ defmodule RealtimeGateway.UserChannel do
     {:noreply, socket}
   end
 
+  # Call RING signaling (Phase-1 LiveKit). The caller pushes `call:*` on their OWN user:<id>; the handler
+  # persists via CallStore and broadcasts to the other party's user:<id>. Auth (self / caller-callee) is
+  # enforced in CallSignaling against the persisted call row. LiveKit carries the media — this is control
+  # only (invite/accept/reject/cancel/hangup); no SDP/ICE here.
+  @impl true
+  def handle_in("call:" <> _ = event, payload, socket) do
+    RealtimeGateway.CallSignaling.handle_event(event, payload, socket)
+  end
+
+  # Server-side ring timeout (scheduled by CallSignaling.invite in the caller's channel process).
+  @impl true
+  def handle_info({:call_ring_timeout, call_id}, socket) do
+    RealtimeGateway.CallSignaling.ring_timeout(call_id, socket)
+    {:noreply, socket}
+  end
+
   # Socket drop (tab closed / network loss) → clear best-effort; TTL covers a missed terminate.
   @impl true
   def terminate(_reason, socket) do

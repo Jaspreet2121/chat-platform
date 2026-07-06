@@ -28,6 +28,43 @@ defmodule NotificationService.PushSender do
     :ok
   end
 
+  @doc """
+  Fire-and-forget incoming-call push for a BACKGROUNDED callee (Phase-1 calling). `attrs` is the decoded
+  `call.incoming` event (string keys): "callee_id", "caller_name", "call_type", "call_id". Suppressed when
+  the callee's app is foreground (they already got the in-app ring over the socket).
+  """
+  def push_incoming_call(attrs) when is_map(attrs) do
+    callee_id = attrs["callee_id"]
+
+    if vapid_configured?() and is_binary(callee_id) and callee_id != "" do
+      Task.start(fn -> deliver_call(attrs, callee_id) end)
+    end
+
+    :ok
+  end
+
+  defp deliver_call(attrs, callee_id) do
+    # Only for a backgrounded app — a foreground callee already got the `call:incoming` socket ring.
+    unless SharedInfra.PresenceMarker.app_present?(callee_id) do
+      payload = build_call_payload(attrs)
+      for subscription <- subscriptions_for(callee_id), do: send_one(subscription, payload)
+    end
+  rescue
+    error -> Logger.warning("call web-push deliver raised, ignored: #{inspect(error)}")
+  end
+
+  defp build_call_payload(attrs) do
+    caller = if is_binary(attrs["caller_name"]) and attrs["caller_name"] != "", do: attrs["caller_name"], else: "Someone"
+    label = if attrs["call_type"] == "video", do: "Video call", else: "Voice call"
+
+    Jason.encode!(%{
+      title: "Incoming call",
+      body: "📞 #{caller} · #{label}",
+      tag: "call:#{attrs["call_id"]}",
+      data: %{type: "call", call_id: attrs["call_id"], call_type: attrs["call_type"]}
+    })
+  end
+
   defp deliver(attrs, recipients) do
     # Shared per-event context (one lookup each): the sender's name, the message preview, and — for a
     # GROUP — the group name. Per-recipient bits (mute, unread count) are resolved in the loop.

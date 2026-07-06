@@ -8,6 +8,8 @@ defmodule NotificationService.Application do
   @message_group "notification-service-message-created"
   @conversation_topic "conversation.events.v1"
   @participants_group "notification-service-conversation-participants"
+  @call_topic "call.events.v1"
+  @call_group "notification-service-call-incoming"
 
   @impl true
   def start(_type, _args) do
@@ -26,7 +28,8 @@ defmodule NotificationService.Application do
 
     consumers =
       maybe(message_consumer_enabled?(), &message_created_child_spec/0) ++
-        maybe(participants_consumer_enabled?(), &participants_child_spec/0)
+        maybe(participants_consumer_enabled?(), &participants_child_spec/0) ++
+        maybe(call_consumer_enabled?(), &call_incoming_child_spec/0)
 
     kafka =
       case consumers do
@@ -50,6 +53,11 @@ defmodule NotificationService.Application do
       System.get_env("NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED") in ["true", "1", "yes"]
   end
 
+  defp call_consumer_enabled? do
+    Application.get_env(:notification_service, :call_consumer_enabled, false) ||
+      System.get_env("NOTIFICATION_CALL_CONSUMER_ENABLED") in ["true", "1", "yes"]
+  end
+
   defp message_created_child_spec do
     group_subscriber_spec(
       NotificationService.Events.MessageCreatedConsumer,
@@ -63,6 +71,14 @@ defmodule NotificationService.Application do
       NotificationService.Events.ConversationParticipantsConsumer,
       @conversation_topic,
       @participants_group
+    )
+  end
+
+  defp call_incoming_child_spec do
+    group_subscriber_spec(
+      NotificationService.Events.CallIncomingConsumer,
+      @call_topic,
+      @call_group
     )
   end
 
