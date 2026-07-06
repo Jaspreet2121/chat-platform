@@ -55,6 +55,12 @@ defmodule SharedInfra.LiveKitToken do
         "video" => %{
           "room" => room,
           "roomJoin" => true,
+          # Our call rooms are created ON DEMAND by the first participant to join (`call-<id>` — never
+          # pre-created via LiveKit's server API). That first join must be allowed to CREATE the room, so
+          # the grant needs roomCreate as well as roomJoin — otherwise the server denies with "no
+          # permission to access this room". (Both parties carry it; whoever connects first creates it,
+          # the other joins the existing room.) Scoped to this one room by the `room` claim above.
+          "roomCreate" => Keyword.get(opts, :room_create, true),
           "canPublish" => Keyword.get(opts, :can_publish, true),
           "canSubscribe" => Keyword.get(opts, :can_subscribe, true)
         }

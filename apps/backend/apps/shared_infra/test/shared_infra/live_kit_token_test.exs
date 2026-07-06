@@ -63,6 +63,9 @@ defmodule SharedInfra.LiveKitTokenTest do
     assert claims["video"] == %{
              "room" => "room-abc",
              "roomJoin" => true,
+             # roomCreate lets the first participant create the on-demand `call-<id>` room (v1.9 denies
+             # the create-on-join otherwise → "no permission to access this room").
+             "roomCreate" => true,
              "canPublish" => true,
              "canSubscribe" => true
            }
