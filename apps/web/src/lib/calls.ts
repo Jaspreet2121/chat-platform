@@ -118,11 +118,17 @@ export async function connectToRoom(
     });
     // Publish the mic (this is what actually prompts for the getUserMedia permission).
     await room.localParticipant.setMicrophoneEnabled(true);
-    // Video call → also publish the camera and hand our own track to the self-view.
+    // Video call → also publish the camera and hand our own track to the self-view. Its OWN try/catch:
+    // a camera denied/busy must NOT drop the call — degrade to audio-only (mic already published above).
     if (opts.video) {
-      await room.localParticipant.setCameraEnabled(true);
-      const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack;
-      opts.onLocalVideo?.((camTrack as LocalVideoTrack | undefined) ?? null);
+      try {
+        await room.localParticipant.setCameraEnabled(true);
+        const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack;
+        opts.onLocalVideo?.((camTrack as LocalVideoTrack | undefined) ?? null);
+      } catch (err) {
+        console.warn(TAG, "camera enable failed — continuing audio-only", err);
+        opts.onLocalVideo?.(null);
+      }
     }
     console.info(TAG, "connected + mic published", roomName, { video: !!opts.video });
   } catch (error) {
@@ -136,9 +142,16 @@ export async function connectToRoom(
       await room.localParticipant.setMicrophoneEnabled(!muted);
     },
     setCameraEnabled: async (enabled) => {
-      await room.localParticipant.setCameraEnabled(enabled);
-      const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack;
-      opts.onLocalVideo?.(enabled ? ((camTrack as LocalVideoTrack | undefined) ?? null) : null);
+      // Defensive mid-call toggle: a camera denied/busy must never crash the call — log, drop the
+      // self-view, and swallow. The call (audio) stays up; re-tapping camera retries.
+      try {
+        await room.localParticipant.setCameraEnabled(enabled);
+        const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack;
+        opts.onLocalVideo?.(enabled ? ((camTrack as LocalVideoTrack | undefined) ?? null) : null);
+      } catch (err) {
+        console.warn(TAG, "camera toggle failed — call continues audio-only", err);
+        opts.onLocalVideo?.(null);
+      }
     },
     disconnect: async () => {
       // The ONLY app-initiated leave. If a CLIENT_REQUEST_LEAVE shows in the server logs, this line ran
