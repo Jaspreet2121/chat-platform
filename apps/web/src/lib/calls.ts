@@ -14,6 +14,11 @@ export type CallConnection = {
   setMuted: (muted: boolean) => Promise<void>;
   /** Toggle the local camera (Phase-2 video). Publishes/unpublishes the camera track + fires onLocalVideo. */
   setCameraEnabled: (enabled: boolean) => Promise<void>;
+  /** The available cameras (videoinput devices) — used to decide whether a front/back switch is possible. */
+  getCameraDevices: () => Promise<MediaDeviceInfo[]>;
+  /** Switch the active camera. No deviceId → cycle to the NEXT videoinput (front↔back on mobile). Best-
+   *  effort: a failed switch keeps the current camera and never drops the call. */
+  switchCamera: (deviceId?: string) => Promise<void>;
   /** Leave the room and stop the mic. Leaves the (provider-owned) audio element in place. Idempotent. */
   disconnect: () => Promise<void>;
 };
@@ -59,12 +64,22 @@ export async function connectToRoom(
   opts: ConnectOptions = {}
 ): Promise<CallConnection> {
   const { url, token } = await createCallToken(roomName);
-  const { Room, RoomEvent, DisconnectReason, Track } = await import("livekit-client");
+  const { Room, RoomEvent, DisconnectReason, Track, VideoPresets } = await import("livekit-client");
 
   const reasonName = (reason?: number) =>
     reason === undefined ? "unknown" : `${DisconnectReason[reason] ?? "?"}(${reason})`;
 
-  const room: LiveKitRoom = new Room({ adaptiveStream: false, dynacast: false });
+  // adaptiveStream + dynacast + simulcast → the peer auto-receives the best layer their network can handle
+  // (adaptive/"auto" quality, no hard cap). These are Room-level but only affect VIDEO subscription — a
+  // voice call publishes no camera track, so its behavior is unchanged (audio path untouched).
+  const room: LiveKitRoom = new Room({
+    adaptiveStream: true,
+    dynacast: true,
+    videoCaptureDefaults: { resolution: VideoPresets.h720.resolution },
+    publishDefaults: {
+      videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360, VideoPresets.h720]
+    }
+  });
 
   const attach = (track: RemoteTrack) => {
     if (track.kind !== "audio") return;
@@ -137,9 +152,39 @@ export async function connectToRoom(
     throw error;
   }
 
+  // The videoinput devices — prefer LiveKit's helper (handles permissions/labels), fall back to the
+  // raw enumeration filtered to cameras.
+  const listCameras = async (): Promise<MediaDeviceInfo[]> => {
+    const viaRoom = await Room.getLocalDevices?.("videoinput");
+    if (viaRoom) return viaRoom;
+    const all = await navigator.mediaDevices.enumerateDevices();
+    return all.filter((d) => d.kind === "videoinput");
+  };
+
   return {
     setMuted: async (muted) => {
       await room.localParticipant.setMicrophoneEnabled(!muted);
+    },
+    getCameraDevices: listCameras,
+    switchCamera: async (deviceId) => {
+      try {
+        let target = deviceId;
+        if (!target) {
+          // Cycle to the NEXT camera relative to the currently-active one (wraps around).
+          const cams = await listCameras();
+          if (cams.length <= 1) return; // nothing to switch to
+          const current = room.getActiveDevice?.("videoinput");
+          const idx = cams.findIndex((d) => d.deviceId === current);
+          target = cams[idx < 0 ? 0 : (idx + 1) % cams.length]?.deviceId;
+        }
+        if (!target) return;
+        await room.switchActiveDevice("videoinput", target);
+        // Re-fire onLocalVideo so the self-view picks up the new camera's track.
+        const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack;
+        opts.onLocalVideo?.((camTrack as LocalVideoTrack | undefined) ?? null);
+      } catch (err) {
+        console.warn(TAG, "camera switch failed — keeping current camera", err);
+      }
     },
     setCameraEnabled: async (enabled) => {
       // Defensive mid-call toggle: a camera denied/busy must never crash the call — log, drop the

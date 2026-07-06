@@ -75,6 +75,8 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
   const [localVideo, setLocalVideo] = useState<LocalVideoTrack | null>(null);
   const [remoteVideo, setRemoteVideo] = useState<RemoteVideoTrack | null>(null);
   const [cameraOn, setCameraOn] = useState(false);
+  // True on a video call with >1 camera (front/back) — gates the "switch camera" button. Computed on connect.
+  const [canSwitchCamera, setCanSwitchCamera] = useState(false);
 
   // Latest-value refs so the (once-per-channel) event handlers read current state without re-subscribing.
   const statusRef = useRef(status);
@@ -130,6 +132,7 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
       setLocalVideo(null);
       setRemoteVideo(null);
       setCameraOn(false);
+      setCanSwitchCamera(false);
       if (message) flashNote(message);
     },
     [clearRingTimer, flashNote]
@@ -158,7 +161,7 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
       const isVideo = active.type === "video";
       setCameraOn(isVideo);
       try {
-        connectionRef.current = await connectToRoom(active.room, audioEl, {
+        const conn = await connectToRoom(active.room, audioEl, {
           video: isVideo,
           onLocalVideo: setLocalVideo,
           onRemoteVideo: setRemoteVideo,
@@ -168,9 +171,17 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
             if (!endingRef.current) reset(`livekit-disconnected:${reason ?? "unknown"}`);
           }
         });
+        connectionRef.current = conn;
         connectingRef.current = false;
         setMuted(false);
         setStatus("in-call");
+        // Video call → can we offer a front/back switch? (>1 videoinput). Best-effort, non-blocking.
+        if (isVideo) {
+          conn
+            .getCameraDevices()
+            .then((cams) => setCanSwitchCamera(cams.length > 1))
+            .catch(() => setCanSwitchCamera(false));
+        }
       } catch (error) {
         connectingRef.current = false;
         const denied =
@@ -249,6 +260,11 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
     // The onLocalVideo callback (passed to connectToRoom) updates the localVideo track state.
     void connectionRef.current?.setCameraEnabled(next);
   }, [cameraOn]);
+
+  // Cycle to the next camera (front↔back on mobile). The onLocalVideo callback refreshes the self-view.
+  const switchCamera = useCallback(() => {
+    void connectionRef.current?.switchCamera();
+  }, []);
 
   // ---- inbound: subscribe to the server's call:* broadcasts (once per channel) ------------------
   useEffect(() => {
@@ -347,6 +363,8 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
           remoteVideoTrack={remoteVideo}
           cameraOn={cameraOn}
           onToggleCamera={toggleCamera}
+          canSwitchCamera={canSwitchCamera}
+          onSwitchCamera={switchCamera}
         />
       )}
 
