@@ -1457,12 +1457,20 @@ export default function ChatPage() {
         </div>
       ) : null}
 
+      {/* Desktop "Calls" — call history in the main pane (rail + conversation list stay visible), opened
+          from the rail phone icon. Mobile uses the md:hidden block above instead. */}
+      {mobileView === "calls" ? (
+        <div className="hidden min-w-0 flex-1 md:block">
+          <CallHistoryList currentUserId={session?.user_id} />
+        </div>
+      ) : null}
+
       {/* Chat pane — on mobile it slides in full-screen over the list. Hidden while the profile ("You")
-          view is active so the ProfileTab above owns the pane. */}
+          or calls view owns the pane. */}
       <section
         className={cn(
           "relative min-w-0 flex-1 flex-col bg-surface",
-          mobileView === "profile"
+          mobileView === "profile" || mobileView === "calls"
             ? "hidden"
             : selectedConversationId
               ? "flex max-md:animate-slide-in-right"

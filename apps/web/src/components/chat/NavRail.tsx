@@ -107,12 +107,13 @@ function DesktopRail({
       </button>
       <button
         type="button"
-        className={cn(railItemClass(false), "cursor-not-allowed opacity-50")}
-        title="Calls — coming soon"
-        aria-disabled="true"
+        onClick={() => onSelectView?.("calls")}
+        className={railItemClass(activeView === "calls")}
+        aria-current={activeView === "calls" ? "page" : undefined}
+        title="Calls"
       >
         <Phone className="h-5 w-5" aria-hidden />
-        <span className="sr-only">Calls (coming soon)</span>
+        <span className="sr-only">Calls</span>
       </button>
       <button type="button" onClick={onNewGroup} className={railItemClass(false)} title="New group">
         <Users className="h-5 w-5" aria-hidden />
