@@ -8,3 +8,5 @@ export { InCallScreen } from "./InCallScreen";
 export type { InCallScreenProps } from "./InCallScreen";
 export { GroupInCallScreen } from "./GroupInCallScreen";
 export type { GroupInCallScreenProps } from "./GroupInCallScreen";
+export { GroupCallBanner } from "./GroupCallBanner";
+export type { GroupCallBannerProps } from "./GroupCallBanner";

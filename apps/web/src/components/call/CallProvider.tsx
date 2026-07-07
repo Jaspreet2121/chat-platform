@@ -58,6 +58,9 @@ type GroupCall = {
   callerId?: string;
 };
 
+/** A group call currently in progress in a conversation — powers the "join call" banner (Slice C1). */
+export type OngoingGroupCallEntry = { callId: string; room: string; type: CallType };
+
 type CallContextValue = {
   /** Start a 1:1 call to `peerId` (no-op unless idle). `conversationId` (the DM) is carried on the invite
    *  so a missed call can drop an entry into that thread (Slice-5b). `type` chooses voice (default) or
@@ -65,6 +68,20 @@ type CallContextValue = {
   startCall: (peerId: string, peerName: string, conversationId?: string, type?: CallType) => void;
   /** Start a GROUP call in `conversationId` — rings every member (Phase 3). `title` = the group name. */
   startGroupCall: (conversationId: string, title: string, type?: CallType) => void;
+  /** Late-join an EXISTING group call (from the thread banner). */
+  joinGroupCall: (
+    callId: string,
+    room: string,
+    conversationId: string,
+    type: CallType,
+    title: string
+  ) => void;
+  /** The group call in progress in `conversationId` (for the banner), or null — also null when WE are
+   *  already in that very call. */
+  ongoingGroupCall: (conversationId: string) => OngoingGroupCallEntry | null;
+  /** Seed/clear the ongoing-call state from a fresh thread-open fetch (covers a call started before we
+   *  opened the thread). Live events keep it fresh afterwards. */
+  primeOngoingGroupCall: (conversationId: string, entry: OngoingGroupCallEntry | null) => void;
   /** True when a new call can be started (nothing in progress). */
   isIdle: boolean;
 };
@@ -72,6 +89,9 @@ type CallContextValue = {
 const CallContext = createContext<CallContextValue>({
   startCall: () => undefined,
   startGroupCall: () => undefined,
+  joinGroupCall: () => undefined,
+  ongoingGroupCall: () => null,
+  primeOngoingGroupCall: () => undefined,
   isIdle: true
 });
 
@@ -116,6 +136,10 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   // Group calling (Phase 3) — parallel to the 1-on-1 state above.
   const [groupCall, setGroupCall] = useState<GroupCall | null>(null);
   const [groupParticipants, setGroupParticipants] = useState<GroupParticipant[]>([]);
+  // Conversations with a group call in progress (from live call:group_incoming / group_ended) → the banner.
+  const [ongoingByConversation, setOngoingByConversation] = useState<Record<string, OngoingGroupCallEntry>>(
+    {}
+  );
 
   // Latest-value refs so the (once-per-channel) event handlers read current state without re-subscribing.
   const statusRef = useRef(status);
@@ -320,6 +344,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       console.warn("[call] group reset", { from, message });
       clearRingTimer();
       endingRef.current = true;
+      const conv = groupCallRef.current?.conversationId;
       const conn = groupConnRef.current;
       groupConnRef.current = null;
       if (conn) void conn.disconnect();
@@ -330,6 +355,16 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       setLocalVideo(null);
       setCameraOn(false);
       setCanSwitchCamera(false);
+      // Drop our own banner entry for the call we just left (a still-ongoing call re-appears on next
+      // thread-open via the fetch; group_ended also clears it for everyone by callId).
+      if (conv) {
+        setOngoingByConversation((m) => {
+          if (!(conv in m)) return m;
+          const next = { ...m };
+          delete next[conv];
+          return next;
+        });
+      }
       if (message) flashNote(message);
     },
     [clearRingTimer, flashNote]
@@ -423,6 +458,18 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
     resetGroup("user-leave");
   }, [userChannel, resetGroup]);
 
+  // Late-join an EXISTING group call from the thread banner (we were never "incoming" on it). Mirrors
+  // acceptGroupIncoming but takes the call coords from the banner instead of the ring payload.
+  const joinGroupCall = useCallback(
+    (callId: string, room: string, conversationId: string, type: CallType, title: string) => {
+      if (!userChannel || statusRef.current !== "idle") return;
+      setNote(null);
+      void userChannel.pushCall("call:group_join", { call_id: callId });
+      void connectGroup({ callId, room, conversationId, type, title });
+    },
+    [userChannel, connectGroup]
+  );
+
   // ---- inbound: subscribe to the server's call:* broadcasts (once per channel) ------------------
   useEffect(() => {
     if (!userChannel) return;
@@ -458,6 +505,13 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
 
       // ---- group (Phase 3) ----
       userChannel.onCall("call:group_incoming", (p) => {
+        // Record the in-progress call for the thread banner — even if we're busy/decline the ring, the
+        // group still has a call we could join later.
+        if (p.call_id && p.room && p.conversation_id) {
+          const cid = p.conversation_id;
+          const entry: OngoingGroupCallEntry = { callId: p.call_id, room: p.room, type: p.type ?? "voice" };
+          setOngoingByConversation((m) => ({ ...m, [cid]: entry }));
+        }
         // Busy (in ANY call) → auto-decline so the initiator's roster is accurate.
         if (statusRef.current !== "idle") {
           if (p.call_id) void userChannel.pushCall("call:group_decline", { call_id: p.call_id });
@@ -479,6 +533,16 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         ringTimerRef.current = setTimeout(() => resetGroup("ring-timeout", "Missed group call"), RING_TIMEOUT_MS);
       }),
       userChannel.onCall("call:group_ended", (p) => {
+        // Clear the banner for whichever conversation this call belonged to (payload has only call_id).
+        if (p.call_id) {
+          setOngoingByConversation((m) => {
+            const cid = Object.keys(m).find((k) => m[k].callId === p.call_id);
+            if (!cid) return m;
+            const next = { ...m };
+            delete next[cid];
+            return next;
+          });
+        }
         if (groupCallRef.current?.callId && p.call_id === groupCallRef.current.callId) {
           resetGroup("group-ended");
         }
@@ -518,9 +582,44 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
     };
   }, []);
 
+  const primeOngoingGroupCall = useCallback(
+    (cid: string, entry: OngoingGroupCallEntry | null) => {
+      setOngoingByConversation((m) => {
+        if (!entry) {
+          if (!(cid in m)) return m;
+          const next = { ...m };
+          delete next[cid];
+          return next;
+        }
+        return { ...m, [cid]: entry };
+      });
+    },
+    []
+  );
+
+  // The conversation whose group call WE are currently in (so its banner hides — we're already joined).
+  const activeGroupConversationId =
+    status === "group-connecting" || status === "group-in-call" ? groupCall?.conversationId : undefined;
+
   const value = useMemo<CallContextValue>(
-    () => ({ startCall, startGroupCall, isIdle: status === "idle" }),
-    [startCall, startGroupCall, status]
+    () => ({
+      startCall,
+      startGroupCall,
+      joinGroupCall,
+      ongoingGroupCall: (cid: string) =>
+        cid && cid !== activeGroupConversationId ? ongoingByConversation[cid] ?? null : null,
+      primeOngoingGroupCall,
+      isIdle: status === "idle"
+    }),
+    [
+      startCall,
+      startGroupCall,
+      joinGroupCall,
+      ongoingByConversation,
+      activeGroupConversationId,
+      primeOngoingGroupCall,
+      status
+    ]
   );
 
   return (

@@ -247,6 +247,15 @@ export function fetchCallHistory() {
   return request<{ calls: CallRecord[] }>("/api/v1/calls").then((r) => r.calls ?? []);
 }
 
+// Phase-3 C1: the group call currently in progress in a conversation (for the "join call" banner), or
+// null. Membership-gated server-side; a non-member / no call → null.
+export type OngoingGroupCall = { call_id: string; room: string; type: "voice" | "video" };
+export function fetchOngoingGroupCall(conversationId: string) {
+  return request<{ ongoing_call: OngoingGroupCall | null }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/ongoing-call`
+  ).then((r) => r.ongoing_call ?? null);
+}
+
 export function requestOtp(input: OtpRequestInput) {
   return request<{
     otp_request_id: string;

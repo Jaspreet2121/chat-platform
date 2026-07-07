@@ -35,7 +35,7 @@ import {
   joinUserChannel,
   type UserChannel
 } from "@/lib/realtime";
-import { CallProvider, type CallController } from "@/components/call";
+import { CallProvider, GroupCallBanner, type CallController } from "@/components/call";
 import type { MessageToast } from "@/components/chat";
 import type { Socket } from "phoenix";
 import {
@@ -1516,6 +1516,12 @@ export default function ChatPage() {
           onStartCall={onStartVoice}
           onStartVideoCall={onStartVideo}
         />
+
+        {/* Live "join group call" banner (Slice C1) — only for a group thread with an ongoing call the
+            viewer isn't already in (the provider gates that). */}
+        {isGroupConversation && selectedConversationId ? (
+          <GroupCallBanner conversationId={selectedConversationId} title={groupCallTitle} />
+        ) : null}
 
         <MessageList
           messages={messages}
