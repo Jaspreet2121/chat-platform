@@ -316,6 +316,29 @@ defmodule ConversationService.CallStore do
     _ -> {:ok, %{authorized: false}}
   end
 
+  @doc """
+  Promote a LIVE 1-on-1 (direct) call to a group call (Phase-3 C3b), keeping the SAME room (no reconnect).
+  attrs: "call_id", "actor_id", "user_id" (the person to add). The actor must be one of the call's two
+  parties (caller_id/callee_id) — either peer may promote → else `{:error, :promote_forbidden}`. Flips
+  kind direct→group + status→ongoing, seats BOTH existing parties as `joined` (they're live in the room now),
+  and adds the target as an `invited` participant (signaling rings them). Idempotent-friendly: promoting an
+  ALREADY-group call just adds the target (the actor must already be a participant). Returns
+  `{:ok, %{call, added_user_id, room, type, conversation_id, existing_parties}}`.
+  """
+  def promote_direct_to_group(attrs) do
+    with :ok <- persistence(),
+         {:ok, call_id} <- required(attrs, "call_id"),
+         {:ok, actor_id} <- required(attrs, "actor_id"),
+         {:ok, user_id} <- required(attrs, "user_id"),
+         {:ok, call} <- fetch_call(call_id),
+         :ok <- ensure_promotable(call),
+         :ok <- ensure_call_actor(call, actor_id) do
+      do_promote(call, user_id)
+    end
+  rescue
+    _ -> {:error, :call_invalid}
+  end
+
   # --- group helpers -----------------------------------------------------------------------------
 
   defp insert_call!(id, initiator_id, conversation_id, type, now) do
@@ -371,6 +394,75 @@ defmodule ConversationService.CallStore do
       %Call{} -> {:error, :not_a_group_call}
       nil -> {:error, :call_not_found}
     end
+  end
+
+  # Kind-agnostic fetch (promote reads a DIRECT call, which fetch_group_call would reject).
+  defp fetch_call(call_id) do
+    case Repo.get(Call, call_id) do
+      %Call{} = call -> {:ok, call}
+      nil -> {:error, :call_not_found}
+    end
+  end
+
+  # A call is promotable when it's LIVE: a direct call that's been answered ("accepted"), or an already-group
+  # call that's still ringing/ongoing (idempotent re-promote). Anything else → not promotable.
+  defp ensure_promotable(%Call{kind: "group", status: status}) when status in ["ringing", "ongoing"], do: :ok
+  defp ensure_promotable(%Call{kind: "direct", status: "accepted"}), do: :ok
+  defp ensure_promotable(_), do: {:error, :call_not_promotable}
+
+  # The actor must belong to the call: a direct call's caller/callee (either peer may promote), or — for an
+  # already-group call — an existing participant. Else forbidden.
+  defp ensure_call_actor(%Call{kind: "group", id: id}, actor_id) do
+    if has_participant_row?(id, actor_id), do: :ok, else: {:error, :promote_forbidden}
+  end
+
+  defp ensure_call_actor(%Call{caller_id: caller_id, callee_id: callee_id}, actor_id) do
+    if actor_id == caller_id or actor_id == callee_id, do: :ok, else: {:error, :promote_forbidden}
+  end
+
+  # An already-group call: just add the target (both parties are already seated). Keeps promote idempotent
+  # if two peers race to promote or a client re-fires.
+  defp do_promote(%Call{kind: "group"} = call, user_id) do
+    ensure_invited_participant(call.id, user_id)
+    {:ok, promote_result(call, user_id)}
+  end
+
+  # A direct call → flip to group + seat both parties joined + invite the target, in one transaction.
+  defp do_promote(%Call{} = call, user_id) do
+    caller_id = call.caller_id
+    callee_id = call.callee_id
+    now = DateTime.utc_now()
+
+    Repo.transaction(fn ->
+      case call |> Call.promote_changeset(%{kind: "group", status: "ongoing"}) |> Repo.update() do
+        {:ok, promoted} ->
+          upsert_participant_status(call.id, caller_id, %{status: "joined", joined_at: now})
+
+          if is_binary(callee_id),
+            do: upsert_participant_status(call.id, callee_id, %{status: "joined", joined_at: now})
+
+          ensure_invited_participant(call.id, user_id)
+          promoted
+
+        {:error, _changeset} ->
+          Repo.rollback(:promote_invalid)
+      end
+    end)
+    |> case do
+      {:ok, promoted} -> {:ok, promote_result(promoted, user_id)}
+      {:error, _reason} -> {:error, :call_invalid}
+    end
+  end
+
+  defp promote_result(%Call{} = call, user_id) do
+    %{
+      call: response(call),
+      added_user_id: user_id,
+      room: call.room_name,
+      type: call.type,
+      conversation_id: call.conversation_id,
+      existing_parties: Enum.filter([call.caller_id, call.callee_id], &is_binary/1)
+    }
   end
 
   defp ensure_joinable(%{status: status}) when status in ["ringing", "ongoing"], do: :ok

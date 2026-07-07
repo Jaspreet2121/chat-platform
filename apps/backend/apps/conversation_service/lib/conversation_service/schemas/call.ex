@@ -65,4 +65,16 @@ defmodule ConversationService.Schemas.Call do
     |> validate_required([:status])
     |> validate_inclusion(:status, @statuses)
   end
+
+  # Promote a DIRECT 1-on-1 call to a GROUP call (Phase-3 C3b): flip kind + status, keeping room_name,
+  # caller_id, callee_id, and conversation_id. `validate_call_shape` then requires conversation_id (the group
+  # invariant), so a direct call with no conversation can't be promoted.
+  def promote_changeset(%__MODULE__{} = call, attrs) do
+    call
+    |> cast(attrs, [:kind, :status])
+    |> validate_required([:kind, :status])
+    |> validate_inclusion(:kind, @kinds)
+    |> validate_inclusion(:status, @statuses)
+    |> validate_call_shape()
+  end
 end

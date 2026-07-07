@@ -39,6 +39,7 @@ defmodule RealtimeGateway.CallSignaling do
   def handle_event("call:group_decline", payload, socket), do: group_decline(payload, socket)
   def handle_event("call:group_leave", payload, socket), do: group_leave(payload, socket)
   def handle_event("call:group_add", payload, socket), do: group_add(payload, socket)
+  def handle_event("call:promote", payload, socket), do: promote(payload, socket)
   def handle_event(_event, _payload, socket), do: reply_error(socket, "call.invalid_event")
 
   # --- invite: caller → create ringing call → ring the callee ------------------------------------
@@ -336,6 +337,64 @@ defmodule RealtimeGateway.CallSignaling do
   end
 
   defp group_add(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  # call:promote %{"call_id","user_id"} (existing member) OR %{"call_id","phone"} (outside person) — flip a
+  # LIVE 1-on-1 (direct) call to a GROUP call in the SAME room (no reconnect): seat both current peers, add
+  # + ring the new person, and tell the OTHER peer to swap to group UI. actor = current_user (never trusted);
+  # either peer of a 1-on-1 may promote. Does NOT touch the 1-on-1 invite/accept/hangup handlers.
+  defp promote(%{"call_id" => call_id} = payload, socket)
+       when is_binary(call_id) and call_id != "" do
+    actor = current_user(socket)
+
+    with {:ok, user_id} <- resolve_add_target(payload),
+         {:ok, result} <-
+           ConversationClient.promote_direct_to_group(%{
+             "call_id" => call_id,
+             "actor_id" => actor,
+             "user_id" => user_id
+           }) do
+      added = cget(result, :added_user_id) || user_id
+      room = cget(result, :room)
+      cid = cget(result, :conversation_id)
+      type = cget(result, :type)
+      caller_name = resolve_name(actor)
+
+      # (a) Ring the NEW person — same payload shape as create_group_call / group_add fan-out.
+      broadcast(socket, added, "call:group_incoming", %{
+        call_id: call_id,
+        room: room,
+        conversation_id: cid,
+        type: type,
+        caller_id: actor,
+        caller_name: caller_name,
+        participants: current_participants(call_id)
+      })
+
+      # (b) Tell the OTHER existing peer (everyone in the call but the actor) the call became a group, so
+      # their client swaps 1-on-1 → group UI. The actor's own client swaps locally on this ok reply.
+      (cget(result, :existing_parties) || [])
+      |> Enum.reject(&(&1 == actor))
+      |> Enum.each(fn peer ->
+        broadcast(socket, peer, "call:promoted", %{
+          call_id: call_id,
+          room: room,
+          conversation_id: cid,
+          type: type,
+          new_user_id: added,
+          actor_id: actor
+        })
+      end)
+
+      {:reply, {:ok, %{call_id: call_id, room: room, conversation_id: cid, type: type}}, socket}
+    else
+      {:error, :user_not_found} -> reply_error(socket, "call.user_not_found")
+      {:error, :promote_forbidden} -> reply_error(socket, "call.forbidden")
+      {:error, :invalid_request} -> reply_error(socket, "call.invalid_request")
+      _ -> reply_error(socket, "call.unavailable")
+    end
+  end
+
+  defp promote(_payload, socket), do: reply_error(socket, "call.invalid_request")
 
   # Resolve the add target → user_id: an explicit "user_id" (existing member), or a "phone" looked up via
   # auth (v1: the phone must belong to an existing ACTIVE app user — a true SMS invite is out of scope).

@@ -51,6 +51,8 @@ defmodule SharedInfra.ConversationClient do
   # Phase-3 C2 — add a participant to a live call + the token/join authorization predicate.
   @callback add_call_participant(attrs()) :: result()
   @callback call_participant?(attrs()) :: result()
+  # Phase-3 C3b — promote a live 1-on-1 (direct) call to a group call.
+  @callback promote_direct_to_group(attrs()) :: result()
 
   # Optional so existing test stubs of this behaviour don't all need it; the real adapters implement it.
   @optional_callbacks get_conversation_app: 1,
@@ -72,7 +74,8 @@ defmodule SharedInfra.ConversationClient do
                       get_call_with_participants: 1,
                       get_ongoing_group_call: 1,
                       add_call_participant: 1,
-                      call_participant?: 1
+                      call_participant?: 1,
+                      promote_direct_to_group: 1
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
@@ -106,6 +109,7 @@ defmodule SharedInfra.ConversationClient do
   def get_ongoing_group_call(attrs), do: adapter().get_ongoing_group_call(attrs)
   def add_call_participant(attrs), do: adapter().add_call_participant(attrs)
   def call_participant?(attrs), do: adapter().call_participant?(attrs)
+  def promote_direct_to_group(attrs), do: adapter().promote_direct_to_group(attrs)
 
   @doc "The configured Conversation client adapter (default `ConversationService.ConversationClientInProcess`)."
   def adapter do

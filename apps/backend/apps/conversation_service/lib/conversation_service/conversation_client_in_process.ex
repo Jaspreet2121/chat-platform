@@ -109,4 +109,8 @@ defmodule ConversationService.ConversationClientInProcess do
 
   @impl true
   def call_participant?(attrs), do: ConversationService.CallStore.call_participant?(attrs)
+
+  @impl true
+  def promote_direct_to_group(attrs),
+    do: ConversationService.CallStore.promote_direct_to_group(attrs)
 end

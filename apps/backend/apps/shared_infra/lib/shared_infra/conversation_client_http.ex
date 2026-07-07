@@ -85,6 +85,9 @@ defmodule SharedInfra.ConversationClientHttp do
   def call_participant?(attrs), do: post("/internal/calls/participant-check", attrs)
 
   @impl true
+  def promote_direct_to_group(attrs), do: post("/internal/calls/promote", attrs)
+
+  @impl true
   def add_participant(attrs), do: post("/internal/participants/add", attrs)
 
   @impl true
