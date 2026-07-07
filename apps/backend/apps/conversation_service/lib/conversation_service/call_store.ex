@@ -243,6 +243,29 @@ defmodule ConversationService.CallStore do
     _ -> {:error, :call_invalid}
   end
 
+  @doc """
+  The current ONGOING group call for a conversation — powers the "join call" banner (Slice C1). attrs:
+  "conversation_id". Returns `{:ok, %{call: call}}` when a group call is in progress, else
+  `{:ok, %{call: nil}}`. NEVER errors on "none" (a missing/bad conversation is just no call).
+  """
+  def get_ongoing_group_call(attrs) do
+    with :ok <- persistence(),
+         {:ok, conversation_id} <- required(attrs, "conversation_id") do
+      call =
+        from(c in Call,
+          where:
+            c.conversation_id == ^conversation_id and c.kind == "group" and c.status == "ongoing",
+          order_by: [desc: c.created_at],
+          limit: 1
+        )
+        |> Repo.one()
+
+      {:ok, %{call: call && response(call)}}
+    end
+  rescue
+    _ -> {:ok, %{call: nil}}
+  end
+
   # --- group helpers -----------------------------------------------------------------------------
 
   defp insert_call!(id, initiator_id, conversation_id, type, now) do

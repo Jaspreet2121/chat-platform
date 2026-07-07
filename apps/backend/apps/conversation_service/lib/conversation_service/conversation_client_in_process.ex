@@ -99,4 +99,8 @@ defmodule ConversationService.ConversationClientInProcess do
   @impl true
   def get_call_with_participants(attrs),
     do: ConversationService.CallStore.get_call_with_participants(attrs)
+
+  @impl true
+  def get_ongoing_group_call(attrs),
+    do: ConversationService.CallStore.get_ongoing_group_call(attrs)
 end

@@ -136,6 +136,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.CallStore.get_call_with_participants(body(conn)))
   end
 
+  post "/internal/calls/group/ongoing" do
+    send_result(conn, ConversationService.CallStore.get_ongoing_group_call(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "conversation", status: "ok", deps: %{}}})
   end

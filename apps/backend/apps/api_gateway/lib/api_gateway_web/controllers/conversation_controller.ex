@@ -112,6 +112,43 @@ defmodule ApiGatewayWeb.ConversationController do
     end
   end
 
+  # GET /api/v1/conversations/:id/ongoing-call → { ongoing_call: {call_id, room, type} | null }. Powers the
+  # "join group call" banner (Slice C1). Membership-gated the SAME way as show/1 — get_conversation returns
+  # :conversation_forbidden for non-members. A non-member / unknown conversation / no call → { ongoing_call:
+  # null } (never errors, never reveals existence).
+  def ongoing_call(conn, %{"conversation_id" => conversation_id}) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, _conversation} <-
+           SharedInfra.ConversationClient.get_conversation(%{
+             "conversation_id" => conversation_id,
+             "user_id" => session.user_id
+           }),
+         {:ok, result} <-
+           SharedInfra.ConversationClient.get_ongoing_group_call(%{
+             "conversation_id" => conversation_id
+           }) do
+      call = Map.get(result, :call) || Map.get(result, "call")
+      json(conn, %{ongoing_call: ongoing_call_view(call)})
+    else
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      # Non-member / unknown conversation / persistence off → no banner (no existence reveal).
+      _ -> json(conn, %{ongoing_call: nil})
+    end
+  end
+
+  defp ongoing_call_view(call) when is_map(call) do
+    %{
+      call_id: Map.get(call, :id) || Map.get(call, "id"),
+      room: Map.get(call, :room_name) || Map.get(call, "room_name"),
+      type: Map.get(call, :type) || Map.get(call, "type")
+    }
+  end
+
+  defp ongoing_call_view(_), do: nil
+
   # USER-SCOPED soft-hides (nothing is deleted; only the caller's own participant row is written).
   # "Clear chat for me": stamps cleared_before = now() on the caller's membership row.
   def clear(conn, %{"conversation_id" => conversation_id}) do

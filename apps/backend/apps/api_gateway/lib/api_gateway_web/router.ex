@@ -136,6 +136,8 @@ defmodule ApiGatewayWeb.Router do
     post "/", ConversationController, :create
     get "/", ConversationController, :index
     get "/:conversation_id", ConversationController, :show
+    # Ongoing group call (for the "join call" banner) — membership-gated (Slice C1).
+    get "/:conversation_id/ongoing-call", ConversationController, :ongoing_call
     post "/:conversation_id/participants", ConversationController, :add_participant
     # User-scoped soft-hides (nothing deleted; admin content viewer unaffected).
     post "/:conversation_id/clear", ConversationController, :clear

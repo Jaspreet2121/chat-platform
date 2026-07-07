@@ -47,6 +47,7 @@ defmodule SharedInfra.ConversationClient do
   @callback leave_group_call(attrs()) :: result()
   @callback mark_group_participants_missed(attrs()) :: result()
   @callback get_call_with_participants(attrs()) :: result()
+  @callback get_ongoing_group_call(attrs()) :: result()
 
   # Optional so existing test stubs of this behaviour don't all need it; the real adapters implement it.
   @optional_callbacks get_conversation_app: 1,
@@ -65,7 +66,8 @@ defmodule SharedInfra.ConversationClient do
                       decline_group_call: 1,
                       leave_group_call: 1,
                       mark_group_participants_missed: 1,
-                      get_call_with_participants: 1
+                      get_call_with_participants: 1,
+                      get_ongoing_group_call: 1
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
@@ -96,6 +98,7 @@ defmodule SharedInfra.ConversationClient do
   def leave_group_call(attrs), do: adapter().leave_group_call(attrs)
   def mark_group_participants_missed(attrs), do: adapter().mark_group_participants_missed(attrs)
   def get_call_with_participants(attrs), do: adapter().get_call_with_participants(attrs)
+  def get_ongoing_group_call(attrs), do: adapter().get_ongoing_group_call(attrs)
 
   @doc "The configured Conversation client adapter (default `ConversationService.ConversationClientInProcess`)."
   def adapter do
