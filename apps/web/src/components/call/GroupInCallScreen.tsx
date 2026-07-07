@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Mic, MicOff, PhoneOff, SwitchCamera, Video, VideoOff } from "lucide-react";
+import { Mic, MicOff, PhoneOff, SwitchCamera, UserPlus, Video, VideoOff } from "lucide-react";
 import type { LocalVideoTrack, RemoteVideoTrack } from "livekit-client";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
@@ -24,6 +24,10 @@ export type GroupInCallScreenProps = {
   onToggleCamera: () => void;
   canSwitchCamera: boolean;
   onSwitchCamera: () => void;
+  /** Open the "add participants" sheet — the Add button renders only when this is set. */
+  onAddParticipants?: () => void;
+  /** Reserved for future pre-gating; the server enforces call_start_permission on add either way. */
+  canAddParticipants?: boolean;
   /** Remote participants (excluding me). */
   participants: GroupTile[];
   /** Me. */
@@ -95,6 +99,8 @@ export function GroupInCallScreen({
   onToggleCamera,
   canSwitchCamera,
   onSwitchCamera,
+  onAddParticipants,
+  canAddParticipants = true,
   participants,
   currentUserId,
   localVideoTrack
@@ -152,7 +158,7 @@ export function GroupInCallScreen({
         ))}
       </div>
 
-      {/* Controls: Mute · [Switch] · [Camera] · Leave. */}
+      {/* Controls: Mute · [Switch] · [Camera] · [Add] · Leave. */}
       <div className="flex shrink-0 items-center justify-center gap-6 bg-gradient-to-t from-black/70 to-transparent p-6 pb-[calc(env(safe-area-inset-bottom)+1.5rem)]">
         <button
           type="button"
@@ -204,6 +210,21 @@ export function GroupInCallScreen({
               {cameraOn ? <Video className="h-6 w-6" aria-hidden /> : <VideoOff className="h-6 w-6" aria-hidden />}
             </span>
             <span className="text-xs font-medium text-white/80">Camera</span>
+          </button>
+        )}
+
+        {onAddParticipants && canAddParticipants && (
+          <button
+            type="button"
+            onClick={onAddParticipants}
+            disabled={connecting}
+            className="flex flex-col items-center gap-1.5 disabled:opacity-50"
+            aria-label="Add participants"
+          >
+            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white/10 text-white shadow-lg transition-transform active:scale-95">
+              <UserPlus className="h-6 w-6" aria-hidden />
+            </span>
+            <span className="text-xs font-medium text-white/80">Add</span>
           </button>
         )}
 

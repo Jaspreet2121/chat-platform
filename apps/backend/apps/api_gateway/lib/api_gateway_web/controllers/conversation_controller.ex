@@ -235,17 +235,16 @@ defmodule ApiGatewayWeb.ConversationController do
     end
   end
 
-  # OWNER or ADMIN: toggle group settings (only_admins_can_send).
+  # OWNER or ADMIN: toggle group settings — only_admins_can_send and/or call_start_permission. Forwards
+  # ONLY the fields the client sent, so toggling one setting never clobbers the other.
   def set_group_settings(conn, %{"conversation_id" => conversation_id} = params) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
-           SharedInfra.ConversationClient.set_group_settings(%{
-             "conversation_id" => conversation_id,
-             "actor_user_id" => session.user_id,
-             "only_admins_can_send" => params["only_admins_can_send"]
-           }) do
+           SharedInfra.ConversationClient.set_group_settings(
+             settings_attrs(conversation_id, session.user_id, params)
+           ) do
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
@@ -255,6 +254,21 @@ defmodule ApiGatewayWeb.ConversationController do
         ErrorResponse.forbidden(conn, "conversation.not_admin", "Only an owner or admin can change this")
 
       _ -> invalid_request(conn)
+    end
+  end
+
+  # Build the settings attrs, including a field ONLY when the client actually sent it (so a
+  # call_start_permission-only update doesn't reset only_admins_can_send, and vice-versa).
+  defp settings_attrs(conversation_id, actor_user_id, params) do
+    %{"conversation_id" => conversation_id, "actor_user_id" => actor_user_id}
+    |> maybe_put_param("only_admins_can_send", params)
+    |> maybe_put_param("call_start_permission", params)
+  end
+
+  defp maybe_put_param(attrs, key, params) do
+    case Map.get(params, key) do
+      nil -> attrs
+      value -> Map.put(attrs, key, value)
     end
   end
 

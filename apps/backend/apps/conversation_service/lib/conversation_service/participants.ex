@@ -72,7 +72,7 @@ defmodule ConversationService.Participants do
   def set_group_settings(attrs) do
     with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
          {:ok, actor_user_id} <- required_attr(attrs, "actor_user_id"),
-         {:ok, only_admins} <- boolean_attr(attrs, "only_admins_can_send"),
+         {:ok, only_admins} <- optional_boolean_attr(attrs, "only_admins_can_send"),
          {:ok, call_permission} <- call_permission_attr(attrs) do
       if conversation_persistence_enabled?() do
         with {:ok, _conversation} <- fetch_active_conversation(conversation_id),
@@ -126,10 +126,13 @@ defmodule ConversationService.Participants do
   defp ensure_not_owner_target(%{role: "owner"}), do: {:error, :participant_forbidden}
   defp ensure_not_owner_target(_), do: :ok
 
-  defp boolean_attr(attrs, key) do
+  # OPTIONAL boolean: absent (nil) → {:ok, nil} = "not provided, leave it alone" (so a call-permission-only
+  # settings update doesn't clobber only_admins_can_send back to false). Present → the parsed boolean.
+  defp optional_boolean_attr(attrs, key) do
     case Map.get(attrs, key) do
+      nil -> {:ok, nil}
       v when v in [true, "true", "1", "yes"] -> {:ok, true}
-      v when v in [false, "false", "0", "no", nil] -> {:ok, false}
+      v when v in [false, "false", "0", "no"] -> {:ok, false}
       _ -> {:error, :invalid_request}
     end
   end
@@ -143,14 +146,22 @@ defmodule ConversationService.Participants do
     end
   end
 
+  # Echo only the fields that were actually set (nil = not provided) so the caller sees exactly what changed.
   defp settings_result(conversation_id, only_admins, call_permission) do
-    base = %{conversation_id: conversation_id, only_admins_can_send: only_admins}
-    if is_nil(call_permission), do: base, else: Map.put(base, :call_start_permission, call_permission)
+    %{conversation_id: conversation_id}
+    |> maybe_put_atom(:only_admins_can_send, only_admins)
+    |> maybe_put_atom(:call_start_permission, call_permission)
   end
 
+  defp maybe_put_atom(map, _key, nil), do: map
+  defp maybe_put_atom(map, key, value), do: Map.put(map, key, value)
+
   defp upsert_settings(conversation_id, only_admins, call_permission) do
+    # Patch ONLY the provided fields — an update with just call_start_permission must not reset
+    # only_admins_can_send (and vice-versa).
     patch =
-      %{"only_admins_can_send" => only_admins}
+      %{}
+      |> maybe_put("only_admins_can_send", only_admins)
       |> maybe_put("call_start_permission", call_permission)
 
     case ConversationSettingsStore.get_settings(conversation_id) do

@@ -13,6 +13,7 @@ import {
   Camera,
   Loader2,
   Lock,
+  PhoneCall,
   MoreVertical,
   ShieldCheck,
   UserMinus,
@@ -39,6 +40,7 @@ import {
   setConversationAutoDelete,
   setConversationMute,
   setGroupOnlyAdminsCanSend,
+  setGroupSettings,
   setGroupProfile,
   setParticipantRole,
   removeParticipant
@@ -149,6 +151,9 @@ export function ConversationDetailsPanel({
   // "Only admins can send" — local reflection; server value comes from the conversation detail.
   const [onlyAdmins, setOnlyAdmins] = useState(false);
   const [isSavingOnlyAdmins, setIsSavingOnlyAdmins] = useState(false);
+  // Who may START a group call — mirrors call_start_permission === "admins_only" (Phase-3 C2).
+  const [callAdminsOnly, setCallAdminsOnly] = useState(false);
+  const [isSavingCallPermission, setIsSavingCallPermission] = useState(false);
   // Default "off" (auto_delete_seconds is NULL by default) so the Off chip reads selected until the
   // user picks a window — mirrors mute below, which also resets to "off" per conversation.
   const [autoDelete, setAutoDelete] = useState<AutoDeleteMode>("off");
@@ -246,6 +251,12 @@ export function ConversationDetailsPanel({
     return () => clearTimeout(handle);
   }, [serverOnlyAdmins]);
 
+  const serverCallAdminsOnly = conversation?.call_start_permission === "admins_only";
+  useEffect(() => {
+    const handle = setTimeout(() => setCallAdminsOnly(serverCallAdminsOnly), 0);
+    return () => clearTimeout(handle);
+  }, [serverCallAdminsOnly]);
+
   // Group photo: owner-only edit (owner = the creator). Display uses the local override, else server.
   const isGroupOwner =
     !isDirect && Boolean(createdBy && currentUserId && createdBy === currentUserId);
@@ -317,6 +328,25 @@ export function ConversationDetailsPanel({
       setActionError(e instanceof Error ? e.message : "Could not update.");
     } finally {
       setIsSavingOnlyAdmins(false);
+    }
+  }
+
+  async function handleToggleCallPermission() {
+    if (isSavingCallPermission) return;
+    const next = !callAdminsOnly;
+    setCallAdminsOnly(next); // optimistic
+    setIsSavingCallPermission(true);
+    setActionError("");
+    try {
+      await setGroupSettings(conversationId, {
+        call_start_permission: next ? "admins_only" : "everyone"
+      });
+      onGroupUpdated?.();
+    } catch (e) {
+      setCallAdminsOnly(!next); // revert
+      setActionError(e instanceof Error ? e.message : "Could not update.");
+    } finally {
+      setIsSavingCallPermission(false);
     }
   }
 
@@ -890,6 +920,35 @@ export function ConversationDetailsPanel({
                     className={cn(
                       "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-subtle transition-all",
                       onlyAdmins ? "left-[22px]" : "left-0.5"
+                    )}
+                  />
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleToggleCallPermission()}
+                disabled={isSavingCallPermission}
+                className="mt-1 flex min-h-11 w-full items-center gap-3 text-left disabled:opacity-60"
+              >
+                <PhoneCall className="h-4 w-4 shrink-0 text-muted" aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm text-fg">Only admins can start calls</span>
+                  <span className="block text-xs text-muted">
+                    Members can join but not start a group call when on.
+                  </span>
+                </span>
+                <span
+                  className={cn(
+                    "relative h-6 w-11 shrink-0 rounded-full transition-colors",
+                    callAdminsOnly ? "accent-gradient" : "bg-border-strong"
+                  )}
+                  aria-hidden
+                >
+                  <span
+                    className={cn(
+                      "absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-subtle transition-all",
+                      callAdminsOnly ? "left-[22px]" : "left-0.5"
                     )}
                   />
                 </span>

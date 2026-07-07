@@ -134,7 +134,8 @@ export type CallClientEvent =
   | "call:group_invite"
   | "call:group_join"
   | "call:group_decline"
-  | "call:group_leave";
+  | "call:group_leave"
+  | "call:group_add";
 /** One member of a group call (as broadcast by the server). */
 export type CallParticipant = {
   call_id?: string;

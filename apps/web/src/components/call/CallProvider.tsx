@@ -24,6 +24,7 @@ import { IncomingCallModal } from "./IncomingCallModal";
 import { OutgoingCallScreen } from "./OutgoingCallScreen";
 import { InCallScreen } from "./InCallScreen";
 import { GroupInCallScreen } from "./GroupInCallScreen";
+import { AddParticipantsSheet, type AddTarget } from "./AddParticipantsSheet";
 
 // 1-on-1: idle → (I invite) outgoing → connecting → in-call ; idle → (they invite) incoming → …
 // group:  idle → (I start) group-connecting → group-in-call ; idle → (they ring me) group-incoming → …
@@ -82,6 +83,9 @@ type CallContextValue = {
   /** Seed/clear the ongoing-call state from a fresh thread-open fetch (covers a call started before we
    *  opened the thread). Live events keep it fresh afterwards. */
   primeOngoingGroupCall: (conversationId: string, entry: OngoingGroupCallEntry | null) => void;
+  /** Add someone to the ACTIVE group call — an existing member (userId) or an outside person (phone) —
+   *  which rings them in. No-op unless we're currently in a group call. */
+  addToGroupCall: (target: AddTarget) => void;
   /** True when a new call can be started (nothing in progress). */
   isIdle: boolean;
 };
@@ -92,6 +96,7 @@ const CallContext = createContext<CallContextValue>({
   joinGroupCall: () => undefined,
   ongoingGroupCall: () => null,
   primeOngoingGroupCall: () => undefined,
+  addToGroupCall: () => undefined,
   isIdle: true
 });
 
@@ -109,6 +114,7 @@ const NOTE_MS = 4_000;
 export type CallController = {
   startCall: (peerId: string, peerName: string, conversationId?: string, type?: CallType) => void;
   startGroupCall: (conversationId: string, title: string, type?: CallType) => void;
+  addToGroupCall: (target: AddTarget) => void;
 };
 
 export type CallProviderProps = {
@@ -136,6 +142,8 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   // Group calling (Phase 3) — parallel to the 1-on-1 state above.
   const [groupCall, setGroupCall] = useState<GroupCall | null>(null);
   const [groupParticipants, setGroupParticipants] = useState<GroupParticipant[]>([]);
+  // The in-call "Add participants" sheet (Phase-3 C2) — open only while in a group call.
+  const [addSheetOpen, setAddSheetOpen] = useState(false);
   // Conversations with a group call in progress (from live call:group_incoming / group_ended) → the banner.
   const [ongoingByConversation, setOngoingByConversation] = useState<Record<string, OngoingGroupCallEntry>>(
     {}
@@ -351,6 +359,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       setStatus("idle");
       setGroupCall(null);
       setGroupParticipants([]);
+      setAddSheetOpen(false);
       setMuted(false);
       setLocalVideo(null);
       setCameraOn(false);
@@ -470,6 +479,33 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
     [userChannel, connectGroup]
   );
 
+  // Add someone to the ACTIVE group call (C2). `userId` for an existing member, `phone` for an outside
+  // person (the server resolves + rings). `label` only feeds the toast. No-op unless we're in a group call.
+  const addToGroupCall = useCallback(
+    (target: AddTarget) => {
+      const active = groupCallRef.current;
+      if (!userChannel || !active) return;
+      const { userId, phone, label } = target;
+      if (!userId && !phone) return;
+      const payload: Record<string, unknown> = { call_id: active.callId };
+      if (userId) payload.user_id = userId;
+      else payload.phone = phone;
+      userChannel
+        .pushCall("call:group_add", payload)
+        .then(() => flashNote(`Ringing ${label ?? "them"}…`))
+        .catch((err) => {
+          const code =
+            err && typeof err === "object" && "code" in err
+              ? (err as { code?: string }).code
+              : undefined;
+          if (code === "call.user_not_found") flashNote("No user with that number");
+          else if (code === "call.add_forbidden") flashNote("You're not allowed to add people");
+          else flashNote("Couldn't add them");
+        });
+    },
+    [userChannel, flashNote]
+  );
+
   // ---- inbound: subscribe to the server's call:* broadcasts (once per channel) ------------------
   useEffect(() => {
     if (!userChannel) return;
@@ -560,11 +596,11 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   // Expose the imperative API to a parent above this provider (the chat page owns the user channel).
   useEffect(() => {
     if (!controllerRef) return;
-    controllerRef.current = { startCall, startGroupCall };
+    controllerRef.current = { startCall, startGroupCall, addToGroupCall };
     return () => {
       controllerRef.current = null;
     };
-  }, [controllerRef, startCall, startGroupCall]);
+  }, [controllerRef, startCall, startGroupCall, addToGroupCall]);
 
   // Cleanup on unmount: leave any room + clear timers. This fires ONLY if the provider itself unmounts
   // (leaving /chat) — it is NOT tied to a call's connecting→in-call transition. If a mid-call leave ever
@@ -601,6 +637,12 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const activeGroupConversationId =
     status === "group-connecting" || status === "group-in-call" ? groupCall?.conversationId : undefined;
 
+  // LiveKit identities already in the call (remotes + me) — the Add sheet excludes these from its member list.
+  const inCallIds = useMemo(
+    () => [...groupParticipants.map((p) => p.identity), ...(currentUserId ? [currentUserId] : [])],
+    [groupParticipants, currentUserId]
+  );
+
   const value = useMemo<CallContextValue>(
     () => ({
       startCall,
@@ -609,6 +651,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       ongoingGroupCall: (cid: string) =>
         cid && cid !== activeGroupConversationId ? ongoingByConversation[cid] ?? null : null,
       primeOngoingGroupCall,
+      addToGroupCall,
       isIdle: status === "idle"
     }),
     [
@@ -618,6 +661,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       ongoingByConversation,
       activeGroupConversationId,
       primeOngoingGroupCall,
+      addToGroupCall,
       status
     ]
   );
@@ -683,16 +727,29 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           onToggleCamera={toggleCamera}
           canSwitchCamera={canSwitchCamera}
           onSwitchCamera={switchCamera}
+          onAddParticipants={() => setAddSheetOpen(true)}
           participants={groupParticipants}
           currentUserId={currentUserId}
           localVideoTrack={localVideo}
         />
       )}
 
-      {note && status === "idle" && (
+      {status === "group-in-call" && addSheetOpen && groupCall && (
+        <AddParticipantsSheet
+          conversationId={groupCall.conversationId}
+          inCallIds={inCallIds}
+          currentUserId={currentUserId}
+          onAdd={addToGroupCall}
+          onClose={() => setAddSheetOpen(false)}
+        />
+      )}
+
+      {/* Transient toast. z-[80] so add-participant feedback shows ABOVE the fullscreen call screen
+          (z-[60]) and the Add sheet (z-[70]); at idle it's the usual call-outcome note. */}
+      {note && (
         <div
           role="status"
-          className="fixed bottom-6 left-1/2 z-[55] -translate-x-1/2 rounded-full bg-fg/90 px-4 py-2 text-sm font-medium text-bg shadow-lg animate-fade-in"
+          className="fixed bottom-6 left-1/2 z-[80] -translate-x-1/2 rounded-full bg-fg/90 px-4 py-2 text-sm font-medium text-bg shadow-lg animate-fade-in"
         >
           {note}
         </div>

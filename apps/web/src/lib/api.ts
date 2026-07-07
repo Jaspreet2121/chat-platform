@@ -730,6 +730,32 @@ export function setGroupOnlyAdminsCanSend(conversationId: string, value: boolean
   );
 }
 
+export type GroupSettingsInput = {
+  only_admins_can_send?: boolean;
+  /** Who may start a group call — "everyone" (default) or "admins_only" (server-enforced; Phase 3). */
+  call_start_permission?: "everyone" | "admins_only";
+};
+
+// Owner/admin: update group settings — sends ONLY the field(s) provided (only_admins_can_send and/or
+// call_start_permission), so toggling one never clobbers the other. Server enforces both.
+export function setGroupSettings(conversationId: string, settings: GroupSettingsInput) {
+  const body: GroupSettingsInput = {};
+  if (settings.only_admins_can_send !== undefined) {
+    body.only_admins_can_send = settings.only_admins_can_send;
+  }
+  if (settings.call_start_permission !== undefined) {
+    body.call_start_permission = settings.call_start_permission;
+  }
+  return request<{
+    conversation_id: string;
+    only_admins_can_send?: boolean;
+    call_start_permission?: "everyone" | "admins_only";
+  }>(`/api/v1/conversations/${encodeURIComponent(conversationId)}/settings`, {
+    method: "PUT",
+    body: JSON.stringify(body)
+  });
+}
+
 export function setGroupProfile(conversationId: string, input: GroupProfileInput) {
   return request<{ conversation_id: string; name?: string; group_avatar_url?: string | null }>(
     `/api/v1/conversations/${encodeURIComponent(conversationId)}/group-profile`,
