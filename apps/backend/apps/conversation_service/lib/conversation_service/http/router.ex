@@ -140,6 +140,14 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.CallStore.get_ongoing_group_call(body(conn)))
   end
 
+  post "/internal/calls/group/add" do
+    send_result(conn, ConversationService.CallStore.add_call_participant(body(conn)))
+  end
+
+  post "/internal/calls/participant-check" do
+    send_result(conn, ConversationService.CallStore.call_participant?(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "conversation", status: "ok", deps: %{}}})
   end

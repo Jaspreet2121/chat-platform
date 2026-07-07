@@ -31,16 +31,22 @@ defmodule ApiGatewayWeb.CallController do
   end
 
   # POST /api/v1/calls/token  { "room": "<room_name>" }
-  # → { "url": "wss://…", "token": "<livekit jwt>" } for the current user + room.
+  # → { "url": "wss://…", "token": "<livekit jwt>" } for the current user + room. The user must BELONG to
+  # the call the room names (`authorize_call/2`) — otherwise 403. This closes the Phase-1 auth gap where any
+  # authenticated user could mint a token for any room.
   def token(conn, %{"room" => room}) when is_binary(room) and room != "" do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- authorize_call(room, session.user_id),
          {:ok, jwt} <- SharedInfra.LiveKitToken.create(session.user_id, room, name: session.user_id) do
       json(conn, %{url: SharedInfra.LiveKitToken.url(), token: jwt})
     else
       {:error, :livekit_not_configured} ->
         ErrorResponse.service_unavailable(conn, "calls.unavailable")
+
+      {:error, :call_forbidden} ->
+        ErrorResponse.forbidden(conn, "calls.forbidden", "Not authorized for this call")
 
       _ ->
         ErrorResponse.unauthorized(conn, "auth.unauthorized", "Invalid or missing session")
@@ -48,6 +54,43 @@ defmodule ApiGatewayWeb.CallController do
   end
 
   def token(conn, _params), do: ErrorResponse.invalid_request(conn, "calls.room_required")
+
+  # Call-authorize a LiveKit token request. The room is "call-"<>call_id; we resolve the call row and check
+  # the user belongs to it: GROUP calls authorize on a `group_call_participants` row (invited or joined —
+  # an added non-member is authorized for THIS call only); DIRECT calls authorize on caller/callee. Anything
+  # unresolvable (room not "call-…", call not found, service/DB unavailable, lookup raise) FAILS CLOSED to
+  # :call_forbidden. A real call can't exist without persistence, so `get_call` resolves every genuine call —
+  # existing 1-on-1 tokens still issue via the caller/callee branch.
+  defp authorize_call("call-" <> call_id, user_id) when call_id != "" and is_binary(user_id) do
+    case SharedInfra.ConversationClient.get_call(%{"call_id" => call_id}) do
+      {:ok, call} ->
+        if authorized_for_call?(call, call_id, user_id), do: :ok, else: {:error, :call_forbidden}
+
+      _ ->
+        {:error, :call_forbidden}
+    end
+  rescue
+    _ -> {:error, :call_forbidden}
+  end
+
+  defp authorize_call(_room, _user_id), do: {:error, :call_forbidden}
+
+  defp authorized_for_call?(call, call_id, user_id) do
+    case cget(call, :kind) || "direct" do
+      "group" ->
+        case SharedInfra.ConversationClient.call_participant?(%{
+               "call_id" => call_id,
+               "user_id" => user_id
+             }) do
+          {:ok, %{authorized: true}} -> true
+          {:ok, %{"authorized" => true}} -> true
+          _ -> false
+        end
+
+      _ ->
+        user_id == cget(call, :caller_id) or user_id == cget(call, :callee_id)
+    end
+  end
 
   defp authorization_header(conn) do
     case get_req_header(conn, "authorization") do

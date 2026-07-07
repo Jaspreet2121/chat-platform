@@ -38,6 +38,7 @@ defmodule RealtimeGateway.CallSignaling do
   def handle_event("call:group_join", payload, socket), do: group_join(payload, socket)
   def handle_event("call:group_decline", payload, socket), do: group_decline(payload, socket)
   def handle_event("call:group_leave", payload, socket), do: group_leave(payload, socket)
+  def handle_event("call:group_add", payload, socket), do: group_add(payload, socket)
   def handle_event(_event, _payload, socket), do: reply_error(socket, "call.invalid_event")
 
   # --- invite: caller → create ringing call → ring the callee ------------------------------------
@@ -295,6 +296,70 @@ defmodule RealtimeGateway.CallSignaling do
   end
 
   defp group_leave(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  # call:group_add %{"call_id","user_id"} (existing member) OR %{"call_id","phone"} (outside person) — add
+  # someone to a LIVE group call and ring them in. Actor = current_user (never trusted from payload); the
+  # permission to add mirrors call-start (member; under admins_only, owner/admin). The added user gets a
+  # participant row for THIS call only (never a conversation membership) and a `call:group_incoming` ring —
+  # SAME payload shape as create_group_call's fan-out — so they can accept + join.
+  defp group_add(%{"call_id" => call_id} = payload, socket)
+       when is_binary(call_id) and call_id != "" do
+    actor = current_user(socket)
+
+    with {:ok, user_id} <- resolve_add_target(payload),
+         {:ok, result} <-
+           ConversationClient.add_call_participant(%{
+             "call_id" => call_id,
+             "actor_id" => actor,
+             "user_id" => user_id
+           }) do
+      added = cget(result, :added_user_id) || user_id
+      caller_name = resolve_name(actor)
+
+      broadcast(socket, added, "call:group_incoming", %{
+        call_id: call_id,
+        room: cget(result, :room),
+        conversation_id: cget(result, :conversation_id),
+        type: cget(result, :type),
+        caller_id: actor,
+        caller_name: caller_name,
+        participants: current_participants(call_id)
+      })
+
+      {:reply, {:ok, %{call_id: call_id, added_user_id: added}}, socket}
+    else
+      {:error, :user_not_found} -> reply_error(socket, "call.user_not_found")
+      {:error, :call_add_forbidden} -> reply_error(socket, "call.add_forbidden")
+      {:error, :invalid_request} -> reply_error(socket, "call.invalid_request")
+      _ -> reply_error(socket, "call.unavailable")
+    end
+  end
+
+  defp group_add(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  # Resolve the add target → user_id: an explicit "user_id" (existing member), or a "phone" looked up via
+  # auth (v1: the phone must belong to an existing ACTIVE app user — a true SMS invite is out of scope).
+  defp resolve_add_target(%{"user_id" => uid}) when is_binary(uid) and uid != "", do: {:ok, uid}
+
+  defp resolve_add_target(%{"phone" => phone}) when is_binary(phone) and phone != "" do
+    case SharedInfra.AuthClient.lookup_user_by_phone(%{"phone_number" => phone}) do
+      {:ok, %{user_id: uid}} when is_binary(uid) and uid != "" -> {:ok, uid}
+      {:ok, %{"user_id" => uid}} when is_binary(uid) and uid != "" -> {:ok, uid}
+      _ -> {:error, :user_not_found}
+    end
+  rescue
+    _ -> {:error, :user_not_found}
+  end
+
+  defp resolve_add_target(_payload), do: {:error, :invalid_request}
+
+  # Live participant list for a call (best-effort) — used to seed the added user's ring payload.
+  defp current_participants(call_id) do
+    case ConversationClient.get_call_with_participants(%{"call_id" => call_id}) do
+      {:ok, result} -> cget(result, :participants) || []
+      _ -> []
+    end
+  end
 
   @doc """
   Group ring timeout (fired from the initiator's channel via `handle_info`). Flips any still-`invited`
