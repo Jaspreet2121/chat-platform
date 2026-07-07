@@ -1,8 +1,11 @@
 defmodule ConversationService.Schemas.CallParticipant do
   @moduledoc """
-  Ecto schema for the `call_participants` table (Phase-3 group calling). One row per (call, user) — a
-  member invited to / joined in a GROUP call and their per-member state. Direct 1-on-1 calls have no rows
+  Ecto schema for the `group_call_participants` table (Phase-3 group calling). One row per (call, user) —
+  a member invited to / joined in a GROUP call and their per-member state. Direct 1-on-1 calls have no rows
   here. Composite primary key (call_id + user_id): a user appears once per call.
+
+  Table is `group_call_participants` (NOT `call_participants`) to avoid colliding with the LEGACY
+  `call_participants` table from migration 010 (the abandoned native-WebRTC design).
   """
 
   use Ecto.Schema
@@ -12,7 +15,7 @@ defmodule ConversationService.Schemas.CallParticipant do
   @primary_key false
   @statuses ~w(invited joined declined left missed)
 
-  schema "call_participants" do
+  schema "group_call_participants" do
     field(:call_id, :binary_id, primary_key: true)
     field(:user_id, :binary_id, primary_key: true)
     field(:status, :string, default: "invited")
