@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, Phone, Video } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Phone, Users, Video } from "lucide-react";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { fetchCallHistory, type CallRecord } from "@/lib/api";
@@ -28,28 +28,52 @@ function callTime(iso?: string | null): string | null {
 }
 
 function CallHistoryRow({ call, currentUserId }: { call: CallRecord; currentUserId?: string }) {
-  // Avatar via the SAME cached/deduped resolver every chat row uses (names come enriched server-side).
+  const isGroup = call.kind === "group";
+  // Hook is ALWAYS called (rules of hooks) — useUserProfile tolerates an undefined id (→ null), so it's a
+  // safe no-op for group rows. Its result is only used on the direct path.
   const profile = useUserProfile(call.counterpart_id);
-  const name = call.counterpart_name?.trim() || profile?.display_name?.trim() || `${call.counterpart_id.slice(0, 8)}…`;
-  const outgoing = call.caller_id === currentUserId;
   const missed = call.status === "missed";
+  const outgoing = call.caller_id === currentUserId;
+  const typeWord = call.type === "video" ? "video" : "voice";
   const TypeIcon = call.type === "video" ? Video : Phone;
   const DirectionIcon = outgoing ? ArrowUpRight : ArrowDownLeft;
-  const label = missed
-    ? `Missed ${call.type === "video" ? "video" : "voice"} call`
-    : `${outgoing ? "Outgoing" : "Incoming"} ${call.type === "video" ? "video" : "voice"}`;
   const time = callTime(call.created_at);
+
+  // Direct rows: EXACTLY as before (null-safe `.slice` so a malformed row can never crash the tab again).
+  // Group rows: a generic "Group call" title (no group name in the history payload yet — MVP).
+  const name = isGroup
+    ? "Group call"
+    : call.counterpart_name?.trim() ||
+      profile?.display_name?.trim() ||
+      `${call.counterpart_id?.slice(0, 8) ?? "…"}…`;
+
+  const label = isGroup
+    ? missed
+      ? `Missed group ${typeWord} call`
+      : `Group ${typeWord} call`
+    : missed
+      ? `Missed ${typeWord} call`
+      : `${outgoing ? "Outgoing" : "Incoming"} ${typeWord}`;
+
+  // Direct → always show a direction arrow. Group → only when we're the initiator (else omit; never crash).
+  const showDirection = isGroup ? outgoing : true;
 
   return (
     <div className="relative flex w-full items-center gap-3 px-4 py-3 text-left">
-      <Avatar id={call.counterpart_id} name={name} imageUrl={profile?.avatar_url} />
+      {isGroup ? (
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-subtle text-brand-hover">
+          <Users className="h-5 w-5" aria-hidden />
+        </span>
+      ) : (
+        <Avatar id={call.counterpart_id ?? call.id} name={name} imageUrl={profile?.avatar_url} />
+      )}
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
           <p className={cn("truncate text-sm font-medium", missed ? "text-red-500" : "text-fg")}>{name}</p>
           {time ? <span className="shrink-0 text-[11px] tabular-nums text-faint">{time}</span> : null}
         </div>
         <div className={cn("mt-0.5 flex items-center gap-1.5 text-xs", missed ? "text-red-500" : "text-muted")}>
-          <DirectionIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          {showDirection ? <DirectionIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
           <TypeIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
           <span className="truncate">{label}</span>
         </div>

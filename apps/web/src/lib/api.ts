@@ -227,15 +227,18 @@ export function createCallToken(room: string) {
 export type CallRecord = {
   id: string;
   room_name: string;
+  // "direct" (1-on-1) or "group" (Phase 3). Group rows have callee_id null + no counterpart.
+  kind?: "direct" | "group";
   caller_id: string;
-  callee_id: string;
+  callee_id?: string | null;
   conversation_id?: string | null;
   type: "voice" | "video";
-  status: "ringing" | "accepted" | "declined" | "missed" | "ended";
+  status: "ringing" | "accepted" | "declined" | "missed" | "ended" | "ongoing";
   created_at: string;
   answered_at?: string | null;
   ended_at?: string | null;
-  counterpart_id: string;
+  // The OTHER party in a DIRECT call (enriched server-side). Absent on group rows.
+  counterpart_id?: string;
   counterpart_name?: string | null;
 };
 
