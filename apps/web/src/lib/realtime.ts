@@ -121,9 +121,7 @@ export type CallServerEvent =
   | "call:participant_joined"
   | "call:participant_declined"
   | "call:participant_left"
-  | "call:group_ended"
-  // Promote (Phase 3 C3b) — a 1-on-1 became a group; tells the OTHER peer to swap to the grid.
-  | "call:promoted";
+  | "call:group_ended";
 /** Control events I push (the server validates ownership against the persisted call row). */
 export type CallClientEvent =
   // 1-on-1 (Phase 1/2)
@@ -137,9 +135,7 @@ export type CallClientEvent =
   | "call:group_join"
   | "call:group_decline"
   | "call:group_leave"
-  | "call:group_add"
-  // Promote a live 1-on-1 to a group call (Phase 3 C3b).
-  | "call:promote";
+  | "call:group_add";
 /** One member of a group call (as broadcast by the server). */
 export type CallParticipant = {
   call_id?: string;
@@ -158,9 +154,6 @@ export type CallEventPayload = {
   user_id?: string;
   joined_at?: string | null;
   participants?: CallParticipant[];
-  // Promote fields (call:promoted).
-  new_user_id?: string;
-  actor_id?: string;
 };
 /** The `ok` reply to `call:invite` — the created call's id + the LiveKit room to join. */
 export type CallInviteAck = { call_id: string; room: string };
