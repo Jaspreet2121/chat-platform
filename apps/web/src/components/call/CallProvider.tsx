@@ -343,6 +343,10 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         return;
       }
       groupConnectingRef.current = true;
+      // Publish the active group call so the in-call screen renders (the INITIATOR path never set it) and
+      // groupCallRef updates → call:group_ended matching + leaveGroup work for the initiator too. No-op for
+      // the member path (their call:group_incoming already stored the same object).
+      setGroupCall(active);
       clearRingTimer();
       endingRef.current = false;
       setStatus("group-connecting");
