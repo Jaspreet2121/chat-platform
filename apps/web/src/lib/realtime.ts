@@ -109,19 +109,39 @@ function push(channel: Channel, event: string, payload: object) {
 export type CallType = "voice" | "video";
 /** Broadcasts the server fans to MY user topic. */
 export type CallServerEvent =
+  // 1-on-1 (Phase 1/2)
   | "call:incoming"
   | "call:accepted"
   | "call:rejected"
   | "call:cancelled"
   | "call:ended"
-  | "call:missed";
+  | "call:missed"
+  // Group (Phase 3)
+  | "call:group_incoming"
+  | "call:participant_joined"
+  | "call:participant_declined"
+  | "call:participant_left"
+  | "call:group_ended";
 /** Control events I push (the server validates ownership against the persisted call row). */
 export type CallClientEvent =
+  // 1-on-1 (Phase 1/2)
   | "call:invite"
   | "call:accept"
   | "call:reject"
   | "call:cancel"
-  | "call:hangup";
+  | "call:hangup"
+  // Group (Phase 3)
+  | "call:group_invite"
+  | "call:group_join"
+  | "call:group_decline"
+  | "call:group_leave";
+/** One member of a group call (as broadcast by the server). */
+export type CallParticipant = {
+  call_id?: string;
+  user_id?: string;
+  status?: "invited" | "joined" | "declined" | "left" | "missed";
+  joined_at?: string | null;
+};
 export type CallEventPayload = {
   call_id?: string;
   room?: string;
@@ -129,9 +149,15 @@ export type CallEventPayload = {
   caller_name?: string;
   type?: CallType;
   conversation_id?: string;
+  // Group fields.
+  user_id?: string;
+  joined_at?: string | null;
+  participants?: CallParticipant[];
 };
 /** The `ok` reply to `call:invite` — the created call's id + the LiveKit room to join. */
 export type CallInviteAck = { call_id: string; room: string };
+/** The `ok` reply to `call:group_invite` / `call:group_join`. */
+export type CallGroupAck = { call_id: string; room: string; participants?: CallParticipant[] };
 
 // The caller's OWN `user:<id>` topic — the backend fans message_created for conversations the user
 // does NOT have open onto it (in-app notifications: toasts + live unread badges). Identity-pinned

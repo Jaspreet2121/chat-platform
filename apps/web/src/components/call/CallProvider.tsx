@@ -11,17 +11,32 @@ import {
   type MutableRefObject,
   type ReactNode
 } from "react";
-import type { CallEventPayload, CallInviteAck, CallType, UserChannel } from "@/lib/realtime";
+import type { CallEventPayload, CallGroupAck, CallInviteAck, CallType, UserChannel } from "@/lib/realtime";
 import type { LocalVideoTrack, RemoteVideoTrack } from "livekit-client";
-import { connectToRoom, type CallConnection } from "@/lib/calls";
+import {
+  connectToRoom,
+  connectToGroupRoom,
+  type CallConnection,
+  type GroupConnection,
+  type GroupParticipant
+} from "@/lib/calls";
 import { IncomingCallModal } from "./IncomingCallModal";
 import { OutgoingCallScreen } from "./OutgoingCallScreen";
 import { InCallScreen } from "./InCallScreen";
+import { GroupInCallScreen } from "./GroupInCallScreen";
 
-// idle → (I invite) outgoing → connecting → in-call    (peer accepted)
-// idle → (they invite) incoming → connecting → in-call (I accepted)
-// any → idle on reject / cancel / hangup / ended / missed / error
-type Status = "idle" | "outgoing" | "incoming" | "connecting" | "in-call";
+// 1-on-1: idle → (I invite) outgoing → connecting → in-call ; idle → (they invite) incoming → …
+// group:  idle → (I start) group-connecting → group-in-call ; idle → (they ring me) group-incoming → …
+// The 1-on-1 flow is UNCHANGED — group adds parallel states.
+type Status =
+  | "idle"
+  | "outgoing"
+  | "incoming"
+  | "connecting"
+  | "in-call"
+  | "group-incoming"
+  | "group-connecting"
+  | "group-in-call";
 
 type ActiveCall = {
   callId: string;
@@ -31,16 +46,34 @@ type ActiveCall = {
   type: CallType;
 };
 
+type GroupCall = {
+  callId: string;
+  room: string;
+  conversationId: string;
+  type: CallType;
+  /** Group name for the in-call header. */
+  title: string;
+  /** The ringing initiator (only set for an incoming ring). */
+  callerName?: string;
+  callerId?: string;
+};
+
 type CallContextValue = {
   /** Start a 1:1 call to `peerId` (no-op unless idle). `conversationId` (the DM) is carried on the invite
    *  so a missed call can drop an entry into that thread (Slice-5b). `type` chooses voice (default) or
    *  video (Phase 2 — publishes the camera on connect). */
   startCall: (peerId: string, peerName: string, conversationId?: string, type?: CallType) => void;
+  /** Start a GROUP call in `conversationId` — rings every member (Phase 3). `title` = the group name. */
+  startGroupCall: (conversationId: string, title: string, type?: CallType) => void;
   /** True when a new call can be started (nothing in progress). */
   isIdle: boolean;
 };
 
-const CallContext = createContext<CallContextValue>({ startCall: () => undefined, isIdle: true });
+const CallContext = createContext<CallContextValue>({
+  startCall: () => undefined,
+  startGroupCall: () => undefined,
+  isIdle: true
+});
 
 /** Access the call controls (e.g. the ChatHeader call button). */
 export function useCall() {
@@ -55,17 +88,20 @@ const NOTE_MS = 4_000;
 /** Imperative handle for callers that live ABOVE the provider (e.g. the page that owns the user channel). */
 export type CallController = {
   startCall: (peerId: string, peerName: string, conversationId?: string, type?: CallType) => void;
+  startGroupCall: (conversationId: string, title: string, type?: CallType) => void;
 };
 
 export type CallProviderProps = {
   /** The joined user:<id> channel (call:* ride on it). Null until it connects — calling is disabled then. */
   userChannel: UserChannel | null;
+  /** The signed-in user's id — labels the self tile in a group call. */
+  currentUserId?: string;
   /** Optional ref populated with the imperative call API (so a parent can trigger startCall via a ref). */
   controllerRef?: MutableRefObject<CallController | null>;
   children: ReactNode;
 };
 
-export function CallProvider({ userChannel, controllerRef, children }: CallProviderProps) {
+export function CallProvider({ userChannel, currentUserId, controllerRef, children }: CallProviderProps) {
   const [status, setStatus] = useState<Status>("idle");
   const [call, setCall] = useState<ActiveCall | null>(null);
   const [muted, setMuted] = useState(false);
@@ -77,6 +113,9 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
   const [cameraOn, setCameraOn] = useState(false);
   // True on a video call with >1 camera (front/back) — gates the "switch camera" button. Computed on connect.
   const [canSwitchCamera, setCanSwitchCamera] = useState(false);
+  // Group calling (Phase 3) — parallel to the 1-on-1 state above.
+  const [groupCall, setGroupCall] = useState<GroupCall | null>(null);
+  const [groupParticipants, setGroupParticipants] = useState<GroupParticipant[]>([]);
 
   // Latest-value refs so the (once-per-channel) event handlers read current state without re-subscribing.
   const statusRef = useRef(status);
@@ -92,6 +131,13 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
   // True from the moment connect() starts until the Room is stored (or fails) — guards against a duplicate
   // connect during the async connect window (connectionRef is still null then).
   const connectingRef = useRef(false);
+  // Group calling: the LiveKit group connection + its idempotency guard + latest-value ref for handlers.
+  const groupConnRef = useRef<GroupConnection | null>(null);
+  const groupConnectingRef = useRef(false);
+  const groupCallRef = useRef(groupCall);
+  useEffect(() => {
+    groupCallRef.current = groupCall;
+  }, [groupCall]);
   // The ONE remote-audio sink for the whole app lifetime — rendered once below, never conditionally
   // unmounted, so the remote track stays attached across the connecting→in-call view swap.
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -248,23 +294,130 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
     reset("user-hangup");
   }, [userChannel, reset]);
 
+  // Media controls target whichever call is active (1-on-1 connectionRef or group groupConnRef — only one
+  // is ever set). GroupConnection and CallConnection share these method signatures.
   const toggleMute = useCallback(() => {
     const next = !muted;
     setMuted(next);
-    void connectionRef.current?.setMuted(next);
+    void (connectionRef.current ?? groupConnRef.current)?.setMuted(next);
   }, [muted]);
 
   const toggleCamera = useCallback(() => {
     const next = !cameraOn;
     setCameraOn(next);
-    // The onLocalVideo callback (passed to connectToRoom) updates the localVideo track state.
-    void connectionRef.current?.setCameraEnabled(next);
+    // The onLocalVideo callback (passed to connect) updates the localVideo track state.
+    void (connectionRef.current ?? groupConnRef.current)?.setCameraEnabled(next);
   }, [cameraOn]);
 
   // Cycle to the next camera (front↔back on mobile). The onLocalVideo callback refreshes the self-view.
   const switchCamera = useCallback(() => {
-    void connectionRef.current?.switchCamera();
+    void (connectionRef.current ?? groupConnRef.current)?.switchCamera();
   }, []);
+
+  // ---- group calling (Phase 3) ------------------------------------------------------------------
+  const resetGroup = useCallback(
+    (from: string, message?: string) => {
+      console.warn("[call] group reset", { from, message });
+      clearRingTimer();
+      endingRef.current = true;
+      const conn = groupConnRef.current;
+      groupConnRef.current = null;
+      if (conn) void conn.disconnect();
+      setStatus("idle");
+      setGroupCall(null);
+      setGroupParticipants([]);
+      setMuted(false);
+      setLocalVideo(null);
+      setCameraOn(false);
+      setCanSwitchCamera(false);
+      if (message) flashNote(message);
+    },
+    [clearRingTimer, flashNote]
+  );
+
+  const connectGroup = useCallback(
+    async (active: GroupCall) => {
+      // Same DUPLICATE_IDENTITY idempotency guard as the 1-on-1 connect.
+      if (groupConnRef.current || groupConnectingRef.current) {
+        console.warn("[call] group connect ignored — already connecting/connected", active.callId);
+        return;
+      }
+      groupConnectingRef.current = true;
+      clearRingTimer();
+      endingRef.current = false;
+      setStatus("group-connecting");
+      const isVideo = active.type === "video";
+      setCameraOn(isVideo);
+      try {
+        const conn = await connectToGroupRoom(active.room, {
+          video: isVideo,
+          onLocalVideo: setLocalVideo,
+          onParticipants: setGroupParticipants,
+          onDisconnected: (reason) => {
+            if (!endingRef.current) resetGroup(`livekit-disconnected:${reason ?? "unknown"}`);
+          }
+        });
+        groupConnRef.current = conn;
+        groupConnectingRef.current = false;
+        setMuted(false);
+        setStatus("group-in-call");
+        if (isVideo) {
+          conn
+            .getCameraDevices()
+            .then((cams) => setCanSwitchCamera(cams.length > 1))
+            .catch(() => setCanSwitchCamera(false));
+        }
+      } catch (error) {
+        groupConnectingRef.current = false;
+        const denied =
+          error instanceof DOMException &&
+          (error.name === "NotAllowedError" || error.name === "NotFoundError");
+        void userChannel?.pushCall("call:group_leave", { call_id: active.callId });
+        resetGroup("connect-error", denied ? "Microphone access is needed for calls" : "Couldn't connect the call");
+      }
+    },
+    [clearRingTimer, resetGroup, userChannel]
+  );
+
+  const startGroupCall = useCallback(
+    (conversationId: string, title: string, type: CallType = "voice") => {
+      if (!userChannel || statusRef.current !== "idle" || !conversationId) return;
+      setNote(null);
+      userChannel
+        .pushCall("call:group_invite", { conversation_id: conversationId, type })
+        .then((ack) => {
+          const { call_id, room } = ack as CallGroupAck;
+          if (!call_id || !room) throw new Error("bad group invite ack");
+          if (statusRef.current !== "idle") return;
+          // The initiator joins immediately (they're already "joined" server-side); no outgoing ring.
+          void connectGroup({ callId: call_id, room, conversationId, type, title });
+        })
+        .catch((err) => {
+          console.warn("[call] group invite failed", err);
+          flashNote("Couldn't start the group call");
+        });
+    },
+    [userChannel, connectGroup, flashNote]
+  );
+
+  const acceptGroupIncoming = useCallback(() => {
+    const active = groupCallRef.current;
+    if (!active || !userChannel) return;
+    void userChannel.pushCall("call:group_join", { call_id: active.callId });
+    void connectGroup(active); // Accept IS the gesture that unlocks mic/audio.
+  }, [userChannel, connectGroup]);
+
+  const declineGroupIncoming = useCallback(() => {
+    const active = groupCallRef.current;
+    if (active) void userChannel?.pushCall("call:group_decline", { call_id: active.callId });
+    resetGroup("user-decline");
+  }, [userChannel, resetGroup]);
+
+  const leaveGroup = useCallback(() => {
+    const active = groupCallRef.current;
+    if (active) void userChannel?.pushCall("call:group_leave", { call_id: active.callId });
+    resetGroup("user-leave");
+  }, [userChannel, resetGroup]);
 
   // ---- inbound: subscribe to the server's call:* broadcasts (once per channel) ------------------
   useEffect(() => {
@@ -297,37 +450,73 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
       userChannel.onCall("call:rejected", (p) => matches(p) && reset("peer-rejected", "Call declined")),
       userChannel.onCall("call:cancelled", (p) => matches(p) && reset("peer-cancelled")),
       userChannel.onCall("call:ended", (p) => matches(p) && reset("peer-ended")),
-      userChannel.onCall("call:missed", (p) => matches(p) && reset("peer-missed", "Missed call"))
+      userChannel.onCall("call:missed", (p) => matches(p) && reset("peer-missed", "Missed call")),
+
+      // ---- group (Phase 3) ----
+      userChannel.onCall("call:group_incoming", (p) => {
+        // Busy (in ANY call) → auto-decline so the initiator's roster is accurate.
+        if (statusRef.current !== "idle") {
+          if (p.call_id) void userChannel.pushCall("call:group_decline", { call_id: p.call_id });
+          return;
+        }
+        if (!p.call_id || !p.room || !p.conversation_id) return;
+        setGroupCall({
+          callId: p.call_id,
+          room: p.room,
+          conversationId: p.conversation_id,
+          type: p.type ?? "voice",
+          // The broadcast carries no group name; the tiles resolve each member's name themselves.
+          title: "Group call",
+          callerName: p.caller_name?.trim() || "Someone",
+          callerId: p.caller_id
+        });
+        setStatus("group-incoming");
+        clearRingTimer();
+        ringTimerRef.current = setTimeout(() => resetGroup("ring-timeout", "Missed group call"), RING_TIMEOUT_MS);
+      }),
+      userChannel.onCall("call:group_ended", (p) => {
+        if (groupCallRef.current?.callId && p.call_id === groupCallRef.current.callId) {
+          resetGroup("group-ended");
+        }
+      }),
+      // participant_joined/declined/left: the grid is media-driven (LiveKit ParticipantConnected/…), so
+      // these are no-ops today — subscribed for a future roster overlay.
+      userChannel.onCall("call:participant_joined", () => undefined),
+      userChannel.onCall("call:participant_declined", () => undefined),
+      userChannel.onCall("call:participant_left", () => undefined)
     ];
 
     return () => unsubs.forEach((u) => u());
-  }, [userChannel, clearRingTimer, reset, connect]);
+  }, [userChannel, clearRingTimer, reset, connect, resetGroup, connectGroup]);
 
   // Expose the imperative API to a parent above this provider (the chat page owns the user channel).
   useEffect(() => {
     if (!controllerRef) return;
-    controllerRef.current = { startCall };
+    controllerRef.current = { startCall, startGroupCall };
     return () => {
       controllerRef.current = null;
     };
-  }, [controllerRef, startCall]);
+  }, [controllerRef, startCall, startGroupCall]);
 
   // Cleanup on unmount: leave any room + clear timers. This fires ONLY if the provider itself unmounts
   // (leaving /chat) — it is NOT tied to a call's connecting→in-call transition. If a mid-call leave ever
   // logs this, the provider is unmounting unexpectedly (that would be the bug); it hasn't in practice.
   useEffect(() => {
     return () => {
-      if (connectionRef.current) console.warn("[call] provider unmounting — disconnecting active call");
+      if (connectionRef.current || groupConnRef.current) {
+        console.warn("[call] provider unmounting — disconnecting active call");
+      }
       endingRef.current = true;
       if (connectionRef.current) void connectionRef.current.disconnect();
+      if (groupConnRef.current) void groupConnRef.current.disconnect();
       if (ringTimerRef.current) clearTimeout(ringTimerRef.current);
       if (noteTimerRef.current) clearTimeout(noteTimerRef.current);
     };
   }, []);
 
   const value = useMemo<CallContextValue>(
-    () => ({ startCall, isIdle: status === "idle" }),
-    [startCall, status]
+    () => ({ startCall, startGroupCall, isIdle: status === "idle" }),
+    [startCall, startGroupCall, status]
   );
 
   return (
@@ -365,6 +554,35 @@ export function CallProvider({ userChannel, controllerRef, children }: CallProvi
           onToggleCamera={toggleCamera}
           canSwitchCamera={canSwitchCamera}
           onSwitchCamera={switchCamera}
+        />
+      )}
+
+      {/* Group (Phase 3) — a member's incoming ring reuses the 1-on-1 modal (group label). */}
+      {status === "group-incoming" && groupCall && (
+        <IncomingCallModal
+          callerName={groupCall.callerName ?? "Someone"}
+          callerId={groupCall.callerId ?? groupCall.conversationId}
+          video={groupCall.type === "video"}
+          group
+          onAccept={acceptGroupIncoming}
+          onReject={declineGroupIncoming}
+        />
+      )}
+      {(status === "group-connecting" || status === "group-in-call") && groupCall && (
+        <GroupInCallScreen
+          title={groupCall.title}
+          connecting={status === "group-connecting"}
+          video={groupCall.type === "video"}
+          muted={muted}
+          onToggleMute={toggleMute}
+          onHangup={leaveGroup}
+          cameraOn={cameraOn}
+          onToggleCamera={toggleCamera}
+          canSwitchCamera={canSwitchCamera}
+          onSwitchCamera={switchCamera}
+          participants={groupParticipants}
+          currentUserId={currentUserId}
+          localVideoTrack={localVideo}
         />
       )}
 

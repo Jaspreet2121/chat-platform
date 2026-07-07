@@ -6,3 +6,5 @@ export { OutgoingCallScreen } from "./OutgoingCallScreen";
 export type { OutgoingCallScreenProps } from "./OutgoingCallScreen";
 export { InCallScreen } from "./InCallScreen";
 export type { InCallScreenProps } from "./InCallScreen";
+export { GroupInCallScreen } from "./GroupInCallScreen";
+export type { GroupInCallScreenProps } from "./GroupInCallScreen";

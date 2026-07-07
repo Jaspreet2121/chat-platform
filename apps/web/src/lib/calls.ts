@@ -255,3 +255,214 @@ export async function connectToRoom(
     }
   };
 }
+
+// ============================================================================================
+// Phase-3 GROUP calling. SEPARATE from connectToRoom (1-on-1) so the working 1-on-1 path is never
+// touched. N remote participants: their AUDIO is attached to per-track hidden <audio> elements MANAGED
+// HERE (React never sees audio — no re-render churn); their VIDEO tracks + the participant set are
+// surfaced to the provider (onParticipants) for the tile grid to attach.
+// ============================================================================================
+
+/** One remote participant in a group call (identity = their user_id). */
+export type GroupParticipant = {
+  identity: string;
+  videoTrack: RemoteVideoTrack | null;
+};
+
+export type GroupConnection = {
+  setMuted: (muted: boolean) => Promise<void>;
+  setCameraEnabled: (enabled: boolean) => Promise<void>;
+  getCameraDevices: () => Promise<MediaDeviceInfo[]>;
+  switchCamera: (deviceId?: string) => Promise<void>;
+  disconnect: () => Promise<void>;
+};
+
+export type GroupConnectOptions = {
+  video?: boolean;
+  onLocalVideo?: (track: LocalVideoTrack | null) => void;
+  /** Fired whenever the remote participant set OR their video tracks change (drives the tile grid). */
+  onParticipants?: (participants: GroupParticipant[]) => void;
+  onDisconnected?: (reason?: string) => void;
+};
+
+export async function connectToGroupRoom(
+  roomName: string,
+  opts: GroupConnectOptions = {}
+): Promise<GroupConnection> {
+  const { url, token } = await createCallToken(roomName);
+  const { Room, RoomEvent, DisconnectReason, Track, VideoPresets } = await import("livekit-client");
+
+  const reasonName = (reason?: number) =>
+    reason === undefined ? "unknown" : `${DisconnectReason[reason] ?? "?"}(${reason})`;
+
+  const room: LiveKitRoom = new Room({
+    adaptiveStream: true,
+    dynacast: true,
+    videoCaptureDefaults: { resolution: VideoPresets.h720.resolution },
+    publishDefaults: {
+      videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360, VideoPresets.h720]
+    }
+  });
+
+  let currentCameraId: string | undefined;
+  let currentFacing: "user" | "environment" = "user";
+  const cameraTrack = () =>
+    room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack as
+      | LocalVideoTrack
+      | undefined;
+  const refireLocalVideo = () => opts.onLocalVideo?.(cameraTrack() ?? null);
+
+  const AUDIO_MARKER = "data-livekit-group-audio";
+  const attachAudio = (track: RemoteTrack) => {
+    if (track.kind !== "audio") return;
+    const el = track.attach();
+    el.setAttribute(AUDIO_MARKER, "");
+    el.autoplay = true;
+    el.style.display = "none";
+    document.body.appendChild(el);
+  };
+  const detachAudio = (track: RemoteTrack) => {
+    if (track.kind === "audio") track.detach().forEach((el) => el.parentNode?.removeChild(el));
+  };
+  const sweepAudio = () =>
+    document.querySelectorAll(`[${AUDIO_MARKER}]`).forEach((el) => el.parentNode?.removeChild(el));
+
+  // Remote participant set + their (nullable) video track. A tile shows for EVERY connected participant;
+  // a camera-off participant just has videoTrack: null (the tile renders their avatar).
+  const identities = new Set<string>();
+  const videoByIdentity = new Map<string, RemoteVideoTrack>();
+  const emit = () =>
+    opts.onParticipants?.(
+      [...identities].map((identity) => ({ identity, videoTrack: videoByIdentity.get(identity) ?? null }))
+    );
+
+  room.on(RoomEvent.ParticipantConnected, (p) => {
+    identities.add(p.identity);
+    emit();
+  });
+  room.on(RoomEvent.ParticipantDisconnected, (p) => {
+    identities.delete(p.identity);
+    videoByIdentity.delete(p.identity);
+    emit();
+  });
+  room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
+    identities.add(participant.identity);
+    if (track.kind === "audio") attachAudio(track);
+    else if (track.kind === "video") videoByIdentity.set(participant.identity, track as RemoteVideoTrack);
+    emit();
+  });
+  room.on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
+    if (track.kind === "audio") detachAudio(track);
+    else if (track.kind === "video") videoByIdentity.delete(participant.identity);
+    emit();
+  });
+  room.on(RoomEvent.Reconnecting, () => console.warn(TAG, "group livekit reconnecting…"));
+  room.on(RoomEvent.Reconnected, () => console.info(TAG, "group livekit reconnected"));
+  room.on(RoomEvent.Disconnected, (reason) => {
+    console.warn(TAG, "group livekit Disconnected", { reason: reasonName(reason) });
+    sweepAudio();
+    opts.onDisconnected?.(reasonName(reason));
+  });
+
+  try {
+    console.info(TAG, "connecting to GROUP room", roomName);
+    await room.connect(url, token);
+    // Participants already present at connect time.
+    room.remoteParticipants.forEach((p) => {
+      identities.add(p.identity);
+      p.audioTrackPublications.forEach((pub) => pub.track && attachAudio(pub.track as RemoteTrack));
+      p.videoTrackPublications.forEach(
+        (pub) => pub.track && videoByIdentity.set(p.identity, pub.track as RemoteVideoTrack)
+      );
+    });
+    emit();
+    await room.localParticipant.setMicrophoneEnabled(true);
+    if (opts.video) {
+      try {
+        await room.localParticipant.setCameraEnabled(true);
+        currentCameraId =
+          cameraTrack()?.mediaStreamTrack?.getSettings?.().deviceId ??
+          room.getActiveDevice?.("videoinput");
+        opts.onLocalVideo?.(cameraTrack() ?? null);
+      } catch (err) {
+        console.warn(TAG, "group camera enable failed — audio-only", err);
+        opts.onLocalVideo?.(null);
+      }
+    }
+    console.info(TAG, "connected to GROUP room", roomName, { video: !!opts.video });
+  } catch (error) {
+    console.error(TAG, "group connect failed", error);
+    sweepAudio();
+    await room.disconnect().catch(() => undefined);
+    throw error;
+  }
+
+  const listCameras = async (): Promise<MediaDeviceInfo[]> => {
+    const viaRoom = await Room.getLocalDevices?.("videoinput");
+    if (viaRoom) return viaRoom;
+    const all = await navigator.mediaDevices.enumerateDevices();
+    return all.filter((d) => d.kind === "videoinput");
+  };
+
+  return {
+    setMuted: async (muted) => {
+      await room.localParticipant.setMicrophoneEnabled(!muted);
+    },
+    getCameraDevices: listCameras,
+    setCameraEnabled: async (enabled) => {
+      try {
+        await room.localParticipant.setCameraEnabled(enabled);
+        if (enabled) {
+          currentCameraId = cameraTrack()?.mediaStreamTrack?.getSettings?.().deviceId ?? currentCameraId;
+        }
+        opts.onLocalVideo?.(enabled ? (cameraTrack() ?? null) : null);
+      } catch (err) {
+        console.warn(TAG, "group camera toggle failed", err);
+        opts.onLocalVideo?.(null);
+      }
+    },
+    switchCamera: async (deviceId) => {
+      const flipFacing = async () => {
+        const camTrack = cameraTrack();
+        if (!camTrack) return;
+        const nextFacing = currentFacing === "user" ? "environment" : "user";
+        await camTrack.restartTrack({ facingMode: nextFacing });
+        currentFacing = nextFacing;
+        currentCameraId = camTrack.mediaStreamTrack?.getSettings?.().deviceId ?? currentCameraId;
+        opts.onLocalVideo?.(camTrack);
+      };
+      try {
+        const cams = await listCameras();
+        if (cams.length <= 1) return;
+        if (deviceId) {
+          await room.switchActiveDevice("videoinput", deviceId);
+          currentCameraId = deviceId;
+          refireLocalVideo();
+          return;
+        }
+        if (cams.length === 2) {
+          await flipFacing();
+          return;
+        }
+        try {
+          let idx = cams.findIndex((c) => c.deviceId === currentCameraId);
+          if (idx === -1) idx = 0;
+          const target = cams[(idx + 1) % cams.length].deviceId;
+          await room.switchActiveDevice("videoinput", target);
+          currentCameraId = target;
+          refireLocalVideo();
+        } catch (cycleErr) {
+          console.warn(TAG, "group deviceId cycle failed — facingMode fallback", cycleErr);
+          await flipFacing();
+        }
+      } catch (err) {
+        console.warn(TAG, "group camera switch failed — keeping current", err);
+      }
+    },
+    disconnect: async () => {
+      console.warn(TAG, "app called group room.disconnect()");
+      await room.disconnect().catch(() => undefined);
+      sweepAudio();
+    }
+  };
+}

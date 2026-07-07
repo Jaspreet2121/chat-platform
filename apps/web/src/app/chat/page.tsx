@@ -1181,6 +1181,26 @@ export default function ChatPage() {
     ? directPeerProfile?.avatar_url ?? null
     : selectedConversation?.group_avatar_url ?? null;
 
+  // Call buttons: a DM rings the peer (startCall); a GROUP rings all members (startGroupCall). The server
+  // enforces call_start_permission for groups — a forbidden start surfaces a note, so the button is always
+  // shown for a group.
+  const isGroupConversation = selectedConversation?.type === "group";
+  const groupCallTitle = selectedConversation?.title || "Group call";
+  const canStartCall = Boolean(userChannel && selectedConversationId);
+  const onStartVoice =
+    canStartCall && selectedIsDirect && directPeerId
+      ? () => callControllerRef.current?.startCall(directPeerId, headerTitle, selectedConversationId)
+      : canStartCall && isGroupConversation
+        ? () => callControllerRef.current?.startGroupCall(selectedConversationId, groupCallTitle, "voice")
+        : undefined;
+  const onStartVideo =
+    canStartCall && selectedIsDirect && directPeerId
+      ? () =>
+          callControllerRef.current?.startCall(directPeerId, headerTitle, selectedConversationId, "video")
+      : canStartCall && isGroupConversation
+        ? () => callControllerRef.current?.startGroupCall(selectedConversationId, groupCallTitle, "video")
+        : undefined;
+
   // Composer lock: in a group with only_admins_can_send on, a plain member can't send (the server
   // enforces it too — this just reflects it in the UI). Owner/admin are unaffected.
   const viewerRole = selectedConversation?.participants?.find(
@@ -1355,7 +1375,11 @@ export default function ChatPage() {
   return (
     // Calls can arrive on any chat screen → the CallProvider wraps the whole shell and renders its ring /
     // in-call overlays above everything. It rides the already-joined user:<id> channel (no 2nd socket).
-    <CallProvider userChannel={userChannel} controllerRef={callControllerRef}>
+    <CallProvider
+      userChannel={userChannel}
+      currentUserId={session?.user_id}
+      controllerRef={callControllerRef}
+    >
     {/* The app floats as one rounded card on a soft periwinkle page from xl up (the mock's depth);
         below xl it fills the viewport edge-to-edge. */}
     <main className="flex h-dvh overflow-hidden bg-bg xl:items-center xl:justify-center xl:p-5">
@@ -1489,23 +1513,8 @@ export default function ChatPage() {
           online={othersOnline}
           onBack={() => setSelectedConversationId("")}
           onOpenDetails={() => setIsDetailsOpen(true)}
-          onStartCall={
-            selectedIsDirect && directPeerId && userChannel
-              ? () =>
-                  callControllerRef.current?.startCall(directPeerId, headerTitle, selectedConversationId)
-              : undefined
-          }
-          onStartVideoCall={
-            selectedIsDirect && directPeerId && userChannel
-              ? () =>
-                  callControllerRef.current?.startCall(
-                    directPeerId,
-                    headerTitle,
-                    selectedConversationId,
-                    "video"
-                  )
-              : undefined
-          }
+          onStartCall={onStartVoice}
+          onStartVideoCall={onStartVideo}
         />
 
         <MessageList

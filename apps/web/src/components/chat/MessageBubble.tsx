@@ -15,6 +15,7 @@ import {
   Phone,
   Star,
   Trash2,
+  Users,
   Video,
   X
 } from "lucide-react";
@@ -227,12 +228,16 @@ export function MessageBubble({
   // icon + label from metadata. (All hooks above have already run, so this early return is hook-safe.)
   if (message.message_type === "call") {
     const isVideoCall = metadataString(message.metadata, "call_type") === "video";
-    const CallIcon = isVideoCall ? Video : Phone;
+    const isGroupCall = metadataString(message.metadata, "call_kind") === "group";
+    const CallIcon = isGroupCall ? Users : isVideoCall ? Video : Phone;
+    const callLabel = isGroupCall
+      ? "Missed group call"
+      : `Missed ${isVideoCall ? "video" : "voice"} call`;
     return (
       <div className={cn("flex px-1 py-0.5", isOwn ? "justify-end" : "justify-start")}>
         <span className="inline-flex items-center gap-2 rounded-full bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-500">
           <CallIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span>Missed {isVideoCall ? "video" : "voice"} call</span>
+          <span>{callLabel}</span>
           <span className="tabular-nums text-red-500/60">{formatTime(message.created_at)}</span>
         </span>
       </div>

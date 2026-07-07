@@ -82,6 +82,8 @@ export type ConversationDetail = {
   group_avatar_url?: string | null;
   // Group admin setting — when true, only owner/admin may send (server-enforced; UI locks the composer).
   only_admins_can_send?: boolean;
+  // Who may start a group call — "everyone" (default) or "admins_only" (server-enforced; Phase 3).
+  call_start_permission?: "everyone" | "admins_only";
   participants?: Array<{
     user_id: string;
     role: string;
