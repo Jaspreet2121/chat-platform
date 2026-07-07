@@ -16,6 +16,7 @@ import type { LocalVideoTrack, RemoteVideoTrack } from "livekit-client";
 import {
   connectToRoom,
   connectToGroupRoom,
+  unlockAudioContext,
   type CallConnection,
   type GroupConnection,
   type GroupParticipant
@@ -229,6 +230,9 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   // (callee Accept) or on the caller receiving call:accepted — both are the moment media should start.
   const connect = useCallback(
     async (active: ActiveCall) => {
+      // iOS-PWA: unlock/resume the WebAudio context in this (gesture-adjacent) sync prefix so remote audio
+      // is audible. No-op off iOS-PWA. Harmless if the room is already connecting (idempotent below).
+      unlockAudioContext();
       // Idempotency: never open a SECOND Room for the same call. A duplicate connect would join the room
       // twice with the same identity → LiveKit kicks the first with DUPLICATE_IDENTITY (a spurious drop).
       if (connectionRef.current || connectingRef.current) {
@@ -289,6 +293,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const startCall = useCallback(
     (peerId: string, peerName: string, conversationId?: string, type: CallType = "voice") => {
       if (!userChannel || statusRef.current !== "idle" || !peerId) return;
+      unlockAudioContext(); // caller's gesture (the call button) — unlock iOS-PWA audio now. No-op elsewhere.
       setNote(null);
       const invite: Record<string, unknown> = { callee_id: peerId, type };
       // Carry the DM id so the server can post a "missed call" entry to this thread (Slice-5b). Omitted
@@ -316,6 +321,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const acceptIncoming = useCallback(() => {
     const active = callRef.current;
     if (!active || !userChannel) return;
+    unlockAudioContext(); // Accept IS the gesture — unlock iOS-PWA audio synchronously. No-op elsewhere.
     void userChannel.pushCall("call:accept", { call_id: active.callId });
     void connect(active); // Accept IS the gesture that unlocks mic/audio.
   }, [userChannel, connect]);
@@ -396,6 +402,8 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
 
   const connectGroup = useCallback(
     async (active: GroupCall) => {
+      // iOS-PWA: unlock/resume WebAudio in this gesture-adjacent sync prefix (no-op off iOS-PWA).
+      unlockAudioContext();
       // Same DUPLICATE_IDENTITY idempotency guard as the 1-on-1 connect.
       if (groupConnRef.current || groupConnectingRef.current) {
         console.warn("[call] group connect ignored — already connecting/connected", active.callId);
@@ -445,6 +453,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const startGroupCall = useCallback(
     (conversationId: string, title: string, type: CallType = "voice") => {
       if (!userChannel || statusRef.current !== "idle" || !conversationId) return;
+      unlockAudioContext(); // caller's gesture (start group call) — unlock iOS-PWA audio. No-op elsewhere.
       setNote(null);
       userChannel
         .pushCall("call:group_invite", { conversation_id: conversationId, type })
@@ -466,6 +475,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const acceptGroupIncoming = useCallback(() => {
     const active = groupCallRef.current;
     if (!active || !userChannel) return;
+    unlockAudioContext(); // Accept IS the gesture — unlock iOS-PWA audio synchronously. No-op elsewhere.
     void userChannel.pushCall("call:group_join", { call_id: active.callId });
     void connectGroup(active); // Accept IS the gesture that unlocks mic/audio.
   }, [userChannel, connectGroup]);
@@ -487,6 +497,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const joinGroupCall = useCallback(
     (callId: string, room: string, conversationId: string, type: CallType, title: string) => {
       if (!userChannel || statusRef.current !== "idle") return;
+      unlockAudioContext(); // banner "Join" tap is the gesture — unlock iOS-PWA audio. No-op elsewhere.
       setNote(null);
       void userChannel.pushCall("call:group_join", { call_id: callId });
       void connectGroup({ callId, room, conversationId, type, title });
