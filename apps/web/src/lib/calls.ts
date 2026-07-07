@@ -42,6 +42,130 @@ export type ConnectOptions = {
 // One tag so all call-media diagnostics are greppable in the browser console during a two-device test.
 const TAG = "[call]";
 
+// ============================================================================================
+// iOS standalone-PWA audio (WebAudio, stale-recreate). A home-screen PWA on iOS silently DROPS remote
+// WebRTC audio played through an <audio> element — while iOS Safari, Android, and desktop all play it. Worse:
+// iOS SUSPENDS/INTERRUPTS the AudioContext when the PWA backgrounds, and a reused (interrupted) context stays
+// silent even after resume() — hence "works on first launch, silent after reopen". Fix, gated to iOS-PWA:
+//   (a) route remote audio through a WebAudio context (reliable in the PWA),
+//   (b) RECREATE that context whenever it's stale (closed / not-"running"), inside the accept/connect gesture,
+//   (c) CLOSE it on background so the next call rebuilds a fresh one.
+// Everyone else keeps the proven <audio> path, byte-for-byte — isIOSPWA() is false so no context is ever made.
+// ============================================================================================
+
+/** True only in an iOS home-screen (standalone) PWA — the one environment with the silent-audio bug. */
+export const isIOSPWA = (): boolean =>
+  typeof navigator !== "undefined" &&
+  /iP(hone|ad|od)/.test(navigator.userAgent) &&
+  ((navigator as Navigator & { standalone?: boolean }).standalone === true ||
+    (typeof window !== "undefined" &&
+      window.matchMedia?.("(display-mode: standalone)").matches === true));
+
+type AudioCtor = typeof AudioContext;
+const audioCtor = (): AudioCtor | null =>
+  typeof window === "undefined"
+    ? null
+    : (window.AudioContext ??
+        (window as Window & { webkitAudioContext?: AudioCtor }).webkitAudioContext ??
+        null);
+
+let audioCtx: AudioContext | null = null;
+
+// A LIVE context — recreate if missing or closed (iOS marks it closed/non-running after backgrounding or an
+// interruption). Callers build their MediaStreamSource from THIS each time, so it's always on the live ctx.
+const getLiveAudioContext = (): AudioContext | null => {
+  const Ctor = audioCtor();
+  if (!Ctor) return null;
+  if (!audioCtx || audioCtx.state === "closed") audioCtx = new Ctor();
+  return audioCtx;
+};
+
+/**
+ * Unlock/resume the WebAudio context — MUST be called synchronously inside a user gesture (call button /
+ * Accept). Resumes the live ctx; if resume doesn't take (a stale ctx carried over from a previous app
+ * session), CLOSES + rebuilds a fresh one and resumes that; then plays a 1-sample silent buffer to fully
+ * unlock iOS audio. No-op off iOS-PWA (returns before touching any AudioContext).
+ */
+export const unlockAudioContext = async (): Promise<void> => {
+  if (!isIOSPWA()) return;
+  const Ctor = audioCtor();
+  if (!Ctor) return;
+  try {
+    let ctx = getLiveAudioContext();
+    if (!ctx) return;
+    if (ctx.state !== "running") await ctx.resume();
+    // Resume didn't take (interrupted/stale) → rebuild fresh and resume that one.
+    if (ctx.state !== "running") {
+      try {
+        await ctx.close();
+      } catch {
+        /* ignore */
+      }
+      audioCtx = new Ctor();
+      ctx = audioCtx;
+      await ctx.resume();
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = ctx.createBuffer(1, 1, 22050);
+    src.connect(ctx.destination);
+    src.start(0);
+  } catch (e) {
+    console.warn(TAG, "audio unlock failed", e);
+  }
+};
+
+// On background (pagehide / tab hidden) CLOSE + drop the ctx, so the next call's gesture rebuilds a fresh one
+// — a context carried across a background/interruption stays silent. Registered ONCE, and only on iOS-PWA
+// (elsewhere no context is ever created, so this would be a no-op anyway — we skip registering entirely).
+if (typeof window !== "undefined" && isIOSPWA()) {
+  const markAudioStale = () => {
+    if (audioCtx && audioCtx.state !== "closed") audioCtx.close().catch(() => undefined);
+    audioCtx = null;
+  };
+  window.addEventListener("pagehide", markAudioStale);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) markAudioStale();
+  });
+}
+
+const IOS_AUDIO_MARKER = "data-livekit-ios-audio";
+
+/**
+ * Route a remote audio track through WebAudio (iOS-PWA only). Belt-and-suspenders: a MUTED <audio> keeps the
+ * MediaStreamTrack "live" (an unreferenced remote track can go silent on iOS), while a WebAudio
+ * source→destination on the LIVE context actually plays it. The source is built from getLiveAudioContext() so
+ * a ctx recreated after an app reopen is the one used. Returns a cleanup fn (disconnect node + remove el).
+ */
+const routeIOSAudio = (track: RemoteTrack): (() => void) => {
+  const el = track.attach();
+  el.muted = true;
+  el.setAttribute(IOS_AUDIO_MARKER, "");
+  el.style.display = "none";
+  document.body.appendChild(el);
+
+  let source: MediaStreamAudioSourceNode | null = null;
+  const ctx = getLiveAudioContext();
+  const mst = track.mediaStreamTrack;
+  if (ctx && mst) {
+    try {
+      if (ctx.state !== "running") void ctx.resume().catch(() => undefined);
+      source = ctx.createMediaStreamSource(new MediaStream([mst]));
+      source.connect(ctx.destination);
+    } catch {
+      source = null;
+    }
+  }
+
+  return () => {
+    try {
+      source?.disconnect();
+    } catch {
+      /* ignore */
+    }
+    track.detach().forEach((e) => e.parentNode?.removeChild(e));
+  };
+};
+
 /**
  * Connect to the LiveKit room for `roomName` and start a voice call: fetch a room-scoped token
  * (POST /calls/token), join the SFU, publish the mic, and route the remote participant's audio into
@@ -94,10 +218,29 @@ export async function connectToRoom(
 
   const refireLocalVideo = () => opts.onLocalVideo?.(cameraTrack() ?? null);
 
+  // Per-connection iOS-PWA WebAudio cleanups, keyed by track. Empty (unused) off iOS-PWA.
+  const audioCleanups = new Map<RemoteTrack, () => void>();
+  const sweepIOSAudio = () => {
+    audioCleanups.forEach((fn) => {
+      try {
+        fn();
+      } catch {
+        /* ignore */
+      }
+    });
+    audioCleanups.clear();
+  };
+
   const attach = (track: RemoteTrack) => {
     if (track.kind !== "audio") return;
-    // Attach to THE persistent element (sets its srcObject + plays). Idempotent — no new node.
-    track.attach(audioElement);
+    if (isIOSPWA()) {
+      // iOS home-screen PWA: <audio> playback is silent → route this remote's audio through WebAudio.
+      audioCleanups.set(track, routeIOSAudio(track));
+    } else {
+      // Android / iOS Safari / desktop: attach to THE persistent element (sets srcObject + plays). Idempotent
+      // — no new node. UNCHANGED.
+      track.attach(audioElement);
+    }
     opts.onRemoteAudio?.(true);
   };
 
@@ -113,7 +256,15 @@ export async function connectToRoom(
   room.on(RoomEvent.TrackUnsubscribed, (track) => {
     if (track.kind === "audio") {
       console.info(TAG, "remote audio track unsubscribed");
-      track.detach(audioElement);
+      const cleanup = audioCleanups.get(track);
+      if (cleanup) {
+        // iOS-PWA: tear down the WebAudio routing for this track.
+        cleanup();
+        audioCleanups.delete(track);
+      } else {
+        // Everyone else: the sacred detach path — UNCHANGED.
+        track.detach(audioElement);
+      }
       opts.onRemoteAudio?.(false);
     } else if (track.kind === "video") {
       console.info(TAG, "remote video track unsubscribed");
@@ -128,6 +279,7 @@ export async function connectToRoom(
     // If reason === CLIENT_INITIATED this was OUR disconnect() call; anything else = livekit-client left
     // on its own (media/ICE failure, duplicate identity, server shutdown, …).
     console.warn(TAG, "livekit Disconnected", { reason: reasonName(reason) });
+    sweepIOSAudio();
     opts.onDisconnected?.(reasonName(reason));
   });
 
@@ -165,6 +317,7 @@ export async function connectToRoom(
     console.info(TAG, "connected + mic published", roomName, { video: !!opts.video });
   } catch (error) {
     console.error(TAG, "connect failed", error);
+    sweepIOSAudio();
     await room.disconnect().catch(() => undefined);
     throw error;
   }
@@ -252,6 +405,8 @@ export async function connectToRoom(
       // (or livekit-client left on its own — the Disconnected reason above disambiguates).
       console.warn(TAG, "app called room.disconnect()");
       await room.disconnect().catch(() => undefined);
+      // Tear down any iOS-PWA WebAudio routing (no-op off iOS-PWA). The persistent audioElement is untouched.
+      sweepIOSAudio();
     }
   };
 }
@@ -313,8 +468,15 @@ export async function connectToGroupRoom(
   const refireLocalVideo = () => opts.onLocalVideo?.(cameraTrack() ?? null);
 
   const AUDIO_MARKER = "data-livekit-group-audio";
+  // iOS-PWA WebAudio cleanups (keyed by track); empty off iOS-PWA → the plain <audio> path below.
+  const audioCleanups = new Map<RemoteTrack, () => void>();
   const attachAudio = (track: RemoteTrack) => {
     if (track.kind !== "audio") return;
+    if (isIOSPWA()) {
+      // iOS home-screen PWA: <audio> playback is silent → route each remote's audio through WebAudio.
+      audioCleanups.set(track, routeIOSAudio(track));
+      return;
+    }
     const el = track.attach();
     el.setAttribute(AUDIO_MARKER, "");
     el.autoplay = true;
@@ -322,10 +484,26 @@ export async function connectToGroupRoom(
     document.body.appendChild(el);
   };
   const detachAudio = (track: RemoteTrack) => {
-    if (track.kind === "audio") track.detach().forEach((el) => el.parentNode?.removeChild(el));
+    if (track.kind !== "audio") return;
+    const cleanup = audioCleanups.get(track);
+    if (cleanup) {
+      cleanup();
+      audioCleanups.delete(track);
+      return;
+    }
+    track.detach().forEach((el) => el.parentNode?.removeChild(el));
   };
-  const sweepAudio = () =>
+  const sweepAudio = () => {
     document.querySelectorAll(`[${AUDIO_MARKER}]`).forEach((el) => el.parentNode?.removeChild(el));
+    audioCleanups.forEach((fn) => {
+      try {
+        fn();
+      } catch {
+        /* ignore */
+      }
+    });
+    audioCleanups.clear();
+  };
 
   // Remote participant set + their (nullable) video track. A tile shows for EVERY connected participant;
   // a camera-off participant just has videoTrack: null (the tile renders their avatar).
