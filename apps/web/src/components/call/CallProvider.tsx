@@ -214,6 +214,12 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       // C3b-2a wired onParticipants into the 1-on-1 connect → clear that set here so it can't leak into a
       // later call (the 1-on-1 view ignores it, but a stale set would mislead the C3b-2b group swap).
       setGroupParticipants([]);
+      // Group-state hygiene (no-ops for an un-promoted 1-on-1): if a PROMOTED call's connection drops, its
+      // onDisconnected still calls reset() (the closure was bound at connect) — clear the group state too so
+      // nothing stale (groupCall / groupConnRef / sheet) survives into the next call.
+      setGroupCall(null);
+      groupConnRef.current = null;
+      setAddSheetOpen(false);
       if (message) flashNote(message);
     },
     [clearRingTimer, flashNote]
@@ -359,8 +365,11 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       clearRingTimer();
       endingRef.current = true;
       const conv = groupCallRef.current?.conversationId;
-      const conn = groupConnRef.current;
+      // A PROMOTED call's live connection lives in connectionRef (NOT groupConnRef). Disconnect whichever is
+      // set, and null BOTH refs — otherwise a promoted call's connection would never disconnect (the bug).
+      const conn = groupConnRef.current ?? connectionRef.current;
       groupConnRef.current = null;
+      connectionRef.current = null;
       if (conn) void conn.disconnect();
       setStatus("idle");
       setGroupCall(null);
@@ -512,6 +521,75 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
     [userChannel, flashNote]
   );
 
+  // ---- promote a 1-on-1 → group (Phase 3 C3b) ---------------------------------------------------
+  // UI-STATE reconcile ONLY: the live LiveKit connection stays in connectionRef (no reconnect). We flip the
+  // 1-on-1 state (ActiveCall/in-call) to group state (GroupCall/group-in-call) so InCallScreen stops
+  // rendering and GroupInCallScreen takes over on the SAME connection. Media controls already read
+  // connectionRef first, so mute/camera/switch keep working uninterrupted.
+  const promoteToGroup = useCallback(
+    (info: {
+      callId: string;
+      room: string;
+      conversationId: string;
+      type: CallType;
+      title: string;
+      note?: string;
+    }) => {
+      // Only from a live 1-on-1 with an active connection (the connection lives in connectionRef).
+      if (statusRef.current !== "in-call" && statusRef.current !== "connecting") return;
+      if (!connectionRef.current) return;
+      setGroupCall({
+        callId: info.callId,
+        room: info.room,
+        conversationId: info.conversationId,
+        type: info.type,
+        title: info.title
+      });
+      setCall(null); // InCallScreen needs `call` → stops matching; GroupInCallScreen (needs groupCall) shows.
+      setStatus("group-in-call");
+      setAddSheetOpen(false);
+      if (info.note) flashNote(info.note);
+    },
+    [flashNote]
+  );
+
+  // The actor taps "Add" on a 1-on-1 → promote. Push call:promote; on ok, swap OUR UI to the grid. The other
+  // peer swaps via the call:promoted broadcast; the new person rings via call:group_incoming.
+  const promoteCall = useCallback(
+    (target: AddTarget) => {
+      const active = callRef.current;
+      if (!userChannel || !active) return;
+      const { userId, phone } = target;
+      if (!userId && !phone) return;
+      const payload: Record<string, unknown> = { call_id: active.callId };
+      if (userId) payload.user_id = userId;
+      else payload.phone = phone;
+      userChannel
+        .pushCall("call:promote", payload)
+        .then((ack) => {
+          const a = ack as { call_id?: string; room?: string; conversation_id?: string; type?: CallType };
+          if (!a.call_id || !a.room || !a.conversation_id) throw new Error("bad promote ack");
+          promoteToGroup({
+            callId: a.call_id,
+            room: a.room,
+            conversationId: a.conversation_id,
+            type: a.type ?? active.type,
+            title: "Group call"
+          });
+        })
+        .catch((err) => {
+          const code =
+            err && typeof err === "object" && "code" in err
+              ? (err as { code?: string }).code
+              : undefined;
+          if (code === "call.user_not_found") flashNote("No user with that number");
+          else if (code === "call.forbidden") flashNote("You're not allowed to add people");
+          else flashNote("Couldn't add them");
+        });
+    },
+    [userChannel, promoteToGroup, flashNote]
+  );
+
   // ---- inbound: subscribe to the server's call:* broadcasts (once per channel) ------------------
   useEffect(() => {
     if (!userChannel) return;
@@ -544,6 +622,19 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       userChannel.onCall("call:cancelled", (p) => matches(p) && reset("peer-cancelled")),
       userChannel.onCall("call:ended", (p) => matches(p) && reset("peer-ended")),
       userChannel.onCall("call:missed", (p) => matches(p) && reset("peer-missed", "Missed call")),
+      // The OTHER peer promoted our 1-on-1 → swap to the group grid on the SAME connection (no reconnect).
+      userChannel.onCall("call:promoted", (p) => {
+        if (!matches(p) || !p.room || !p.conversation_id) return;
+        if (statusRef.current !== "in-call" && statusRef.current !== "connecting") return;
+        promoteToGroup({
+          callId: p.call_id as string,
+          room: p.room,
+          conversationId: p.conversation_id,
+          type: p.type ?? callRef.current?.type ?? "voice",
+          title: "Group call",
+          note: "Someone joined the call"
+        });
+      }),
 
       // ---- group (Phase 3) ----
       userChannel.onCall("call:group_incoming", (p) => {
@@ -597,7 +688,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
     ];
 
     return () => unsubs.forEach((u) => u());
-  }, [userChannel, clearRingTimer, reset, connect, resetGroup, connectGroup]);
+  }, [userChannel, clearRingTimer, reset, connect, resetGroup, connectGroup, promoteToGroup]);
 
   // Expose the imperative API to a parent above this provider (the chat page owns the user channel).
   useEffect(() => {
@@ -707,6 +798,18 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           onToggleCamera={toggleCamera}
           canSwitchCamera={canSwitchCamera}
           onSwitchCamera={switchCamera}
+          onAddParticipants={() => setAddSheetOpen(true)}
+        />
+      )}
+
+      {/* 1-on-1 "Add" → promote sheet. No conversationId (a DM's other party is already in the call), so the
+          sheet opens on the "by number" tab; onAdd promotes the call. Only while actually in-call. */}
+      {status === "in-call" && addSheetOpen && call && (
+        <AddParticipantsSheet
+          inCallIds={[currentUserId, call.peerId].filter(Boolean) as string[]}
+          currentUserId={currentUserId}
+          onAdd={promoteCall}
+          onClose={() => setAddSheetOpen(false)}
         />
       )}
 
