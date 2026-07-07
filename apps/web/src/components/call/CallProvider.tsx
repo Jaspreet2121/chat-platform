@@ -137,6 +137,8 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const [localVideo, setLocalVideo] = useState<LocalVideoTrack | null>(null);
   const [remoteVideo, setRemoteVideo] = useState<RemoteVideoTrack | null>(null);
   const [cameraOn, setCameraOn] = useState(false);
+  // Active camera facing — drives the self-view mirror (front "user" = mirrored selfie, back = not).
+  const [cameraFacing, setCameraFacing] = useState<"user" | "environment">("user");
   // True on a video call with >1 camera (front/back) — gates the "switch camera" button. Computed on connect.
   const [canSwitchCamera, setCanSwitchCamera] = useState(false);
   // Group calling (Phase 3) — parallel to the 1-on-1 state above.
@@ -210,6 +212,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       setLocalVideo(null);
       setRemoteVideo(null);
       setCameraOn(false);
+      setCameraFacing("user");
       setCanSwitchCamera(false);
       if (message) flashNote(message);
     },
@@ -242,6 +245,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         const conn = await connectToRoom(active.room, audioEl, {
           video: isVideo,
           onLocalVideo: setLocalVideo,
+          onFacingChange: setCameraFacing,
           onRemoteVideo: setRemoteVideo,
           onDisconnected: (reason) => {
             // livekit-client left the room. If it wasn't OUR own disconnect() (endingRef), end the call and
@@ -363,6 +367,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       setMuted(false);
       setLocalVideo(null);
       setCameraOn(false);
+      setCameraFacing("user");
       setCanSwitchCamera(false);
       // Drop our own banner entry for the call we just left (a still-ongoing call re-appears on next
       // thread-open via the fetch; group_ended also clears it for everyone by callId).
@@ -400,6 +405,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         const conn = await connectToGroupRoom(active.room, {
           video: isVideo,
           onLocalVideo: setLocalVideo,
+          onFacingChange: setCameraFacing,
           onParticipants: setGroupParticipants,
           onDisconnected: (reason) => {
             if (!endingRef.current) resetGroup(`livekit-disconnected:${reason ?? "unknown"}`);
@@ -701,6 +707,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           onToggleCamera={toggleCamera}
           canSwitchCamera={canSwitchCamera}
           onSwitchCamera={switchCamera}
+          cameraFacing={cameraFacing}
         />
       )}
 
@@ -731,6 +738,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           participants={groupParticipants}
           currentUserId={currentUserId}
           localVideoTrack={localVideo}
+          cameraFacing={cameraFacing}
         />
       )}
 
