@@ -16,7 +16,6 @@ import type { LocalVideoTrack, RemoteVideoTrack } from "livekit-client";
 import {
   connectToRoom,
   connectToGroupRoom,
-  unlockAudioContext,
   type CallConnection,
   type GroupConnection,
   type GroupParticipant
@@ -278,7 +277,6 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const startCall = useCallback(
     (peerId: string, peerName: string, conversationId?: string, type: CallType = "voice") => {
       if (!userChannel || statusRef.current !== "idle" || !peerId) return;
-      void unlockAudioContext(); // caller's gesture (call button) — unlock/rebuild iOS-PWA audio. No-op else.
       setNote(null);
       const invite: Record<string, unknown> = { callee_id: peerId, type };
       // Carry the DM id so the server can post a "missed call" entry to this thread (Slice-5b). Omitted
@@ -306,7 +304,6 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const acceptIncoming = useCallback(() => {
     const active = callRef.current;
     if (!active || !userChannel) return;
-    void unlockAudioContext(); // Accept IS the gesture — unlock/rebuild iOS-PWA audio now. No-op elsewhere.
     void userChannel.pushCall("call:accept", { call_id: active.callId });
     void connect(active); // Accept IS the gesture that unlocks mic/audio.
   }, [userChannel, connect]);
@@ -433,7 +430,6 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const startGroupCall = useCallback(
     (conversationId: string, title: string, type: CallType = "voice") => {
       if (!userChannel || statusRef.current !== "idle" || !conversationId) return;
-      void unlockAudioContext(); // caller's gesture (start group call) — unlock/rebuild iOS-PWA audio.
       setNote(null);
       userChannel
         .pushCall("call:group_invite", { conversation_id: conversationId, type })
@@ -455,7 +451,6 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const acceptGroupIncoming = useCallback(() => {
     const active = groupCallRef.current;
     if (!active || !userChannel) return;
-    void unlockAudioContext(); // Accept IS the gesture — unlock/rebuild iOS-PWA audio now. No-op elsewhere.
     void userChannel.pushCall("call:group_join", { call_id: active.callId });
     void connectGroup(active); // Accept IS the gesture that unlocks mic/audio.
   }, [userChannel, connectGroup]);
@@ -477,7 +472,6 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const joinGroupCall = useCallback(
     (callId: string, room: string, conversationId: string, type: CallType, title: string) => {
       if (!userChannel || statusRef.current !== "idle") return;
-      void unlockAudioContext(); // banner "Join" tap is the gesture — unlock/rebuild iOS-PWA audio.
       setNote(null);
       void userChannel.pushCall("call:group_join", { call_id: callId });
       void connectGroup({ callId, room, conversationId, type, title });
