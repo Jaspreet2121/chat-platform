@@ -37,13 +37,6 @@ export type ConnectOptions = {
   onRemoteVideo?: (track: RemoteVideoTrack | null) => void;
   /** Fired with our own camera track (or null when off). InCallScreen attaches it to the self-view PiP. */
   onLocalVideo?: (track: LocalVideoTrack | null) => void;
-  /**
-   * Fired whenever the remote participant SET or their video tracks change — same shape as
-   * connectToGroupRoom (C3a plumbing for the 1-on-1→group promote). DORMANT in a pure 1-on-1: the provider
-   * doesn't consume it yet, so `emit()` hits an undefined callback and nothing changes. The proven
-   * single-sink audio path and `onRemoteVideo` are untouched.
-   */
-  onParticipants?: (participants: GroupParticipant[]) => void;
 };
 
 // One tag so all call-media diagnostics are greppable in the browser console during a two-device test.
@@ -101,105 +94,31 @@ export async function connectToRoom(
 
   const refireLocalVideo = () => opts.onLocalVideo?.(cameraTrack() ?? null);
 
-  // Participant-set plumbing (C3a) — DORMANT for a pure 1-on-1 (onParticipants unwired). Mirrors
-  // connectToGroupRoom so the C3b promote can switch the provider to onParticipants without touching media.
-  const identities = new Set<string>();
-  const videoByIdentity = new Map<string, RemoteVideoTrack>();
-  const emit = () =>
-    opts.onParticipants?.(
-      [...identities].map((identity) => ({ identity, videoTrack: videoByIdentity.get(identity) ?? null }))
-    );
-
-  // AUDIO — the FIRST remote's audio owns the persistent, provider-rendered `audioElement` sink (the
-  // hard-won iOS-Safari path — never moved, never recreated). Only a 2nd+ remote (possible only after a
-  // C3b promote) gets its OWN runtime-created hidden <audio> on document.body, tracked for cleanup.
-  const EXTRA_AUDIO_MARKER = "data-livekit-extra-audio";
-  let primaryAudioTrack: RemoteTrack | null = null;
-  const extraAudioEls = new Set<HTMLMediaElement>();
-
-  const attachAudio = (track: RemoteTrack) => {
+  const attach = (track: RemoteTrack) => {
     if (track.kind !== "audio") return;
-    if (!primaryAudioTrack || track === primaryAudioTrack) {
-      // PRIMARY: the proven single-sink path, byte-for-byte as before. Idempotent — no new node.
-      primaryAudioTrack = track;
-      track.attach(audioElement);
-      opts.onRemoteAudio?.(true);
-    } else {
-      // EXTRA (2nd+ remote, post-promote only): its own hidden element on body.
-      const el = track.attach();
-      el.setAttribute(EXTRA_AUDIO_MARKER, "");
-      el.autoplay = true;
-      el.style.display = "none";
-      document.body.appendChild(el);
-      extraAudioEls.add(el);
-    }
+    // Attach to THE persistent element (sets its srcObject + plays). Idempotent — no new node.
+    track.attach(audioElement);
+    opts.onRemoteAudio?.(true);
   };
 
-  const detachAudio = (track: RemoteTrack) => {
-    if (track.kind !== "audio") return;
-    if (track === primaryAudioTrack) {
-      // Leave the (provider-owned) element in place; just detach the track + free the slot so a later
-      // track can take the primary sink. Exactly today's 1-on-1 behavior.
-      track.detach(audioElement);
-      primaryAudioTrack = null;
-      opts.onRemoteAudio?.(false);
-    } else {
-      track.detach().forEach((el) => {
-        el.parentNode?.removeChild(el);
-        extraAudioEls.delete(el as HTMLMediaElement);
-      });
-    }
-  };
-
-  // Remove ONLY the extra elements we created; the primary `audioElement` is provider-owned and reused.
-  const sweepExtraAudio = () => {
-    document.querySelectorAll(`[${EXTRA_AUDIO_MARKER}]`).forEach((el) => el.parentNode?.removeChild(el));
-    extraAudioEls.clear();
-  };
-
-  // VIDEO — `onRemoteVideo` reflects the FIRST remote only (backward-compat for InCallScreen's single
-  // remoteVideoTrack). Every remote's video is also recorded in videoByIdentity for the dormant emit().
-  let primaryVideoIdentity: string | null = null;
-  const recordVideo = (identity: string, track: RemoteVideoTrack) => {
-    videoByIdentity.set(identity, track);
-    if (!primaryVideoIdentity) primaryVideoIdentity = identity;
-    if (identity === primaryVideoIdentity) opts.onRemoteVideo?.(track);
-  };
-
-  room.on(RoomEvent.ParticipantConnected, (p) => {
-    identities.add(p.identity);
-    emit();
-  });
-  room.on(RoomEvent.ParticipantDisconnected, (p) => {
-    identities.delete(p.identity);
-    videoByIdentity.delete(p.identity);
-    emit();
-  });
-  room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
+  room.on(RoomEvent.TrackSubscribed, (track) => {
     console.info(TAG, "remote track subscribed", { kind: track.kind });
-    identities.add(participant.identity);
     if (track.kind === "audio") {
-      attachAudio(track);
+      attach(track);
     } else if (track.kind === "video") {
       // Do NOT attach video here — InCallScreen owns the <video> element; just hand the track over.
-      recordVideo(participant.identity, track as RemoteVideoTrack);
+      opts.onRemoteVideo?.(track as RemoteVideoTrack);
     }
-    emit();
   });
-  room.on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
+  room.on(RoomEvent.TrackUnsubscribed, (track) => {
     if (track.kind === "audio") {
       console.info(TAG, "remote audio track unsubscribed");
-      detachAudio(track);
+      track.detach(audioElement);
+      opts.onRemoteAudio?.(false);
     } else if (track.kind === "video") {
       console.info(TAG, "remote video track unsubscribed");
-      videoByIdentity.delete(participant.identity);
-      // Only clear the surfaced (first) remote's video — a secondary's video ending must not blank it.
-      if (participant.identity === primaryVideoIdentity) {
-        primaryVideoIdentity = null;
-        opts.onRemoteVideo?.(null);
-      }
+      opts.onRemoteVideo?.(null);
     }
-    emit();
   });
   // Connection-lifecycle diagnostics: these tell us whether livekit-client is trying to recover
   // (Reconnecting/Reconnected) or has given up (Disconnected — the terminal event we act on).
@@ -209,7 +128,6 @@ export async function connectToRoom(
     // If reason === CLIENT_INITIATED this was OUR disconnect() call; anything else = livekit-client left
     // on its own (media/ICE failure, duplicate identity, server shutdown, …).
     console.warn(TAG, "livekit Disconnected", { reason: reasonName(reason) });
-    sweepExtraAudio();
     opts.onDisconnected?.(reasonName(reason));
   });
 
@@ -219,15 +137,13 @@ export async function connectToRoom(
     // Any remote track already subscribed at connect time → surface it now (TrackSubscribed only fires
     // for tracks that arrive AFTER the listener is set).
     room.remoteParticipants.forEach((participant) => {
-      identities.add(participant.identity);
       participant.audioTrackPublications.forEach((pub) => {
-        if (pub.track) attachAudio(pub.track as RemoteTrack);
+        if (pub.track) attach(pub.track as RemoteTrack);
       });
       participant.videoTrackPublications.forEach((pub) => {
-        if (pub.track) recordVideo(participant.identity, pub.track as RemoteVideoTrack);
+        if (pub.track) opts.onRemoteVideo?.(pub.track as RemoteVideoTrack);
       });
     });
-    emit();
     // Publish the mic (this is what actually prompts for the getUserMedia permission).
     await room.localParticipant.setMicrophoneEnabled(true);
     // Video call → also publish the camera and hand our own track to the self-view. Its OWN try/catch:
@@ -249,7 +165,6 @@ export async function connectToRoom(
     console.info(TAG, "connected + mic published", roomName, { video: !!opts.video });
   } catch (error) {
     console.error(TAG, "connect failed", error);
-    sweepExtraAudio();
     await room.disconnect().catch(() => undefined);
     throw error;
   }
@@ -337,9 +252,6 @@ export async function connectToRoom(
       // (or livekit-client left on its own — the Disconnected reason above disambiguates).
       console.warn(TAG, "app called room.disconnect()");
       await room.disconnect().catch(() => undefined);
-      // Remove any extra audio elements (none in a pure 1-on-1 → no-op). The provider-owned primary
-      // `audioElement` is left in place, reused across calls exactly as today.
-      sweepExtraAudio();
     }
   };
 }
