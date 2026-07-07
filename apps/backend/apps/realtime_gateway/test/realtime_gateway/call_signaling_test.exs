@@ -5,9 +5,68 @@ defmodule RealtimeGateway.CallSignalingMockClient do
   maps (like the in-process CallStore) which `CallSignaling.cget/2` reads. Not a full behaviour impl — the
   dispatcher resolves the adapter at runtime, so only the call functions the signaling path uses are here.
   """
-  def start_link, do: Agent.start_link(fn -> %{call: nil, log: []} end, name: __MODULE__)
-  def reset, do: Agent.update(__MODULE__, fn _ -> %{call: nil, log: []} end)
+  def start_link, do: Agent.start_link(fn -> %{call: nil, group: nil, log: []} end, name: __MODULE__)
+  def reset, do: Agent.update(__MODULE__, fn _ -> %{call: nil, group: nil, log: []} end)
   def log, do: Agent.get(__MODULE__, & &1.log) |> Enum.reverse()
+  def group_call, do: Agent.get(__MODULE__, &(&1.group && &1.group.call))
+
+  # --- group calling (Phase 3) — mirrors CallStore's {:ok, %{call, participants, member_ids}} shapes ----
+  # The conversation's members are seeded by the test via :group_members (the real fn reads the DB).
+  def create_group_call(%{"initiator_id" => initiator} = attrs) do
+    members = Application.get_env(:realtime_gateway, :group_members, [])
+
+    if initiator not in members do
+      # Mirror CallStore's membership gate so the signaling error-mapping is exercised.
+      {:error, :not_a_member}
+    else
+      others = Enum.reject(members, &(&1 == initiator))
+
+      call = %{
+        id: "gcall_1",
+        room_name: "groom_1",
+        kind: "group",
+        status: "ringing",
+        caller_id: initiator,
+        callee_id: nil,
+        conversation_id: attrs["conversation_id"],
+        type: attrs["type"]
+      }
+
+      parts =
+        [%{call_id: "gcall_1", user_id: initiator, status: "joined", joined_at: "t0"}] ++
+          Enum.map(others, &%{call_id: "gcall_1", user_id: &1, status: "invited", joined_at: nil})
+
+      Agent.update(__MODULE__, fn s ->
+        %{s | group: %{call: call, participants: parts}, log: [{:group_create, attrs} | s.log]}
+      end)
+
+      {:ok, %{call: call, participants: parts, member_ids: others}}
+    end
+  end
+
+  def join_group_call(%{"user_id" => uid} = attrs) do
+    Agent.get_and_update(__MODULE__, fn s ->
+      g = s.group
+      call = %{g.call | status: "ongoing"}
+
+      parts =
+        Enum.map(g.participants, fn p ->
+          if p.user_id == uid, do: %{p | status: "joined", joined_at: "tj"}, else: p
+        end)
+
+      participant = Enum.find(parts, &(&1.user_id == uid))
+
+      {{:ok, %{call: call, participant: participant}},
+       %{s | group: %{call: call, participants: parts}, log: [{:group_join, attrs} | s.log]}}
+    end)
+  end
+
+  def get_call_with_participants(_attrs) do
+    case Agent.get(__MODULE__, & &1.group) do
+      %{call: call, participants: parts} -> {:ok, %{call: call, participants: parts}}
+      _ -> {:error, :call_not_found}
+    end
+  end
 
   def create_call(attrs) do
     call = %{
@@ -193,5 +252,89 @@ defmodule RealtimeGateway.CallSignalingTest do
   test "an unknown call:* event → call.invalid_event" do
     assert {:reply, {:error, %{code: "call.invalid_event"}}, _} =
              CallSignaling.handle_event("call:teleport", %{}, socket(@caller))
+  end
+
+  # ---- group calling (Phase 3) ------------------------------------------------------------------
+  @owner "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+  @m1 "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+  @m2 "cccccccc-cccc-cccc-cccc-cccccccccccc"
+  @conv "dddddddd-dddd-dddd-dddd-dddddddddddd"
+
+  defp seed_group_members(ids) do
+    Application.put_env(:realtime_gateway, :group_members, ids)
+    on_exit(fn -> Application.delete_env(:realtime_gateway, :group_members) end)
+  end
+
+  defp flush_broadcasts do
+    receive do
+      {:broadcast, _topic, _event, _payload} -> flush_broadcasts()
+    after
+      0 -> :ok
+    end
+  end
+
+  test "call:group_invite fans call:group_incoming to every OTHER member (not self) + replies with room" do
+    seed_group_members([@owner, @m1, @m2])
+
+    assert {:reply, {:ok, %{call_id: call_id, room: room, participants: parts}}, _} =
+             CallSignaling.handle_event(
+               "call:group_invite",
+               %{"conversation_id" => @conv, "type" => "video"},
+               socket(@owner)
+             )
+
+    # Rings BOTH other members over their user topics — never the initiator.
+    assert_receive {:broadcast, "user:" <> u1, "call:group_incoming", p1}
+    assert_receive {:broadcast, "user:" <> u2, "call:group_incoming", p2}
+    assert Enum.sort([u1, u2]) == Enum.sort([@m1, @m2])
+    refute_receive {:broadcast, "user:" <> @owner, "call:group_incoming", _}
+
+    assert p1.call_id == call_id
+    assert p1.room == room
+    assert p1.caller_id == @owner
+    assert p1.type == "video"
+    assert p1.conversation_id == @conv
+    assert is_list(p2.participants)
+
+    assert length(parts) == 3
+    assert Enum.any?(Mock.log(), &match?({:group_create, _}, &1))
+  end
+
+  test "call:group_join flips the call to ongoing and notifies the OTHER participants" do
+    seed_group_members([@owner, @m1, @m2])
+
+    {:reply, {:ok, %{call_id: call_id}}, _} =
+      CallSignaling.handle_event(
+        "call:group_invite",
+        %{"conversation_id" => @conv, "type" => "voice"},
+        socket(@owner)
+      )
+
+    flush_broadcasts()
+
+    assert {:reply, {:ok, %{call_id: ^call_id, room: room}}, _} =
+             CallSignaling.handle_event("call:group_join", %{"call_id" => call_id}, socket(@m1))
+
+    assert is_binary(room)
+    # The store flipped ringing → ongoing on the late join.
+    assert Mock.group_call().status == "ongoing"
+
+    # Everyone EXCEPT the joiner is told they joined.
+    assert_receive {:broadcast, "user:" <> a, "call:participant_joined", jp}
+    assert_receive {:broadcast, "user:" <> b, "call:participant_joined", _}
+    assert Enum.sort([a, b]) == Enum.sort([@owner, @m2])
+    assert jp.user_id == @m1
+    refute_receive {:broadcast, "user:" <> @m1, "call:participant_joined", _}
+  end
+
+  test "starting a group call in a conversation you're not a member of → call.forbidden" do
+    seed_group_members([@m1, @m2])
+
+    assert {:reply, {:error, %{code: "call.forbidden"}}, _} =
+             CallSignaling.handle_event(
+               "call:group_invite",
+               %{"conversation_id" => @conv, "type" => "voice"},
+               socket(@stranger)
+             )
   end
 end

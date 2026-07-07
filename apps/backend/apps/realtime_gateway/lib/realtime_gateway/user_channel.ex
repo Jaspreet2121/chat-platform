@@ -52,6 +52,13 @@ defmodule RealtimeGateway.UserChannel do
     {:noreply, socket}
   end
 
+  # Group ring timeout (scheduled by CallSignaling.group_invite in the initiator's channel process).
+  @impl true
+  def handle_info({:group_ring_timeout, call_id}, socket) do
+    RealtimeGateway.CallSignaling.group_ring_timeout(call_id, socket)
+    {:noreply, socket}
+  end
+
   # Socket drop (tab closed / network loss) → clear best-effort; TTL covers a missed terminate.
   @impl true
   def terminate(_reason, socket) do

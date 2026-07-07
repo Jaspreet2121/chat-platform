@@ -12,6 +12,11 @@ defmodule RealtimeGateway.CallSignaling do
   callee-only, cancel is caller-only, hangup is either party — validated against the persisted call row.
 
   A best-effort incoming-call web-push is emitted for a backgrounded callee (see `emit_incoming_push/4`).
+
+  Phase 3 adds a SEPARATE group event set (`call:group_invite`/`group_join`/`group_decline`/`group_leave`)
+  that fans out to N conversation members over their `user:<id>` topics (`call:group_incoming`,
+  `call:participant_joined`/`declined`/`left`, `call:group_ended`). Membership/permission live in CallStore
+  (A1); the 1-on-1 handlers above are untouched.
   """
 
   require Logger
@@ -22,11 +27,17 @@ defmodule RealtimeGateway.CallSignaling do
   @call_events_topic "call.events.v1"
 
   @doc "Dispatch a `call:*` event from the user channel. Returns a `{:reply, reply, socket}` tuple."
+  # 1-on-1 (Phase 1/2) — UNCHANGED.
   def handle_event("call:invite", payload, socket), do: invite(payload, socket)
   def handle_event("call:accept", payload, socket), do: accept(payload, socket)
   def handle_event("call:reject", payload, socket), do: reject(payload, socket)
   def handle_event("call:cancel", payload, socket), do: cancel(payload, socket)
   def handle_event("call:hangup", payload, socket), do: hangup(payload, socket)
+  # Group (Phase 3) — a SEPARATE event set; distinct handlers, no callee_id.
+  def handle_event("call:group_invite", payload, socket), do: group_invite(payload, socket)
+  def handle_event("call:group_join", payload, socket), do: group_join(payload, socket)
+  def handle_event("call:group_decline", payload, socket), do: group_decline(payload, socket)
+  def handle_event("call:group_leave", payload, socket), do: group_leave(payload, socket)
   def handle_event(_event, _payload, socket), do: reply_error(socket, "call.invalid_event")
 
   # --- invite: caller → create ringing call → ring the callee ------------------------------------
@@ -150,6 +161,190 @@ defmodule RealtimeGateway.CallSignaling do
     :ok
   rescue
     _ -> :ok
+  end
+
+  # ============================================================================================
+  # Group calling (Phase 3). SEPARATE event set — no callee_id; membership + permission live in
+  # CallStore (A1). Fan-out reuses the same `broadcast/4` over each member's user:<id> topic. The acting
+  # user is ALWAYS current_user(socket) — a user_id in the payload is never trusted.
+  # ============================================================================================
+
+  # call:group_invite %{"conversation_id","type"} — initiator starts a group call → ring every other member.
+  defp group_invite(%{"conversation_id" => cid, "type" => type}, socket)
+       when is_binary(cid) and cid != "" and type in ["voice", "video"] do
+    initiator = current_user(socket)
+
+    case ConversationClient.create_group_call(%{
+           "initiator_id" => initiator,
+           "conversation_id" => cid,
+           "type" => type
+         }) do
+      {:ok, result} ->
+        call = cget(result, :call)
+        parts = cget(result, :participants) || []
+        others = cget(result, :member_ids) || []
+        call_id = cget(call, :id)
+        room = cget(call, :room_name)
+        caller_name = resolve_name(initiator)
+
+        Enum.each(others, fn member_id ->
+          broadcast(socket, member_id, "call:group_incoming", %{
+            call_id: call_id,
+            room: room,
+            conversation_id: cid,
+            type: type,
+            caller_id: initiator,
+            caller_name: caller_name,
+            participants: parts
+          })
+        end)
+
+        # Server-side group ring timeout (this = the initiator's channel). On fire we mark still-invited
+        # members missed; joins first make it a no-op (idempotent) — mirrors the 1-on-1 timer.
+        Process.send_after(self(), {:group_ring_timeout, call_id}, @ring_timeout_ms)
+
+        {:reply, {:ok, %{call_id: call_id, room: room, participants: parts}}, socket}
+
+      {:error, :call_start_forbidden} ->
+        reply_error(socket, "call.start_forbidden")
+
+      {:error, :not_a_member} ->
+        reply_error(socket, "call.forbidden")
+
+      {:error, _reason} ->
+        reply_error(socket, "call.unavailable")
+    end
+  end
+
+  defp group_invite(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  # call:group_join %{"call_id"} — accept OR late-join. Notifies the other participants.
+  defp group_join(%{"call_id" => call_id}, socket) when is_binary(call_id) and call_id != "" do
+    me = current_user(socket)
+
+    case ConversationClient.join_group_call(%{"call_id" => call_id, "user_id" => me}) do
+      {:ok, result} ->
+        room = result |> cget(:call) |> cget(:room_name)
+        joined_at = result |> cget(:participant) |> cget(:joined_at)
+
+        broadcast_group(socket, call_id, me, ["invited", "joined"], "call:participant_joined", %{
+          call_id: call_id,
+          user_id: me,
+          joined_at: joined_at
+        })
+
+        {:reply, {:ok, %{call_id: call_id, room: room}}, socket}
+
+      {:error, :not_a_member} ->
+        reply_error(socket, "call.forbidden")
+
+      {:error, :call_not_found} ->
+        reply_error(socket, "call.not_found")
+
+      {:error, _reason} ->
+        reply_error(socket, "call.unavailable")
+    end
+  end
+
+  defp group_join(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  # call:group_decline %{"call_id"} — one member declines. Notifies others; ends the call if it closed.
+  defp group_decline(%{"call_id" => call_id}, socket) when is_binary(call_id) and call_id != "" do
+    me = current_user(socket)
+
+    case ConversationClient.decline_group_call(%{"call_id" => call_id, "user_id" => me}) do
+      {:ok, result} ->
+        broadcast_group(socket, call_id, me, ["invited", "joined"], "call:participant_declined", %{
+          call_id: call_id,
+          user_id: me
+        })
+
+        maybe_broadcast_group_ended(socket, call_id, cget(result, :call))
+        {:reply, {:ok, %{call_id: call_id}}, socket}
+
+      {:error, :call_not_found} ->
+        reply_error(socket, "call.not_found")
+
+      {:error, _reason} ->
+        reply_error(socket, "call.unavailable")
+    end
+  end
+
+  defp group_decline(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  # call:group_leave %{"call_id"} — a participant leaves. Notifies the rest; ends the call if nobody remains.
+  defp group_leave(%{"call_id" => call_id}, socket) when is_binary(call_id) and call_id != "" do
+    me = current_user(socket)
+
+    case ConversationClient.leave_group_call(%{"call_id" => call_id, "user_id" => me}) do
+      {:ok, result} ->
+        broadcast_group(socket, call_id, me, ["invited", "joined"], "call:participant_left", %{
+          call_id: call_id,
+          user_id: me
+        })
+
+        maybe_broadcast_group_ended(socket, call_id, cget(result, :call))
+        {:reply, {:ok, %{call_id: call_id}}, socket}
+
+      {:error, :call_not_found} ->
+        reply_error(socket, "call.not_found")
+
+      {:error, _reason} ->
+        reply_error(socket, "call.unavailable")
+    end
+  end
+
+  defp group_leave(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  @doc """
+  Group ring timeout (fired from the initiator's channel via `handle_info`). Flips any still-`invited`
+  members to `missed` (idempotent — a join first makes it a no-op), then, if that closed the call (nobody
+  joined), broadcasts `call:group_ended` to all participants. If people are in the call it stays ongoing —
+  only stale invites were cleared. Mirrors the 1-on-1 timeout's re-check.
+  """
+  def group_ring_timeout(call_id, socket) when is_binary(call_id) do
+    case ConversationClient.mark_group_participants_missed(%{"call_id" => call_id}) do
+      {:ok, result} -> maybe_broadcast_group_ended(socket, call_id, cget(result, :call))
+      _ -> :ok
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  # Fan an event to a group call's participants (limited to `statuses`), excluding `exclude_user`
+  # (pass nil to include everyone). Reads the live participant list; best-effort.
+  defp broadcast_group(socket, call_id, exclude_user, statuses, event, payload) do
+    case ConversationClient.get_call_with_participants(%{"call_id" => call_id}) do
+      {:ok, result} ->
+        (cget(result, :participants) || [])
+        |> Enum.filter(&(cget(&1, :status) in statuses))
+        |> Enum.map(&cget(&1, :user_id))
+        |> Enum.reject(&(is_nil(&1) or &1 == exclude_user))
+        |> Enum.each(&broadcast(socket, &1, event, payload))
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  end
+
+  # When a group call has CLOSED (ended/missed), tell every participant to tear down.
+  defp maybe_broadcast_group_ended(socket, call_id, call) do
+    if cget(call, :status) in ["ended", "missed"] do
+      broadcast_group(
+        socket,
+        call_id,
+        nil,
+        ["invited", "joined", "declined", "left", "missed"],
+        "call:group_ended",
+        %{call_id: call_id}
+      )
+    end
+
+    :ok
   end
 
   # --- helpers -----------------------------------------------------------------------------------
@@ -287,7 +482,9 @@ defmodule RealtimeGateway.CallSignaling do
 
   defp current_user(socket), do: socket.assigns.current_user_id
 
-  # Call maps come atom-keyed (in-process CallStore) or string-keyed (HTTP adapter) — read either.
+  # Call maps come atom-keyed (in-process CallStore) or string-keyed (HTTP adapter) — read either. Nil-safe
+  # so nested reads (result → :call → :room_name) can pipe without crashing when a level is absent.
+  defp cget(nil, _key), do: nil
   defp cget(call, key), do: Map.get(call, key) || Map.get(call, to_string(key))
 
   defp reply_error(socket, code), do: {:reply, {:error, %{code: code}}, socket}
