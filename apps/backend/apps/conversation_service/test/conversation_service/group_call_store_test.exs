@@ -119,6 +119,134 @@ defmodule ConversationService.GroupCallStoreTest do
              })
   end
 
+  # --- C2: add-participant + authorization predicate ---------------------------------------------
+
+  @tag :postgres_integration
+  test "add_call_participant: an outside non-member gets an invited row, can be authorized + join" do
+    {owner, [a, _b], conv_id} = group_of(2)
+    outsider = new_user!()
+
+    {:ok, %{call: call}} =
+      CallStore.create_group_call(%{
+        "initiator_id" => owner,
+        "conversation_id" => conv_id,
+        "type" => "voice"
+      })
+
+    {:ok, _} = CallStore.join_group_call(%{"call_id" => call.id, "user_id" => a})
+
+    # Before adding: the outsider is neither a participant nor joinable.
+    assert {:ok, %{authorized: false}} =
+             CallStore.call_participant?(%{"call_id" => call.id, "user_id" => outsider})
+
+    assert {:error, :not_a_member} =
+             CallStore.join_group_call(%{"call_id" => call.id, "user_id" => outsider})
+
+    # Owner adds the outsider → invited row + ring metadata.
+    assert {:ok, %{added_user_id: ^outsider, room: room, type: "voice", conversation_id: ^conv_id}} =
+             CallStore.add_call_participant(%{
+               "call_id" => call.id,
+               "actor_id" => owner,
+               "user_id" => outsider
+             })
+
+    assert String.starts_with?(room, "call-")
+
+    # After adding: authorized, and can now join despite never being a conversation member.
+    assert {:ok, %{authorized: true}} =
+             CallStore.call_participant?(%{"call_id" => call.id, "user_id" => outsider})
+
+    assert {:ok, %{participant: %{status: "joined"}}} =
+             CallStore.join_group_call(%{"call_id" => call.id, "user_id" => outsider})
+  end
+
+  @tag :postgres_integration
+  test "add_call_participant: re-adding someone already invited/joined is an idempotent no-op" do
+    {owner, [a, _b], conv_id} = group_of(2)
+
+    {:ok, %{call: call}} =
+      CallStore.create_group_call(%{
+        "initiator_id" => owner,
+        "conversation_id" => conv_id,
+        "type" => "voice"
+      })
+
+    # `a` was invited at create; re-adding is a no-op that still succeeds (and leaves one row).
+    assert {:ok, %{added_user_id: ^a}} =
+             CallStore.add_call_participant(%{
+               "call_id" => call.id,
+               "actor_id" => owner,
+               "user_id" => a
+             })
+
+    {:ok, %{participants: parts}} =
+      CallStore.get_call_with_participants(%{"call_id" => call.id})
+
+    a_rows = Enum.filter(parts, &(&1.user_id == a))
+    assert length(a_rows) == 1
+    assert hd(a_rows).status == "invited"
+  end
+
+  @tag :postgres_integration
+  test "add_call_participant: admins_only blocks a plain member from adding, allows the owner" do
+    {owner, [member, _b], conv_id} = group_of(2)
+    outsider = new_user!()
+
+    {:ok, _} =
+      Participants.set_group_settings(%{
+        "conversation_id" => conv_id,
+        "actor_user_id" => owner,
+        "only_admins_can_send" => false,
+        "call_start_permission" => "admins_only"
+      })
+
+    {:ok, %{call: call}} =
+      CallStore.create_group_call(%{
+        "initiator_id" => owner,
+        "conversation_id" => conv_id,
+        "type" => "voice"
+      })
+
+    # A plain member cannot add under admins_only.
+    assert {:error, :call_add_forbidden} =
+             CallStore.add_call_participant(%{
+               "call_id" => call.id,
+               "actor_id" => member,
+               "user_id" => outsider
+             })
+
+    # The owner still can.
+    assert {:ok, %{added_user_id: ^outsider}} =
+             CallStore.add_call_participant(%{
+               "call_id" => call.id,
+               "actor_id" => owner,
+               "user_id" => outsider
+             })
+  end
+
+  @tag :postgres_integration
+  test "add_call_participant: rejected on an ended call" do
+    {owner, [_a, _b], conv_id} = group_of(2)
+    outsider = new_user!()
+
+    {:ok, %{call: call}} =
+      CallStore.create_group_call(%{
+        "initiator_id" => owner,
+        "conversation_id" => conv_id,
+        "type" => "voice"
+      })
+
+    # Owner (only joined party) leaves → call closes (nobody joined → missed).
+    {:ok, _} = CallStore.leave_group_call(%{"call_id" => call.id, "user_id" => owner})
+
+    assert {:error, :call_not_joinable} =
+             CallStore.add_call_participant(%{
+               "call_id" => call.id,
+               "actor_id" => owner,
+               "user_id" => outsider
+             })
+  end
+
   # --- helpers -----------------------------------------------------------------------------------
 
   # A group conversation with an owner + `n` members. Returns {owner_id, member_ids, conversation_id}.
@@ -136,6 +264,13 @@ defmodule ConversationService.GroupCallStoreTest do
       })
 
     {owner, members, conv.conversation_id}
+  end
+
+  # A fresh app user (auth parent only, NOT in any conversation) — an "outside person" for add tests.
+  defp new_user! do
+    user_id = Ecto.UUID.generate()
+    insert_user_auth_parent!(user_id)
+    user_id
   end
 
   defp insert_user_auth_parent!(user_id) do
