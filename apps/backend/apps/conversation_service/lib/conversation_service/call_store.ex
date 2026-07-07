@@ -356,17 +356,20 @@ defmodule ConversationService.CallStore do
     end
   end
 
-  # THE single close rule (reused by decline / leave / ring-timeout). A ringing/ongoing group call ends
-  # once NOBODY is `joined` AND NOBODY is still `invited` (nobody active, nobody pending). Terminal status:
-  # `ended` if it ever went `ongoing`, else `missed` (it only ever rang). Already-terminal calls pass
-  # through unchanged. (A lone joined initiator or any pending invite keeps the call open — the ring-timeout
-  # clears stale invites, which then lets this rule close the call.)
+  # THE single close rule (reused by decline / leave / ring-timeout). A ringing/ongoing group call ends the
+  # moment NOBODY is `joined` — regardless of pending invites (a stale ring shouldn't keep an EMPTY call
+  # "ongoing", which would leave the C1 "Join" banner up on a call nobody's in). Terminal status: `ended`
+  # if anyone OTHER than the initiator ever joined (a real multi-party call), else `missed` (initiator-only
+  # or nobody answered → the missed-group-call pill). Already-terminal calls pass through unchanged.
   defp maybe_close_call(%Call{status: status} = call) when status in ["ringing", "ongoing"] do
     counts = participant_status_counts(call.id)
 
-    if Map.get(counts, "joined", 0) == 0 and Map.get(counts, "invited", 0) == 0 do
-      terminal = if status == "ongoing", do: "ended", else: "missed"
-      {:ok, updated} = call |> Call.status_changeset(%{status: terminal, ended_at: DateTime.utc_now()}) |> Repo.update()
+    if Map.get(counts, "joined", 0) == 0 do
+      terminal = if anyone_but_initiator_joined?(call), do: "ended", else: "missed"
+
+      {:ok, updated} =
+        call |> Call.status_changeset(%{status: terminal, ended_at: DateTime.utc_now()}) |> Repo.update()
+
       updated
     else
       call
@@ -374,6 +377,16 @@ defmodule ConversationService.CallStore do
   end
 
   defp maybe_close_call(call), do: call
+
+  # Did anyone OTHER than the initiator (caller_id) ever join (joined_at set)? Distinguishes a real
+  # multi-party call (→ "ended") from an initiator-only / nobody-answered call (→ "missed" + pill).
+  defp anyone_but_initiator_joined?(%Call{id: call_id, caller_id: caller_id}) do
+    from(p in CallParticipant,
+      where: p.call_id == ^call_id and p.user_id != ^caller_id and not is_nil(p.joined_at),
+      limit: 1
+    )
+    |> Repo.exists?()
+  end
 
   defp participant_status_counts(call_id) do
     from(p in CallParticipant,
