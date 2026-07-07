@@ -37,9 +37,6 @@ export type ConnectOptions = {
   onRemoteVideo?: (track: RemoteVideoTrack | null) => void;
   /** Fired with our own camera track (or null when off). InCallScreen attaches it to the self-view PiP. */
   onLocalVideo?: (track: LocalVideoTrack | null) => void;
-  /** Fired with the active camera's facing ("user" = front/selfie, "environment" = back). Drives the
-   *  self-view mirror: front is mirrored (selfie), back is NOT (world-facing). */
-  onFacingChange?: (facing: "user" | "environment") => void;
   /**
    * Fired whenever the remote participant SET or their video tracks change — same shape as
    * connectToGroupRoom (C3a plumbing for the 1-on-1→group promote). DORMANT in a pure 1-on-1: the provider
@@ -244,8 +241,6 @@ export async function connectToRoom(
           camTrack?.mediaStreamTrack?.getSettings?.().deviceId ??
           room.getActiveDevice?.("videoinput");
         opts.onLocalVideo?.(camTrack ?? null);
-        // Initial facing — the camera opens front-facing ("user"), so the self-view mirrors (selfie).
-        opts.onFacingChange?.(currentFacing);
       } catch (err) {
         console.warn(TAG, "camera enable failed — continuing audio-only", err);
         opts.onLocalVideo?.(null);
@@ -282,7 +277,6 @@ export async function connectToRoom(
         const nextFacing = currentFacing === "user" ? "environment" : "user";
         await camTrack.restartTrack({ facingMode: nextFacing });
         currentFacing = nextFacing;
-        opts.onFacingChange?.(currentFacing);
         currentCameraId = camTrack.mediaStreamTrack?.getSettings?.().deviceId ?? currentCameraId;
         opts.onLocalVideo?.(camTrack);
       };
@@ -374,8 +368,6 @@ export type GroupConnection = {
 export type GroupConnectOptions = {
   video?: boolean;
   onLocalVideo?: (track: LocalVideoTrack | null) => void;
-  /** Active camera facing ("user" = front, "environment" = back) — drives the self-tile mirror. */
-  onFacingChange?: (facing: "user" | "environment") => void;
   /** Fired whenever the remote participant set OR their video tracks change (drives the tile grid). */
   onParticipants?: (participants: GroupParticipant[]) => void;
   onDisconnected?: (reason?: string) => void;
@@ -480,7 +472,6 @@ export async function connectToGroupRoom(
           cameraTrack()?.mediaStreamTrack?.getSettings?.().deviceId ??
           room.getActiveDevice?.("videoinput");
         opts.onLocalVideo?.(cameraTrack() ?? null);
-        opts.onFacingChange?.(currentFacing); // initial "user" (front) → self-tile mirrors
       } catch (err) {
         console.warn(TAG, "group camera enable failed — audio-only", err);
         opts.onLocalVideo?.(null);
@@ -525,7 +516,6 @@ export async function connectToGroupRoom(
         const nextFacing = currentFacing === "user" ? "environment" : "user";
         await camTrack.restartTrack({ facingMode: nextFacing });
         currentFacing = nextFacing;
-        opts.onFacingChange?.(currentFacing);
         currentCameraId = camTrack.mediaStreamTrack?.getSettings?.().deviceId ?? currentCameraId;
         opts.onLocalVideo?.(camTrack);
       };
