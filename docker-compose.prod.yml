@@ -384,12 +384,20 @@ services:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}"
     volumes:
       - ./infra/livekit/livekit.yaml:/etc/livekit/livekit.yaml:ro
+      # Caddy's data volume, READ-ONLY — LiveKit reads the turn.growblic.com cert Caddy provisioned here to
+      # serve TURNS on 5349. The cert must EXIST at boot (deploy Caddy first; see the TURN block in the yaml).
+      - caddy_data:/caddy-certs:ro
+    # Start after Caddy so the cert dir is mounted. NOTE: depends_on only waits for Caddy to START, not for
+    # the cert to be ISSUED — do the first TURN deploy staged (caddy → confirm cert file → livekit).
+    depends_on:
+      - caddy
     # Host-published media/TURN (OPEN these in the security group). 7880 is deliberately NOT published —
     # Caddy reaches it internally over chatnet as livekit:7880.
     ports:
       - "7881:7881"          # ICE/TCP fallback
       - "7882:7882/udp"      # WebRTC media (single UDP mux port) — carries the audio
       - "3478:3478/udp"      # built-in TURN (UDP)
+      - "5349:5349"          # TURNS (TURN over TLS) — restrictive-firewall fallback
 
   gateway:
     build:

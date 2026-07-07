@@ -37,3 +37,12 @@ admin.growblic.com {
 livekit.growblic.com {
 	reverse_proxy livekit:7880
 }
+
+# --- TURN/TLS cert provisioning (Phase-3 calling) — this block does NOT proxy media; it exists ONLY so
+# Caddy obtains + auto-renews the Let's Encrypt cert for turn.growblic.com into caddy_data. LiveKit then
+# reads that cert file to serve TURNS (TURN over TLS) on 5349 for restrictive networks (see
+# infra/livekit/livekit.yaml turn.tls_port). Requires DNS turn.growblic.com → the EC2 IP and 80/443 reaching
+# Caddy (already true). The media plane itself never passes through Caddy.
+turn.growblic.com {
+	respond "turn" 200
+}
