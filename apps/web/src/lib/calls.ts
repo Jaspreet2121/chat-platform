@@ -37,6 +37,13 @@ export type ConnectOptions = {
   onRemoteVideo?: (track: RemoteVideoTrack | null) => void;
   /** Fired with our own camera track (or null when off). InCallScreen attaches it to the self-view PiP. */
   onLocalVideo?: (track: LocalVideoTrack | null) => void;
+  /**
+   * Fired whenever the remote participant SET or their VIDEO tracks change — same shape as
+   * connectToGroupRoom (C3a plumbing for the 1-on-1→group promote). VIDEO + participant-set ONLY; the audio
+   * path is untouched. DORMANT for a pure 1-on-1 (the provider doesn't consume it yet) → `emit()` hits an
+   * undefined callback and nothing changes.
+   */
+  onParticipants?: (participants: GroupParticipant[]) => void;
 };
 
 // One tag so all call-media diagnostics are greppable in the browser console during a two-device test.
@@ -101,16 +108,41 @@ export async function connectToRoom(
     opts.onRemoteAudio?.(true);
   };
 
-  room.on(RoomEvent.TrackSubscribed, (track) => {
+  // C3a VIDEO/participant-set plumbing — completely SEPARATE from the audio path above and DORMANT
+  // (onParticipants unwired in the provider). Tracks the remote participant set + their (nullable) video
+  // track for C3b's grid. AUDIO is untouched: the FIRST (in 1-on-1, only) remote's audio still routes to
+  // `audioElement` exactly as before; a 2nd+ remote's audio is deferred to C3b.
+  const identities = new Set<string>();
+  const videoByIdentity = new Map<string, RemoteVideoTrack>();
+  const emit = () =>
+    opts.onParticipants?.(
+      [...identities].map((identity) => ({ identity, videoTrack: videoByIdentity.get(identity) ?? null }))
+    );
+
+  room.on(RoomEvent.ParticipantConnected, (p) => {
+    identities.add(p.identity);
+    emit();
+  });
+  room.on(RoomEvent.ParticipantDisconnected, (p) => {
+    identities.delete(p.identity);
+    videoByIdentity.delete(p.identity);
+    emit();
+  });
+
+  room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
     console.info(TAG, "remote track subscribed", { kind: track.kind });
     if (track.kind === "audio") {
       attach(track);
     } else if (track.kind === "video") {
       // Do NOT attach video here — InCallScreen owns the <video> element; just hand the track over.
       opts.onRemoteVideo?.(track as RemoteVideoTrack);
+      // Additive (video only) — record for the dormant participant-set emit. Audio branch is untouched.
+      identities.add(participant.identity);
+      videoByIdentity.set(participant.identity, track as RemoteVideoTrack);
+      emit();
     }
   });
-  room.on(RoomEvent.TrackUnsubscribed, (track) => {
+  room.on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
     if (track.kind === "audio") {
       console.info(TAG, "remote audio track unsubscribed");
       track.detach(audioElement);
@@ -118,6 +150,9 @@ export async function connectToRoom(
     } else if (track.kind === "video") {
       console.info(TAG, "remote video track unsubscribed");
       opts.onRemoteVideo?.(null);
+      // Additive (video only) — drop from the dormant participant-set emit.
+      videoByIdentity.delete(participant.identity);
+      emit();
     }
   });
   // Connection-lifecycle diagnostics: these tell us whether livekit-client is trying to recover
@@ -137,13 +172,18 @@ export async function connectToRoom(
     // Any remote track already subscribed at connect time → surface it now (TrackSubscribed only fires
     // for tracks that arrive AFTER the listener is set).
     room.remoteParticipants.forEach((participant) => {
+      identities.add(participant.identity);
       participant.audioTrackPublications.forEach((pub) => {
         if (pub.track) attach(pub.track as RemoteTrack);
       });
       participant.videoTrackPublications.forEach((pub) => {
-        if (pub.track) opts.onRemoteVideo?.(pub.track as RemoteVideoTrack);
+        if (pub.track) {
+          opts.onRemoteVideo?.(pub.track as RemoteVideoTrack);
+          videoByIdentity.set(participant.identity, pub.track as RemoteVideoTrack);
+        }
       });
     });
+    emit();
     // Publish the mic (this is what actually prompts for the getUserMedia permission).
     await room.localParticipant.setMicrophoneEnabled(true);
     // Video call → also publish the camera and hand our own track to the self-view. Its OWN try/catch:
