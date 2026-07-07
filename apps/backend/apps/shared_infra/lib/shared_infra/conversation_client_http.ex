@@ -79,12 +79,6 @@ defmodule SharedInfra.ConversationClientHttp do
   def get_ongoing_group_call(attrs), do: post("/internal/calls/group/ongoing", attrs)
 
   @impl true
-  def add_call_participant(attrs), do: post("/internal/calls/group/add", attrs)
-
-  @impl true
-  def call_participant?(attrs), do: post("/internal/calls/participant-check", attrs)
-
-  @impl true
   def add_participant(attrs), do: post("/internal/participants/add", attrs)
 
   @impl true

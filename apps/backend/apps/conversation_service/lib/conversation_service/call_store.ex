@@ -165,7 +165,7 @@ defmodule ConversationService.CallStore do
          {:ok, call} <- fetch_group_call(call_id),
          :ok <- ensure_joinable(call),
          members <- ParticipantStore.list_active_participants(call.conversation_id),
-         :ok <- ensure_member_or_participant(members, call_id, user_id) do
+         :ok <- ensure_member(members, user_id) do
       now = DateTime.utc_now()
       upsert_participant_status(call_id, user_id, %{status: "joined", joined_at: now})
 
@@ -266,56 +266,6 @@ defmodule ConversationService.CallStore do
     _ -> {:ok, %{call: nil}}
   end
 
-  @doc """
-  Add a participant to an ONGOING/ringing group call (Phase-3 C2). attrs: "call_id", "actor_id", "user_id".
-  The `actor_id` must be allowed to add — same rule as starting a call: an ACTIVE member, and (under
-  `admins_only`) an owner/admin. The `user_id` being added need NOT be a conversation member (adding an
-  outside person to THIS call only — they get a participant row, never a conversation membership). Idempotent:
-  re-adding someone with a live invited/joined row is a no-op; a prior declined/left/missed row is re-invited.
-  Returns `{:ok, %{call, added_user_id, room, type, conversation_id}}` so signaling can ring them.
-  """
-  def add_call_participant(attrs) do
-    with :ok <- persistence(),
-         {:ok, call_id} <- required(attrs, "call_id"),
-         {:ok, actor_id} <- required(attrs, "actor_id"),
-         {:ok, user_id} <- required(attrs, "user_id"),
-         {:ok, call} <- fetch_group_call(call_id),
-         :ok <- ensure_joinable(call),
-         members <- ParticipantStore.list_active_participants(call.conversation_id),
-         :ok <- ensure_can_add(call.conversation_id, members, actor_id) do
-      ensure_invited_participant(call_id, user_id)
-
-      {:ok,
-       %{
-         call: response(call),
-         added_user_id: user_id,
-         room: call.room_name,
-         type: call.type,
-         conversation_id: call.conversation_id
-       }}
-    end
-  rescue
-    _ -> {:error, :call_invalid}
-  end
-
-  @doc """
-  Authorization predicate (powers the LiveKit token endpoint + join): does (call_id, user_id) have ANY
-  `group_call_participants` row? Any status (invited/joined/left/declined/missed) means the user was
-  authorized for THIS call. attrs: "call_id", "user_id". Returns `{:ok, %{authorized: boolean}}` (never
-  errors — a missing/bad id or DB-off is simply `authorized: false`, so the caller fails closed).
-  """
-  def call_participant?(attrs) do
-    with :ok <- persistence(),
-         {:ok, call_id} <- required(attrs, "call_id"),
-         {:ok, user_id} <- required(attrs, "user_id") do
-      {:ok, %{authorized: has_participant_row?(call_id, user_id)}}
-    else
-      _ -> {:ok, %{authorized: false}}
-    end
-  rescue
-    _ -> {:ok, %{authorized: false}}
-  end
-
   # --- group helpers -----------------------------------------------------------------------------
 
   defp insert_call!(id, initiator_id, conversation_id, type, now) do
@@ -378,48 +328,6 @@ defmodule ConversationService.CallStore do
 
   defp ensure_member(members, user_id) do
     if Enum.any?(members, &(&1.user_id == user_id)), do: :ok, else: {:error, :not_a_member}
-  end
-
-  # Join is allowed for a conversation member (normal ring / late-join) OR anyone who already holds a
-  # participant row for this call (an added non-member — C2). A non-member with no row is rejected.
-  defp ensure_member_or_participant(members, call_id, user_id) do
-    cond do
-      Enum.any?(members, &(&1.user_id == user_id)) -> :ok
-      has_participant_row?(call_id, user_id) -> :ok
-      true -> {:error, :not_a_member}
-    end
-  end
-
-  # Actor authorization for adding a participant — the SAME rule as starting a call (active member; under
-  # admins_only, owner/admin). Any failure collapses to :call_add_forbidden (signaling maps it to a code).
-  defp ensure_can_add(conversation_id, members, actor_id) do
-    with :ok <- ensure_member(members, actor_id),
-         :ok <- ensure_can_start(conversation_id, members, actor_id) do
-      :ok
-    else
-      _ -> {:error, :call_add_forbidden}
-    end
-  end
-
-  # Idempotent invite: no row → insert `invited`; a live invited/joined row → no-op (re-adding someone
-  # already in is a no-op); a spent declined/left/missed row → flip back to `invited` so they ring again.
-  defp ensure_invited_participant(call_id, user_id) do
-    case get_participant_row(call_id, user_id) do
-      nil ->
-        insert_participant!(call_id, user_id, "invited", DateTime.utc_now(), nil)
-
-      %CallParticipant{status: status} when status in ["invited", "joined"] ->
-        :ok
-
-      %CallParticipant{} = participant ->
-        participant |> CallParticipant.status_changeset(%{status: "invited"}) |> Repo.update()
-    end
-  end
-
-  # Does (call_id, user_id) have ANY participant row? The raw predicate behind call_participant?/1 + join.
-  defp has_participant_row?(call_id, user_id) do
-    from(p in CallParticipant, where: p.call_id == ^call_id and p.user_id == ^user_id, limit: 1)
-    |> Repo.exists?()
   end
 
   defp ensure_can_start(conversation_id, members, initiator_id) do
