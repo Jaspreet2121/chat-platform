@@ -108,34 +108,6 @@ export async function connectToRoom(
     opts.onRemoteAudio?.(true);
   };
 
-  // C3b-2a GUARDED multi-remote audio. The FIRST remote's audio owns the persistent `audioElement` (the
-  // 1-on-1 path via `attach` above — UNCHANGED). Only a DIFFERENT (2nd+) remote — possible ONLY after a
-  // promote — gets its OWN runtime hidden <audio> on document.body. With a single remote this NEVER runs
-  // (identity always == primaryAudioIdentity) → zero risk to 1-on-1.
-  let primaryAudioIdentity: string | null = null;
-  const EXTRA_AUDIO_MARKER = "data-livekit-extra-audio";
-  const extraAudioEls = new Set<HTMLMediaElement>();
-  const attachExtraAudio = (track: RemoteTrack) => {
-    const el = track.attach();
-    el.setAttribute(EXTRA_AUDIO_MARKER, "");
-    el.autoplay = true;
-    el.style.display = "none";
-    document.body.appendChild(el);
-    extraAudioEls.add(el);
-  };
-  const detachExtraAudio = (track: RemoteTrack) => {
-    track.detach().forEach((el) => {
-      el.parentNode?.removeChild(el);
-      extraAudioEls.delete(el as HTMLMediaElement);
-    });
-  };
-  // Remove ONLY the extra elements; the persistent provider-owned audioElement is left in place (reused).
-  const sweepExtraAudio = () => {
-    extraAudioEls.forEach((el) => el.parentNode?.removeChild(el));
-    extraAudioEls.clear();
-    primaryAudioIdentity = null;
-  };
-
   // C3a VIDEO/participant-set plumbing — completely SEPARATE from the audio path above and DORMANT
   // (onParticipants unwired in the provider). Tracks the remote participant set + their (nullable) video
   // track for C3b's grid. AUDIO is untouched: the FIRST (in 1-on-1, only) remote's audio still routes to
@@ -160,14 +132,7 @@ export async function connectToRoom(
   room.on(RoomEvent.TrackSubscribed, (track, _pub, participant) => {
     console.info(TAG, "remote track subscribed", { kind: track.kind });
     if (track.kind === "audio") {
-      if (primaryAudioIdentity === null || participant.identity === primaryAudioIdentity) {
-        // PRIMARY (in 1-on-1, the ONLY remote): the sacred persistent-sink path — attach(track) UNCHANGED.
-        primaryAudioIdentity = participant.identity;
-        attach(track);
-      } else {
-        // GUARDED EXTRA (2nd+ remote, post-promote only): its own hidden element on body. Never in 1-on-1.
-        attachExtraAudio(track);
-      }
+      attach(track);
     } else if (track.kind === "video") {
       // Do NOT attach video here — InCallScreen owns the <video> element; just hand the track over.
       opts.onRemoteVideo?.(track as RemoteVideoTrack);
@@ -180,15 +145,8 @@ export async function connectToRoom(
   room.on(RoomEvent.TrackUnsubscribed, (track, _pub, participant) => {
     if (track.kind === "audio") {
       console.info(TAG, "remote audio track unsubscribed");
-      if (participant.identity === primaryAudioIdentity) {
-        // PRIMARY: the sacred detach path — UNCHANGED. Free the slot so a later remote can claim it.
-        track.detach(audioElement);
-        opts.onRemoteAudio?.(false);
-        primaryAudioIdentity = null;
-      } else {
-        // GUARDED EXTRA: remove its own element(s). Never taken in 1-on-1.
-        detachExtraAudio(track);
-      }
+      track.detach(audioElement);
+      opts.onRemoteAudio?.(false);
     } else if (track.kind === "video") {
       console.info(TAG, "remote video track unsubscribed");
       opts.onRemoteVideo?.(null);
@@ -205,7 +163,6 @@ export async function connectToRoom(
     // If reason === CLIENT_INITIATED this was OUR disconnect() call; anything else = livekit-client left
     // on its own (media/ICE failure, duplicate identity, server shutdown, …).
     console.warn(TAG, "livekit Disconnected", { reason: reasonName(reason) });
-    sweepExtraAudio();
     opts.onDisconnected?.(reasonName(reason));
   });
 
@@ -217,15 +174,7 @@ export async function connectToRoom(
     room.remoteParticipants.forEach((participant) => {
       identities.add(participant.identity);
       participant.audioTrackPublications.forEach((pub) => {
-        if (!pub.track) return;
-        const t = pub.track as RemoteTrack;
-        // Same primary-vs-extra rule. A fresh 1-on-1 has ≤1 remote → only the primary attach(t) runs.
-        if (primaryAudioIdentity === null || participant.identity === primaryAudioIdentity) {
-          primaryAudioIdentity = participant.identity;
-          attach(t);
-        } else {
-          attachExtraAudio(t);
-        }
+        if (pub.track) attach(pub.track as RemoteTrack);
       });
       participant.videoTrackPublications.forEach((pub) => {
         if (pub.track) {
@@ -256,7 +205,6 @@ export async function connectToRoom(
     console.info(TAG, "connected + mic published", roomName, { video: !!opts.video });
   } catch (error) {
     console.error(TAG, "connect failed", error);
-    sweepExtraAudio();
     await room.disconnect().catch(() => undefined);
     throw error;
   }
@@ -344,8 +292,6 @@ export async function connectToRoom(
       // (or livekit-client left on its own — the Disconnected reason above disambiguates).
       console.warn(TAG, "app called room.disconnect()");
       await room.disconnect().catch(() => undefined);
-      // Remove any extra audio elements (none in a pure 1-on-1 → no-op). The persistent audioElement stays.
-      sweepExtraAudio();
     }
   };
 }

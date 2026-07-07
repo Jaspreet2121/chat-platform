@@ -211,9 +211,6 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       setRemoteVideo(null);
       setCameraOn(false);
       setCanSwitchCamera(false);
-      // C3b-2a wired onParticipants into the 1-on-1 connect → clear that set here so it can't leak into a
-      // later call (the 1-on-1 view ignores it, but a stale set would mislead the C3b-2b group swap).
-      setGroupParticipants([]);
       if (message) flashNote(message);
     },
     [clearRingTimer, flashNote]
@@ -246,9 +243,6 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           video: isVideo,
           onLocalVideo: setLocalVideo,
           onRemoteVideo: setRemoteVideo,
-          // C3b-2a: populate the group-participant set (data only). The 1-on-1 render below still uses
-          // InCallScreen + single remoteVideo and IGNORES this — it's staged for the C3b-2b UI swap.
-          onParticipants: setGroupParticipants,
           onDisconnected: (reason) => {
             // livekit-client left the room. If it wasn't OUR own disconnect() (endingRef), end the call and
             // surface WHY (media/ICE failure, duplicate identity, …) — the reason is logged in calls.ts too.
