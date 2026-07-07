@@ -331,9 +331,12 @@ defmodule RealtimeGateway.CallSignaling do
     :ok
   end
 
-  # When a group call has CLOSED (ended/missed), tell every participant to tear down.
+  # When a group call has CLOSED (ended/missed), tell every participant to tear down. A call that closed as
+  # `missed` (nobody ever joined) also drops ONE "Missed group call" entry into the conversation thread.
   defp maybe_broadcast_group_ended(socket, call_id, call) do
-    if cget(call, :status) in ["ended", "missed"] do
+    status = cget(call, :status)
+
+    if status in ["ended", "missed"] do
       broadcast_group(
         socket,
         call_id,
@@ -344,7 +347,60 @@ defmodule RealtimeGateway.CallSignaling do
       )
     end
 
+    if status == "missed", do: write_missed_group_message(call, socket)
+
     :ok
+  end
+
+  # Best-effort "Missed group call" chat entry (Slice B). Reuses the message create+broadcast path (same as
+  # the 1-on-1 write_missed_message): one message_type=call row, sender = initiator, metadata.call_kind =
+  # "group". Fans message_created to the conversation topic + each participant's user:<id>. Fire-and-forget:
+  # a failed write never affects the (already-marked-missed) call.
+  defp write_missed_group_message(call, socket) do
+    conversation_id = cget(call, :conversation_id)
+    caller_id = cget(call, :caller_id)
+    call_id = cget(call, :id)
+
+    if is_binary(conversation_id) and conversation_id != "" and is_binary(caller_id) do
+      endpoint = socket.endpoint
+      call_type = if cget(call, :type) == "video", do: "video", else: "voice"
+
+      attrs = %{
+        "conversation_id" => conversation_id,
+        "sender_user_id" => caller_id,
+        "message_type" => "call",
+        "body" => "Missed group call",
+        "metadata" => %{
+          "call_id" => call_id,
+          "call_type" => call_type,
+          "call_kind" => "group",
+          "status" => "missed"
+        }
+      }
+
+      Task.start(fn ->
+        with {:ok, response} <- SharedInfra.MessageClient.create_message(attrs) do
+          endpoint.broadcast("conversation:" <> conversation_id, "message_created", response)
+
+          case ConversationClient.get_call_with_participants(%{"call_id" => call_id}) do
+            {:ok, result} ->
+              (cget(result, :participants) || [])
+              |> Enum.map(&cget(&1, :user_id))
+              |> Enum.reject(&is_nil/1)
+              |> Enum.each(&endpoint.broadcast("user:" <> &1, "message_created", response))
+
+            _ ->
+              :ok
+          end
+        else
+          other -> Logger.warning("missed group-call chat write failed for #{call_id}: #{inspect(other)}")
+        end
+      end)
+    end
+
+    :ok
+  rescue
+    error -> Logger.warning("missed group-call chat write raised, ignored: #{inspect(error)}")
   end
 
   # --- helpers -----------------------------------------------------------------------------------
