@@ -64,6 +64,7 @@ defmodule ApiGatewayWeb.CallController do
     names =
       rows
       |> Enum.map(& &1["counterpart_id"])
+      |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
       |> Map.new(fn id -> {id, resolve_name(id)} end)
 
@@ -71,13 +72,19 @@ defmodule ApiGatewayWeb.CallController do
   end
 
   defp present_call(call, me) do
+    kind = cget(call, :kind) || "direct"
     caller_id = cget(call, :caller_id)
     callee_id = cget(call, :callee_id)
-    counterpart_id = if caller_id == me, do: callee_id, else: caller_id
+
+    # Direct calls have a single counterpart (the OTHER party). Group calls have no single counterpart
+    # (callee_id is NULL) — leave it nil; the client renders group rows from `kind`.
+    counterpart_id =
+      if kind == "group", do: nil, else: if(caller_id == me, do: callee_id, else: caller_id)
 
     %{
       "id" => cget(call, :id),
       "room_name" => cget(call, :room_name),
+      "kind" => kind,
       "caller_id" => caller_id,
       "callee_id" => callee_id,
       "conversation_id" => cget(call, :conversation_id),
