@@ -14,8 +14,9 @@ import { useUserProfile } from "../chat/useUserProfile";
 export type AddTarget = { userId?: string; phone?: string; label?: string };
 
 export type AddParticipantsSheetProps = {
-  /** The group call's conversation — its member list is fetched on open. */
-  conversationId: string;
+  /** The group call's conversation — its member list is fetched on open. Absent for a 1-on-1 being promoted
+   *  (a DM's only other member is already in the call) → the sheet opens on the "by number" tab. */
+  conversationId?: string | null;
   /** LiveKit identities already in the call (self + remotes) — excluded from the member list. */
   inCallIds: string[];
   currentUserId?: string;
@@ -69,14 +70,17 @@ export function AddParticipantsSheet({
   onAdd,
   onClose
 }: AddParticipantsSheetProps) {
-  const [tab, setTab] = useState<Tab>("members");
+  // No conversation (1-on-1 promote) → start on the number tab; the member list is empty by construction.
+  const [tab, setTab] = useState<Tab>(conversationId ? "members" : "number");
 
   // Member list — fetched once on open (CallProvider doesn't hold it): all active members except me. Who's
   // already in the call is filtered out reactively below, so a mid-open join updates the list without refetch.
-  const [allMemberIds, setAllMemberIds] = useState<string[] | null>(null);
+  // With no conversationId there are no members to list (a DM's other party is already in the call) → [].
+  const [allMemberIds, setAllMemberIds] = useState<string[] | null>(conversationId ? null : []);
   const [membersError, setMembersError] = useState(false);
 
   useEffect(() => {
+    if (!conversationId) return;
     let active = true;
     getConversation(conversationId)
       .then((detail) => {

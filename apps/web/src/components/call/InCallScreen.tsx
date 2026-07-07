@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Mic, MicOff, PhoneOff, SwitchCamera, Video, VideoOff } from "lucide-react";
+import { Mic, MicOff, PhoneOff, SwitchCamera, UserPlus, Video, VideoOff } from "lucide-react";
 import type { LocalVideoTrack, RemoteVideoTrack } from "livekit-client";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
@@ -25,6 +25,8 @@ export type InCallScreenProps = {
   /** True when >1 camera exists (front/back) — gates the switch-camera button. */
   canSwitchCamera: boolean;
   onSwitchCamera: () => void;
+  /** Open the "add participants" sheet → promotes this 1-on-1 to a group. Add button renders only when set. */
+  onAddParticipants?: () => void;
 };
 
 function formatElapsed(totalSeconds: number) {
@@ -51,7 +53,8 @@ export function InCallScreen({
   cameraOn,
   onToggleCamera,
   canSwitchCamera,
-  onSwitchCamera
+  onSwitchCamera,
+  onAddParticipants
 }: InCallScreenProps) {
   const [elapsed, setElapsed] = useState(0);
   const startedAt = useRef<number | null>(null);
@@ -134,6 +137,21 @@ export function InCallScreen({
             </span>
             <span className="text-xs font-medium text-white/80">{muted ? "Unmute" : "Mute"}</span>
           </button>
+
+          {onAddParticipants && (
+            <button
+              type="button"
+              onClick={onAddParticipants}
+              disabled={connecting}
+              className="flex flex-col items-center gap-2 disabled:opacity-50"
+              aria-label="Add participants"
+            >
+              <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white/10 text-white shadow-lg transition-transform active:scale-95">
+                <UserPlus className="h-6 w-6" aria-hidden />
+              </span>
+              <span className="text-xs font-medium text-white/80">Add</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -293,6 +311,21 @@ export function InCallScreen({
           </span>
           <span className="text-xs font-medium text-white/80">Camera</span>
         </button>
+
+        {onAddParticipants && (
+          <button
+            type="button"
+            onClick={onAddParticipants}
+            disabled={connecting}
+            className="flex flex-col items-center gap-2 disabled:opacity-50"
+            aria-label="Add participants"
+          >
+            <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white/10 text-white shadow-lg transition-transform active:scale-95">
+              <UserPlus className="h-6 w-6" aria-hidden />
+            </span>
+            <span className="text-xs font-medium text-white/80">Add</span>
+          </button>
+        )}
 
         <button
           type="button"
