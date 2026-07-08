@@ -203,7 +203,7 @@ defmodule ConversationService.CallStore do
     with :ok <- persistence(),
          {:ok, call_id} <- required(attrs, "call_id"),
          {:ok, user_id} <- required(attrs, "user_id"),
-         {:ok, call} <- fetch_group_call(call_id) do
+         {:ok, call} <- fetch_group_or_link_call(call_id) do
       now = DateTime.utc_now()
       upsert_participant_status(call_id, user_id, %{status: "left", left_at: now})
       call = maybe_close_call(call)
@@ -516,17 +516,29 @@ defmodule ConversationService.CallStore do
   end
 
   # Seat a call-link joiner. The host (caller_id) and no-approval links join immediately ("joined"). An
-  # approval-required NON-host is RE-GATED on EVERY join: their row is overwritten to "pending_approval"
-  # (whatever it was — joined/left/declined/absent), so a leave→rejoin must be approved again (strict). We do
-  # NOT keep a prior "joined" row as an admit shortcut: a link leave never updates the server row (it stays
-  # "joined"), so that signal is stale and would wrongly skip re-approval. Returns true = admitted, false = pending.
+  # approval-required NON-host is RE-GATED to "pending_approval" UNLESS they're CURRENTLY "joined" (an active
+  # duplicate join while still in the call → keep them, don't kick their token). A real leave marks the row
+  # "left" (server-aware leave), so a leave→rejoin is NOT currently "joined" → re-gated → host must approve
+  # again. Returns true = admitted (joined), false = pending.
   defp seat_link_joiner(%Call{caller_id: caller_id, id: call_id}, %CallLink{require_approval: approval}, user_id, now) do
-    if user_id == caller_id or not approval do
-      upsert_participant_status(call_id, user_id, %{status: "joined", joined_at: now})
-      true
-    else
-      upsert_participant_status(call_id, user_id, %{status: "pending_approval", joined_at: nil})
-      false
+    cond do
+      user_id == caller_id or not approval ->
+        upsert_participant_status(call_id, user_id, %{status: "joined", joined_at: now})
+        true
+
+      currently_joined?(call_id, user_id) ->
+        true
+
+      true ->
+        upsert_participant_status(call_id, user_id, %{status: "pending_approval", joined_at: nil})
+        false
+    end
+  end
+
+  defp currently_joined?(call_id, user_id) do
+    case get_participant_row(call_id, user_id) do
+      %CallParticipant{status: "joined"} -> true
+      _ -> false
     end
   end
 
@@ -627,6 +639,16 @@ defmodule ConversationService.CallStore do
   defp fetch_group_call(call_id) do
     case Repo.get(Call, call_id) do
       %Call{kind: "group"} = call -> {:ok, call}
+      %Call{} -> {:error, :not_a_group_call}
+      nil -> {:error, :call_not_found}
+    end
+  end
+
+  # Leave accepts a GROUP or a LINK call (both are N-party calls with participant rows + close-when-empty).
+  # Only leave_group_call uses this — the other group-only functions keep the stricter fetch_group_call.
+  defp fetch_group_or_link_call(call_id) do
+    case Repo.get(Call, call_id) do
+      %Call{kind: kind} = call when kind in ["group", "link"] -> {:ok, call}
       %Call{} -> {:error, :not_a_group_call}
       nil -> {:error, :call_not_found}
     end

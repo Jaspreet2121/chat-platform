@@ -494,7 +494,7 @@ defmodule ConversationService.GroupCallStoreTest do
   end
 
   @tag :postgres_integration
-  test "approval link: an approved joiner who leaves+rejoins is RE-GATED to pending_approval" do
+  test "approval link: leave (server-aware, row 'left') → rejoin RE-GATES to pending_approval" do
     host = new_user!()
     joiner = new_user!()
     {:ok, %{link: link}} =
@@ -512,8 +512,20 @@ defmodule ConversationService.GroupCallStoreTest do
     assert {:ok, %{authorized: true}} =
              CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
 
-    # A link leave does NOT mark the row "left" (it stays "joined"). REJOIN must re-gate to pending anyway →
-    # token denies again until the host re-approves. This is the fix.
+    # A DUPLICATE join while still joined does NOT downgrade (stays joined, doesn't kick the active token).
+    assert {:ok, %{status: "joined"}} =
+             CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
+
+    # LEAVE — server-aware for link calls now: the row becomes "left" + left_at set (host still joined so the
+    # call stays open).
+    assert {:ok, _} = CallStore.leave_group_call(%{"call_id" => call.id, "user_id" => joiner})
+
+    {:ok, %{participants: parts}} = CallStore.get_call_with_participants(%{"call_id" => call.id})
+    left_row = Enum.find(parts, &(&1.user_id == joiner))
+    assert left_row.status == "left"
+    assert is_binary(left_row.left_at)
+
+    # REJOIN after leaving → re-gated to pending; token denies until re-approved. This is the fix.
     assert {:ok, %{status: "pending_approval"}} =
              CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
 
@@ -526,6 +538,17 @@ defmodule ConversationService.GroupCallStoreTest do
 
     assert {:ok, %{authorized: true}} =
              CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
+  end
+
+  @tag :postgres_integration
+  test "link call: the last participant leaving closes the call (no ghost participants)" do
+    host = new_user!()
+    {:ok, %{link: link}} = CallStore.create_call_link(%{"creator_id" => host, "type" => "voice"})
+    {:ok, %{call: call}} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
+
+    assert {:ok, %{call: closed}} = CallStore.leave_group_call(%{"call_id" => call.id, "user_id" => host})
+    # Host was the only (joined) participant → nobody left joined → the call ends (kind="link" close works).
+    assert closed.status in ["ended", "missed"]
   end
 
   @tag :postgres_integration

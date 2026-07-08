@@ -467,8 +467,8 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         const denied =
           error instanceof DOMException &&
           (error.name === "NotAllowedError" || error.name === "NotFoundError");
-        // A link call has no group_leave server path — just tear down the client (skip the push).
-        if (!active.isLink) void userChannel?.pushCall("call:group_leave", { call_id: active.callId });
+        // Tell the server we're not joining (marks the row "left" — works for group AND link calls now).
+        void userChannel?.pushCall("call:group_leave", { call_id: active.callId });
         resetGroup("connect-error", denied ? "Microphone access is needed for calls" : "Couldn't connect the call");
       }
     },
@@ -511,9 +511,10 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
 
   const leaveGroup = useCallback(() => {
     const active = groupCallRef.current;
-    // Group calls notify the server (call:group_leave); a link call's leave is a plain client disconnect
-    // (the server-side leave path is group-only) → resetGroup (callId-based) handles teardown either way.
-    if (active && !active.isLink) void userChannel?.pushCall("call:group_leave", { call_id: active.callId });
+    // Notify the server so the participant row is marked "left" (server-aware for group AND link calls now) —
+    // link calls need this so a leave→rejoin re-gates through approval + an empty call closes. resetGroup
+    // (callId-based) handles the local teardown.
+    if (active) void userChannel?.pushCall("call:group_leave", { call_id: active.callId });
     resetGroup("user-leave");
   }, [userChannel, resetGroup]);
 
@@ -531,7 +532,8 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
 
   // Join a call-link (L2) call. The REST /call-links/:id/join already created the "link" call + seated us
   // server-side, so we ONLY connect the media (reuse the group path; no signaling). A link call has no
-  // conversation → conversationId "" (no banner, no group_leave); isLink flags the leave/teardown path.
+  // conversation → conversationId "" (no banner); isLink just marks it a link call. Leave now goes through
+  // the server (call:group_leave) for link calls too, so the row is marked "left".
   const joinLinkCall = useCallback(
     (info: { callId: string; room: string; type: CallType }) => {
       if (statusRef.current !== "idle" || !info.callId || !info.room) return;
