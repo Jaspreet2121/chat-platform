@@ -33,6 +33,7 @@ import {
   createSocket,
   joinConversationChannel,
   joinUserChannel,
+  type CallType,
   type UserChannel
 } from "@/lib/realtime";
 import { CallProvider, GroupCallBanner, type CallController } from "@/components/call";
@@ -436,6 +437,33 @@ export default function ChatPage() {
       socketRef.current?.disconnect();
     };
   }, []);
+
+  // Call-link (L2) hand-off: /call/[linkId] joined a link call, stashed it, and redirected here. Once the
+  // user channel (and thus the CallProvider controller) is ready, connect to that room via joinLinkCall,
+  // then clear the stash so it fires once.
+  useEffect(() => {
+    if (!userChannel) return;
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem("pendingLinkCall");
+      if (raw) sessionStorage.removeItem("pendingLinkCall");
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    try {
+      const info = JSON.parse(raw) as { callId?: string; room?: string; type?: CallType };
+      if (info?.callId && info?.room) {
+        callControllerRef.current?.joinLinkCall({
+          callId: info.callId,
+          room: info.room,
+          type: info.type ?? "voice"
+        });
+      }
+    } catch {
+      /* ignore a malformed stash */
+    }
+  }, [userChannel]);
 
   async function refreshConversationList(selectConversationId?: string) {
     const response = await listConversations();

@@ -256,6 +256,48 @@ export function fetchOngoingGroupCall(conversationId: string) {
   ).then((r) => r.ongoing_call ?? null);
 }
 
+// Call links (L2) — a reusable, WhatsApp-style link. Create one, read its metadata (join screen), and join
+// it (find-or-create a conversation-less "link" call). Registered users only. `require_approval` is stored
+// now but not enforced until L3.
+export type CallLink = {
+  id: string;
+  type: "voice" | "video";
+  require_approval: boolean;
+  active: boolean;
+  creator_id?: string;
+};
+
+export type JoinCallLinkResult = {
+  call_id: string;
+  room: string;
+  type: "voice" | "video";
+  require_approval: boolean;
+  is_host: boolean;
+};
+
+export async function createCallLink(input: {
+  type: "voice" | "video";
+  require_approval: boolean;
+}): Promise<CallLink> {
+  const { link } = await request<{ link: CallLink }>("/api/v1/call-links", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+  return link;
+}
+
+export async function getCallLink(id: string): Promise<CallLink> {
+  const { link } = await request<{ link: CallLink }>(`/api/v1/call-links/${encodeURIComponent(id)}`);
+  return link;
+}
+
+export function joinCallLink(id: string): Promise<JoinCallLinkResult> {
+  return request<JoinCallLinkResult>(`/api/v1/call-links/${encodeURIComponent(id)}/join`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
 export function requestOtp(input: OtpRequestInput) {
   return request<{
     otp_request_id: string;

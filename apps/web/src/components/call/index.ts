@@ -12,3 +12,5 @@ export { GroupCallBanner } from "./GroupCallBanner";
 export type { GroupCallBannerProps } from "./GroupCallBanner";
 export { AddParticipantsSheet } from "./AddParticipantsSheet";
 export type { AddParticipantsSheetProps, AddTarget } from "./AddParticipantsSheet";
+export { NewCallLinkModal } from "./NewCallLinkModal";
+export type { NewCallLinkModalProps } from "./NewCallLinkModal";

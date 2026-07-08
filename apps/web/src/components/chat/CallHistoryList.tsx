@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, Phone, Users, Video } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Link2, Phone, Users, Video } from "lucide-react";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { fetchCallHistory, type CallRecord } from "@/lib/api";
+import { NewCallLinkModal } from "@/components/call";
 import { useUserProfile } from "./useUserProfile";
 
 export type CallHistoryListProps = {
@@ -89,6 +90,7 @@ function CallHistoryRow({ call, currentUserId }: { call: CallRecord; currentUser
 export function CallHistoryList({ currentUserId }: CallHistoryListProps) {
   const [calls, setCalls] = useState<CallRecord[] | null>(null);
   const [error, setError] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -100,26 +102,18 @@ export function CallHistoryList({ currentUserId }: CallHistoryListProps) {
     };
   }, []);
 
-  const centered = "flex h-full flex-col items-center justify-center gap-3 bg-bg px-8 pb-[calc(84px+env(safe-area-inset-bottom))] text-center";
+  const centered = "flex h-full flex-col items-center justify-center gap-3 px-8 text-center";
 
-  if (error) {
-    return (
+  const content =
+    error ? (
       <div className={centered}>
         <p className="text-sm text-muted">Couldn&apos;t load your calls. Pull up later.</p>
       </div>
-    );
-  }
-
-  if (calls === null) {
-    return (
+    ) : calls === null ? (
       <div className={centered}>
         <p className="text-sm text-muted">Loading calls…</p>
       </div>
-    );
-  }
-
-  if (calls.length === 0) {
-    return (
+    ) : calls.length === 0 ? (
       <div className={centered}>
         <div className="accent-gradient flex h-16 w-16 items-center justify-center rounded-3xl shadow-accent-glow">
           <Phone className="h-7 w-7 text-white" aria-hidden />
@@ -127,16 +121,34 @@ export function CallHistoryList({ currentUserId }: CallHistoryListProps) {
         <h1 className="text-lg font-semibold tracking-[-0.02em] text-fg">No calls yet</h1>
         <p className="max-w-[17rem] text-sm text-muted">Your voice and video calls will show up here.</p>
       </div>
-    );
-  }
-
-  return (
-    <div className="h-full overflow-y-auto bg-bg pb-[calc(84px+env(safe-area-inset-bottom))]">
+    ) : (
       <div className="divide-y divide-border/60">
         {calls.map((call) => (
           <CallHistoryRow key={call.id} call={call} currentUserId={currentUserId} />
         ))}
       </div>
+    );
+
+  return (
+    <div className="flex h-full flex-col bg-bg">
+      {/* Header — always present so "New call link" is reachable from every state (empty / list / error). */}
+      <div className="flex shrink-0 items-center justify-between border-b border-border/60 px-4 py-3">
+        <h1 className="text-base font-semibold tracking-[-0.02em] text-fg">Calls</h1>
+        <button
+          type="button"
+          onClick={() => setLinkOpen(true)}
+          className="accent-gradient inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold text-white shadow-accent-glow transition-transform active:scale-95"
+        >
+          <Link2 className="h-3.5 w-3.5" aria-hidden />
+          New call link
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto pb-[calc(84px+env(safe-area-inset-bottom))]">
+        {content}
+      </div>
+
+      {linkOpen && <NewCallLinkModal onClose={() => setLinkOpen(false)} />}
     </div>
   );
 }

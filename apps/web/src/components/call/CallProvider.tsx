@@ -57,6 +57,9 @@ type GroupCall = {
   /** The ringing initiator (only set for an incoming ring). */
   callerName?: string;
   callerId?: string;
+  /** True for a call-link (L2) call — a conversation-less N-party call. Suppresses the group_leave signaling
+   *  (the server-side leave path is group-only; a link call's teardown is a plain client disconnect). */
+  isLink?: boolean;
 };
 
 /** A group call currently in progress in a conversation — powers the "join call" banner (Slice C1). */
@@ -86,6 +89,9 @@ type CallContextValue = {
   /** Add someone to the ACTIVE group call — an existing member (userId) or an outside person (phone) —
    *  which rings them in. No-op unless we're currently in a group call. */
   addToGroupCall: (target: AddTarget) => void;
+  /** Join a call-link (L2) call — a conversation-less N-party call. Connects to the room via the group path
+   *  (the REST /call-links/:id/join already seated us server-side). No-op unless idle. */
+  joinLinkCall: (info: { callId: string; room: string; type: CallType }) => void;
   /** True when a new call can be started (nothing in progress). */
   isIdle: boolean;
 };
@@ -97,6 +103,7 @@ const CallContext = createContext<CallContextValue>({
   ongoingGroupCall: () => null,
   primeOngoingGroupCall: () => undefined,
   addToGroupCall: () => undefined,
+  joinLinkCall: () => undefined,
   isIdle: true
 });
 
@@ -115,6 +122,7 @@ export type CallController = {
   startCall: (peerId: string, peerName: string, conversationId?: string, type?: CallType) => void;
   startGroupCall: (conversationId: string, title: string, type?: CallType) => void;
   addToGroupCall: (target: AddTarget) => void;
+  joinLinkCall: (info: { callId: string; room: string; type: CallType }) => void;
 };
 
 export type CallProviderProps = {
@@ -441,7 +449,8 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         const denied =
           error instanceof DOMException &&
           (error.name === "NotAllowedError" || error.name === "NotFoundError");
-        void userChannel?.pushCall("call:group_leave", { call_id: active.callId });
+        // A link call has no group_leave server path — just tear down the client (skip the push).
+        if (!active.isLink) void userChannel?.pushCall("call:group_leave", { call_id: active.callId });
         resetGroup("connect-error", denied ? "Microphone access is needed for calls" : "Couldn't connect the call");
       }
     },
@@ -484,7 +493,9 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
 
   const leaveGroup = useCallback(() => {
     const active = groupCallRef.current;
-    if (active) void userChannel?.pushCall("call:group_leave", { call_id: active.callId });
+    // Group calls notify the server (call:group_leave); a link call's leave is a plain client disconnect
+    // (the server-side leave path is group-only) → resetGroup (callId-based) handles teardown either way.
+    if (active && !active.isLink) void userChannel?.pushCall("call:group_leave", { call_id: active.callId });
     resetGroup("user-leave");
   }, [userChannel, resetGroup]);
 
@@ -498,6 +509,25 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       void connectGroup({ callId, room, conversationId, type, title });
     },
     [userChannel, connectGroup]
+  );
+
+  // Join a call-link (L2) call. The REST /call-links/:id/join already created the "link" call + seated us
+  // server-side, so we ONLY connect the media (reuse the group path; no signaling). A link call has no
+  // conversation → conversationId "" (no banner, no group_leave); isLink flags the leave/teardown path.
+  const joinLinkCall = useCallback(
+    (info: { callId: string; room: string; type: CallType }) => {
+      if (statusRef.current !== "idle" || !info.callId || !info.room) return;
+      setNote(null);
+      void connectGroup({
+        callId: info.callId,
+        room: info.room,
+        conversationId: "",
+        type: info.type,
+        title: "Call",
+        isLink: true
+      });
+    },
+    [connectGroup]
   );
 
   // Add someone to the ACTIVE group call (C2). `userId` for an existing member, `phone` for an outside
@@ -699,11 +729,11 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   // Expose the imperative API to a parent above this provider (the chat page owns the user channel).
   useEffect(() => {
     if (!controllerRef) return;
-    controllerRef.current = { startCall, startGroupCall, addToGroupCall };
+    controllerRef.current = { startCall, startGroupCall, addToGroupCall, joinLinkCall };
     return () => {
       controllerRef.current = null;
     };
-  }, [controllerRef, startCall, startGroupCall, addToGroupCall]);
+  }, [controllerRef, startCall, startGroupCall, addToGroupCall, joinLinkCall]);
 
   // Cleanup on unmount: leave any room + clear timers. This fires ONLY if the provider itself unmounts
   // (leaving /chat) — it is NOT tied to a call's connecting→in-call transition. If a mid-call leave ever
@@ -755,6 +785,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         cid && cid !== activeGroupConversationId ? ongoingByConversation[cid] ?? null : null,
       primeOngoingGroupCall,
       addToGroupCall,
+      joinLinkCall,
       isIdle: status === "idle"
     }),
     [
@@ -765,6 +796,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       activeGroupConversationId,
       primeOngoingGroupCall,
       addToGroupCall,
+      joinLinkCall,
       status
     ]
   );
