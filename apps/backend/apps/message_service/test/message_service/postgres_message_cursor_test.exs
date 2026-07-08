@@ -14,6 +14,7 @@ defmodule MessageService.PostgresMessageCursorTest do
 
   @conversation_id "33333333-3333-4333-8333-333333333333"
   @sender "44444444-4444-4444-8444-444444444444"
+  @app_id "55555555-5555-4555-8555-555555555555"
   # A uuid that sorts strictly before any real message id → a "from the beginning" forward anchor.
   @min_uuid "00000000-0000-0000-0000-000000000000"
   @shared_ts ~U[2026-01-01 00:00:00.000000Z]
@@ -31,6 +32,28 @@ defmodule MessageService.PostgresMessageCursorTest do
       Application.put_env(:message_service, :message_persistence, previous_persistence)
       Application.put_env(:message_service, :message_store_adapter, previous_adapter)
     end)
+
+    # Messages resolve their authoritative app_id from the parent conversation (migration 056) — an
+    # unknown conversation is rejected as :message_invalid. Seed the FK chain so create_message works:
+    # apps ← users_auth ← conversations (and messages.app_id → apps). All rolled back with the test by
+    # the SQL Sandbox.
+    Repo.query!(
+      "INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'cursor-test', 'cursor-test') " <>
+        "ON CONFLICT (id) DO NOTHING",
+      [@app_id]
+    )
+
+    Repo.query!(
+      "INSERT INTO users_auth (id, app_id, external_id) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, 'cursor-test-sender') ON CONFLICT (id) DO NOTHING",
+      [@sender, @app_id]
+    )
+
+    Repo.query!(
+      "INSERT INTO conversations (id, type, created_by, app_id) " <>
+        "VALUES ($1::text::uuid, 'direct', $2::text::uuid, $3::text::uuid) ON CONFLICT (id) DO NOTHING",
+      [@conversation_id, @sender, @app_id]
+    )
 
     :ok
   end
