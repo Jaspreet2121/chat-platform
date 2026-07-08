@@ -300,16 +300,18 @@ defmodule ConversationService.CallStore do
   end
 
   @doc """
-  Authorization predicate (powers the LiveKit token endpoint + join): does (call_id, user_id) have ANY
-  `group_call_participants` row? Any status (invited/joined/left/declined/missed) means the user was
-  authorized for THIS call. attrs: "call_id", "user_id". Returns `{:ok, %{authorized: boolean}}` (never
-  errors — a missing/bad id or DB-off is simply `authorized: false`, so the caller fails closed).
+  Authorization predicate for the LiveKit token endpoint: does (call_id, user_id) have a
+  `group_call_participants` row whose status is NOT `pending_approval`? Any admitted status
+  (invited/joined/declined/left/missed) authorizes; a call-link joiner still waiting for the host
+  (`pending_approval`, L3a) does NOT (the token 403s until the host approves → row flips to `joined`). Group
+  calls are unaffected — their rows are never pending. attrs: "call_id", "user_id". Returns
+  `{:ok, %{authorized: boolean}}` (never errors — a missing/bad id or DB-off is `authorized: false` = fail closed).
   """
   def call_participant?(attrs) do
     with :ok <- persistence(),
          {:ok, call_id} <- required(attrs, "call_id"),
          {:ok, user_id} <- required(attrs, "user_id") do
-      {:ok, %{authorized: has_participant_row?(call_id, user_id)}}
+      {:ok, %{authorized: authorized_participant?(call_id, user_id)}}
     else
       _ -> {:ok, %{authorized: false}}
     end
@@ -383,9 +385,11 @@ defmodule ConversationService.CallStore do
   @doc """
   Join a call link. attrs: "link_id", "user_id". Loads the active link, then find-or-creates THE ongoing
   `link` call for it (kind="link", conversation_id NULL, link_id set, status "ongoing"; caller_id = the
-  first joiner, the effective host of the session) and seats the user as a `joined` participant. Serialized
-  per-link (row lock) so two simultaneous joiners land in the SAME room. Approval is NOT enforced here (L3).
-  Returns `{:ok, %{call, room, type, require_approval, is_host}}`.
+  first joiner, the effective host). Serialized per-link (row lock) so two simultaneous joiners land in the
+  SAME room. APPROVAL (L3a): the host and no-approval links join immediately (status "joined" → `%{status:
+  "joined", call, room, type, is_host, require_approval}`). An approval-required NON-host is seated
+  `pending_approval` (NO room in the reply — the token 403s until the host approves) → `%{status:
+  "pending_approval", call, is_host: false, require_approval: true}`.
   """
   def join_call_link(attrs) do
     with :ok <- persistence(),
@@ -394,24 +398,79 @@ defmodule ConversationService.CallStore do
          {:ok, link} <- fetch_active_link(link_id) do
       now = DateTime.utc_now()
 
-      {:ok, call} =
+      {:ok, {call, admitted}} =
         Repo.transaction(fn ->
           # Lock the link row → serialize concurrent joins so only the FIRST creates the link call; the rest
           # find the one it created and reuse its room.
           Repo.one(from(l in CallLink, where: l.id == ^link_id, lock: "FOR UPDATE"))
           call = find_or_create_link_call(link, user_id, now)
-          upsert_participant_status(call.id, user_id, %{status: "joined", joined_at: now})
-          call
+          admitted = seat_link_joiner(call, link, user_id, now)
+          {call, admitted}
         end)
 
-      {:ok,
-       %{
-         call: response(call),
-         room: call.room_name,
-         type: call.type,
-         require_approval: link.require_approval,
-         is_host: user_id == call.caller_id
-       }}
+      is_host = user_id == call.caller_id
+
+      if admitted do
+        {:ok,
+         %{
+           status: "joined",
+           call: response(call),
+           room: call.room_name,
+           type: call.type,
+           require_approval: link.require_approval,
+           is_host: is_host
+         }}
+      else
+        # Pending: no room (the client waits; the token endpoint 403s until approved). call carries call_id
+        # so the joiner can send call:link_join_request to the host.
+        {:ok,
+         %{
+           status: "pending_approval",
+           call: response(call),
+           require_approval: link.require_approval,
+           is_host: false
+         }}
+      end
+    end
+  rescue
+    _ -> {:error, :call_invalid}
+  end
+
+  @doc """
+  Host admits a pending call-link joiner (L3a). attrs: "call_id", "actor_id" (must be the host = caller_id),
+  "user_id". Flips their row to `joined` → the token now authorizes them. Returns
+  `{:ok, %{call_id, user_id, status: "joined", room, type}}` so signaling can tell the joiner to connect.
+  Non-host actor → `{:error, :not_host}`.
+  """
+  def approve_link_participant(attrs) do
+    with :ok <- persistence(),
+         {:ok, call_id} <- required(attrs, "call_id"),
+         {:ok, actor_id} <- required(attrs, "actor_id"),
+         {:ok, user_id} <- required(attrs, "user_id"),
+         {:ok, call} <- fetch_call(call_id),
+         :ok <- ensure_host(call, actor_id) do
+      upsert_participant_status(call_id, user_id, %{status: "joined", joined_at: DateTime.utc_now()})
+      {:ok, %{call_id: call_id, user_id: user_id, status: "joined", room: call.room_name, type: call.type}}
+    end
+  rescue
+    _ -> {:error, :call_invalid}
+  end
+
+  @doc """
+  Host denies a pending call-link joiner (L3a). Same attrs as approve. DELETES their participant row (no row
+  → the token fails closed). Returns `{:ok, %{call_id, user_id, status: "denied"}}`. Non-host → `:not_host`.
+  """
+  def deny_link_participant(attrs) do
+    with :ok <- persistence(),
+         {:ok, call_id} <- required(attrs, "call_id"),
+         {:ok, actor_id} <- required(attrs, "actor_id"),
+         {:ok, user_id} <- required(attrs, "user_id"),
+         {:ok, call} <- fetch_call(call_id),
+         :ok <- ensure_host(call, actor_id) do
+      from(p in CallParticipant, where: p.call_id == ^call_id and p.user_id == ^user_id)
+      |> Repo.delete_all()
+
+      {:ok, %{call_id: call_id, user_id: user_id, status: "denied"}}
     end
   rescue
     _ -> {:error, :call_invalid}
@@ -454,6 +513,36 @@ defmodule ConversationService.CallStore do
       %Call{} = call -> call
       nil -> insert_link_call!(link_id, type, user_id, now)
     end
+  end
+
+  # Seat a call-link joiner. The host (caller_id) and no-approval links join immediately ("joined"); an
+  # approval-required non-host is left "pending_approval" — UNLESS already admitted earlier (a re-join must
+  # never downgrade a joined participant back to pending). Returns true when admitted (joined), false pending.
+  defp seat_link_joiner(%Call{caller_id: caller_id, id: call_id}, %CallLink{require_approval: approval}, user_id, now) do
+    cond do
+      user_id == caller_id or not approval ->
+        upsert_participant_status(call_id, user_id, %{status: "joined", joined_at: now})
+        true
+
+      already_admitted?(call_id, user_id) ->
+        true
+
+      true ->
+        upsert_participant_status(call_id, user_id, %{status: "pending_approval", joined_at: nil})
+        false
+    end
+  end
+
+  defp already_admitted?(call_id, user_id) do
+    case get_participant_row(call_id, user_id) do
+      %CallParticipant{status: "joined"} -> true
+      _ -> false
+    end
+  end
+
+  # The host of a link call is its caller_id (the first joiner). Only the host may approve/deny.
+  defp ensure_host(%Call{caller_id: caller_id}, actor_id) do
+    if is_binary(caller_id) and actor_id == caller_id, do: :ok, else: {:error, :not_host}
   end
 
   defp active_link_call(link_id) do
@@ -665,9 +754,20 @@ defmodule ConversationService.CallStore do
     end
   end
 
-  # Does (call_id, user_id) have ANY participant row? The raw predicate behind call_participant?/1 + join.
+  # Does (call_id, user_id) have ANY participant row? The raw predicate behind join/promote authorization
+  # (a member/added participant may join regardless of status). NOT used by the token.
   defp has_participant_row?(call_id, user_id) do
     from(p in CallParticipant, where: p.call_id == ^call_id and p.user_id == ^user_id, limit: 1)
+    |> Repo.exists?()
+  end
+
+  # TOKEN predicate: a participant row that is NOT `pending_approval`. A call-link joiner waiting for the host
+  # has only a pending row → not authorized (token 403) until the host approves and the row flips to `joined`.
+  defp authorized_participant?(call_id, user_id) do
+    from(p in CallParticipant,
+      where: p.call_id == ^call_id and p.user_id == ^user_id and p.status != "pending_approval",
+      limit: 1
+    )
     |> Repo.exists?()
   end
 

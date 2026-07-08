@@ -57,6 +57,9 @@ defmodule SharedInfra.ConversationClient do
   @callback create_call_link(attrs()) :: result()
   @callback get_call_link(attrs()) :: result()
   @callback join_call_link(attrs()) :: result()
+  # Call links (L3a) — host approve/deny a pending joiner.
+  @callback approve_link_participant(attrs()) :: result()
+  @callback deny_link_participant(attrs()) :: result()
 
   # Optional so existing test stubs of this behaviour don't all need it; the real adapters implement it.
   @optional_callbacks get_conversation_app: 1,
@@ -82,7 +85,9 @@ defmodule SharedInfra.ConversationClient do
                       promote_direct_to_group: 1,
                       create_call_link: 1,
                       get_call_link: 1,
-                      join_call_link: 1
+                      join_call_link: 1,
+                      approve_link_participant: 1,
+                      deny_link_participant: 1
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
@@ -120,6 +125,8 @@ defmodule SharedInfra.ConversationClient do
   def create_call_link(attrs), do: adapter().create_call_link(attrs)
   def get_call_link(attrs), do: adapter().get_call_link(attrs)
   def join_call_link(attrs), do: adapter().join_call_link(attrs)
+  def approve_link_participant(attrs), do: adapter().approve_link_participant(attrs)
+  def deny_link_participant(attrs), do: adapter().deny_link_participant(attrs)
 
   @doc "The configured Conversation client adapter (default `ConversationService.ConversationClientInProcess`)."
   def adapter do

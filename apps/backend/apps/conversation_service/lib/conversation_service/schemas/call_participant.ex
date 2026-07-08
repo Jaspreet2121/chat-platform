@@ -13,7 +13,8 @@ defmodule ConversationService.Schemas.CallParticipant do
   import Ecto.Changeset
 
   @primary_key false
-  @statuses ~w(invited joined declined left missed)
+  # pending_approval: a call-link joiner waiting for the host to admit them (L3a) — no token until "joined".
+  @statuses ~w(invited joined declined left missed pending_approval)
 
   schema "group_call_participants" do
     field(:call_id, :binary_id, primary_key: true)

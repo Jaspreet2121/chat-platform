@@ -40,6 +40,10 @@ defmodule RealtimeGateway.CallSignaling do
   def handle_event("call:group_leave", payload, socket), do: group_leave(payload, socket)
   def handle_event("call:group_add", payload, socket), do: group_add(payload, socket)
   def handle_event("call:promote", payload, socket), do: promote(payload, socket)
+  # Call links L3a — approval gate (joiner requests, host approves/denies).
+  def handle_event("call:link_join_request", payload, socket), do: link_join_request(payload, socket)
+  def handle_event("call:link_approve", payload, socket), do: link_approve(payload, socket)
+  def handle_event("call:link_deny", payload, socket), do: link_deny(payload, socket)
   def handle_event(_event, _payload, socket), do: reply_error(socket, "call.invalid_event")
 
   # --- invite: caller → create ringing call → ring the callee ------------------------------------
@@ -395,6 +399,91 @@ defmodule RealtimeGateway.CallSignaling do
   end
 
   defp promote(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  # ============================================================================================
+  # Call links L3a — approval gate. A pending joiner asks the host to admit them; the host approves/denies.
+  # The host is the link call's caller_id (first joiner). Actor is ALWAYS current_user(socket).
+  # ============================================================================================
+
+  # call:link_join_request %{"call_id"} — sent BY a pending joiner. Ring the host with an approve/deny prompt.
+  defp link_join_request(%{"call_id" => call_id}, socket)
+       when is_binary(call_id) and call_id != "" do
+    actor = current_user(socket)
+
+    case ConversationClient.get_call(%{"call_id" => call_id}) do
+      {:ok, call} ->
+        host = cget(call, :caller_id)
+
+        if is_binary(host) and host != actor do
+          broadcast(socket, host, "call:link_incoming_request", %{
+            call_id: call_id,
+            user_id: actor,
+            user_name: resolve_name(actor)
+          })
+        end
+
+        {:reply, {:ok, %{call_id: call_id}}, socket}
+
+      _ ->
+        reply_error(socket, "call.not_found")
+    end
+  end
+
+  defp link_join_request(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  # call:link_approve %{"call_id","user_id"} — host admits the joiner. Flip their row → joined (the token now
+  # authorizes them) and tell them the room so they can connect.
+  defp link_approve(%{"call_id" => call_id, "user_id" => user_id}, socket)
+       when is_binary(call_id) and call_id != "" and is_binary(user_id) and user_id != "" do
+    host = current_user(socket)
+
+    case ConversationClient.approve_link_participant(%{
+           "call_id" => call_id,
+           "actor_id" => host,
+           "user_id" => user_id
+         }) do
+      {:ok, result} ->
+        broadcast(socket, user_id, "call:link_approved", %{
+          call_id: call_id,
+          room: cget(result, :room),
+          type: cget(result, :type)
+        })
+
+        {:reply, {:ok, %{call_id: call_id, user_id: user_id}}, socket}
+
+      {:error, :not_host} ->
+        reply_error(socket, "call.forbidden")
+
+      _ ->
+        reply_error(socket, "call.unavailable")
+    end
+  end
+
+  defp link_approve(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  # call:link_deny %{"call_id","user_id"} — host rejects the joiner. Drop their row (no token) + tell them.
+  defp link_deny(%{"call_id" => call_id, "user_id" => user_id}, socket)
+       when is_binary(call_id) and call_id != "" and is_binary(user_id) and user_id != "" do
+    host = current_user(socket)
+
+    case ConversationClient.deny_link_participant(%{
+           "call_id" => call_id,
+           "actor_id" => host,
+           "user_id" => user_id
+         }) do
+      {:ok, _result} ->
+        broadcast(socket, user_id, "call:link_denied", %{call_id: call_id})
+        {:reply, {:ok, %{call_id: call_id, user_id: user_id}}, socket}
+
+      {:error, :not_host} ->
+        reply_error(socket, "call.forbidden")
+
+      _ ->
+        reply_error(socket, "call.unavailable")
+    end
+  end
+
+  defp link_deny(_payload, socket), do: reply_error(socket, "call.invalid_request")
 
   # Resolve the add target → user_id: an explicit "user_id" (existing member), or a "phone" looked up via
   # auth (v1: the phone must belong to an existing ACTIVE app user — a true SMS invite is out of scope).

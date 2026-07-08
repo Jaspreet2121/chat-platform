@@ -165,6 +165,14 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.CallStore.join_call_link(body(conn)))
   end
 
+  post "/internal/call-links/approve" do
+    send_result(conn, ConversationService.CallStore.approve_link_participant(body(conn)))
+  end
+
+  post "/internal/call-links/deny" do
+    send_result(conn, ConversationService.CallStore.deny_link_participant(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "conversation", status: "ok", deps: %{}}})
   end

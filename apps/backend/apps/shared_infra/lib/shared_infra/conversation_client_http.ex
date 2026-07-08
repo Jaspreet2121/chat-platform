@@ -97,6 +97,12 @@ defmodule SharedInfra.ConversationClientHttp do
   def join_call_link(attrs), do: post("/internal/call-links/join", attrs)
 
   @impl true
+  def approve_link_participant(attrs), do: post("/internal/call-links/approve", attrs)
+
+  @impl true
+  def deny_link_participant(attrs), do: post("/internal/call-links/deny", attrs)
+
+  @impl true
   def add_participant(attrs), do: post("/internal/participants/add", attrs)
 
   @impl true

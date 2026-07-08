@@ -122,4 +122,11 @@ defmodule ConversationService.ConversationClientInProcess do
 
   @impl true
   def join_call_link(attrs), do: ConversationService.CallStore.join_call_link(attrs)
+
+  @impl true
+  def approve_link_participant(attrs),
+    do: ConversationService.CallStore.approve_link_participant(attrs)
+
+  @impl true
+  def deny_link_participant(attrs), do: ConversationService.CallStore.deny_link_participant(attrs)
 end

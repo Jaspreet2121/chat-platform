@@ -391,6 +391,124 @@ defmodule ConversationService.GroupCallStoreTest do
              CallStore.join_call_link(%{"link_id" => "nope", "user_id" => new_user!()})
   end
 
+  # --- L3a: call-link approval gate --------------------------------------------------------------
+
+  @tag :postgres_integration
+  test "approval link: host joins directly; a non-host lands pending_approval (token denied)" do
+    host = new_user!()
+    joiner = new_user!()
+    {:ok, %{link: link}} =
+      CallStore.create_call_link(%{"creator_id" => host, "type" => "video", "require_approval" => true})
+
+    # Host is the FIRST joiner → joined directly (caller_id/host) + token-authorized.
+    assert {:ok, %{status: "joined", is_host: true, call: hostcall}} =
+             CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
+
+    assert {:ok, %{authorized: true}} =
+             CallStore.call_participant?(%{"call_id" => hostcall.id, "user_id" => host})
+
+    # Non-host on an approval link → pending_approval, NO room, and the token DENIES them.
+    assert {:ok, result} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
+    assert result.status == "pending_approval"
+    assert result.is_host == false
+    assert Map.get(result, :room) == nil
+    assert result.call.id == hostcall.id
+
+    assert {:ok, %{authorized: false}} =
+             CallStore.call_participant?(%{"call_id" => hostcall.id, "user_id" => joiner})
+  end
+
+  @tag :postgres_integration
+  test "approve_link_participant: host approves → joined → token authorizes" do
+    host = new_user!()
+    joiner = new_user!()
+    {:ok, %{link: link}} =
+      CallStore.create_call_link(%{"creator_id" => host, "type" => "voice", "require_approval" => true})
+
+    {:ok, %{call: call}} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
+    {:ok, %{status: "pending_approval"}} =
+      CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
+
+    assert {:ok, %{status: "joined", room: room, type: "voice"}} =
+             CallStore.approve_link_participant(%{
+               "call_id" => call.id,
+               "actor_id" => host,
+               "user_id" => joiner
+             })
+
+    assert String.starts_with?(room, "call-")
+    assert {:ok, %{authorized: true}} =
+             CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
+  end
+
+  @tag :postgres_integration
+  test "deny_link_participant: host denies → row removed → token still denies" do
+    host = new_user!()
+    joiner = new_user!()
+    {:ok, %{link: link}} =
+      CallStore.create_call_link(%{"creator_id" => host, "type" => "video", "require_approval" => true})
+
+    {:ok, %{call: call}} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
+    {:ok, %{status: "pending_approval"}} =
+      CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
+
+    assert {:ok, %{status: "denied"}} =
+             CallStore.deny_link_participant(%{
+               "call_id" => call.id,
+               "actor_id" => host,
+               "user_id" => joiner
+             })
+
+    assert {:ok, %{authorized: false}} =
+             CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
+
+    # The denied user's row is gone.
+    {:ok, %{participants: parts}} = CallStore.get_call_with_participants(%{"call_id" => call.id})
+    refute Enum.any?(parts, &(&1.user_id == joiner))
+  end
+
+  @tag :postgres_integration
+  test "approve/deny: a NON-host actor is forbidden" do
+    host = new_user!()
+    joiner = new_user!()
+    stranger = new_user!()
+    {:ok, %{link: link}} =
+      CallStore.create_call_link(%{"creator_id" => host, "type" => "voice", "require_approval" => true})
+
+    {:ok, %{call: call}} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
+    {:ok, _} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
+
+    assert {:error, :not_host} =
+             CallStore.approve_link_participant(%{
+               "call_id" => call.id,
+               "actor_id" => stranger,
+               "user_id" => joiner
+             })
+
+    assert {:error, :not_host} =
+             CallStore.deny_link_participant(%{
+               "call_id" => call.id,
+               "actor_id" => stranger,
+               "user_id" => joiner
+             })
+  end
+
+  @tag :postgres_integration
+  test "no-approval link: a non-host still joins directly (approval gate off)" do
+    host = new_user!()
+    joiner = new_user!()
+    {:ok, %{link: link}} = CallStore.create_call_link(%{"creator_id" => host, "type" => "voice"})
+
+    {:ok, %{call: call}} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
+
+    assert {:ok, %{status: "joined", is_host: false, room: room}} =
+             CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
+
+    assert String.starts_with?(room, "call-")
+    assert {:ok, %{authorized: true}} =
+             CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
+  end
+
   # --- helpers -----------------------------------------------------------------------------------
 
   # A LIVE 1-on-1 (direct) call: create (ringing) then mark_answered (→ "accepted"). Returns {:ok, call}.

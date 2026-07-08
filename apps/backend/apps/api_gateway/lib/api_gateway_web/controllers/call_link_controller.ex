@@ -54,7 +54,10 @@ defmodule ApiGatewayWeb.CallLinkController do
            }) do
       call = cget(result, :call)
 
+      # status is "joined" (host / no-approval → room present) or "pending_approval" (approval-required
+      # non-host → NO room; the client waits, then connects on the call:link_approved signal — L3b).
       json(conn, %{
+        status: cget(result, :status),
         call_id: cget(call, :id),
         room: cget(result, :room),
         type: cget(result, :type),
