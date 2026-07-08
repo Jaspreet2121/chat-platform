@@ -864,12 +864,13 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     conversation_id = attr(attrs, "conversation_id")
     limit = attr(attrs, "limit") || 50
     viewer = attr(attrs, "viewer_user_id")
+    cursor = parse_cursor(attrs)
 
     rows =
       Message
       |> where([m], m.conversation_id == ^conversation_id)
       |> apply_viewer_window(conversation_id, viewer)
-      |> order_by([m], desc: m.created_at)
+      |> apply_keyset(cursor)
       |> limit(^limit)
       |> Repo.all()
 
@@ -889,10 +890,65 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         |> Map.put(:is_starred, MapSet.member?(starred, message.message_id))
       end)
 
-    {:ok, %{conversation_id: conversation_id, messages: messages, next_cursor: nil}}
+    {:ok, %{conversation_id: conversation_id, messages: messages, next_cursor: next_cursor(rows, limit)}}
   rescue
     Ecto.Query.CastError -> {:error, :message_invalid}
   end
+
+  # Compound (created_at, message_id) keyset pagination. Additive: with NO cursor params this is the
+  # unchanged "recent" page (newest first) — only the always-nil next_cursor becomes real. Forward
+  # (after_*) backfills oldest→newest strictly after a point; backward (before_*) scrolls history
+  # newest→older strictly before a point. The message_id tiebreak (the uuid PK) means same-timestamp
+  # rows are never skipped — mirrors the webhook outbox list_failed keyset ((created_at, id) < ($ts, $id)),
+  # using the same $N::text::timestamptz / $N::text::uuid cast convention.
+  defp parse_cursor(attrs) do
+    after_ts = attr(attrs, "after_created_at")
+    after_id = attr(attrs, "after_id")
+    before_ts = attr(attrs, "before_created_at")
+    before_id = attr(attrs, "before_id")
+
+    cond do
+      present?(after_ts) and present?(after_id) -> {:forward, after_ts, after_id}
+      present?(before_ts) and present?(before_id) -> {:backward, before_ts, before_id}
+      true -> :recent
+    end
+  end
+
+  defp apply_keyset(query, {:forward, ts, id}) do
+    query
+    |> where(
+      [m],
+      fragment("(?, ?) > (?::text::timestamptz, ?::text::uuid)", m.created_at, m.message_id, ^ts, ^id)
+    )
+    |> order_by([m], asc: m.created_at, asc: m.message_id)
+  end
+
+  defp apply_keyset(query, {:backward, ts, id}) do
+    query
+    |> where(
+      [m],
+      fragment("(?, ?) < (?::text::timestamptz, ?::text::uuid)", m.created_at, m.message_id, ^ts, ^id)
+    )
+    |> order_by([m], desc: m.created_at, desc: m.message_id)
+  end
+
+  # Recent (no cursor): unchanged newest-first, now with a deterministic message_id tiebreak so
+  # same-timestamp rows have a stable order (and a usable next_cursor).
+  defp apply_keyset(query, :recent) do
+    order_by(query, [m], desc: m.created_at, desc: m.message_id)
+  end
+
+  # next_cursor = the keyset of the LAST row in the page, but only when the page is full (there may be
+  # more) — a short page means we hit the end → nil. created_at as ISO-8601 + message_id as text so it
+  # survives the HTTP boundary and feeds straight back as an after_*/before_* cursor.
+  defp next_cursor(rows, limit) when length(rows) >= limit and rows != [] do
+    last = List.last(rows)
+    %{created_at: DateTime.to_iso8601(last.created_at), message_id: to_string(last.message_id)}
+  end
+
+  defp next_cursor(_rows, _limit), do: nil
+
+  defp present?(v), do: is_binary(v) and v != ""
 
   # Shared-media gallery: the conversation's media messages, newest first, paginated by created_at
   # cursor. A pure filtered READ of messages (no migration, nothing written); the caller's viewer

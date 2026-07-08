@@ -33,16 +33,44 @@ defmodule ApiGatewayWeb.V1.MessageController do
     end
   end
 
-  def index(conn, %{"id" => conversation_id}) do
+  # Optional compound-keyset cursor pagination (additive — no cursor params → the unchanged recent page):
+  #   forward backfill : after_created_at + after_id  (strictly-after, oldest→newest)
+  #   history scroll   : before_created_at + before_id (strictly-before, newest→older)
+  #   limit            : default 30, capped at 100
+  # next_cursor in the response is the keyset {created_at, message_id} of the page's last row (or null at
+  # the end). The tenant gate (conversation_in_app) is unchanged.
+  def index(conn, %{"id" => conversation_id} = params) do
     app_id = conn.assigns.v1_app_id
 
     with {:ok, _conversation} <- conversation_in_app(conversation_id, app_id),
          {:ok, result} <-
-           SharedInfra.MessageClient.list_messages(%{"conversation_id" => conversation_id}) do
+           SharedInfra.MessageClient.list_messages(list_attrs(conversation_id, params)) do
       json(conn, result)
     else
       {:error, :not_found} -> not_found(conn)
       _ -> ErrorResponse.invalid_request(conn, "v1.invalid_request")
+    end
+  end
+
+  # Thread only the recognised cursor params through (unknown params ignored). Blank/absent cursor keys
+  # are dropped so the store sees "no cursor" and serves the recent page exactly as before.
+  defp list_attrs(conversation_id, params) do
+    %{"conversation_id" => conversation_id, "limit" => list_limit(params)}
+    |> put_present("after_created_at", params["after_created_at"])
+    |> put_present("after_id", params["after_id"])
+    |> put_present("before_created_at", params["before_created_at"])
+    |> put_present("before_id", params["before_id"])
+  end
+
+  defp put_present(attrs, key, value) when is_binary(value) and value != "",
+    do: Map.put(attrs, key, value)
+
+  defp put_present(attrs, _key, _value), do: attrs
+
+  defp list_limit(params) do
+    case Integer.parse(to_string(params["limit"] || "")) do
+      {n, _} -> n |> max(1) |> min(100)
+      :error -> 30
     end
   end
 
