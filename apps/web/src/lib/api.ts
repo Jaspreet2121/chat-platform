@@ -268,9 +268,12 @@ export type CallLink = {
 };
 
 export type JoinCallLinkResult = {
+  // "joined" (host / no-approval → room present) or "pending_approval" (approval-required non-host → no
+  // room; the client waits for the host, then connects on call:link_approved — L3b).
+  status: "joined" | "pending_approval";
   call_id: string;
-  room: string;
-  type: "voice" | "video";
+  room?: string;
+  type?: "voice" | "video";
   require_approval: boolean;
   is_host: boolean;
 };

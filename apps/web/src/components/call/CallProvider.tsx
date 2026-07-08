@@ -25,6 +25,7 @@ import { OutgoingCallScreen } from "./OutgoingCallScreen";
 import { InCallScreen } from "./InCallScreen";
 import { GroupInCallScreen } from "./GroupInCallScreen";
 import { AddParticipantsSheet, type AddTarget } from "./AddParticipantsSheet";
+import { LinkApprovalPrompt, LinkWaitingScreen } from "./LinkApprovalPrompt";
 
 // 1-on-1: idle → (I invite) outgoing → connecting → in-call ; idle → (they invite) incoming → …
 // group:  idle → (I start) group-connecting → group-in-call ; idle → (they ring me) group-incoming → …
@@ -92,6 +93,9 @@ type CallContextValue = {
   /** Join a call-link (L2) call — a conversation-less N-party call. Connects to the room via the group path
    *  (the REST /call-links/:id/join already seated us server-side). No-op unless idle. */
   joinLinkCall: (info: { callId: string; room: string; type: CallType }) => void;
+  /** Request to join an APPROVAL-required link call (L3b) — show a waiting screen + ask the host. Connects
+   *  automatically when the host approves (call:link_approved). No-op unless idle. */
+  requestLinkJoin: (info: { callId: string; type: CallType }) => void;
   /** True when a new call can be started (nothing in progress). */
   isIdle: boolean;
 };
@@ -104,6 +108,7 @@ const CallContext = createContext<CallContextValue>({
   primeOngoingGroupCall: () => undefined,
   addToGroupCall: () => undefined,
   joinLinkCall: () => undefined,
+  requestLinkJoin: () => undefined,
   isIdle: true
 });
 
@@ -123,6 +128,7 @@ export type CallController = {
   startGroupCall: (conversationId: string, title: string, type?: CallType) => void;
   addToGroupCall: (target: AddTarget) => void;
   joinLinkCall: (info: { callId: string; room: string; type: CallType }) => void;
+  requestLinkJoin: (info: { callId: string; type: CallType }) => void;
 };
 
 export type CallProviderProps = {
@@ -154,6 +160,12 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const [groupParticipants, setGroupParticipants] = useState<GroupParticipant[]>([]);
   // The in-call "Add participants" sheet (Phase-3 C2) — open only while in a group call.
   const [addSheetOpen, setAddSheetOpen] = useState(false);
+  // Call-link approval (L3b). Joiner side: the pending link call we're waiting on the host to admit us to.
+  // Host side: a queue of "wants to join" requests (shown one at a time).
+  const [linkWaiting, setLinkWaiting] = useState<{ callId: string; type: CallType } | null>(null);
+  const [linkRequests, setLinkRequests] = useState<
+    { callId: string; userId: string; userName: string }[]
+  >([]);
   // Conversations with a group call in progress (from live call:group_incoming / group_ended) → the banner.
   const [ongoingByConversation, setOngoingByConversation] = useState<Record<string, OngoingGroupCallEntry>>(
     {}
@@ -180,6 +192,11 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   useEffect(() => {
     groupCallRef.current = groupCall;
   }, [groupCall]);
+  // Latest-value ref for the link-approval handlers (subscribed once per channel).
+  const linkWaitingRef = useRef(linkWaiting);
+  useEffect(() => {
+    linkWaitingRef.current = linkWaiting;
+  }, [linkWaiting]);
   // The ONE remote-audio sink for the whole app lifetime — rendered once below, never conditionally
   // unmounted, so the remote track stays attached across the connecting→in-call view swap.
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -387,6 +404,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       setGroupCall(null);
       setGroupParticipants([]);
       setAddSheetOpen(false);
+      setLinkRequests([]); // drop any pending approve/deny prompts for the call we just left
       setMuted(false);
       setLocalVideo(null);
       setCameraOn(false);
@@ -528,6 +546,38 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       });
     },
     [connectGroup]
+  );
+
+  // Request to join an APPROVAL-required link call (L3b). The REST join already seated us as
+  // pending_approval (no token yet); here we show the waiting screen and ping the host. We connect on
+  // call:link_approved (below). No-op unless idle.
+  const requestLinkJoin = useCallback(
+    (info: { callId: string; type: CallType }) => {
+      if (!userChannel || statusRef.current !== "idle" || !info.callId) return;
+      setNote(null);
+      setLinkWaiting({ callId: info.callId, type: info.type });
+      void userChannel.pushCall("call:link_join_request", { call_id: info.callId });
+    },
+    [userChannel]
+  );
+
+  const cancelLinkWaiting = useCallback(() => setLinkWaiting(null), []);
+
+  // Host: admit / reject the FIRST queued join request, then dequeue it.
+  const decideLinkRequest = useCallback(
+    (approve: boolean) => {
+      setLinkRequests((queue) => {
+        const [req, ...rest] = queue;
+        if (req && userChannel) {
+          void userChannel.pushCall(approve ? "call:link_approve" : "call:link_deny", {
+            call_id: req.callId,
+            user_id: req.userId
+          });
+        }
+        return rest;
+      });
+    },
+    [userChannel]
   );
 
   // Add someone to the ACTIVE group call (C2). `userId` for an existing member, `phone` for an outside
@@ -672,6 +722,33 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         });
       }),
 
+      // ---- call links L3b (approval) ----
+      // Host approved us → stop waiting and connect to the room (same as a normal link join).
+      userChannel.onCall("call:link_approved", (p) => {
+        const waiting = linkWaitingRef.current;
+        if (!p.call_id || !p.room || waiting?.callId !== p.call_id) return;
+        setLinkWaiting(null);
+        joinLinkCall({ callId: p.call_id, room: p.room, type: p.type ?? waiting.type });
+      }),
+      // Host denied us → stop waiting + note.
+      userChannel.onCall("call:link_denied", (p) => {
+        if (!p.call_id || linkWaitingRef.current?.callId !== p.call_id) return;
+        setLinkWaiting(null);
+        flashNote("The host declined your request");
+      }),
+      // Host side: someone wants to join a link call WE host → queue an approve/deny prompt. Only if we're
+      // actually in that call (defensive — the server only routes this to the host's user topic).
+      userChannel.onCall("call:link_incoming_request", (p) => {
+        if (!p.call_id || !p.user_id || groupCallRef.current?.callId !== p.call_id) return;
+        const userId = p.user_id;
+        const userName = p.user_name?.trim() || "Someone";
+        setLinkRequests((queue) =>
+          queue.some((r) => r.callId === p.call_id && r.userId === userId)
+            ? queue
+            : [...queue, { callId: p.call_id as string, userId, userName }]
+        );
+      }),
+
       // ---- group (Phase 3) ----
       userChannel.onCall("call:group_incoming", (p) => {
         // Record the in-progress call for the thread banner — even if we're busy/decline the ring, the
@@ -724,16 +801,26 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
     ];
 
     return () => unsubs.forEach((u) => u());
-  }, [userChannel, clearRingTimer, reset, connect, resetGroup, connectGroup, promoteToGroup]);
+  }, [
+    userChannel,
+    clearRingTimer,
+    reset,
+    connect,
+    resetGroup,
+    connectGroup,
+    promoteToGroup,
+    joinLinkCall,
+    flashNote
+  ]);
 
   // Expose the imperative API to a parent above this provider (the chat page owns the user channel).
   useEffect(() => {
     if (!controllerRef) return;
-    controllerRef.current = { startCall, startGroupCall, addToGroupCall, joinLinkCall };
+    controllerRef.current = { startCall, startGroupCall, addToGroupCall, joinLinkCall, requestLinkJoin };
     return () => {
       controllerRef.current = null;
     };
-  }, [controllerRef, startCall, startGroupCall, addToGroupCall, joinLinkCall]);
+  }, [controllerRef, startCall, startGroupCall, addToGroupCall, joinLinkCall, requestLinkJoin]);
 
   // Cleanup on unmount: leave any room + clear timers. This fires ONLY if the provider itself unmounts
   // (leaving /chat) — it is NOT tied to a call's connecting→in-call transition. If a mid-call leave ever
@@ -786,6 +873,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       primeOngoingGroupCall,
       addToGroupCall,
       joinLinkCall,
+      requestLinkJoin,
       isIdle: status === "idle"
     }),
     [
@@ -797,6 +885,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       primeOngoingGroupCall,
       addToGroupCall,
       joinLinkCall,
+      requestLinkJoin,
       status
     ]
   );
@@ -890,6 +979,21 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           currentUserId={currentUserId}
           onAdd={addToGroupCall}
           onClose={() => setAddSheetOpen(false)}
+        />
+      )}
+
+      {/* Call-link L3b — joiner's waiting screen (approval-required, not yet admitted). Idle-phase only. */}
+      {linkWaiting && status === "idle" && (
+        <LinkWaitingScreen video={linkWaiting.type === "video"} onCancel={cancelLinkWaiting} />
+      )}
+
+      {/* Call-link L3b — host's approve/deny prompt (one at a time, queued). */}
+      {linkRequests[0] && (
+        <LinkApprovalPrompt
+          userId={linkRequests[0].userId}
+          userName={linkRequests[0].userName}
+          onApprove={() => decideLinkRequest(true)}
+          onDeny={() => decideLinkRequest(false)}
         />
       )}
 

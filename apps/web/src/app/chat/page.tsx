@@ -465,6 +465,28 @@ export default function ChatPage() {
     }
   }, [userChannel]);
 
+  // Call-link L3b hand-off: an approval-required join landed pending → show the waiting screen + ask the
+  // host (requestLinkJoin). We connect automatically once the host approves (call:link_approved).
+  useEffect(() => {
+    if (!userChannel) return;
+    let raw: string | null = null;
+    try {
+      raw = sessionStorage.getItem("pendingLinkApproval");
+      if (raw) sessionStorage.removeItem("pendingLinkApproval");
+    } catch {
+      return;
+    }
+    if (!raw) return;
+    try {
+      const info = JSON.parse(raw) as { callId?: string; type?: CallType };
+      if (info?.callId) {
+        callControllerRef.current?.requestLinkJoin({ callId: info.callId, type: info.type ?? "voice" });
+      }
+    } catch {
+      /* ignore a malformed stash */
+    }
+  }, [userChannel]);
+
   async function refreshConversationList(selectConversationId?: string) {
     const response = await listConversations();
     const loadedConversations = response.conversations ?? [];

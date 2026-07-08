@@ -123,7 +123,11 @@ export type CallServerEvent =
   | "call:participant_left"
   | "call:group_ended"
   // Promote (Phase 3 C3b) — a 1-on-1 became a group; tells the OTHER peer to swap to the grid.
-  | "call:promoted";
+  | "call:promoted"
+  // Call links L3b — approval gate: host gets a request; joiner gets approved/denied.
+  | "call:link_incoming_request"
+  | "call:link_approved"
+  | "call:link_denied";
 /** Control events I push (the server validates ownership against the persisted call row). */
 export type CallClientEvent =
   // 1-on-1 (Phase 1/2)
@@ -139,7 +143,11 @@ export type CallClientEvent =
   | "call:group_leave"
   | "call:group_add"
   // Promote a live 1-on-1 to a group call (Phase 3 C3b).
-  | "call:promote";
+  | "call:promote"
+  // Call links L3b — joiner requests to join; host approves/denies.
+  | "call:link_join_request"
+  | "call:link_approve"
+  | "call:link_deny";
 /** One member of a group call (as broadcast by the server). */
 export type CallParticipant = {
   call_id?: string;
@@ -161,6 +169,8 @@ export type CallEventPayload = {
   // Promote fields (call:promoted).
   new_user_id?: string;
   actor_id?: string;
+  // Call-link approval (call:link_incoming_request) — who's asking to join.
+  user_name?: string;
 };
 /** The `ok` reply to `call:invite` — the created call's id + the LiveKit room to join. */
 export type CallInviteAck = { call_id: string; room: string };

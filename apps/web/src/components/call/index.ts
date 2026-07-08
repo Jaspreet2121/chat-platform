@@ -14,3 +14,5 @@ export { AddParticipantsSheet } from "./AddParticipantsSheet";
 export type { AddParticipantsSheetProps, AddTarget } from "./AddParticipantsSheet";
 export { NewCallLinkModal } from "./NewCallLinkModal";
 export type { NewCallLinkModalProps } from "./NewCallLinkModal";
+export { LinkApprovalPrompt, LinkWaitingScreen } from "./LinkApprovalPrompt";
+export type { LinkApprovalPromptProps } from "./LinkApprovalPrompt";

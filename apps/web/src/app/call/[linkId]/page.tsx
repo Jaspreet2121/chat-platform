@@ -44,10 +44,19 @@ export default function CallLinkJoinPage() {
     setError("");
     try {
       const res = await joinCallLink(linkId);
-      sessionStorage.setItem(
-        "pendingLinkCall",
-        JSON.stringify({ callId: res.call_id, room: res.room, type: res.type })
-      );
+      if (res.status === "pending_approval") {
+        // Approval-required, not the host → wait for the host in /chat (no room/token yet). The type comes
+        // from the link (the pending join returns no type) for the waiting-screen label.
+        sessionStorage.setItem(
+          "pendingLinkApproval",
+          JSON.stringify({ callId: res.call_id, type: res.type ?? link?.type ?? "voice" })
+        );
+      } else {
+        sessionStorage.setItem(
+          "pendingLinkCall",
+          JSON.stringify({ callId: res.call_id, room: res.room, type: res.type })
+        );
+      }
       router.replace("/chat");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't join the call.");
