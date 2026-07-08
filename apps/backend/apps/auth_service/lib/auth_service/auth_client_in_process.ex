@@ -43,6 +43,9 @@ defmodule AuthService.AuthClientInProcess do
   def resolve_external_user(attrs), do: AppAuth.resolve_external_user(attrs)
 
   @impl true
+  def resolve_user_external_id(attrs), do: AppAuth.resolve_user_external_id(attrs)
+
+  @impl true
   def verify_app_user_token(attrs), do: AppAuth.verify_app_user_token(Map.get(attrs, "token"))
 
   @impl true

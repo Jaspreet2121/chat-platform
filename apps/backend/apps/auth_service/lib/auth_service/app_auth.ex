@@ -70,6 +70,18 @@ defmodule AuthService.AppAuth do
   end
 
   @doc """
+  Reverse map an internal `user_id` back to the integrator's `external_id` within an app →
+  {:ok, %{user_id, external_id}} | {:error, :not_found}. Used to keep internal user_ids OUT of /v1
+  responses and to tenant-scope a call-link by its creator. Never creates.
+  """
+  def resolve_user_external_id(attrs) do
+    with {:ok, app_id} <- fetch(attrs, "app_id"),
+         {:ok, user_id} <- fetch(attrs, "user_id") do
+      Accounts.external_id_for_user(app_id, user_id)
+    end
+  end
+
+  @doc """
   Verify an end-user JWT → {:ok, %{app_id, user_id, mode}}. Rejects anything that isn't a valid,
   unexpired `typ:"app_user"` token (expiry + signature are enforced by `Tokens.verify_signed_token/1`).
   `mode` defaults to "live" for tokens minted before mode was carried.

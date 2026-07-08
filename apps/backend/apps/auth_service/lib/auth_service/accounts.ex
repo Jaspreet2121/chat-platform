@@ -80,6 +80,25 @@ defmodule AuthService.Accounts do
 
   def resolve_or_create_external_user(_app_id, _external_id), do: {:error, :user_invalid}
 
+  @doc """
+  Reverse of `resolve_or_create_external_user`: map an internal `user_id` back to the integrator's
+  `external_id` WITHIN an app. The `app_id` scope makes this double as a tenant check — a user_id that
+  doesn't belong to `app_id` (cross-tenant, or a phone/email session user with no external_id) → `:not_found`.
+  Never creates. Returns `{:ok, %{user_id, external_id}}` | `{:error, :not_found}`.
+  """
+  def external_id_for_user(app_id, user_id)
+      when is_binary(app_id) and app_id != "" and is_binary(user_id) and user_id != "" do
+    case Repo.get_by(UserAuth, id: user_id, app_id: app_id) do
+      %UserAuth{external_id: external_id} when is_binary(external_id) and external_id != "" ->
+        {:ok, %{user_id: user_id, external_id: external_id}}
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  def external_id_for_user(_app_id, _user_id), do: {:error, :not_found}
+
   defp get_external_user(app_id, external_id),
     do: Repo.get_by(UserAuth, app_id: app_id, external_id: external_id)
 

@@ -55,9 +55,16 @@ defmodule ApiGatewayWeb.Router do
     get "/conversations/:id/messages", MessageController, :index
 
     # End-user call surface for integrator SDKs (end-user JWT actor required; a secret-key actor → 403
-    # v1.app_only). Scoped to the caller's app via call participant membership (calls carry no app_id).
+    # v1.end_user_only). Scoped to the caller's app: calls/links carry no app_id, so scope rides on
+    # app-scoped user_ids (seat membership for calls, creator for links). Users are referred to by the
+    # integrator's external_id in and out.
+    post "/calls", CallController, :create
     post "/calls/:id/token", CallController, :token
+    post "/calls/:id/end", CallController, :end_call
     get "/calls/:id", CallController, :show
+    post "/call-links", CallController, :create_link
+    post "/call-links/:id/join", CallController, :join_link
+    get "/call-links/:id", CallController, :show_link
 
     # Key-authenticated webhook management for integrator servers (app_id = the key's app; secret-key
     # actor required). Same Webhooks context as the session route below.
