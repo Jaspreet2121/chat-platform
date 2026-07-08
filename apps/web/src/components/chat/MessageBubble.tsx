@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Check,
   CheckCheck,
+  Copy,
   CornerUpLeft,
   Download,
   FileText,
@@ -25,6 +26,7 @@ import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { formatTime, metadataString, senderDisplayName } from "./format";
 import { VoiceMessagePlayer } from "./VoiceMessagePlayer";
+import { LinkifiedText } from "./LinkifiedText";
 
 // Leaflet needs `window` — load the interactive map client-side only (no SSR) so the build/SSR never
 // touch it. A neutral skeleton reserves the space while the chunk loads.
@@ -98,6 +100,8 @@ export function MessageBubble({
   const canForward = !isDeleted && Boolean(onForward);
   const canReact = !isDeleted && Boolean(onReact);
   const canStar = !isDeleted && Boolean(onStar) && Boolean(onUnstar);
+  // Copy the message text — any non-deleted message that HAS body text (skips pure media/voice with none).
+  const canCopy = !isDeleted && Boolean((message.body ?? "").trim());
   const isStarred = Boolean(message.is_starred);
   const isForwarded = Boolean(message.metadata?.forwarded_from);
 
@@ -125,11 +129,26 @@ export function MessageBubble({
   const [editDraft, setEditDraft] = useState(message.body ?? "");
   const [isBusy, setIsBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
 
-  // React/reply/forward/star are available on any non-deleted message; edit (own text) / delete (own) too.
+  // React/reply/forward/star/copy are available on any non-deleted message; edit (own text) / delete (own) too.
   const hasActions =
-    !isEditing && (canReact || canReply || canForward || canStar || canEdit || canDelete);
+    !isEditing && (canReact || canReply || canForward || canStar || canCopy || canEdit || canDelete);
+
+  async function copyBody() {
+    try {
+      await navigator.clipboard.writeText(message.body ?? "");
+      // Keep the menu open briefly to flash "Copied", then close.
+      setCopied(true);
+      setTimeout(() => {
+        setCopied(false);
+        setMenuOpen(false);
+      }, 1200);
+    } catch {
+      setMenuOpen(false);
+    }
+  }
 
   // Close the actions popover on click-outside / Esc. Listeners attach only while open, AFTER the
   // opening click has fired, so opening the menu never immediately closes it.
@@ -366,7 +385,7 @@ export function MessageBubble({
               )}
               onClick={hasActions ? () => setMenuOpen((open) => !open) : undefined}
             >
-              {message.body || message.message_type}
+              {message.body ? <LinkifiedText text={message.body} /> : message.message_type}
               {stamp}
             </p>
           )}
@@ -477,6 +496,21 @@ export function MessageBubble({
                       className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
                     >
                       <Forward className="h-4 w-4" aria-hidden /> Forward
+                    </button>
+                  )}
+                  {canCopy && (
+                    <button
+                      role="menuitem"
+                      type="button"
+                      onClick={() => void copyBody()}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
+                    >
+                      {copied ? (
+                        <Check className="h-4 w-4 text-success" aria-hidden />
+                      ) : (
+                        <Copy className="h-4 w-4" aria-hidden />
+                      )}{" "}
+                      {copied ? "Copied" : "Copy"}
                     </button>
                   )}
                   {canStar && (
