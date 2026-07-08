@@ -494,6 +494,41 @@ defmodule ConversationService.GroupCallStoreTest do
   end
 
   @tag :postgres_integration
+  test "approval link: an approved joiner who leaves+rejoins is RE-GATED to pending_approval" do
+    host = new_user!()
+    joiner = new_user!()
+    {:ok, %{link: link}} =
+      CallStore.create_call_link(%{"creator_id" => host, "type" => "video", "require_approval" => true})
+
+    {:ok, %{call: call}} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
+
+    # First join → pending → host approves → joined + token authorized.
+    {:ok, %{status: "pending_approval"}} =
+      CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
+
+    {:ok, %{status: "joined"}} =
+      CallStore.approve_link_participant(%{"call_id" => call.id, "actor_id" => host, "user_id" => joiner})
+
+    assert {:ok, %{authorized: true}} =
+             CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
+
+    # A link leave does NOT mark the row "left" (it stays "joined"). REJOIN must re-gate to pending anyway →
+    # token denies again until the host re-approves. This is the fix.
+    assert {:ok, %{status: "pending_approval"}} =
+             CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
+
+    assert {:ok, %{authorized: false}} =
+             CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
+
+    # Re-approve → joined again.
+    {:ok, %{status: "joined"}} =
+      CallStore.approve_link_participant(%{"call_id" => call.id, "actor_id" => host, "user_id" => joiner})
+
+    assert {:ok, %{authorized: true}} =
+             CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
+  end
+
+  @tag :postgres_integration
   test "no-approval link: a non-host still joins directly (approval gate off)" do
     host = new_user!()
     joiner = new_user!()

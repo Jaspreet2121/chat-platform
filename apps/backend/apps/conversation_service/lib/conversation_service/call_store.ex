@@ -515,28 +515,18 @@ defmodule ConversationService.CallStore do
     end
   end
 
-  # Seat a call-link joiner. The host (caller_id) and no-approval links join immediately ("joined"); an
-  # approval-required non-host is left "pending_approval" — UNLESS already admitted earlier (a re-join must
-  # never downgrade a joined participant back to pending). Returns true when admitted (joined), false pending.
+  # Seat a call-link joiner. The host (caller_id) and no-approval links join immediately ("joined"). An
+  # approval-required NON-host is RE-GATED on EVERY join: their row is overwritten to "pending_approval"
+  # (whatever it was — joined/left/declined/absent), so a leave→rejoin must be approved again (strict). We do
+  # NOT keep a prior "joined" row as an admit shortcut: a link leave never updates the server row (it stays
+  # "joined"), so that signal is stale and would wrongly skip re-approval. Returns true = admitted, false = pending.
   defp seat_link_joiner(%Call{caller_id: caller_id, id: call_id}, %CallLink{require_approval: approval}, user_id, now) do
-    cond do
-      user_id == caller_id or not approval ->
-        upsert_participant_status(call_id, user_id, %{status: "joined", joined_at: now})
-        true
-
-      already_admitted?(call_id, user_id) ->
-        true
-
-      true ->
-        upsert_participant_status(call_id, user_id, %{status: "pending_approval", joined_at: nil})
-        false
-    end
-  end
-
-  defp already_admitted?(call_id, user_id) do
-    case get_participant_row(call_id, user_id) do
-      %CallParticipant{status: "joined"} -> true
-      _ -> false
+    if user_id == caller_id or not approval do
+      upsert_participant_status(call_id, user_id, %{status: "joined", joined_at: now})
+      true
+    else
+      upsert_participant_status(call_id, user_id, %{status: "pending_approval", joined_at: nil})
+      false
     end
   end
 
