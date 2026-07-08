@@ -311,6 +311,86 @@ defmodule ConversationService.GroupCallStoreTest do
     assert still_direct.status == "accepted"
   end
 
+  # --- L1: call links (conversation-less "link" calls) -------------------------------------------
+
+  @tag :postgres_integration
+  test "create_call_link + get_call_link: an active link with a url-safe id" do
+    creator = new_user!()
+
+    assert {:ok, %{link: link}} =
+             CallStore.create_call_link(%{
+               "creator_id" => creator,
+               "type" => "video",
+               "require_approval" => true
+             })
+
+    assert is_binary(link.id) and byte_size(link.id) >= 8
+    assert link.type == "video"
+    assert link.require_approval == true
+    assert link.active == true
+    assert link.creator_id == creator
+
+    assert {:ok, %{link: fetched}} = CallStore.get_call_link(%{"link_id" => link.id})
+    assert fetched.id == link.id
+
+    assert {:error, :link_not_found} = CallStore.get_call_link(%{"link_id" => "does-not-exist"})
+  end
+
+  @tag :postgres_integration
+  test "join_call_link: first join creates a conversation-less kind=link call + joined participant" do
+    creator = new_user!()
+    joiner = new_user!()
+    {:ok, %{link: link}} = CallStore.create_call_link(%{"creator_id" => creator, "type" => "voice"})
+
+    assert {:ok, result} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
+
+    assert result.type == "voice"
+    assert result.require_approval == false
+    # First joiner is the effective host (caller_id).
+    assert result.is_host == true
+    assert String.starts_with?(result.room, "call-")
+
+    {:ok, %{call: call, participants: parts}} =
+      CallStore.get_call_with_participants(%{"call_id" => result.call.id})
+
+    assert call.kind == "link"
+    assert call.status == "ongoing"
+    assert is_nil(call.conversation_id)
+    assert call.caller_id == joiner
+
+    by_user = Map.new(parts, &{&1.user_id, &1.status})
+    assert by_user[joiner] == "joined"
+  end
+
+  @tag :postgres_integration
+  test "join_call_link: a SECOND joiner reuses the SAME call/room (find-or-create by link_id)" do
+    creator = new_user!()
+    a = new_user!()
+    b = new_user!()
+    {:ok, %{link: link}} = CallStore.create_call_link(%{"creator_id" => creator, "type" => "video"})
+
+    {:ok, first} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => a})
+    {:ok, second} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => b})
+
+    # Same call + same room; the second joiner is NOT the host (the first created + hosts it).
+    assert second.call.id == first.call.id
+    assert second.room == first.room
+    assert first.is_host == true
+    assert second.is_host == false
+
+    {:ok, %{participants: parts}} =
+      CallStore.get_call_with_participants(%{"call_id" => first.call.id})
+
+    assert Enum.sort(Enum.map(parts, & &1.user_id)) == Enum.sort([a, b])
+    assert Enum.all?(parts, &(&1.status == "joined"))
+  end
+
+  @tag :postgres_integration
+  test "join_call_link: an inactive/missing link is rejected" do
+    assert {:error, :link_not_found} =
+             CallStore.join_call_link(%{"link_id" => "nope", "user_id" => new_user!()})
+  end
+
   # --- helpers -----------------------------------------------------------------------------------
 
   # A LIVE 1-on-1 (direct) call: create (ringing) then mark_answered (→ "accepted"). Returns {:ok, call}.

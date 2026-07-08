@@ -53,6 +53,10 @@ defmodule SharedInfra.ConversationClient do
   @callback call_participant?(attrs()) :: result()
   # Phase-3 C3b — promote a live 1-on-1 (direct) call to a group call.
   @callback promote_direct_to_group(attrs()) :: result()
+  # Call links (L1) — reusable link → conversation-less "link" call.
+  @callback create_call_link(attrs()) :: result()
+  @callback get_call_link(attrs()) :: result()
+  @callback join_call_link(attrs()) :: result()
 
   # Optional so existing test stubs of this behaviour don't all need it; the real adapters implement it.
   @optional_callbacks get_conversation_app: 1,
@@ -75,7 +79,10 @@ defmodule SharedInfra.ConversationClient do
                       get_ongoing_group_call: 1,
                       add_call_participant: 1,
                       call_participant?: 1,
-                      promote_direct_to_group: 1
+                      promote_direct_to_group: 1,
+                      create_call_link: 1,
+                      get_call_link: 1,
+                      join_call_link: 1
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
@@ -110,6 +117,9 @@ defmodule SharedInfra.ConversationClient do
   def add_call_participant(attrs), do: adapter().add_call_participant(attrs)
   def call_participant?(attrs), do: adapter().call_participant?(attrs)
   def promote_direct_to_group(attrs), do: adapter().promote_direct_to_group(attrs)
+  def create_call_link(attrs), do: adapter().create_call_link(attrs)
+  def get_call_link(attrs), do: adapter().get_call_link(attrs)
+  def join_call_link(attrs), do: adapter().join_call_link(attrs)
 
   @doc "The configured Conversation client adapter (default `ConversationService.ConversationClientInProcess`)."
   def adapter do

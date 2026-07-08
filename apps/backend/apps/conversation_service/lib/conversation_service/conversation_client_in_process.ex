@@ -113,4 +113,13 @@ defmodule ConversationService.ConversationClientInProcess do
   @impl true
   def promote_direct_to_group(attrs),
     do: ConversationService.CallStore.promote_direct_to_group(attrs)
+
+  @impl true
+  def create_call_link(attrs), do: ConversationService.CallStore.create_call_link(attrs)
+
+  @impl true
+  def get_call_link(attrs), do: ConversationService.CallStore.get_call_link(attrs)
+
+  @impl true
+  def join_call_link(attrs), do: ConversationService.CallStore.join_call_link(attrs)
 end

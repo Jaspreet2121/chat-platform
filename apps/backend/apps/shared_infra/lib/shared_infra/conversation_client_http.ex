@@ -88,6 +88,15 @@ defmodule SharedInfra.ConversationClientHttp do
   def promote_direct_to_group(attrs), do: post("/internal/calls/promote", attrs)
 
   @impl true
+  def create_call_link(attrs), do: post("/internal/call-links/create", attrs)
+
+  @impl true
+  def get_call_link(attrs), do: post("/internal/call-links/get", attrs)
+
+  @impl true
+  def join_call_link(attrs), do: post("/internal/call-links/join", attrs)
+
+  @impl true
   def add_participant(attrs), do: post("/internal/participants/add", attrs)
 
   @impl true

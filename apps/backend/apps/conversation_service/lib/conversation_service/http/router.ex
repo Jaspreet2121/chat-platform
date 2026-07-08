@@ -152,6 +152,19 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.CallStore.promote_direct_to_group(body(conn)))
   end
 
+  # Call links (L1).
+  post "/internal/call-links/create" do
+    send_result(conn, ConversationService.CallStore.create_call_link(body(conn)))
+  end
+
+  post "/internal/call-links/get" do
+    send_result(conn, ConversationService.CallStore.get_call_link(body(conn)))
+  end
+
+  post "/internal/call-links/join" do
+    send_result(conn, ConversationService.CallStore.join_call_link(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "conversation", status: "ok", deps: %{}}})
   end

@@ -12,7 +12,7 @@ defmodule ConversationService.Schemas.Call do
   @primary_key {:id, :binary_id, autogenerate: false}
 
   @types ~w(voice video)
-  @kinds ~w(direct group)
+  @kinds ~w(direct group link)
   @statuses ~w(ringing accepted declined missed ended ongoing)
 
   schema "calls" do
@@ -21,6 +21,8 @@ defmodule ConversationService.Schemas.Call do
     field(:caller_id, :binary_id)
     field(:callee_id, :binary_id)
     field(:conversation_id, :binary_id)
+    # Call-link (L1): a "link" call ties back to its call_links row here (nullable — direct/group never set).
+    field(:link_id, :string)
     field(:type, :string)
     field(:status, :string, default: "ringing")
     field(:created_at, :utc_datetime_usec)
@@ -37,6 +39,7 @@ defmodule ConversationService.Schemas.Call do
       :caller_id,
       :callee_id,
       :conversation_id,
+      :link_id,
       :type,
       :status,
       :created_at
@@ -50,10 +53,13 @@ defmodule ConversationService.Schemas.Call do
   end
 
   # Shape by kind: a DIRECT (1-on-1) call requires a callee (unchanged from Phase 1); a GROUP call has no
-  # single callee but MUST belong to a conversation (participants come from that conversation's members).
+  # single callee but MUST belong to a conversation (participants come from that conversation's members); a
+  # LINK call (L1) has NEITHER a single callee NOR a conversation — membership is the join-created
+  # group_call_participants rows — so it requires neither.
   defp validate_call_shape(changeset) do
     case get_field(changeset, :kind) do
       "group" -> validate_required(changeset, [:conversation_id])
+      "link" -> changeset
       _ -> validate_required(changeset, [:callee_id])
     end
   end

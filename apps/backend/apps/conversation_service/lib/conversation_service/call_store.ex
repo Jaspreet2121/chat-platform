@@ -17,6 +17,7 @@ defmodule ConversationService.CallStore do
   alias ConversationService.ParticipantStore
   alias ConversationService.Repo
   alias ConversationService.Schemas.Call
+  alias ConversationService.Schemas.CallLink
   alias ConversationService.Schemas.CallParticipant
 
   @doc """
@@ -338,6 +339,162 @@ defmodule ConversationService.CallStore do
   rescue
     _ -> {:error, :call_invalid}
   end
+
+  # ============================================================================================
+  # Call links (L1). A reusable link (call_links row) that, on join, spins up a conversation-LESS call
+  # (kind="link", conversation_id NULL, link_id=<link>). Registered users only. Approval is L3; L1 lets
+  # everyone in. Existing direct/group calls are untouched — these are new functions on new/nullable columns.
+  # ============================================================================================
+
+  @doc """
+  Create a reusable call link. attrs: "creator_id", "type" ('voice'|'video'), optional "require_approval".
+  Generates a collision-safe url-safe id (retried on the tiny chance of a clash). Returns
+  `{:ok, %{link: %{id, type, require_approval, active, creator_id}}}`.
+  """
+  def create_call_link(attrs) do
+    with :ok <- persistence(),
+         {:ok, creator_id} <- required(attrs, "creator_id"),
+         {:ok, type} <- required(attrs, "type") do
+      require_approval = truthy(get(attrs, "require_approval"))
+
+      case insert_call_link(creator_id, type, require_approval, 5) do
+        {:ok, link} -> {:ok, %{link: link_response(link)}}
+        {:error, _} -> {:error, :link_invalid}
+      end
+    end
+  rescue
+    _ -> {:error, :link_invalid}
+  end
+
+  @doc """
+  Fetch an ACTIVE link's metadata (for the join screen). attrs: "link_id". Inactive/missing → `:link_not_found`.
+  Returns `{:ok, %{link: link_response}}`.
+  """
+  def get_call_link(attrs) do
+    with :ok <- persistence(),
+         {:ok, link_id} <- required(attrs, "link_id"),
+         {:ok, link} <- fetch_active_link(link_id) do
+      {:ok, %{link: link_response(link)}}
+    end
+  rescue
+    _ -> {:error, :link_not_found}
+  end
+
+  @doc """
+  Join a call link. attrs: "link_id", "user_id". Loads the active link, then find-or-creates THE ongoing
+  `link` call for it (kind="link", conversation_id NULL, link_id set, status "ongoing"; caller_id = the
+  first joiner, the effective host of the session) and seats the user as a `joined` participant. Serialized
+  per-link (row lock) so two simultaneous joiners land in the SAME room. Approval is NOT enforced here (L3).
+  Returns `{:ok, %{call, room, type, require_approval, is_host}}`.
+  """
+  def join_call_link(attrs) do
+    with :ok <- persistence(),
+         {:ok, link_id} <- required(attrs, "link_id"),
+         {:ok, user_id} <- required(attrs, "user_id"),
+         {:ok, link} <- fetch_active_link(link_id) do
+      now = DateTime.utc_now()
+
+      {:ok, call} =
+        Repo.transaction(fn ->
+          # Lock the link row → serialize concurrent joins so only the FIRST creates the link call; the rest
+          # find the one it created and reuse its room.
+          Repo.one(from(l in CallLink, where: l.id == ^link_id, lock: "FOR UPDATE"))
+          call = find_or_create_link_call(link, user_id, now)
+          upsert_participant_status(call.id, user_id, %{status: "joined", joined_at: now})
+          call
+        end)
+
+      {:ok,
+       %{
+         call: response(call),
+         room: call.room_name,
+         type: call.type,
+         require_approval: link.require_approval,
+         is_host: user_id == call.caller_id
+       }}
+    end
+  rescue
+    _ -> {:error, :call_invalid}
+  end
+
+  # --- link helpers ------------------------------------------------------------------------------
+
+  defp fetch_active_link(link_id) do
+    case Repo.get(CallLink, link_id) do
+      %CallLink{active: true} = link -> {:ok, link}
+      _ -> {:error, :link_not_found}
+    end
+  end
+
+  # Generate + insert a link, retrying on a PK collision (astronomically unlikely with 8 random bytes).
+  defp insert_call_link(_creator_id, _type, _require_approval, 0), do: {:error, :link_collision}
+
+  defp insert_call_link(creator_id, type, require_approval, attempts) do
+    %{
+      id: generate_link_id(),
+      creator_id: creator_id,
+      type: type,
+      require_approval: require_approval,
+      active: true,
+      created_at: DateTime.utc_now()
+    }
+    |> CallLink.create_changeset()
+    |> Repo.insert()
+    |> case do
+      {:ok, link} -> {:ok, link}
+      {:error, _changeset} -> insert_call_link(creator_id, type, require_approval, attempts - 1)
+    end
+  end
+
+  # ~11 url-safe chars (8 random bytes, base64url, no padding).
+  defp generate_link_id, do: :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
+
+  defp find_or_create_link_call(%CallLink{id: link_id, type: type}, user_id, now) do
+    case active_link_call(link_id) do
+      %Call{} = call -> call
+      nil -> insert_link_call!(link_id, type, user_id, now)
+    end
+  end
+
+  defp active_link_call(link_id) do
+    from(c in Call,
+      where: c.kind == "link" and c.link_id == ^link_id and c.status in ["ringing", "ongoing"],
+      order_by: [desc: c.created_at],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  defp insert_link_call!(link_id, type, caller_id, now) do
+    id = Ecto.UUID.generate()
+
+    %{
+      id: id,
+      room_name: "call-" <> id,
+      kind: "link",
+      caller_id: caller_id,
+      callee_id: nil,
+      conversation_id: nil,
+      link_id: link_id,
+      type: type,
+      status: "ongoing",
+      created_at: now
+    }
+    |> Call.create_changeset()
+    |> Repo.insert!()
+  end
+
+  defp link_response(%CallLink{} = link) do
+    %{
+      id: link.id,
+      type: link.type,
+      require_approval: link.require_approval,
+      active: link.active,
+      creator_id: link.creator_id
+    }
+  end
+
+  defp truthy(v), do: v in [true, "true", "1", "yes"]
 
   # --- group helpers -----------------------------------------------------------------------------
 

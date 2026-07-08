@@ -130,6 +130,16 @@ defmodule ApiGatewayWeb.Router do
     post "/token", CallController, :token
   end
 
+  # Call links (L1) — reusable link → conversation-less "link" call. Registered users only (session-gated in
+  # the controller). Join returns a room; the client fetches a token via /api/v1/calls/token.
+  scope "/api/v1/call-links", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/", CallLinkController, :create
+    get "/:id", CallLinkController, :show
+    post "/:id/join", CallLinkController, :join
+  end
+
   scope "/api/v1/conversations", ApiGatewayWeb do
     pipe_through :api
 
