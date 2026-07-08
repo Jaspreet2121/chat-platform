@@ -27,6 +27,8 @@ export type InCallScreenProps = {
   onSwitchCamera: () => void;
   /** Open the "add participants" sheet → promotes this 1-on-1 to a group. Add button renders only when set. */
   onAddParticipants?: () => void;
+  /** Active camera facing — the self-view mirrors only for the front camera ("user"). */
+  cameraFacing: "user" | "environment";
 };
 
 function formatElapsed(totalSeconds: number) {
@@ -54,7 +56,8 @@ export function InCallScreen({
   onToggleCamera,
   canSwitchCamera,
   onSwitchCamera,
-  onAddParticipants
+  onAddParticipants,
+  cameraFacing
 }: InCallScreenProps) {
   const [elapsed, setElapsed] = useState(0);
   const startedAt = useRef<number | null>(null);
@@ -200,7 +203,8 @@ export function InCallScreen({
         onClick={toggleEnlarged}
         className={cn(selfEnlarged ? pipCls : fullCls, !remoteActive && "invisible pointer-events-none")}
       />
-      {/* Local self-view (mirrored): PiP by default, full-screen when enlarged. Tap to swap. */}
+      {/* Local self-view: PiP by default, full-screen when enlarged. Tap to swap. Mirrored for the FRONT
+          camera only (selfie); the back camera is world-facing → not mirrored. */}
       <video
         ref={localVideoRef}
         autoPlay
@@ -209,7 +213,7 @@ export function InCallScreen({
         onClick={toggleEnlarged}
         className={cn(
           selfEnlarged ? fullCls : pipCls,
-          "scale-x-[-1]",
+          cameraFacing === "user" && "scale-x-[-1]",
           !localActive && "invisible pointer-events-none"
         )}
       />

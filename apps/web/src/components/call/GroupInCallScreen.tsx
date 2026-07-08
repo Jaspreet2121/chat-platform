@@ -33,6 +33,8 @@ export type GroupInCallScreenProps = {
   /** Me. */
   currentUserId?: string;
   localVideoTrack: LocalVideoTrack | null;
+  /** Active camera facing — the self tile mirrors only for the front camera ("user"). */
+  cameraFacing: "user" | "environment";
 };
 
 function formatElapsed(totalSeconds: number) {
@@ -103,7 +105,8 @@ export function GroupInCallScreen({
   canAddParticipants = true,
   participants,
   currentUserId,
-  localVideoTrack
+  localVideoTrack,
+  cameraFacing
 }: GroupInCallScreenProps) {
   const [elapsed, setElapsed] = useState(0);
   const startedAt = useRef<number | null>(null);
@@ -150,7 +153,7 @@ export function GroupInCallScreen({
         <Tile
           identity={currentUserId ?? "me"}
           videoTrack={cameraOn ? localVideoTrack : null}
-          mirror
+          mirror={cameraFacing === "user"}
           selfLabel="You"
         />
         {participants.map((p) => (

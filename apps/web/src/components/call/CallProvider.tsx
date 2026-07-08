@@ -137,6 +137,8 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
   const [localVideo, setLocalVideo] = useState<LocalVideoTrack | null>(null);
   const [remoteVideo, setRemoteVideo] = useState<RemoteVideoTrack | null>(null);
   const [cameraOn, setCameraOn] = useState(false);
+  // Active camera facing — drives the self-view mirror (front "user" = mirrored selfie, back = not).
+  const [cameraFacing, setCameraFacing] = useState<"user" | "environment">("user");
   // True on a video call with >1 camera (front/back) — gates the "switch camera" button. Computed on connect.
   const [canSwitchCamera, setCanSwitchCamera] = useState(false);
   // Group calling (Phase 3) — parallel to the 1-on-1 state above.
@@ -210,6 +212,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       setLocalVideo(null);
       setRemoteVideo(null);
       setCameraOn(false);
+      setCameraFacing("user");
       setCanSwitchCamera(false);
       // C3b-2a wired onParticipants into the 1-on-1 connect → clear that set here so it can't leak into a
       // later call (the 1-on-1 view ignores it, but a stale set would mislead the C3b-2b group swap).
@@ -251,6 +254,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         const conn = await connectToRoom(active.room, audioEl, {
           video: isVideo,
           onLocalVideo: setLocalVideo,
+          onFacingChange: setCameraFacing,
           onRemoteVideo: setRemoteVideo,
           // C3b-2a: populate the group-participant set (data only). The 1-on-1 render below still uses
           // InCallScreen + single remoteVideo and IGNORES this — it's staged for the C3b-2b UI swap.
@@ -378,6 +382,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       setMuted(false);
       setLocalVideo(null);
       setCameraOn(false);
+      setCameraFacing("user");
       setCanSwitchCamera(false);
       // Drop our own banner entry for the call we just left (a still-ongoing call re-appears on next
       // thread-open via the fetch; group_ended also clears it for everyone by callId).
@@ -415,6 +420,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         const conn = await connectToGroupRoom(active.room, {
           video: isVideo,
           onLocalVideo: setLocalVideo,
+          onFacingChange: setCameraFacing,
           onParticipants: setGroupParticipants,
           onDisconnected: (reason) => {
             if (!endingRef.current) resetGroup(`livekit-disconnected:${reason ?? "unknown"}`);
@@ -799,6 +805,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           canSwitchCamera={canSwitchCamera}
           onSwitchCamera={switchCamera}
           onAddParticipants={() => setAddSheetOpen(true)}
+          cameraFacing={cameraFacing}
         />
       )}
 
@@ -840,6 +847,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           participants={groupParticipants}
           currentUserId={currentUserId}
           localVideoTrack={localVideo}
+          cameraFacing={cameraFacing}
         />
       )}
 
