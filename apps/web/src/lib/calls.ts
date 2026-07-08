@@ -50,19 +50,6 @@ export type ConnectOptions = {
 const TAG = "[call]";
 
 /**
- * True only in an iOS home-screen (standalone) PWA — the one environment where, after a background/reopen,
- * iOS suspends the audio session so LiveKit's own mic acquisition yields a dead track (both sides silent).
- * We work around it by acquiring a fresh mic stream ourselves inside the connect gesture. iOS Safari,
- * Android, and desktop return false → the mic path is byte-for-byte unchanged there.
- */
-const isIOSPWA = (): boolean =>
-  typeof navigator !== "undefined" &&
-  /iP(hone|ad|od)/.test(navigator.userAgent) &&
-  ((navigator as Navigator & { standalone?: boolean }).standalone === true ||
-    (typeof window !== "undefined" &&
-      window.matchMedia?.("(display-mode: standalone)").matches === true));
-
-/**
  * Connect to the LiveKit room for `roomName` and start a voice call: fetch a room-scoped token
  * (POST /calls/token), join the SFU, publish the mic, and route the remote participant's audio into
  * `audioElement`.
@@ -84,8 +71,7 @@ export async function connectToRoom(
   opts: ConnectOptions = {}
 ): Promise<CallConnection> {
   const { url, token } = await createCallToken(roomName);
-  const { Room, RoomEvent, DisconnectReason, Track, VideoPresets, LocalAudioTrack } =
-    await import("livekit-client");
+  const { Room, RoomEvent, DisconnectReason, Track, VideoPresets } = await import("livekit-client");
 
   const reasonName = (reason?: number) =>
     reason === undefined ? "unknown" : `${DisconnectReason[reason] ?? "?"}(${reason})`;
@@ -93,24 +79,14 @@ export async function connectToRoom(
   // adaptiveStream + dynacast + simulcast → the peer auto-receives the best layer their network can handle
   // (adaptive/"auto" quality, no hard cap). These are Room-level but only affect VIDEO subscription — a
   // voice call publishes no camera track, so its behavior is unchanged (audio path untouched).
-  // audioCaptureDefaults: the standard mic constraints browsers already default to — set explicitly to help
-  // iOS re-acquire cleanly; benign cross-platform.
   const room: LiveKitRoom = new Room({
     adaptiveStream: true,
     dynacast: true,
-    audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     videoCaptureDefaults: { resolution: VideoPresets.h720.resolution },
     publishDefaults: {
       videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360, VideoPresets.h720]
     }
   });
-
-  // iOS-PWA mic re-acquire: after a background/reopen the audio session is suspended, so LiveKit's own mic
-  // acquisition yields a dead track. On iOS-PWA we grab a FRESH mic stream ourselves (BEFORE room.connect,
-  // to stay inside the user-activation window) and publish that live track. Kept so mute/unmute + disconnect
-  // operate on it. Null off iOS-PWA.
-  let iosMicStream: MediaStream | null = null;
-  let iosMicTrack: InstanceType<typeof LocalAudioTrack> | null = null;
 
   // Camera-switch state, tracked BY US for the connection's life. The bug fix: cycling reads OUR
   // currentCameraId / currentFacing rather than re-reading room.getActiveDevice() each time (which stops
@@ -234,13 +210,6 @@ export async function connectToRoom(
   });
 
   try {
-    // iOS-PWA: acquire the fresh mic BEFORE room.connect — the connect round-trip can outlast iOS's
-    // user-activation window, so getUserMedia must run first (still in the accept/call-button gesture) to
-    // wake the suspended audio session. We publish this live track after connect (below).
-    if (isIOSPWA()) {
-      iosMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      iosMicTrack = new LocalAudioTrack(iosMicStream.getAudioTracks()[0], undefined, true);
-    }
     console.info(TAG, "connecting to room", roomName);
     await room.connect(url, token);
     // Any remote track already subscribed at connect time → surface it now (TrackSubscribed only fires
@@ -266,13 +235,8 @@ export async function connectToRoom(
       });
     });
     emit();
-    // Publish the mic. iOS-PWA: the fresh live track acquired above (LiveKit won't re-acquire against the
-    // dead session). Everyone else: LiveKit acquires + publishes — UNCHANGED.
-    if (iosMicTrack) {
-      await room.localParticipant.publishTrack(iosMicTrack);
-    } else {
-      await room.localParticipant.setMicrophoneEnabled(true);
-    }
+    // Publish the mic (this is what actually prompts for the getUserMedia permission).
+    await room.localParticipant.setMicrophoneEnabled(true);
     // Video call → also publish the camera and hand our own track to the self-view. Its OWN try/catch:
     // a camera denied/busy must NOT drop the call — degrade to audio-only (mic already published above).
     if (opts.video) {
@@ -293,7 +257,6 @@ export async function connectToRoom(
   } catch (error) {
     console.error(TAG, "connect failed", error);
     sweepExtraAudio();
-    iosMicStream?.getTracks().forEach((t) => t.stop());
     await room.disconnect().catch(() => undefined);
     throw error;
   }
@@ -309,14 +272,7 @@ export async function connectToRoom(
 
   return {
     setMuted: async (muted) => {
-      // iOS-PWA: we published our OWN LocalAudioTrack (not registered as Source.Microphone), so toggle IT
-      // directly — an enabled-flip, so unmute never re-runs getUserMedia. Everyone else: UNCHANGED.
-      if (iosMicTrack) {
-        if (muted) await iosMicTrack.mute();
-        else await iosMicTrack.unmute();
-      } else {
-        await room.localParticipant.setMicrophoneEnabled(!muted);
-      }
+      await room.localParticipant.setMicrophoneEnabled(!muted);
     },
     getCameraDevices: listCameras,
     switchCamera: async (deviceId) => {
@@ -390,8 +346,6 @@ export async function connectToRoom(
       await room.disconnect().catch(() => undefined);
       // Remove any extra audio elements (none in a pure 1-on-1 → no-op). The persistent audioElement stays.
       sweepExtraAudio();
-      // Stop our fresh iOS mic stream so the OS mic indicator clears + the mic is released.
-      iosMicStream?.getTracks().forEach((t) => t.stop());
     }
   };
 }
@@ -430,8 +384,7 @@ export async function connectToGroupRoom(
   opts: GroupConnectOptions = {}
 ): Promise<GroupConnection> {
   const { url, token } = await createCallToken(roomName);
-  const { Room, RoomEvent, DisconnectReason, Track, VideoPresets, LocalAudioTrack } =
-    await import("livekit-client");
+  const { Room, RoomEvent, DisconnectReason, Track, VideoPresets } = await import("livekit-client");
 
   const reasonName = (reason?: number) =>
     reason === undefined ? "unknown" : `${DisconnectReason[reason] ?? "?"}(${reason})`;
@@ -439,16 +392,11 @@ export async function connectToGroupRoom(
   const room: LiveKitRoom = new Room({
     adaptiveStream: true,
     dynacast: true,
-    audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     videoCaptureDefaults: { resolution: VideoPresets.h720.resolution },
     publishDefaults: {
       videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360, VideoPresets.h720]
     }
   });
-
-  // iOS-PWA mic re-acquire (see connectToRoom for the why) — acquired BEFORE room.connect. Null off iOS-PWA.
-  let iosMicStream: MediaStream | null = null;
-  let iosMicTrack: InstanceType<typeof LocalAudioTrack> | null = null;
 
   let currentCameraId: string | undefined;
   let currentFacing: "user" | "environment" = "user";
@@ -511,11 +459,6 @@ export async function connectToGroupRoom(
   });
 
   try {
-    // iOS-PWA: acquire the fresh mic BEFORE connect (stay in the user-activation window); publish it below.
-    if (isIOSPWA()) {
-      iosMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      iosMicTrack = new LocalAudioTrack(iosMicStream.getAudioTracks()[0], undefined, true);
-    }
     console.info(TAG, "connecting to GROUP room", roomName);
     await room.connect(url, token);
     // Participants already present at connect time.
@@ -527,11 +470,7 @@ export async function connectToGroupRoom(
       );
     });
     emit();
-    if (iosMicTrack) {
-      await room.localParticipant.publishTrack(iosMicTrack);
-    } else {
-      await room.localParticipant.setMicrophoneEnabled(true);
-    }
+    await room.localParticipant.setMicrophoneEnabled(true);
     if (opts.video) {
       try {
         await room.localParticipant.setCameraEnabled(true);
@@ -548,7 +487,6 @@ export async function connectToGroupRoom(
   } catch (error) {
     console.error(TAG, "group connect failed", error);
     sweepAudio();
-    iosMicStream?.getTracks().forEach((t) => t.stop());
     await room.disconnect().catch(() => undefined);
     throw error;
   }
@@ -562,13 +500,7 @@ export async function connectToGroupRoom(
 
   return {
     setMuted: async (muted) => {
-      // iOS-PWA: toggle our own published track directly; else the proven path — UNCHANGED.
-      if (iosMicTrack) {
-        if (muted) await iosMicTrack.mute();
-        else await iosMicTrack.unmute();
-      } else {
-        await room.localParticipant.setMicrophoneEnabled(!muted);
-      }
+      await room.localParticipant.setMicrophoneEnabled(!muted);
     },
     getCameraDevices: listCameras,
     setCameraEnabled: async (enabled) => {
@@ -625,8 +557,6 @@ export async function connectToGroupRoom(
       console.warn(TAG, "app called group room.disconnect()");
       await room.disconnect().catch(() => undefined);
       sweepAudio();
-      // Stop our fresh iOS mic stream so the OS mic indicator clears + the mic is released.
-      iosMicStream?.getTracks().forEach((t) => t.stop());
     }
   };
 }
