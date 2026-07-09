@@ -29,6 +29,10 @@ defmodule MediaService.HTTP.Router do
     send_result(conn, MediaService.Media.get_download_url(body(conn)))
   end
 
+  post "/internal/media/get_asset" do
+    send_result(conn, MediaService.Media.get_asset(body(conn)))
+  end
+
   # Service health: own liveness + the dependency this service owns (MinIO object storage).
   get "/internal/health" do
     endpoint =

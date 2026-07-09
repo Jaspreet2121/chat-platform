@@ -126,7 +126,58 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
              Media.complete_upload(%{"media_id" => media_id, "owner_user_id" => owner, "app_id" => @app})
   end
 
+  test "get_asset returns purpose/owner/conversation scoped to app_id; another tenant → not_found",
+       %{owner: owner, other_app: other_app, conversation: conversation} do
+    media_id = create_message!(owner, conversation)
+
+    assert {:ok, asset} = Media.get_asset(%{"media_id" => media_id, "app_id" => @app})
+    assert asset.purpose == "message"
+    assert asset.owner_user_id == owner
+    assert asset.conversation_id == conversation
+    refute Map.has_key?(asset, :object_key)
+
+    assert {:error, :not_found} = Media.get_asset(%{"media_id" => media_id, "app_id" => other_app})
+  end
+
+  test "get_download_url resolves object_key FROM THE ROW (ignores a client object_key), no object_key returned",
+       %{owner: owner} do
+    media_id = create!(owner)
+
+    assert {:ok, resp} =
+             Media.get_download_url(%{
+               "media_id" => media_id,
+               "app_id" => @app,
+               # An attacker-supplied key must NOT influence the signed URL.
+               "object_key" => "media/victim/secret/steal.png"
+             })
+
+    assert is_binary(resp.download_url)
+    # The URL is signed for the ROW's server key (media/<owner>/<media_id>/a.png), not the client's.
+    assert resp.download_url =~ "media/#{owner}"
+    refute resp.download_url =~ "victim"
+    assert resp.mime_type == "image/png"
+    refute Map.has_key?(resp, :object_key)
+
+    assert {:error, :not_found} =
+             Media.get_download_url(%{"media_id" => media_id, "app_id" => Ecto.UUID.generate()})
+  end
+
   # --- helpers -------------------------------------------------------------------------------------
+
+  defp create_message!(owner, conversation) do
+    {:ok, %{media_id: media_id}} =
+      Media.create_upload(%{
+        "owner_user_id" => owner,
+        "app_id" => @app,
+        "purpose" => "message",
+        "conversation_id" => conversation,
+        "filename" => "m.png",
+        "content_type" => "image/png",
+        "size_bytes" => 5
+      })
+
+    media_id
+  end
 
   defp create!(owner) do
     {:ok, %{media_id: media_id}} =

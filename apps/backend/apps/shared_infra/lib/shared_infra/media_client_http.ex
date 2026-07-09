@@ -23,6 +23,9 @@ defmodule SharedInfra.MediaClientHttp do
   @impl true
   def get_download_url(attrs), do: post("/internal/media/download_url", attrs)
 
+  @impl true
+  def get_asset(attrs), do: post("/internal/media/get_asset", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs, unavailable: @unavailable)
   end

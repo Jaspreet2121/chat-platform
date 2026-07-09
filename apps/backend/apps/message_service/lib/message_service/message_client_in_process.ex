@@ -73,4 +73,7 @@ defmodule MessageService.MessageClientInProcess do
 
   @impl true
   def list_media(attrs), do: MessageService.MessageStore.list_media(attrs)
+
+  @impl true
+  def get_by_media_id(attrs), do: MessageService.MessageStore.get_by_media_id(attrs)
 end

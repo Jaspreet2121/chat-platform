@@ -100,26 +100,30 @@ defmodule MediaService.Media do
     end
   end
 
+  # Presign a download by media_id (scoped to the caller's app_id). The object_key is read FROM THE ROW —
+  # NEVER from the request. A client-supplied object_key is ignored (the frontend still sends one until
+  # Phase 5). Authorization (ownership / membership) happens at the gateway BEFORE this is called.
   def get_download_url(attrs) do
-    with {:ok, media_id} <- required_attr(attrs, "media_id"),
-         {:ok, owner_user_id} <- required_attr(attrs, "owner_user_id"),
-         {:ok, object_key} <- required_attr(attrs, "object_key") do
-      expires_at = expires_at()
-
-      download_attrs = %{
-        "media_id" => media_id,
-        "owner_user_id" => owner_user_id,
-        "object_key" => object_key,
-        "expires_at" => expires_at
-      }
-
+    with {:ok, media_id} <- required_attr(attrs, "media_id") do
       if media_persistence_enabled?() do
-        case Storage.get_download_url(download_attrs) do
-          {:ok, media} -> {:ok, download_response(media, download_attrs)}
-          {:error, reason} -> {:error, reason}
+        with {:ok, app_id} <- required_attr(attrs, "app_id") do
+          download_persisted(media_id, app_id)
         end
       else
-        {:ok, placeholder_download_response(download_attrs)}
+        {:ok, placeholder_download_response(%{"media_id" => media_id, "expires_at" => expires_at()})}
+      end
+    end
+  end
+
+  # Read-path authorization support: resolve an asset's purpose + owner + conversation (scoped to app_id)
+  # so the gateway can authorize BEFORE any URL is minted. NEVER returns object_key. (media_id, app_id) only.
+  def get_asset(attrs) do
+    with {:ok, media_id} <- required_attr(attrs, "media_id"),
+         {:ok, app_id} <- required_attr(attrs, "app_id") do
+      if media_persistence_enabled?() do
+        lookup_asset(media_id, app_id)
+      else
+        {:error, :not_found}
       end
     end
   end
@@ -164,6 +168,45 @@ defmodule MediaService.Media do
       {:ok, asset} -> {:ok, asset}
       {:error, _changeset} -> {:error, :media_invalid}
     end
+  end
+
+  defp download_persisted(media_id, app_id) do
+    case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
+      nil ->
+        {:error, :not_found}
+
+      %MediaAsset{} = asset ->
+        expires_at = expires_at()
+
+        case Storage.get_download_url(%{
+               "object_key" => asset.object_key,
+               "media_id" => media_id,
+               "expires_at" => expires_at
+             }) do
+          {:ok, media} -> {:ok, download_response(media, asset, expires_at)}
+          {:error, reason} -> {:error, reason}
+        end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :not_found}
+  end
+
+  defp lookup_asset(media_id, app_id) do
+    case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
+      nil ->
+        {:error, :not_found}
+
+      %MediaAsset{} = asset ->
+        {:ok,
+         %{
+           media_id: asset.id,
+           purpose: asset.purpose,
+           owner_user_id: asset.owner_user_id,
+           conversation_id: asset.conversation_id
+         }}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :not_found}
   end
 
   defp complete_persisted(media_id, app_id, owner_user_id) do
@@ -250,11 +293,14 @@ defmodule MediaService.Media do
     }
   end
 
-  defp download_response(media, attrs) do
+  # The persisted download response — mime_type comes from the ROW; object_key + owner_user_id are NEVER
+  # returned (they'd re-leak the capability we just stopped trusting from the client).
+  defp download_response(media, asset, expires_at) do
     %{
-      media_id: media[:media_id] || attrs["media_id"],
+      media_id: asset.id,
       download_url: media[:download_url],
-      expires_at: iso8601(media[:expires_at] || attrs["expires_at"])
+      expires_at: iso8601(expires_at),
+      mime_type: asset.mime_type
     }
   end
 

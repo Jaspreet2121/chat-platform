@@ -3,6 +3,7 @@ defmodule ApiGatewayWeb.MediaUnavailableMappingTest.SessionOkStub do
   @behaviour SharedInfra.AuthClient
   @session %{
     user_id: "user_1",
+    app_id: "00000000-0000-0000-0000-000000000001",
     session_id: "s",
     device_id: "d",
     platform: "ios",
@@ -47,6 +48,9 @@ defmodule ApiGatewayWeb.MediaUnavailableMappingTest.MediaUnavailableStub do
   def complete_upload(_attrs), do: {:error, :media_unavailable}
   @impl true
   def get_download_url(_attrs), do: {:error, :media_unavailable}
+  # The download path calls get_asset FIRST; an unreachable media service surfaces here → still 503.
+  @impl true
+  def get_asset(_attrs), do: {:error, :media_unavailable}
 end
 
 defmodule ApiGatewayWeb.MediaUnavailableMappingTest do

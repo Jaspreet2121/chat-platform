@@ -18,4 +18,7 @@ defmodule MediaService.MediaClientInProcess do
 
   @impl true
   def get_download_url(attrs), do: Media.get_download_url(attrs)
+
+  @impl true
+  def get_asset(attrs), do: Media.get_asset(attrs)
 end

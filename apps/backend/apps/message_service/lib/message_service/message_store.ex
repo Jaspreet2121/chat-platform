@@ -26,7 +26,8 @@ defmodule MessageService.MessageStore do
   @callback list_starred(message_attrs()) :: timeline_result()
   @callback search_messages(message_attrs()) :: timeline_result()
   @callback list_media(message_attrs()) :: timeline_result()
-  @optional_callbacks list_media: 1
+  @callback get_by_media_id(message_attrs()) :: message_result()
+  @optional_callbacks list_media: 1, get_by_media_id: 1
 
   def put_message(attrs), do: adapter().put_message(attrs)
   def get_message(attrs), do: adapter().get_message(attrs)
@@ -38,6 +39,18 @@ defmodule MessageService.MessageStore do
 
     if function_exported?(store, :list_media, 1) do
       store.list_media(attrs)
+    else
+      {:error, :message_unavailable}
+    end
+  end
+
+  # Media-authorization support: the conversation a media_id was sent to (optional callback — Postgres
+  # only). Returns {:ok, %{conversation_id}} or {:error, :not_found} for an unsent/unknown media_id.
+  def get_by_media_id(attrs) do
+    store = adapter()
+
+    if function_exported?(store, :get_by_media_id, 1) do
+      store.get_by_media_id(attrs)
     else
       {:error, :message_unavailable}
     end
@@ -983,6 +996,31 @@ defmodule MessageService.MessageStore.PostgresAdapter do
      }}
   rescue
     Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  # The conversation a media_id was sent to (read-path authz). Takes the earliest message carrying it (a
+  # media_id maps to a message); an unsent / unknown media_id → :not_found (the gateway then falls back to
+  # the owner-only check). No deleted_at filter: authorization is by membership, not message liveness.
+  @impl true
+  def get_by_media_id(attrs) do
+    case attr(attrs, "media_id") do
+      media_id when is_binary(media_id) and media_id != "" ->
+        Message
+        |> where([m], m.media_id == ^media_id)
+        |> order_by([m], asc: m.created_at)
+        |> limit(1)
+        |> select([m], m.conversation_id)
+        |> Repo.one()
+        |> case do
+          nil -> {:error, :not_found}
+          conversation_id -> {:ok, %{conversation_id: conversation_id}}
+        end
+
+      _ ->
+        {:error, :not_found}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :not_found}
   end
 
   defp maybe_before(query, before) when is_binary(before) and before != "" do

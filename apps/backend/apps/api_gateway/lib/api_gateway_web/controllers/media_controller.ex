@@ -186,24 +186,79 @@ defmodule ApiGatewayWeb.MediaController do
     end
   end
 
-  defp download_with_session(conn, media_id, params) do
+  # AUTHORIZE, then presign. The object_key is resolved server-side FROM THE ROW (never the client's), so
+  # `params` (which may still carry a client object_key until Phase 5) is intentionally ignored. Every
+  # authorization/lookup failure collapses to 404 — no existence reveal, never 403, no distinction between
+  # "doesn't exist", "wrong tenant", and "not a member".
+  defp download_with_session(conn, media_id, _params) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, asset} <-
+           SharedInfra.MediaClient.get_asset(%{"media_id" => media_id, "app_id" => session.app_id}),
+         :ok <- authorize_download(media_id, asset, session.user_id),
          {:ok, response} <-
-           params
-           |> Map.put("media_id", media_id)
-           |> Map.put("owner_user_id", session.user_id)
-           |> SharedInfra.MediaClient.get_download_url() do
+           SharedInfra.MediaClient.get_download_url(%{
+             "media_id" => media_id,
+             "app_id" => session.app_id
+           }) do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :media_unavailable} -> service_unavailable(conn)
-      {:error, :media_too_large} -> too_large(conn)
-      _ -> invalid_request(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      # not_found (unknown / cross-tenant asset), not_a_member, or any other failure → opaque 404.
+      _ -> not_found(conn)
     end
   end
+
+  # Authorize a download by the asset's purpose (per the locked model):
+  #   message      → the conversation the media was SENT to (messages.media_id) → membership; if it isn't
+  #                  attached to a message yet (uploaded, not sent) → owner-only.
+  #   group_avatar → the asset's conversation_id (set on upload) → membership.
+  #   user_avatar  → already scoped to the caller's app_id by get_asset; an authenticated caller is enough
+  #                  (visibility rules are Phase 4).
+  defp authorize_download(media_id, asset, user_id) do
+    case aget(asset, :purpose) do
+      "message" -> authorize_message_media(media_id, asset, user_id)
+      "group_avatar" -> authorize_group_avatar(asset, user_id)
+      "user_avatar" -> :ok
+      _ -> {:error, :not_a_member}
+    end
+  end
+
+  defp authorize_message_media(media_id, asset, user_id) do
+    case SharedInfra.MessageClient.get_by_media_id(%{"media_id" => media_id}) do
+      {:ok, result} ->
+        case aget(result, :conversation_id) do
+          conversation_id when is_binary(conversation_id) -> membership(conversation_id, user_id)
+          # Attached to no readable conversation → fall back to owner-only.
+          _ -> owner_only(asset, user_id)
+        end
+
+      {:error, :message_unavailable} ->
+        {:error, :conversation_unavailable}
+
+      # Not attached to any message (uploaded, not sent) → only the owner may download it.
+      _ ->
+        owner_only(asset, user_id)
+    end
+  end
+
+  defp authorize_group_avatar(asset, user_id) do
+    case aget(asset, :conversation_id) do
+      conversation_id when is_binary(conversation_id) -> membership(conversation_id, user_id)
+      _ -> {:error, :not_a_member}
+    end
+  end
+
+  defp owner_only(asset, user_id) do
+    if aget(asset, :owner_user_id) == user_id, do: :ok, else: {:error, :not_a_member}
+  end
+
+  defp aget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
+  defp aget(_map, _key), do: nil
 
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "media.invalid_request")
 

@@ -75,6 +75,9 @@ defmodule SharedInfra.MessageClientHttp do
   @impl true
   def list_media(attrs), do: post("/internal/messages/list_media", attrs)
 
+  @impl true
+  def get_by_media_id(attrs), do: post("/internal/messages/by_media_id", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs,
       unavailable: @unavailable,
