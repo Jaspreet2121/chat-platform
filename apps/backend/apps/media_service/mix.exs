@@ -27,6 +27,9 @@ defmodule MediaService.MixProject do
       # Implements the SharedInfra.MediaClient behaviour (MediaService.MediaClientInProcess).
       # No cycle: shared_infra does not depend on media_service.
       {:shared_infra, in_umbrella: true},
+      # Persists media_assets rows (tenant + ownership) via MediaService.Repo on the shared Postgres.
+      {:ecto_sql, "~> 3.10"},
+      {:postgrex, "~> 0.17"},
       # Internal HTTP API (Plug, not Phoenix). The listener is flag-gated/default-off.
       {:plug, "~> 1.14"},
       {:plug_cowboy, "~> 2.7"},

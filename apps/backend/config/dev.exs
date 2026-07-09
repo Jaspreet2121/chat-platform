@@ -28,6 +28,7 @@ config :user_service, UserService.Repo, postgres_config
 config :conversation_service, ConversationService.Repo, postgres_config
 config :message_service, MessageService.Repo, postgres_config
 config :notification_service, NotificationService.Repo, postgres_config
+config :media_service, MediaService.Repo, postgres_config
 
 config :api_gateway, ApiGatewayWeb.Endpoint,
   http: [

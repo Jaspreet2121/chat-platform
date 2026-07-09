@@ -8,10 +8,15 @@ defmodule MediaService.Application do
     Supervisor.start_link(children(), strategy: :one_for_one, name: MediaService.Supervisor)
   end
 
-  # Internal HTTP API listener starts ONLY under MEDIA_HTTP_API_ENABLED (default off), so the
-  # umbrella boot + plain `mix test` start no listener. Bind on a private network in deployment.
-  # (media_service owns no Repo — storage-adapter based — so the listener is its only child.)
+  # MediaService.Repo persists media_assets (tenant + ownership) for the write path. Started
+  # unconditionally like the other services' repos — Ecto's pool boots even if Postgres is momentarily
+  # unreachable, and plain `mix test` (no DB) is unaffected (DB-backed tests are :postgres_integration).
+  # The internal HTTP API listener starts ONLY under MEDIA_HTTP_API_ENABLED (default off); bind private.
   defp children do
+    [MediaService.Repo] ++ http_children()
+  end
+
+  defp http_children do
     if http_api_enabled?() do
       [{Plug.Cowboy, scheme: :http, plug: MediaService.HTTP.Router, options: [port: http_port()]}]
     else

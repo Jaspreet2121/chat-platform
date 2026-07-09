@@ -82,6 +82,7 @@ if config_env() == :prod do
   config :conversation_service, ConversationService.Repo, repo_opts
   config :message_service, MessageService.Repo, repo_opts
   config :notification_service, NotificationService.Repo, repo_opts
+  config :media_service, MediaService.Repo, repo_opts
 
   # --- Authoritative secrets (override the code's insecure dev fallbacks) -------------------
   config :auth_service, token_secret: token_secret, otp_secret: otp_secret

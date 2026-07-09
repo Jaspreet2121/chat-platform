@@ -100,32 +100,13 @@ defmodule ApiGatewayWeb.MediaControllerTest do
     assert Jason.decode!(conn.resp_body)["error"]["code"] == "media.unauthorized"
   end
 
-  test "media persistence enabled creates upload through in-memory adapter with session user" do
-    Application.put_env(:media_service, :media_persistence, true)
-    Application.put_env(:media_service, :media_storage_adapter, Storage.InMemoryAdapter)
-    start_in_memory_storage!()
-    Storage.InMemoryAdapter.reset()
-
-    conn =
-      :post
-      |> conn(
-        "/api/v1/media/uploads",
-        Jason.encode!(%{
-          "filename" => "photo.png",
-          "content_type" => "image/png",
-          "size_bytes" => 123
-        })
-      )
-      |> put_req_header("content-type", "application/json")
-      |> put_req_header("authorization", "Bearer access_token_placeholder")
-      |> ApiGatewayWeb.Endpoint.call([])
-
-    assert conn.status == 201
-
-    response = Jason.decode!(conn.resp_body)
-    assert response["object_key"] =~ "media/user_placeholder/"
-    assert response["upload_url"] =~ "action=upload"
-  end
+  # NOTE: the former "media persistence enabled creates upload through in-memory adapter with session
+  # user" test was removed. create_upload now INSERTs a media_assets row (tenant + owner) via
+  # MediaService.Repo, so the persistence-enabled path requires a REAL Postgres AND a UUID owner — the old
+  # combination (persistence on, session persistence off → the "user_placeholder" session, no DB) is no
+  # longer coherent. That coverage moved to:
+  #   * media_controller_authz_test.exs — the session → create path + field passing (media client stubbed);
+  #   * media_persistence_postgres_integration_test.exs — the real persisted insert (:postgres_integration).
 
   defp json_request(method, path, params) do
     method
@@ -145,16 +126,5 @@ defmodule ApiGatewayWeb.MediaControllerTest do
 
     assert is_binary(correlation_id) and correlation_id != "" and
              correlation_id != "corr_placeholder"
-  end
-
-  defp start_in_memory_storage! do
-    case Storage.InMemoryAdapter.start_link() do
-      {:ok, pid} ->
-        Process.unlink(pid)
-        :ok
-
-      {:error, {:already_started, _pid}} ->
-        :ok
-    end
   end
 end

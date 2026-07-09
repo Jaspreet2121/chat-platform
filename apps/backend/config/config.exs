@@ -45,6 +45,7 @@ config :user_service, ecto_repos: [UserService.Repo]
 config :conversation_service, ecto_repos: [ConversationService.Repo]
 config :message_service, ecto_repos: [MessageService.Repo]
 config :notification_service, ecto_repos: [NotificationService.Repo]
+config :media_service, ecto_repos: [MediaService.Repo]
 
 config :message_service, :scylla,
   nodes:

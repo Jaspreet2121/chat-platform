@@ -6,6 +6,8 @@ defmodule MediaService.Media do
   enabled by default.
   """
 
+  alias MediaService.Repo
+  alias MediaService.Schemas.MediaAsset
   alias MediaService.Storage
 
   # Kept in sync with the frontend allowedMediaTypes set (apps/web chat page). video/quicktime (.mov)
@@ -34,14 +36,20 @@ defmodule MediaService.Media do
   @callback complete_upload(media_attrs()) :: result()
   @callback get_download_url(media_attrs()) :: result()
 
+  # Authorization for `message` / `group_avatar` (membership / owner-admin) is enforced at the GATEWAY
+  # before this is called — media_service can't reach conversation_service in prod. Here we persist the
+  # authoritative media_assets row (tenant + owner + purpose + server object_key), then presign the PUT.
+  # `app_id` is required (the caller's session tenant); `purpose` defaults to "message"; `conversation_id`
+  # is optional this slice (Phase 5 frontend will always send it — see the enforce-when-present note above).
   def create_upload(attrs) do
     with {:ok, owner_user_id} <- required_attr(attrs, "owner_user_id"),
+         {:ok, purpose} <- fetch_purpose(attrs),
          {:ok, filename} <- required_attr(attrs, "filename"),
          {:ok, content_type} <- required_content_type(attrs),
          {:ok, size_bytes} <- required_size(attrs) do
       media_id = generate_uuid()
       object_key = object_key(owner_user_id, media_id, filename)
-      expires_at = expires_at()
+      conversation_id = optional_attr(attrs, "conversation_id")
 
       upload_attrs = %{
         "media_id" => media_id,
@@ -50,13 +58,25 @@ defmodule MediaService.Media do
         "content_type" => content_type,
         "size_bytes" => size_bytes,
         "object_key" => object_key,
-        "expires_at" => expires_at
+        "expires_at" => expires_at()
       }
 
       if media_persistence_enabled?() do
-        case Storage.create_upload(upload_attrs) do
-          {:ok, upload} -> {:ok, upload_response(upload, upload_attrs)}
-          {:error, reason} -> {:error, reason}
+        # app_id is required only on the persisting path (placeholder/dev mode has no tenant + no INSERT).
+        with {:ok, app_id} <- required_attr(attrs, "app_id"),
+             {:ok, _asset} <-
+               insert_media_asset(
+                 media_id,
+                 app_id,
+                 owner_user_id,
+                 conversation_id,
+                 purpose,
+                 object_key,
+                 content_type,
+                 size_bytes
+               ),
+             {:ok, upload} <- Storage.create_upload(upload_attrs) do
+          {:ok, upload_response(upload, upload_attrs)}
         end
       else
         {:ok, placeholder_upload_response(upload_attrs)}
@@ -64,23 +84,18 @@ defmodule MediaService.Media do
     end
   end
 
+  # Take `media_id` + the caller (`owner_user_id`) + `app_id` ONLY — NEVER a client object_key. Resolve the
+  # row server-side scoped to the tenant, verify the caller OWNS it (else 404 — no existence reveal), and
+  # flip it to "ready". Idempotent: completing an already-ready asset succeeds.
   def complete_upload(attrs) do
     with {:ok, media_id} <- required_attr(attrs, "media_id"),
-         {:ok, owner_user_id} <- required_attr(attrs, "owner_user_id"),
-         {:ok, object_key} <- required_attr(attrs, "object_key") do
-      complete_attrs = %{
-        "media_id" => media_id,
-        "owner_user_id" => owner_user_id,
-        "object_key" => object_key
-      }
-
+         {:ok, owner_user_id} <- required_attr(attrs, "owner_user_id") do
       if media_persistence_enabled?() do
-        case Storage.complete_upload(complete_attrs) do
-          {:ok, media} -> {:ok, complete_response(media)}
-          {:error, reason} -> {:error, reason}
+        with {:ok, app_id} <- required_attr(attrs, "app_id") do
+          complete_persisted(media_id, app_id, owner_user_id)
         end
       else
-        {:ok, complete_response(complete_attrs)}
+        {:ok, complete_response(%{"media_id" => media_id})}
       end
     end
   end
@@ -114,9 +129,105 @@ defmodule MediaService.Media do
       System.get_env("MEDIA_DB_BACKED") in ["true", "1", "yes"]
   end
 
+  # --- media_assets persistence (write path) -------------------------------------------------------
+
+  defp insert_media_asset(
+         media_id,
+         app_id,
+         owner_user_id,
+         conversation_id,
+         purpose,
+         object_key,
+         mime_type,
+         size_bytes
+       ) do
+    now = DateTime.utc_now()
+
+    %{
+      id: media_id,
+      app_id: app_id,
+      owner_user_id: owner_user_id,
+      conversation_id: conversation_id,
+      purpose: purpose,
+      storage_provider: storage_provider(),
+      bucket: bucket(),
+      object_key: object_key,
+      mime_type: mime_type,
+      size_bytes: size_bytes,
+      status: "created",
+      created_at: now,
+      updated_at: now
+    }
+    |> MediaAsset.create_changeset()
+    |> Repo.insert()
+    |> case do
+      {:ok, asset} -> {:ok, asset}
+      {:error, _changeset} -> {:error, :media_invalid}
+    end
+  end
+
+  defp complete_persisted(media_id, app_id, owner_user_id) do
+    case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
+      nil ->
+        {:error, :not_found}
+
+      %MediaAsset{owner_user_id: ^owner_user_id} = asset ->
+        mark_ready(asset)
+
+      %MediaAsset{} ->
+        # A different owner's asset — 404, never reveal that it exists.
+        {:error, :not_found}
+    end
+  rescue
+    # A non-UUID media_id casts-errors on the lookup; treat as not found (no 500).
+    Ecto.Query.CastError -> {:error, :not_found}
+  end
+
+  # Idempotent: an already-ready asset returns success without a redundant write.
+  defp mark_ready(%MediaAsset{status: "ready"} = asset),
+    do: {:ok, complete_response(%{"media_id" => asset.id})}
+
+  defp mark_ready(%MediaAsset{} = asset) do
+    asset
+    |> MediaAsset.status_changeset("ready", DateTime.utc_now())
+    |> Repo.update()
+    |> case do
+      {:ok, updated} -> {:ok, complete_response(%{"media_id" => updated.id})}
+      {:error, _changeset} -> {:error, :media_invalid}
+    end
+  end
+
+  defp storage_provider, do: "minio"
+
+  defp bucket do
+    :media_service
+    |> Application.get_env(:minio, [])
+    |> Keyword.get(:bucket, "chat-media")
+  end
+
+  defp fetch_purpose(attrs) do
+    case get_attr(attrs, "purpose") do
+      nil -> {:ok, "message"}
+      "" -> {:ok, "message"}
+      purpose when purpose in ["message", "user_avatar", "group_avatar"] -> {:ok, purpose}
+      _ -> {:error, :media_invalid}
+    end
+  end
+
+  defp optional_attr(attrs, key) do
+    case get_attr(attrs, key) do
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
   defp upload_response(upload, attrs) do
     %{
       media_id: upload[:media_id] || attrs["media_id"],
+      # TODO(phase-5): stop returning object_key. The current frontend puts it into message metadata and
+      # every avatar flow reads it (apps/web chat/page.tsx, MyProfileModal, ConversationDetailsPanel), so
+      # removing it now breaks live uploads. The read path (Phase 2) will resolve the key server-side from
+      # media_id, and Phase 5 migrates the frontend off this field.
       object_key: upload[:object_key] || attrs["object_key"],
       upload_url: upload[:upload_url],
       expires_at: iso8601(upload[:expires_at] || attrs["expires_at"])
