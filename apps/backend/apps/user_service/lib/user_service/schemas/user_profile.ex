@@ -14,6 +14,9 @@ defmodule UserService.Schemas.UserProfile do
     field(:avatar_media_id, :binary_id)
     field(:avatar_object_key, :string)
     field(:bio, :string)
+    # The profile's tenant (migration 048). Read-only here — surfaced so the gateway can presign the
+    # avatar scoped to the ASSET's app (the /avatar route is unauthenticated → no caller app_id).
+    field(:app_id, :binary_id)
     field(:created_at, :utc_datetime_usec)
     field(:updated_at, :utc_datetime_usec)
   end

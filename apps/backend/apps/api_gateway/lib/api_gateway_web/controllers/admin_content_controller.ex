@@ -89,7 +89,7 @@ defmodule ApiGatewayWeb.AdminContentController do
       app_id: app_id,
       masked: false,
       message_count: length(messages),
-      messages: messages |> enrich_all() |> with_sender_identities()
+      messages: messages |> enrich_all(app_id) |> with_sender_identities()
     })
   end
 
@@ -98,9 +98,9 @@ defmodule ApiGatewayWeb.AdminContentController do
   # response. A failed/slow presign degrades that one message (no URL) instead of the list.
   @enrich_concurrency 16
   @enrich_timeout_ms 5_000
-  defp enrich_all(messages) do
+  defp enrich_all(messages, app_id) do
     messages
-    |> Task.async_stream(&enrich_media/1,
+    |> Task.async_stream(fn message -> enrich_media(message, app_id) end,
       max_concurrency: @enrich_concurrency,
       timeout: @enrich_timeout_ms,
       on_timeout: :kill_task,
@@ -205,17 +205,18 @@ defmodule ApiGatewayWeb.AdminContentController do
   # content.read only: attach a presigned GET download_url to media messages (same signing path the
   # normal chat uses) so the admin viewer can render them. Best-effort — a presign failure leaves the
   # message intact without a URL. Non-media messages pass through untouched.
+  # Presign scoped to the ASSET's app_id (the conversation's tenant, resolved by the caller). An admin/root
+  # actor is tenant-wide, so the asset's own app is the correct scope. object_key is resolved server-side
+  # from the row; the "message" purpose assertion refuses to presign a non-message asset.
   @doc false
-  def enrich_media(m) do
-    metadata = mget(m, :metadata) || %{}
-    object_key = Map.get(metadata, "object_key") || Map.get(metadata, :object_key)
+  def enrich_media(m, app_id) do
     media_id = mget(m, :media_id)
 
-    if mget(m, :message_type) == "media" and is_binary(object_key) and media_id do
+    if mget(m, :message_type) == "media" and is_binary(media_id) and is_binary(app_id) do
       case SharedInfra.MediaClient.get_download_url(%{
              "media_id" => media_id,
-             "owner_user_id" => mget(m, :sender_user_id) || "admin_content_read",
-             "object_key" => object_key
+             "app_id" => app_id,
+             "purpose" => "message"
            }) do
         {:ok, download} ->
           Map.put(m, :download_url, Map.get(download, :download_url) || Map.get(download, "download_url"))

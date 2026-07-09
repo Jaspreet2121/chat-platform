@@ -214,28 +214,32 @@ defmodule ApiGatewayWeb.UserController do
   # avatar visibility gating is a tracked follow-up.
   defp with_avatar_url(profile) when is_map(profile) do
     media_id = Map.get(profile, :avatar_media_id)
-    object_key = Map.get(profile, :avatar_object_key)
+    app_id = Map.get(profile, :app_id)
 
-    if is_binary(media_id) and is_binary(object_key) do
-      # An avatar is set → presign a download URL. On any media error, leave the profile unchanged
-      # (fail-open) so a transient glitch never wipes a valid avatar.
-      with owner_user_id when is_binary(owner_user_id) <- Map.get(profile, :user_id),
-           {:ok, download} <-
-             SharedInfra.MediaClient.get_download_url(%{
-               "media_id" => media_id,
-               "owner_user_id" => owner_user_id,
-               "object_key" => object_key
-             }),
-           url when is_binary(url) <- Map.get(download, :download_url) do
-        Map.put(profile, :avatar_url, url)
+    result =
+      if is_binary(media_id) and is_binary(app_id) do
+        # Presign scoped to the PROFILE's app (the /avatar route is unauthenticated → no caller app_id).
+        # object_key is resolved server-side from the row; the "user_avatar" purpose assertion refuses to
+        # presign a non-avatar asset (so a poisoned avatar_media_id can't presign a message attachment). On
+        # any media error, leave the profile unchanged (fail-open) so a glitch never wipes a valid avatar.
+        with {:ok, download} <-
+               SharedInfra.MediaClient.get_download_url(%{
+                 "media_id" => media_id,
+                 "app_id" => app_id,
+                 "purpose" => "user_avatar"
+               }),
+             url when is_binary(url) <- Map.get(download, :download_url) do
+          Map.put(profile, :avatar_url, url)
+        else
+          _ -> profile
+        end
       else
-        _ -> profile
+        # No avatar (never set, or just cleared) → avatar_url: nil EXPLICITLY so clients drop any stale URL.
+        Map.put(profile, :avatar_url, nil)
       end
-    else
-      # No avatar (never set, or just cleared) → return avatar_url: nil EXPLICITLY so clients drop any
-      # stale URL and revert to initials instead of retaining the previous photo.
-      Map.put(profile, :avatar_url, nil)
-    end
+
+    # app_id is an INTERNAL presign input — never leak the tenant id to the client.
+    Map.delete(result, :app_id)
   end
 
   defp with_avatar_url(other), do: other

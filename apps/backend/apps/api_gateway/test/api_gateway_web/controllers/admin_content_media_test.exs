@@ -6,10 +6,14 @@ defmodule ApiGatewayWeb.AdminContentMediaTest.MediaStub do
   def create_upload(_attrs), do: {:error, :not_used}
   @impl true
   def complete_upload(_attrs), do: {:error, :not_used}
-
   @impl true
-  def get_download_url(%{"object_key" => object_key}) do
-    {:ok, %{download_url: "https://media.growblic.com/chat-media/#{object_key}?X-Amz-Signature=stub"}}
+  def get_asset(_attrs), do: {:error, :not_used}
+
+  # New shape: (media_id, app_id, purpose "message"). object_key is resolved server-side from the row, so
+  # the URL is derived from media_id here.
+  @impl true
+  def get_download_url(%{"media_id" => media_id, "app_id" => _app, "purpose" => "message"}) do
+    {:ok, %{download_url: "https://media.growblic.com/get/#{media_id}?X-Amz-Signature=stub"}}
   end
 end
 
@@ -21,6 +25,8 @@ defmodule ApiGatewayWeb.AdminContentMediaTest.FailingMediaStub do
   def create_upload(_attrs), do: {:error, :media_unavailable}
   @impl true
   def complete_upload(_attrs), do: {:error, :media_unavailable}
+  @impl true
+  def get_asset(_attrs), do: {:error, :media_unavailable}
   @impl true
   def get_download_url(_attrs), do: {:error, :media_unavailable}
 end
@@ -84,11 +90,14 @@ defmodule ApiGatewayWeb.AdminContentMediaTest do
     :ok
   end
 
-  describe "enrich_media/1 (content.read / root)" do
-    test "attaches a presigned download_url to media messages" do
-      enriched = Controller.enrich_media(@image_message)
+  # The asset's app_id is the conversation's tenant, resolved by the caller and threaded into enrich_media.
+  @app "44444444-4444-4444-8444-444444444444"
 
-      assert enriched.download_url =~ "https://media.growblic.com/chat-media/media/u1/media-1/photo.png"
+  describe "enrich_media/2 (content.read / root)" do
+    test "attaches a presigned download_url to media messages (signed by media_id + app_id)" do
+      enriched = Controller.enrich_media(@image_message, @app)
+
+      assert enriched.download_url =~ "https://media.growblic.com/get/media-1"
       # the rest of the message is untouched (metadata, caption etc. remain for the viewer)
       assert enriched.media_id == "media-1"
       assert enriched.metadata["content_type"] == "image/png"
@@ -96,21 +105,22 @@ defmodule ApiGatewayWeb.AdminContentMediaTest do
     end
 
     test "voice messages get a download_url too" do
-      assert Controller.enrich_media(@voice_message).download_url =~ "voice.webm"
+      assert Controller.enrich_media(@voice_message, @app).download_url =~ "media-2"
     end
 
     test "text messages pass through untouched" do
-      assert Controller.enrich_media(@text_message) == @text_message
+      assert Controller.enrich_media(@text_message, @app) == @text_message
     end
 
-    test "media message without object_key passes through without a URL" do
-      message = %{@image_message | metadata: %{}}
-      assert Controller.enrich_media(message) == message
+    test "media message without a media_id passes through without a URL" do
+      # object_key is no longer consulted — the gate is media_id + app_id (the row is the source of truth).
+      message = %{@image_message | media_id: nil}
+      assert Controller.enrich_media(message, @app) == message
     end
 
     test "presign failure degrades gracefully (message kept, no URL)" do
       Application.put_env(:shared_infra, :media_client_adapter, __MODULE__.FailingMediaStub)
-      assert Controller.enrich_media(@image_message) == @image_message
+      assert Controller.enrich_media(@image_message, @app) == @image_message
     end
   end
 

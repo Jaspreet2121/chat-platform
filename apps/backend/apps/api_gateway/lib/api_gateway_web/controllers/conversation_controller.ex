@@ -65,7 +65,7 @@ defmodule ApiGatewayWeb.ConversationController do
            params
            |> Map.put("user_id", session.user_id)
            |> SharedInfra.ConversationClient.list_conversations() do
-      json(conn, enrich_list_group_avatars(response))
+      json(conn, enrich_list_group_avatars(response, session.app_id))
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
@@ -100,7 +100,7 @@ defmodule ApiGatewayWeb.ConversationController do
            |> Map.put("conversation_id", conversation_id)
            |> Map.put("user_id", session.user_id)
            |> SharedInfra.ConversationClient.get_conversation() do
-      json(conn, with_group_avatar_url(response))
+      json(conn, with_group_avatar_url(response, session.app_id))
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
@@ -198,7 +198,7 @@ defmodule ApiGatewayWeb.ConversationController do
              "avatar_media_id" => params["avatar_media_id"],
              "avatar_object_key" => params["avatar_object_key"]
            }) do
-      json(conn, with_group_avatar_url(response))
+      json(conn, with_group_avatar_url(response, session.app_id))
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
@@ -274,18 +274,18 @@ defmodule ApiGatewayWeb.ConversationController do
 
   # Presign a group's avatar (media_id + object_key) → group_avatar_url. Mirrors user with_avatar_url.
   # Best-effort: missing fields / media error → the map is unchanged (no group_avatar_url).
-  defp with_group_avatar_url(map) when is_map(map) do
+  # `app_id` is the caller's session tenant. A caller only ever sees groups in their own app (membership),
+  # so it equals the conversation's app_id; a mismatch just fails safe to no-avatar (the row lookup misses).
+  # object_key is resolved server-side from the row; the "group_avatar" purpose assertion refuses to presign
+  # a non-group-avatar asset.
+  defp with_group_avatar_url(map, app_id) when is_map(map) and is_binary(app_id) do
     with media_id when is_binary(media_id) <-
            Map.get(map, :group_avatar_media_id) || Map.get(map, "group_avatar_media_id"),
-         object_key when is_binary(object_key) <-
-           Map.get(map, :group_avatar_object_key) || Map.get(map, "group_avatar_object_key"),
-         owner when is_binary(owner) <-
-           Map.get(map, :conversation_id) || Map.get(map, "conversation_id"),
          {:ok, download} <-
            SharedInfra.MediaClient.get_download_url(%{
              "media_id" => media_id,
-             "owner_user_id" => owner,
-             "object_key" => object_key
+             "app_id" => app_id,
+             "purpose" => "group_avatar"
            }),
          url when is_binary(url) <-
            Map.get(download, :download_url) || Map.get(download, "download_url") do
@@ -295,25 +295,25 @@ defmodule ApiGatewayWeb.ConversationController do
     end
   end
 
-  defp with_group_avatar_url(other), do: other
+  defp with_group_avatar_url(other, _app_id), do: other
 
   # Presign group avatars for the LIST concurrently (only group rows with a photo). Bounded fan-out;
   # a failed presign just leaves that row without a group_avatar_url (client falls back to initials).
-  defp enrich_list_group_avatars(%{conversations: conversations} = response)
+  defp enrich_list_group_avatars(%{conversations: conversations} = response, app_id)
        when is_list(conversations) do
-    %{response | conversations: enrich_rows(conversations)}
+    %{response | conversations: enrich_rows(conversations, app_id)}
   end
 
-  defp enrich_list_group_avatars(%{"conversations" => conversations} = response)
+  defp enrich_list_group_avatars(%{"conversations" => conversations} = response, app_id)
        when is_list(conversations) do
-    Map.put(response, "conversations", enrich_rows(conversations))
+    Map.put(response, "conversations", enrich_rows(conversations, app_id))
   end
 
-  defp enrich_list_group_avatars(other), do: other
+  defp enrich_list_group_avatars(other, _app_id), do: other
 
-  defp enrich_rows(conversations) do
+  defp enrich_rows(conversations, app_id) do
     conversations
-    |> Task.async_stream(&with_group_avatar_url/1,
+    |> Task.async_stream(fn row -> with_group_avatar_url(row, app_id) end,
       max_concurrency: 8,
       timeout: 5_000,
       on_timeout: :kill_task,

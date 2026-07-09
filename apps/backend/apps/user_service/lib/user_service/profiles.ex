@@ -102,6 +102,7 @@ defmodule UserService.Profiles do
       display_name: profile.display_name,
       avatar_media_id: profile.avatar_media_id,
       avatar_object_key: profile.avatar_object_key,
+      app_id: profile.app_id,
       bio: profile.bio,
       updated_at: DateTime.to_iso8601(profile.updated_at || DateTime.utc_now())
     }
@@ -142,6 +143,9 @@ defmodule UserService.Profiles do
       display_name: profile.display_name,
       avatar_media_id: profile.avatar_media_id,
       avatar_object_key: profile.avatar_object_key,
+      # The profile's tenant — the gateway presigns the avatar scoped to this app (the /avatar route has
+      # no caller session). Stripped by the gateway before the response reaches the client.
+      app_id: profile.app_id,
       bio: profile.bio
     }
   end
@@ -171,6 +175,7 @@ defmodule UserService.Profiles do
       display_name: profile.display_name,
       avatar_media_id: profile.avatar_media_id,
       avatar_object_key: profile.avatar_object_key,
+      app_id: profile.app_id,
       bio: profile.bio,
       settings: UserService.Settings.placeholder_settings(),
       privacy: UserService.Privacy.placeholder_privacy()

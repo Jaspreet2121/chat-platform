@@ -162,6 +162,21 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
              Media.get_download_url(%{"media_id" => media_id, "app_id" => Ecto.UUID.generate()})
   end
 
+  test "get_download_url asserts an expected purpose when given one (poisoning narrowing)", %{owner: owner} do
+    media_id = create!(owner)
+
+    # Correct expected purpose → presigns.
+    assert {:ok, _} =
+             Media.get_download_url(%{"media_id" => media_id, "app_id" => @app, "purpose" => "user_avatar"})
+
+    # A mismatched expected purpose → refuses (an avatar call-site can't presign a non-avatar asset).
+    assert {:error, :not_found} =
+             Media.get_download_url(%{"media_id" => media_id, "app_id" => @app, "purpose" => "message"})
+
+    # No expected purpose → no assertion (the media_controller.download path, which already authorized).
+    assert {:ok, _} = Media.get_download_url(%{"media_id" => media_id, "app_id" => @app})
+  end
+
   # --- helpers -------------------------------------------------------------------------------------
 
   defp create_message!(owner, conversation) do

@@ -107,7 +107,10 @@ defmodule MediaService.Media do
     with {:ok, media_id} <- required_attr(attrs, "media_id") do
       if media_persistence_enabled?() do
         with {:ok, app_id} <- required_attr(attrs, "app_id") do
-          download_persisted(media_id, app_id)
+          # Optional expected purpose: an avatar/message call-site refuses to presign an asset of the wrong
+          # purpose (so a poisoned avatar_media_id can't presign a message attachment). Absent → no check
+          # (media_controller.download already authorized the specific asset).
+          download_persisted(media_id, app_id, optional_attr(attrs, "purpose"))
         end
       else
         {:ok, placeholder_download_response(%{"media_id" => media_id, "expires_at" => expires_at()})}
@@ -170,26 +173,34 @@ defmodule MediaService.Media do
     end
   end
 
-  defp download_persisted(media_id, app_id) do
+  defp download_persisted(media_id, app_id, expected_purpose) do
     case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
       nil ->
         {:error, :not_found}
 
       %MediaAsset{} = asset ->
-        expires_at = expires_at()
+        if purpose_ok?(asset, expected_purpose) do
+          expires_at = expires_at()
 
-        case Storage.get_download_url(%{
-               "object_key" => asset.object_key,
-               "media_id" => media_id,
-               "expires_at" => expires_at
-             }) do
-          {:ok, media} -> {:ok, download_response(media, asset, expires_at)}
-          {:error, reason} -> {:error, reason}
+          case Storage.get_download_url(%{
+                 "object_key" => asset.object_key,
+                 "media_id" => media_id,
+                 "expires_at" => expires_at
+               }) do
+            {:ok, media} -> {:ok, download_response(media, asset, expires_at)}
+            {:error, reason} -> {:error, reason}
+          end
+        else
+          # Wrong purpose (e.g. an avatar call-site pointed at a message asset) → 404, no presign.
+          {:error, :not_found}
         end
     end
   rescue
     Ecto.Query.CastError -> {:error, :not_found}
   end
+
+  defp purpose_ok?(_asset, nil), do: true
+  defp purpose_ok?(%MediaAsset{purpose: purpose}, expected), do: purpose == expected
 
   defp lookup_asset(media_id, app_id) do
     case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
