@@ -411,6 +411,12 @@ services:
     environment:
       <<: *secrets
       PORT: "4000"
+      # /v1 rate-limit ceiling (requests per app_id per 60s). The code default is 60 — a single-tenant
+      # placeholder that cripples any real integrator (~3-6 concurrent active users). Interim raise while
+      # the proper design lands (per-category buckets: auth/read/write; per-user sub-limits to stop one
+      # client starving a tenant; X-RateLimit-* headers; sliding window). Affects ONLY /v1 — /api/v1 runs
+      # on the `:api` pipeline, which has no rate-limit plug.
+      V1_RATE_LIMIT: "3000"
       # Allowed browser CORS origin(s), comma-separated. Read at runtime by the gateway endpoint
       # (cors_origins/0). Defaults to the local frontend dev server; override via .env for a real host.
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
