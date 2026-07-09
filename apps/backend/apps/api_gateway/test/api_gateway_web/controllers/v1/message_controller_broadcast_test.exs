@@ -23,8 +23,11 @@ defmodule ApiGatewayWeb.V1.MessageControllerBroadcastTest do
     def get_conversation_app(_attrs), do: {:ok, %{}}
     @impl true
     def get_conversation(_attrs) do
+      # Carries app_id (the end-user gate pins it) AND participants (fan_out reads them). @sender is an
+      # active participant, so authorize_conversation passes.
       {:ok,
        %{
+         app_id: "44444444-4444-4444-8444-444444444444",
          participants: [
            %{user_id: "22222222-2222-4222-8222-222222222222"},
            %{user_id: "33333333-3333-4333-8333-333333333333"}
@@ -76,6 +79,7 @@ defmodule ApiGatewayWeb.V1.MessageControllerBroadcastTest do
       :post
       |> conn("/v1/conversations/#{@conversation_id}/messages", %{})
       |> assign(:v1_app_id, @app_id)
+      |> assign(:v1_actor, :end_user)
       |> assign(:v1_user_id, @sender)
 
     if idempotency_key, do: put_req_header(conn, "idempotency-key", idempotency_key), else: conn

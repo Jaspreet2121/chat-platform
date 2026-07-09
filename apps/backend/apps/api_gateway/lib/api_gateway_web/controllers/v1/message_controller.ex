@@ -1,18 +1,21 @@
 defmodule ApiGatewayWeb.V1.MessageController do
   @moduledoc """
-  Public `/v1` message send + list — every request gated by the authenticated app_id. A conversation
-  not in the caller's app returns 404 (never reveal cross-tenant existence). Send accepts an
-  Idempotency-Key header so a retried POST returns the SAME message instead of duplicating.
+  Public `/v1` message send + list. Every request is gated by `ConversationAuthz.authorize_conversation/2`:
+  an app (secret-key) actor needs only tenant scope; an end-user (JWT) actor must additionally be an active
+  participant of the conversation. Any failure — cross-tenant id, unknown id, or a non-member — returns a
+  404 with a generic body (never reveal existence, never 403). Send accepts an Idempotency-Key header so a
+  retried POST returns the SAME message instead of duplicating.
   """
 
   use ApiGatewayWeb, :controller
 
   alias ApiGatewayWeb.ErrorResponse
+  alias ApiGatewayWeb.V1.ConversationAuthz
 
   def create(conn, %{"id" => conversation_id} = params) do
     app_id = conn.assigns.v1_app_id
 
-    with {:ok, _conversation} <- conversation_in_app(conversation_id, app_id),
+    with {:ok, _conversation} <- ConversationAuthz.authorize_conversation(conn, conversation_id),
          {:ok, sender_user_id} <- resolve_sender(conn, app_id, params),
          {:ok, message} <- send_message(conn, app_id, conversation_id, sender_user_id, params) do
       conn
@@ -38,11 +41,9 @@ defmodule ApiGatewayWeb.V1.MessageController do
   #   history scroll   : before_created_at + before_id (strictly-before, newest→older)
   #   limit            : default 30, capped at 100
   # next_cursor in the response is the keyset {created_at, message_id} of the page's last row (or null at
-  # the end). The tenant gate (conversation_in_app) is unchanged.
+  # the end). The membership gate (authorize_conversation) is unchanged by the cursor logic.
   def index(conn, %{"id" => conversation_id} = params) do
-    app_id = conn.assigns.v1_app_id
-
-    with {:ok, _conversation} <- conversation_in_app(conversation_id, app_id),
+    with {:ok, _conversation} <- ConversationAuthz.authorize_conversation(conn, conversation_id),
          {:ok, result} <-
            SharedInfra.MessageClient.list_messages(list_attrs(conversation_id, params)) do
       json(conn, result)
@@ -71,20 +72,6 @@ defmodule ApiGatewayWeb.V1.MessageController do
     case Integer.parse(to_string(params["limit"] || "")) do
       {n, _} -> n |> max(1) |> min(100)
       :error -> 30
-    end
-  end
-
-  # ISOLATION GATE: the app_id is passed INTO the conversation lookup, which resolves the row only if
-  # it belongs to the caller's app (an (app_id, id) predicate). A cross-tenant OR unknown id both
-  # return not_found — indistinguishable to the caller, so we never confirm another tenant's resource
-  # exists. app_id is server-derived (V1Auth → conn.assigns.v1_app_id); a body app_id can't reach it.
-  defp conversation_in_app(conversation_id, app_id) do
-    case SharedInfra.ConversationClient.get_conversation_app(%{
-           "conversation_id" => conversation_id,
-           "app_id" => app_id
-         }) do
-      {:ok, conversation} -> {:ok, conversation}
-      _ -> {:error, :not_found}
     end
   end
 
