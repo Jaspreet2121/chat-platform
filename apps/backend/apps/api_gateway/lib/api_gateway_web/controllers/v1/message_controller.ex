@@ -108,22 +108,75 @@ defmodule ApiGatewayWeb.V1.MessageController do
     end
   end
 
+  # The broadcast (fan_out) lives INSIDE the two insert branches (no-key, and key + :miss) and NEVER in
+  # the cached-replay branch — so a client retry with the same Idempotency-Key returns the same message
+  # but does NOT re-deliver a duplicate live event to every connected client.
   defp send_message(conn, app_id, conversation_id, sender_user_id, params) do
     case idempotency_key(conn) do
       nil ->
-        do_send(conversation_id, sender_user_id, params)
+        with {:ok, message} <- do_send(conversation_id, sender_user_id, params) do
+          fan_out(conversation_id, sender_user_id, message)
+          {:ok, message}
+        end
 
       key ->
         case ApiGatewayWeb.V1Runtime.idem_get(app_id, conversation_id, key) do
           {:ok, message} ->
+            # Idempotent REPLAY — the message was already inserted + fanned out on the first request.
             {:ok, message}
 
           :miss ->
             with {:ok, message} <- do_send(conversation_id, sender_user_id, params) do
               ApiGatewayWeb.V1Runtime.idem_put(app_id, conversation_id, key, message)
+              fan_out(conversation_id, sender_user_id, message)
               {:ok, message}
             end
         end
+    end
+  end
+
+  # Broadcast a freshly-INSERTED message to connected sockets, mirroring the socket send path
+  # (conversation_channel.create_message) so a client can't tell which path produced it — same endpoint,
+  # same PubSub, same "message_created" event, same `message` payload the socket path broadcasts.
+  #
+  # Fire-and-forget (Task.start + rescue), exactly like the socket path's notify_user_topics: a broadcast
+  # or participant-lookup hiccup must never turn a successful 201 into an error.
+  #
+  # NOTE on the conversation-topic broadcast: the socket path uses broadcast_from to exclude the sender's
+  # SOCKET; a controller has no socket to exclude, so the sender's OTHER conversation-topic subscribers
+  # (e.g. another tab) WILL receive it. That is intentional + safe — the SDK reconciles by real
+  # message_id, and a sender's other tabs SHOULD see it. The user:<id> mirror still EXCLUDES the sender.
+  defp fan_out(conversation_id, sender_user_id, message) do
+    Task.start(fn ->
+      try do
+        ApiGatewayWeb.Endpoint.broadcast("conversation:" <> conversation_id, "message_created", message)
+        notify_user_topics(conversation_id, sender_user_id, message)
+      rescue
+        _ -> :ok
+      end
+    end)
+
+    :ok
+  end
+
+  # Mirror message_created onto each OTHER participant's user:<id> topic — reuse the socket path's logic
+  # verbatim (participants via get_conversation, reject nil + the SENDER). Same as
+  # conversation_channel.notify_user_topics.
+  defp notify_user_topics(conversation_id, sender_user_id, message) do
+    case SharedInfra.ConversationClient.get_conversation(%{
+           "conversation_id" => conversation_id,
+           "user_id" => sender_user_id
+         }) do
+      {:ok, conversation} ->
+        (Map.get(conversation, :participants) || Map.get(conversation, "participants") || [])
+        |> Enum.map(fn p -> Map.get(p, :user_id) || Map.get(p, "user_id") end)
+        |> Enum.reject(&(&1 in [nil, sender_user_id]))
+        |> Enum.each(fn user_id ->
+          ApiGatewayWeb.Endpoint.broadcast("user:" <> user_id, "message_created", message)
+        end)
+
+      _ ->
+        :ok
     end
   end
 
