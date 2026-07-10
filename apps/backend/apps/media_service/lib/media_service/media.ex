@@ -213,7 +213,9 @@ defmodule MediaService.Media do
            media_id: asset.id,
            purpose: asset.purpose,
            owner_user_id: asset.owner_user_id,
-           conversation_id: asset.conversation_id
+           conversation_id: asset.conversation_id,
+           # status lets the avatar-set path require a completed ("ready") asset, not a pending upload.
+           status: asset.status
          }}
     end
   rescue

@@ -117,26 +117,23 @@ defmodule UserService.Profiles do
     Ecto.Query.CastError -> {:error, :profile_invalid}
   end
 
+  # App-SCOPED public read: the profile must belong to the CALLER's app (passed as "app_id"). A
+  # cross-tenant user_id (or a user with no profile row) → :profile_not_found → the gateway 404s. This is
+  # the tenant gate for /users/:id/profile and the avatar reads — no cross-tenant profile leak.
   defp get_public_profile_from_db(attrs) do
-    with {:ok, user_id} <- required_user_id(attrs) do
-      profile = ProfileStore.get_profile(user_id)
-
-      {:ok, public_profile_response(user_id, profile)}
+    with {:ok, user_id} <- required_user_id(attrs),
+         {:ok, app_id} <- required_attr(attrs, :app_id) do
+      case ProfileStore.get_profile_in_app(user_id, app_id) do
+        nil -> {:error, :profile_not_found}
+        profile -> {:ok, public_profile_response(user_id, profile)}
+      end
     end
   rescue
     Ecto.Query.CastError -> {:error, :profile_invalid}
   end
 
-  defp public_profile_response(user_id, nil) do
-    %{
-      user_id: user_id,
-      display_name: nil,
-      avatar_media_id: nil,
-      avatar_object_key: nil,
-      bio: nil
-    }
-  end
-
+  # (A nil profile no longer reaches here — get_public_profile_from_db returns :profile_not_found for a
+  # missing / cross-tenant row, so the public read is app-scoped and 404s instead of returning empty data.)
   defp public_profile_response(user_id, profile) do
     %{
       user_id: user_id,
@@ -153,6 +150,13 @@ defmodule UserService.Profiles do
   defp required_user_id(attrs) do
     case get_attr(attrs, :user_id) do
       user_id when is_binary(user_id) and user_id != "" -> {:ok, user_id}
+      _ -> {:error, :profile_invalid}
+    end
+  end
+
+  defp required_attr(attrs, key) do
+    case get_attr(attrs, key) do
+      value when is_binary(value) and value != "" -> {:ok, value}
       _ -> {:error, :profile_invalid}
     end
   end

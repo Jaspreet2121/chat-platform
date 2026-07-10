@@ -107,18 +107,31 @@ defmodule NotificationService.PushSender do
     }
   end
 
-  # Sender's avatar as the notification icon: a STABLE public proxy URL on the gateway (it 302s to a
-  # fresh presign, so the URL never expires). Built from PHX_HOST; nil in dev / when the host isn't a
-  # real domain, so the SW falls back to the app icon. Broken/absent avatar → the proxy 404s → the SW
-  # still shows the notification with the app icon (a broken avatar never breaks the notification).
+  # Sender's avatar as the notification icon. The gateway's avatar routes are AUTHENTICATED now, but a
+  # service worker fetches a notification icon with no session — so we mint a narrow HMAC CAPABILITY TOKEN
+  # (SharedInfra.AvatarToken) bound to (sender_user_id, sender's app_id, kind: avatar) and point at
+  # `/api/v1/push/avatar/<token>`, the one public avatar path. The token grants read of ONLY this sender's
+  # avatar image, in this app, for a bounded TTL (see AvatarToken); it can presign nothing else. Built from
+  # PHX_HOST; nil in dev / non-real host, or if the sender's app can't be resolved → the SW uses the app
+  # icon. A broken/absent avatar → the route 404s → the notification still shows with the app icon.
   defp avatar_icon_url(sender_user_id) do
-    case System.get_env("PHX_HOST") do
-      host when is_binary(host) and host not in ["", "localhost"] ->
-        "https://#{host}/api/v1/users/#{sender_user_id}/avatar"
-
-      _ ->
-        nil
+    with host when is_binary(host) and host not in ["", "localhost"] <- System.get_env("PHX_HOST"),
+         app_id when is_binary(app_id) <- sender_app_id(sender_user_id) do
+      "https://#{host}/api/v1/push/avatar/#{SharedInfra.AvatarToken.sign(sender_user_id, app_id)}"
+    else
+      _ -> nil
     end
+  end
+
+  # The token binds the sender's app_id → the sender's own tenant (users_auth.app_id). One cheap indexed
+  # lookup against the shared Postgres this service already reads (no extra service round trip).
+  defp sender_app_id(sender_user_id) do
+    case Repo.query("SELECT app_id::text FROM users_auth WHERE id = $1::text::uuid", [sender_user_id]) do
+      {:ok, %{rows: [[app_id]]}} when is_binary(app_id) -> app_id
+      _ -> nil
+    end
+  rescue
+    _ -> nil
   end
 
   # Per-recipient payload. DM → title = sender, body = preview. GROUP → "Sender in GroupName" as the

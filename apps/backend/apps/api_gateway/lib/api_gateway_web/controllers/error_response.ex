@@ -85,6 +85,20 @@ defmodule ApiGatewayWeb.ErrorResponse do
     })
   end
 
+  # 422 for a well-formed request that fails a SEMANTIC check (e.g. claiming ownership of an avatar asset
+  # that doesn't validate) — distinct from a malformed body (400) or an auth/existence issue (401/404).
+  def unprocessable_entity(conn, code, message) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{
+      error: %{
+        code: code,
+        message: message,
+        correlation_id: correlation_id(conn)
+      }
+    })
+  end
+
   def rate_limited(conn, code) do
     conn
     |> put_status(:too_many_requests)

@@ -131,6 +131,10 @@ defmodule ApiGatewayWeb.Router do
 
     post "/subscriptions", PushController, :create
     delete "/subscriptions", PushController, :delete
+
+    # The ONLY unauthenticated avatar path — verified by a narrow HMAC capability token (not a session), so
+    # a web-push notification icon can point at a stable URL. 302s to a presigned avatar; bad token → 404.
+    get "/avatar/:token", UserController, :push_avatar
   end
 
   # Phase-1 calling — LiveKit access token (session-gated in the controller). Slice 1 takes a room name

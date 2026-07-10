@@ -3,7 +3,11 @@ defmodule ApiGatewayWeb.UserController do
 
   alias ApiGatewayWeb.ErrorResponse
 
-  @allowed_update_fields ["display_name", "bio", "avatar_media_id", "avatar_object_key"]
+  # avatar_object_key is NO LONGER accepted — the server resolves object_key from the media_assets row
+  # (bee9562). It is tolerated in the body but stripped + ignored (never persisted). avatar_media_id is
+  # accepted but VALIDATED for ownership before it is stored (see validate_avatar_media_id/2).
+  @allowed_update_fields ["display_name", "bio", "avatar_media_id"]
+  @ignored_update_fields ["avatar_object_key"]
 
   def me(conn, params) do
     if user_profile_persistence_enabled?() do
@@ -21,37 +25,95 @@ defmodule ApiGatewayWeb.UserController do
     end
   end
 
-  def profile(conn, %{"user_id" => user_id} = params) do
-    with {:ok, response} <-
-           SharedInfra.UserClient.get_public_profile(Map.put(params, "user_id", user_id)) do
+  # Public profile — FULLY authenticated + app-scoped. The target must be in the CALLER's app; a
+  # cross-tenant (or unknown/no-profile) user_id → 404 with a generic body (no existence reveal). Profile
+  # DATA and the avatar IMAGE are separate concerns: this returns data; the avatar image has its own route.
+  def profile(conn, %{"user_id" => user_id}) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, response} <-
+           SharedInfra.UserClient.get_public_profile(%{
+             "user_id" => user_id,
+             "app_id" => session_app(session)
+           }) do
       json(conn, with_avatar_url(response))
     else
-      {:error, :profile_invalid} -> invalid_request(conn)
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :user_unavailable} -> service_unavailable(conn)
+      # Cross-tenant / unknown / no-profile → 404, nothing revealed.
+      _ -> profile_not_found(conn)
     end
   end
 
   @doc """
-  PUBLIC avatar proxy — a STABLE, unauthenticated URL that 302-redirects to a freshly-presigned avatar
-  download. Exists so a web-push notification ICON can point at a permanent URL: the presign happens
-  per-request, so the URL itself never expires. Serves ONLY the avatar image (302 to MinIO), nothing
-  else; no avatar / any error → 404 so the client falls back to the app icon. Must be public because
-  the OS/service-worker fetches notification icons with no session.
+  Avatar image → 302 to a freshly-presigned MinIO URL. AUTHENTICATED + app-scoped: the target must be in
+  the caller's app (cross-tenant → 404). This is the normal in-app path (e.g. rendering a peer's avatar).
+  A missing/absent avatar → 404.
 
-  Privacy note: this makes avatars fetchable by user id without auth (already visible to any
-  authenticated peer via /profile; standard for chat notification icons). `profile_photo_visibility`
-  gating is the same tracked follow-up noted on `with_avatar_url`.
+  The ONLY unauthenticated way to fetch an avatar image is `push_avatar/2` below (`/api/v1/push/avatar/:token`),
+  which requires a narrow HMAC capability token — see SharedInfra.AvatarToken. Nothing else is public.
   """
   def avatar(conn, %{"user_id" => user_id}) do
-    with {:ok, profile} <- SharedInfra.UserClient.get_public_profile(%{"user_id" => user_id}),
-         %{avatar_url: url} when is_binary(url) <- with_avatar_url(profile) do
-      conn
-      |> put_resp_header("cache-control", "private, max-age=60")
-      |> redirect(external: url)
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, url} <- presign_avatar(user_id, session_app(session)) do
+      redirect_avatar(conn, url)
     else
-      _ -> conn |> put_status(:not_found) |> json(%{error: %{code: "user.no_avatar"}})
+      {:error, :session_invalid} -> session_invalid(conn)
+      # Cross-tenant / no avatar / any media error → 404 (SW falls back to the app icon).
+      _ -> no_avatar(conn)
     end
   end
+
+  @doc """
+  UNAUTHENTICATED avatar image for web-push notification icons — the ONLY public avatar path. Verifies a
+  narrow HMAC capability token (SharedInfra.AvatarToken) bound to `(user_id, app_id, kind: avatar)`, then
+  302s to a presigned avatar for exactly that user, in that app. A tampered/expired/wrong-kind token, or a
+  missing avatar → 404 (no existence reveal; the SW falls back to the app icon). It can presign NOTHING
+  but that user's avatar — the token is inert on every other route.
+  """
+  def push_avatar(conn, %{"token" => token}) do
+    with {:ok, %{user_id: user_id, app_id: app_id}} <- SharedInfra.AvatarToken.verify(token),
+         {:ok, url} <- presign_avatar(user_id, app_id) do
+      redirect_avatar(conn, url)
+    else
+      _ -> no_avatar(conn)
+    end
+  end
+
+  def push_avatar(conn, _params), do: no_avatar(conn)
+
+  # Resolve a user's avatar to a presigned URL, scoped to `app_id`. Cross-tenant (profile not in app),
+  # no avatar_media_id, or a media error → :error. object_key is resolved server-side from the row; the
+  # "user_avatar" purpose assertion refuses to presign a non-avatar asset.
+  defp presign_avatar(user_id, app_id) when is_binary(app_id) and app_id != "" do
+    with {:ok, %{avatar_media_id: media_id}} when is_binary(media_id) <-
+           SharedInfra.UserClient.get_public_profile(%{"user_id" => user_id, "app_id" => app_id}),
+         {:ok, download} <-
+           SharedInfra.MediaClient.get_download_url(%{
+             "media_id" => media_id,
+             "app_id" => app_id,
+             "purpose" => "user_avatar"
+           }),
+         url when is_binary(url) <- Map.get(download, :download_url) do
+      {:ok, url}
+    else
+      _ -> {:error, :no_avatar}
+    end
+  end
+
+  defp presign_avatar(_user_id, _app_id), do: {:error, :no_avatar}
+
+  defp redirect_avatar(conn, url) do
+    conn
+    |> put_resp_header("cache-control", "private, max-age=60")
+    |> redirect(external: url)
+  end
+
+  defp no_avatar(conn), do: conn |> put_status(:not_found) |> json(%{error: %{code: "user.no_avatar"}})
 
   @doc """
   DIRECT-PEER contact info (phone number) — the ONLY place a user's phone is exposed to another user.
@@ -135,7 +197,10 @@ defmodule ApiGatewayWeb.UserController do
            SharedInfra.AuthClient.lookup_user_by_phone(%{"phone_number" => phone}),
          :ok <- reject_self(session.user_id, user_id),
          {:ok, response} <-
-           SharedInfra.UserClient.get_public_profile(%{"user_id" => user_id}) do
+           SharedInfra.UserClient.get_public_profile(%{
+             "user_id" => user_id,
+             "app_id" => session_app(session)
+           }) do
       json(conn, with_avatar_url(response))
     else
       {:error, :session_invalid} -> session_invalid(conn)
@@ -143,9 +208,10 @@ defmodule ApiGatewayWeb.UserController do
       {:error, :user_unavailable} -> service_unavailable(conn)
       {:error, :not_found} -> phone_not_found(conn)
       {:error, :self_lookup} -> self_lookup(conn)
-      # The number resolved to a user but their profile row is malformed — treat as not found rather
-      # than leaking a 400 for a lookup whose phone was perfectly valid.
+      # The number resolved to a user but their profile is malformed OR not in the caller's app — treat as
+      # not found rather than leaking a 400 for a lookup whose phone was perfectly valid.
       {:error, :profile_invalid} -> phone_not_found(conn)
+      {:error, :profile_not_found} -> phone_not_found(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -188,10 +254,15 @@ defmodule ApiGatewayWeb.UserController do
   end
 
   defp update_current_profile_from_db(conn, params) do
+    # Strip avatar_object_key BEFORE anything else — it's accepted (no 400) but never persisted; the server
+    # resolves object_key from the media_assets row now.
+    params = Map.drop(params, @ignored_update_fields)
+
     with :ok <- validate_update_payload(params),
          {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- validate_avatar_media_id(params, session),
          {:ok, response} <-
            SharedInfra.UserClient.update_current_profile(
              Map.put(params, "user_id", session.user_id)
@@ -201,8 +272,36 @@ defmodule ApiGatewayWeb.UserController do
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :user_unavailable} -> service_unavailable(conn)
+      {:error, :invalid_avatar} -> invalid_avatar(conn)
       {:error, :profile_invalid} -> invalid_request(conn)
       _ -> invalid_request(conn)
+    end
+  end
+
+  # Stop avatar poisoning: a client-supplied avatar_media_id must be an asset the CALLER owns, of purpose
+  # user_avatar, status ready, in the caller's app. Setting it null/"" (removing the avatar) is always OK.
+  # Anything else → :invalid_avatar (422). The caller is asserting ownership of an id — not an
+  # existence-reveal concern, so a plain 422 (not a 404) is correct.
+  defp validate_avatar_media_id(params, session) do
+    case Map.get(params, "avatar_media_id") do
+      value when value in [nil, ""] ->
+        :ok
+
+      media_id when is_binary(media_id) ->
+        case SharedInfra.MediaClient.get_asset(%{
+               "media_id" => media_id,
+               "app_id" => session_app(session)
+             }) do
+          {:ok, %{owner_user_id: owner, purpose: "user_avatar", status: "ready"}}
+          when owner == session.user_id ->
+            :ok
+
+          _ ->
+            {:error, :invalid_avatar}
+        end
+
+      _ ->
+        {:error, :invalid_avatar}
     end
   end
 
@@ -251,8 +350,10 @@ defmodule ApiGatewayWeb.UserController do
     end
   end
 
+  # Validate on the params AFTER ignored fields (avatar_object_key) are stripped. An unknown field (e.g.
+  # email) still 400s; a lone avatar_object_key (nothing left after stripping) is an empty payload → 400.
   defp validate_update_payload(params) do
-    keys = Enum.map(Map.keys(params), &to_string/1)
+    keys = params |> Map.drop(@ignored_update_fields) |> Map.keys() |> Enum.map(&to_string/1)
 
     if keys != [] and Enum.all?(keys, &(&1 in @allowed_update_fields)) do
       :ok
@@ -260,6 +361,9 @@ defmodule ApiGatewayWeb.UserController do
       {:error, :invalid_request}
     end
   end
+
+  # The caller's tenant, from the session (nil-safe: the placeholder session always carries it).
+  defp session_app(session), do: Map.get(session, :app_id)
 
   defp user_profile_persistence_enabled? do
     Application.get_env(:user_service, :user_profile_persistence, false) ||
@@ -272,6 +376,17 @@ defmodule ApiGatewayWeb.UserController do
 
   defp phone_not_found(conn),
     do: ErrorResponse.not_found(conn, "user.phone_not_found", "No account uses this number")
+
+  defp profile_not_found(conn),
+    do: ErrorResponse.not_found(conn, "user.not_found", "Not found")
+
+  defp invalid_avatar(conn),
+    do:
+      ErrorResponse.unprocessable_entity(
+        conn,
+        "user.invalid_avatar",
+        "avatar_media_id must reference your own ready avatar upload"
+      )
 
   defp self_lookup(conn),
     do: ErrorResponse.conflict(conn, "user.self_lookup", "You can't start a chat with yourself")

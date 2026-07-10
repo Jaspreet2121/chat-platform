@@ -153,10 +153,13 @@ defmodule ApiGatewayWeb.MediaAvatarPresignTest do
 
   defp body(conn), do: Jason.decode!(conn.resp_body)
 
-  # --- user avatar (via GET /users/:id/profile — public, no session) --------------------------------
+  # profile/avatar are authenticated now — the AuthStub maps "Bearer <uid>" → a session in @app.
+  defp authed_conn, do: put_req_header(conn(:get, "/"), "authorization", "Bearer caller-1")
+
+  # --- user avatar (via GET /users/:id/profile — session-gated) -------------------------------------
 
   test "profile with a valid same-app avatar → 200, avatar_url present, app_id NOT leaked" do
-    conn = UserController.profile(conn(:get, "/"), %{"user_id" => @user_ok})
+    conn = UserController.profile(authed_conn(), %{"user_id" => @user_ok})
     assert conn.status == 200
     b = body(conn)
     assert b["avatar_url"] == "https://minio.local/get/" <> @avatar_ok
@@ -164,20 +167,20 @@ defmodule ApiGatewayWeb.MediaAvatarPresignTest do
   end
 
   test "profile whose avatar_media_id points at an asset in ANOTHER app → no avatar (fail-open), no cross-tenant presign" do
-    conn = UserController.profile(conn(:get, "/"), %{"user_id" => @user_cross})
+    conn = UserController.profile(authed_conn(), %{"user_id" => @user_cross})
     assert conn.status == 200
     assert body(conn)["avatar_url"] == nil
     refute Map.has_key?(body(conn), "app_id")
   end
 
   test "avatar_media_id pointing at a purpose=message asset → no avatar (the purpose assertion)" do
-    conn = UserController.profile(conn(:get, "/"), %{"user_id" => @user_poison})
+    conn = UserController.profile(authed_conn(), %{"user_id" => @user_poison})
     assert conn.status == 200
     assert body(conn)["avatar_url"] == nil
   end
 
   test "profile with no avatar → avatar_url nil" do
-    conn = UserController.profile(conn(:get, "/"), %{"user_id" => @user_noavatar})
+    conn = UserController.profile(authed_conn(), %{"user_id" => @user_noavatar})
     assert conn.status == 200
     assert body(conn)["avatar_url"] == nil
   end
@@ -185,13 +188,13 @@ defmodule ApiGatewayWeb.MediaAvatarPresignTest do
   # --- the 302 /users/:id/avatar route --------------------------------------------------------------
 
   test "GET /users/:id/avatar redirects (302) when the avatar is valid" do
-    conn = UserController.avatar(conn(:get, "/"), %{"user_id" => @user_ok})
+    conn = UserController.avatar(authed_conn(), %{"user_id" => @user_ok})
     assert conn.status == 302
     assert Enum.any?(conn.resp_headers, fn {k, v} -> k == "location" and v =~ @avatar_ok end)
   end
 
   test "GET /users/:id/avatar → 404 when there is no avatar" do
-    conn = UserController.avatar(conn(:get, "/"), %{"user_id" => @user_noavatar})
+    conn = UserController.avatar(authed_conn(), %{"user_id" => @user_noavatar})
     assert conn.status == 404
   end
 

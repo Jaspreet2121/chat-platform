@@ -17,6 +17,7 @@ defmodule ApiGatewayWeb.UserControllerTest do
              "user_id" => "user_placeholder",
              "display_name" => "Placeholder User",
              "avatar_media_id" => nil,
+             "avatar_url" => nil,
              "bio" => "User profile placeholder",
              "settings" => %{
                "locale" => "en",
@@ -44,6 +45,7 @@ defmodule ApiGatewayWeb.UserControllerTest do
              "user_id" => "user_placeholder",
              "display_name" => "Jaspreet",
              "avatar_media_id" => "media_placeholder",
+             "avatar_url" => nil,
              "bio" => "Building chat-platform",
              "updated_at" => "2026-06-16T18:30:00Z"
            }
@@ -66,10 +68,12 @@ defmodule ApiGatewayWeb.UserControllerTest do
     assert_invalid_error(conn, "user.invalid_request")
   end
 
-  test "GET /api/v1/users/:user_id/profile returns public profile placeholder" do
+  test "GET /api/v1/users/:user_id/profile returns public profile placeholder (now session-gated)" do
     conn =
       :get
       |> conn("/api/v1/users/user_123/profile")
+      # Authenticated now — /profile is no longer public (placeholder session in this mode).
+      |> put_req_header("authorization", "Bearer access_token_placeholder")
       |> ApiGatewayWeb.Endpoint.call([])
 
     assert conn.status == 200
@@ -78,8 +82,18 @@ defmodule ApiGatewayWeb.UserControllerTest do
              "user_id" => "user_123",
              "display_name" => "Placeholder User",
              "avatar_media_id" => nil,
+             "avatar_url" => nil,
              "bio" => "Public profile placeholder"
            }
+  end
+
+  test "GET /api/v1/users/:user_id/profile WITHOUT a session → 401 (the closed hole)" do
+    conn =
+      :get
+      |> conn("/api/v1/users/user_123/profile")
+      |> ApiGatewayWeb.Endpoint.call([])
+
+    assert conn.status == 401
   end
 
   defp json_request(method, path, params) do
