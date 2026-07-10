@@ -5,6 +5,7 @@ import { ArrowRight, Camera, Loader2 } from "lucide-react";
 import imageCompression from "browser-image-compression";
 import { completeMediaUpload, createMediaUpload, updateMe } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
+import { ImageCropModal } from "@/components/chat/ImageCropModal";
 
 const BIO_MAX = 240;
 
@@ -29,6 +30,8 @@ export function OnboardingStep({ userId, onDone, onSkip }: OnboardingStepProps) 
   const [isUploading, setIsUploading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState("");
+  // A just-picked file waiting for the square crop step (same cropper as MyProfileModal / group photos).
+  const [cropFile, setCropFile] = useState<File | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   async function handleFile(file: File) {
@@ -98,6 +101,7 @@ export function OnboardingStep({ userId, onDone, onSkip }: OnboardingStepProps) 
   const busy = isUploading || isSaving;
 
   return (
+    <>
     <Card className="p-6 sm:p-7">
       <div className="mb-6 text-center">
         <h1 className="text-xl font-semibold tracking-tight text-fg">Set up your profile</h1>
@@ -143,7 +147,11 @@ export function OnboardingStep({ userId, onDone, onSkip }: OnboardingStepProps) 
           className="hidden"
           onChange={(event) => {
             const file = event.target.files?.[0];
-            if (file) void handleFile(file);
+            if (file) {
+              if (file.type.startsWith("image/")) setCropFile(file);
+              else setError("Please choose an image file.");
+            }
+            // Reset so cancelling the crop and re-picking the SAME file re-opens the cropper.
             event.target.value = "";
           }}
         />
@@ -202,5 +210,18 @@ export function OnboardingStep({ userId, onDone, onSkip }: OnboardingStepProps) 
         </button>
       </form>
     </Card>
+
+      {cropFile ? (
+        <ImageCropModal
+          file={cropFile}
+          title="Crop profile photo"
+          onCancel={() => setCropFile(null)}
+          onCropped={(cropped) => {
+            setCropFile(null);
+            void handleFile(cropped);
+          }}
+        />
+      ) : null}
+    </>
   );
 }

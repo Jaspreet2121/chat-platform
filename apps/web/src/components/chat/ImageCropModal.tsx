@@ -14,13 +14,14 @@ export type ImageCropModalProps = {
   onCropped: (file: File) => void;
 };
 
-const OUTPUT_SIZE = 512; // square output edge (px)
+const OUTPUT_SIZE = 512; // MAX square output edge (px) — smaller sources emit at their natural size (no upscale)
 const MAX_ZOOM = 4;
 
-// A self-contained square image cropper (no external dependency). The picked image is shown inside a
-// square viewport that the user pans (drag) and zooms (slider / wheel / pinch); on confirm we draw the
-// visible square region to a 512×512 canvas and hand back a square JPEG File. That File then flows through
-// the EXISTING compress → createMediaUpload → PUT → complete pipeline unchanged, so uploads stay identical.
+// A self-contained square image cropper (no external dependency — hand-rolled canvas + Pointer Events so
+// pinch-zoom works on mobile without a crop library). The picked image is shown inside a square viewport
+// that the user pans (drag) and zooms (slider / wheel / pinch); on confirm we draw the visible square region
+// to a square canvas (up to 512×512 — never upscaling a smaller source) and hand back a square JPEG File.
+// That File then flows through the EXISTING compress → createMediaUpload → PUT → complete pipeline unchanged.
 export function ImageCropModal({ file, title = "Crop photo", onCancel, onCropped }: ImageCropModalProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -139,9 +140,13 @@ export function ImageCropModal({ file, title = "Crop photo", onCancel, onCropped
       const sy = -posY / displayScale;
       const sSize = viewport / displayScale;
 
+      // NO UPSCALE: the cropped region is ~sSize source px. If that's below 512 (a small source, or a fully
+      // zoomed-in crop), emit at its natural size rather than blurring it up to 512; otherwise downscale to 512.
+      const outputSize = Math.min(OUTPUT_SIZE, Math.max(1, Math.round(sSize)));
+
       const canvas = document.createElement("canvas");
-      canvas.width = OUTPUT_SIZE;
-      canvas.height = OUTPUT_SIZE;
+      canvas.width = outputSize;
+      canvas.height = outputSize;
       const ctx = canvas.getContext("2d");
       if (!ctx) throw new Error("Canvas not supported.");
       ctx.imageSmoothingQuality = "high";
@@ -153,9 +158,14 @@ export function ImageCropModal({ file, title = "Crop photo", onCancel, onCropped
         Math.min(sSize, natural.h),
         0,
         0,
-        OUTPUT_SIZE,
-        OUTPUT_SIZE
+        outputSize,
+        outputSize
       );
+
+      // SERVER-SIDE TRUST: this square is produced client-side only — nothing forces it. A crafted client
+      // could still PUT a non-square 5000×3000 image; today's worst case is a stretched avatar (no security
+      // impact — the backend caps the CLAIMED size_bytes at MEDIA_MAX_SIZE_BYTES, default 100 MB). Server-side
+      // resize/validation of the actual bytes is a future image-pipeline slice; do not assume this is enforced.
 
       const blob: Blob | null = await new Promise((resolve) =>
         canvas.toBlob(resolve, "image/jpeg", 0.9)
