@@ -65,16 +65,22 @@ defmodule RealtimeGateway.CallSignaling do
           {:ok, call} ->
             call_id = cget(call, :id)
             room = cget(call, :room_name)
-            caller_name = resolve_name(caller_id)
+            {caller_name, caller_avatar_url} = resolve_caller(caller_id, app_id(socket))
 
-            broadcast(socket, callee_id, "call:incoming", %{
-              call_id: call_id,
-              room: room,
-              caller_id: caller_id,
-              caller_name: caller_name,
-              type: type,
-              conversation_id: cget(call, :conversation_id)
-            })
+            broadcast(
+              socket,
+              callee_id,
+              "call:incoming",
+              %{
+                call_id: call_id,
+                room: room,
+                caller_id: caller_id,
+                caller_name: caller_name,
+                type: type,
+                conversation_id: cget(call, :conversation_id)
+              }
+              |> put_avatar(caller_avatar_url)
+            )
 
             emit_incoming_push(callee_id, caller_name, type, call_id)
 
@@ -191,18 +197,24 @@ defmodule RealtimeGateway.CallSignaling do
         others = cget(result, :member_ids) || []
         call_id = cget(call, :id)
         room = cget(call, :room_name)
-        caller_name = resolve_name(initiator)
+        {caller_name, caller_avatar_url} = resolve_caller(initiator, app_id(socket))
 
         Enum.each(others, fn member_id ->
-          broadcast(socket, member_id, "call:group_incoming", %{
-            call_id: call_id,
-            room: room,
-            conversation_id: cid,
-            type: type,
-            caller_id: initiator,
-            caller_name: caller_name,
-            participants: parts
-          })
+          broadcast(
+            socket,
+            member_id,
+            "call:group_incoming",
+            %{
+              call_id: call_id,
+              room: room,
+              conversation_id: cid,
+              type: type,
+              caller_id: initiator,
+              caller_name: caller_name,
+              participants: parts
+            }
+            |> put_avatar(caller_avatar_url)
+          )
         end)
 
         # Server-side group ring timeout (this = the initiator's channel). On fire we mark still-invited
@@ -319,17 +331,23 @@ defmodule RealtimeGateway.CallSignaling do
              "user_id" => user_id
            }) do
       added = cget(result, :added_user_id) || user_id
-      caller_name = resolve_name(actor)
+      {caller_name, caller_avatar_url} = resolve_caller(actor, app_id(socket))
 
-      broadcast(socket, added, "call:group_incoming", %{
-        call_id: call_id,
-        room: cget(result, :room),
-        conversation_id: cget(result, :conversation_id),
-        type: cget(result, :type),
-        caller_id: actor,
-        caller_name: caller_name,
-        participants: current_participants(call_id)
-      })
+      broadcast(
+        socket,
+        added,
+        "call:group_incoming",
+        %{
+          call_id: call_id,
+          room: cget(result, :room),
+          conversation_id: cget(result, :conversation_id),
+          type: cget(result, :type),
+          caller_id: actor,
+          caller_name: caller_name,
+          participants: current_participants(call_id)
+        }
+        |> put_avatar(caller_avatar_url)
+      )
 
       {:reply, {:ok, %{call_id: call_id, added_user_id: added}}, socket}
     else
@@ -361,18 +379,24 @@ defmodule RealtimeGateway.CallSignaling do
       room = cget(result, :room)
       cid = cget(result, :conversation_id)
       type = cget(result, :type)
-      caller_name = resolve_name(actor)
+      {caller_name, caller_avatar_url} = resolve_caller(actor, app_id(socket))
 
       # (a) Ring the NEW person — same payload shape as create_group_call / group_add fan-out.
-      broadcast(socket, added, "call:group_incoming", %{
-        call_id: call_id,
-        room: room,
-        conversation_id: cid,
-        type: type,
-        caller_id: actor,
-        caller_name: caller_name,
-        participants: current_participants(call_id)
-      })
+      broadcast(
+        socket,
+        added,
+        "call:group_incoming",
+        %{
+          call_id: call_id,
+          room: room,
+          conversation_id: cid,
+          type: type,
+          caller_id: actor,
+          caller_name: caller_name,
+          participants: current_participants(call_id)
+        }
+        |> put_avatar(caller_avatar_url)
+      )
 
       # (b) Tell the OTHER existing peer (everyone in the call but the actor) the call became a group, so
       # their client swaps 1-on-1 → group UI. The actor's own client swaps locally on this ok reply.
@@ -418,7 +442,7 @@ defmodule RealtimeGateway.CallSignaling do
           broadcast(socket, host, "call:link_incoming_request", %{
             call_id: call_id,
             user_id: actor,
-            user_name: resolve_name(actor)
+            user_name: resolve_name(actor, app_id(socket))
           })
         end
 
@@ -651,19 +675,71 @@ defmodule RealtimeGateway.CallSignaling do
 
   defp broadcast(_socket, _user_id, _event, _payload), do: :ok
 
-  # Caller display name for the ring/push — best-effort (falls back to a short id).
-  defp resolve_name(user_id) do
-    case SharedInfra.UserClient.get_public_profile(%{"user_id" => user_id}) do
-      {:ok, profile} ->
-        name = Map.get(profile, :display_name) || Map.get(profile, "display_name")
-        if is_binary(name) and name != "", do: name, else: short(user_id)
-
-      _ ->
-        short(user_id)
+  # Caller display name for the ring/push — best-effort (falls back to a short id). MUST pass the socket's
+  # app_id: get_public_profile is app-scoped (a1ce358) and returns :profile_invalid without it, which is
+  # exactly the bug that made rings show "#0db187fe" instead of a name.
+  defp resolve_name(user_id, app_id) do
+    case SharedInfra.UserClient.get_public_profile(%{"user_id" => user_id, "app_id" => app_id}) do
+      {:ok, profile} -> display_name(profile, user_id)
+      _ -> short(user_id)
     end
   rescue
     _ -> short(user_id)
   end
+
+  # Resolve BOTH the caller's display name and a presigned avatar URL in ONE profile fetch — the ring payload
+  # carries what the callee needs to render the incoming screen with no extra round-trip. Fully best-effort:
+  # any failure yields {short_id, nil} so a ring is never blocked by a profile/media hiccup.
+  defp resolve_caller(user_id, app_id) do
+    case SharedInfra.UserClient.get_public_profile(%{"user_id" => user_id, "app_id" => app_id}) do
+      {:ok, profile} -> {display_name(profile, user_id), presign_avatar(profile, app_id)}
+      _ -> {short(user_id), nil}
+    end
+  rescue
+    _ -> {short(user_id), nil}
+  end
+
+  defp display_name(profile, user_id) do
+    case Map.get(profile, :display_name) || Map.get(profile, "display_name") do
+      name when is_binary(name) and name != "" -> name
+      _ -> short(user_id)
+    end
+  end
+
+  # Presign the caller's avatar, scoped to app_id + purpose "user_avatar" (the SAME path the gateway's
+  # avatar route uses — NOT the HMAC push-token route, which exists only for pushes that outlive short TTLs;
+  # a ring is answered in seconds, so a normal presigned URL is correct). No avatar_media_id, a cross-tenant
+  # asset, or any media error → nil (the field is then omitted; the client falls back to initials).
+  defp presign_avatar(profile, app_id) when is_binary(app_id) and app_id != "" do
+    with media_id when is_binary(media_id) and media_id != "" <-
+           Map.get(profile, :avatar_media_id) || Map.get(profile, "avatar_media_id"),
+         {:ok, download} <-
+           SharedInfra.MediaClient.get_download_url(%{
+             "media_id" => media_id,
+             "app_id" => app_id,
+             "purpose" => "user_avatar"
+           }),
+         url when is_binary(url) and url != "" <-
+           Map.get(download, :download_url) || Map.get(download, "download_url") do
+      url
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp presign_avatar(_profile, _app_id), do: nil
+
+  # Add caller_avatar_url ONLY when we actually have one — the client treats an ABSENT field as "no avatar"
+  # (renders initials); we never send null/"".
+  defp put_avatar(payload, url) when is_binary(url) and url != "",
+    do: Map.put(payload, :caller_avatar_url, url)
+
+  defp put_avatar(payload, _url), do: payload
+
+  # The tenant this socket belongs to (set by UserSocket.assign_session via Tenancy.app_id_or_default).
+  defp app_id(socket), do: Map.get(socket.assigns, :app_id)
 
   defp short(user_id) when is_binary(user_id), do: "#" <> String.slice(user_id, 0, 8)
   defp short(_), do: "Someone"

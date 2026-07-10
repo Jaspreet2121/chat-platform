@@ -45,6 +45,8 @@ type ActiveCall = {
   room: string;
   peerId: string;
   peerName: string;
+  /** Presigned caller avatar from the ring payload (incoming only) — falls back to initials when absent. */
+  peerAvatarUrl?: string;
   type: CallType;
 };
 
@@ -58,6 +60,8 @@ type GroupCall = {
   /** The ringing initiator (only set for an incoming ring). */
   callerName?: string;
   callerId?: string;
+  /** Presigned initiator avatar from the ring payload — falls back to initials when absent. */
+  callerAvatarUrl?: string;
   /** True for a call-link (L2) call — a conversation-less N-party call. Suppresses the group_leave signaling
    *  (the server-side leave path is group-only; a link call's teardown is a plain client disconnect). */
   isLink?: boolean;
@@ -696,6 +700,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           room: p.room,
           peerId: p.caller_id ?? "",
           peerName: p.caller_name?.trim() || "Unknown caller",
+          peerAvatarUrl: typeof p.caller_avatar_url === "string" ? p.caller_avatar_url : undefined,
           type: p.type ?? "voice"
         });
         setStatus("incoming");
@@ -774,7 +779,8 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           // The broadcast carries no group name; the tiles resolve each member's name themselves.
           title: "Group call",
           callerName: p.caller_name?.trim() || "Someone",
-          callerId: p.caller_id
+          callerId: p.caller_id,
+          callerAvatarUrl: typeof p.caller_avatar_url === "string" ? p.caller_avatar_url : undefined
         });
         setStatus("group-incoming");
         clearRingTimer();
@@ -904,6 +910,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         <IncomingCallModal
           callerName={call.peerName}
           callerId={call.peerId}
+          callerAvatarUrl={call.peerAvatarUrl}
           video={call.type === "video"}
           onAccept={acceptIncoming}
           onReject={rejectIncoming}
@@ -948,6 +955,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         <IncomingCallModal
           callerName={groupCall.callerName ?? "Someone"}
           callerId={groupCall.callerId ?? groupCall.conversationId}
+          callerAvatarUrl={groupCall.callerAvatarUrl}
           video={groupCall.type === "video"}
           group
           onAccept={acceptGroupIncoming}

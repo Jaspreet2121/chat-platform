@@ -6,6 +6,8 @@ import { Avatar } from "@/components";
 export type IncomingCallModalProps = {
   callerName: string;
   callerId: string;
+  /** Presigned caller avatar carried on the ring payload; absent → the Avatar falls back to initials. */
+  callerAvatarUrl?: string;
   /** Phase-2: video vs voice — only changes the label. Accept is the same gesture; the provider publishes
    *  the camera on connect because the stored ActiveCall carries type="video". */
   video: boolean;
@@ -22,6 +24,7 @@ export type IncomingCallModalProps = {
 export function IncomingCallModal({
   callerName,
   callerId,
+  callerAvatarUrl,
   video,
   group,
   onAccept,
@@ -37,7 +40,7 @@ export function IncomingCallModal({
       <div className="flex flex-1 flex-col items-center justify-center gap-5 text-center">
         <span className="relative flex">
           <span className="absolute inset-0 animate-ping rounded-full bg-white/20" aria-hidden />
-          <Avatar id={callerId} name={callerName} size="lg" />
+          <Avatar id={callerId} name={callerName} imageUrl={callerAvatarUrl ?? null} size="lg" />
         </span>
         <div>
           <p className="text-sm font-medium uppercase tracking-wide text-white/70">

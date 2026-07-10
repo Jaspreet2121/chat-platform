@@ -160,6 +160,8 @@ export type CallEventPayload = {
   room?: string;
   caller_id?: string;
   caller_name?: string;
+  /** Presigned caller avatar for the ring screen — omitted when the caller has no avatar. */
+  caller_avatar_url?: string;
   type?: CallType;
   conversation_id?: string;
   // Group fields.

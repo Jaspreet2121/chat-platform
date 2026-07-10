@@ -24,7 +24,7 @@ defmodule ApiGatewayWeb.CallController do
           _ -> []
         end
 
-      json(conn, %{calls: enrich(calls, session.user_id)})
+      json(conn, %{calls: enrich(calls, session.user_id, session_app(session))})
     else
       _ -> ErrorResponse.unauthorized(conn, "auth.unauthorized", "Invalid or missing session")
     end
@@ -103,7 +103,7 @@ defmodule ApiGatewayWeb.CallController do
 
   # Normalize each call to a stable string-keyed shape + the counterpart id, then batch-enrich names
   # (one profile lookup per UNIQUE counterpart, not per row).
-  defp enrich(calls, me) do
+  defp enrich(calls, me, app_id) do
     rows = Enum.map(calls, &present_call(&1, me))
 
     names =
@@ -111,7 +111,7 @@ defmodule ApiGatewayWeb.CallController do
       |> Enum.map(& &1["counterpart_id"])
       |> Enum.reject(&is_nil/1)
       |> Enum.uniq()
-      |> Map.new(fn id -> {id, resolve_name(id)} end)
+      |> Map.new(fn id -> {id, resolve_name(id, app_id)} end)
 
     Enum.map(rows, fn row -> Map.put(row, "counterpart_name", Map.get(names, row["counterpart_id"])) end)
   end
@@ -143,8 +143,11 @@ defmodule ApiGatewayWeb.CallController do
   end
 
   # Best-effort display name for a counterpart uuid (nil → the client falls back to a short id/initials).
-  defp resolve_name(user_id) when is_binary(user_id) and user_id != "" do
-    case SharedInfra.UserClient.get_public_profile(%{"user_id" => user_id}) do
+  # get_public_profile is app-scoped (a1ce358) — WITHOUT app_id it returns :profile_invalid and every row's
+  # name silently became nil. app_id is the caller's session tenant (the counterpart is in the same app).
+  defp resolve_name(user_id, app_id)
+       when is_binary(user_id) and user_id != "" and is_binary(app_id) and app_id != "" do
+    case SharedInfra.UserClient.get_public_profile(%{"user_id" => user_id, "app_id" => app_id}) do
       {:ok, profile} ->
         name = Map.get(profile, :display_name) || Map.get(profile, "display_name")
         if is_binary(name) and name != "", do: name, else: nil
@@ -156,7 +159,10 @@ defmodule ApiGatewayWeb.CallController do
     _ -> nil
   end
 
-  defp resolve_name(_), do: nil
+  defp resolve_name(_user_id, _app_id), do: nil
+
+  # The caller's tenant from their session (mirrors ApiGatewayWeb user_controller's session_app/1).
+  defp session_app(session), do: Map.get(session, :app_id)
 
   # Call maps arrive atom-keyed (in-process CallStore) or string-keyed (HTTP adapter) — read either.
   defp cget(call, key), do: Map.get(call, key) || Map.get(call, to_string(key))

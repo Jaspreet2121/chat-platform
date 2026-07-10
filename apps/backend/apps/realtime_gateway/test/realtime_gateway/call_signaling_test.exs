@@ -115,6 +115,48 @@ defmodule RealtimeGateway.CallCaptureEndpoint do
   end
 end
 
+defmodule RealtimeGateway.CallSignalingStubs do
+  @moduledoc "UserClient / MediaClient stand-ins for the caller-profile + avatar-presign path (no @behaviour)."
+
+  @app "44444444-4444-4444-8444-444444444444"
+  def app, do: @app
+
+  # Same-app caller WITH an avatar asset. App-scoped on purpose: a call that forgot to thread app_id would
+  # miss this clause and fall through to :profile_invalid — so the "resolves the name" assertion guards the bug.
+  defmodule NamedProfile do
+    @app "44444444-4444-4444-8444-444444444444"
+    def get_public_profile(%{"user_id" => uid, "app_id" => @app}),
+      do: {:ok, %{user_id: uid, display_name: "Ada Lovelace", avatar_media_id: "media-1"}}
+
+    def get_public_profile(_), do: {:error, :profile_invalid}
+  end
+
+  # Same-app caller with NO avatar.
+  defmodule NoAvatarProfile do
+    @app "44444444-4444-4444-8444-444444444444"
+    def get_public_profile(%{"user_id" => uid, "app_id" => @app}),
+      do: {:ok, %{user_id: uid, display_name: "Ada Lovelace", avatar_media_id: nil}}
+
+    def get_public_profile(_), do: {:error, :profile_invalid}
+  end
+
+  # Cross-tenant / unknown user → app-scoped lookup 404s.
+  defmodule MissingProfile do
+    def get_public_profile(_attrs), do: {:error, :profile_not_found}
+  end
+
+  defmodule MediaOk do
+    def get_download_url(%{"app_id" => _app, "purpose" => "user_avatar"}),
+      do: {:ok, %{media_id: "media-1", download_url: "https://minio.local/ada.png?signed=1"}}
+
+    def get_download_url(_), do: {:error, :not_found}
+  end
+
+  defmodule MediaError do
+    def get_download_url(_attrs), do: {:error, :media_unavailable}
+  end
+end
+
 defmodule RealtimeGateway.CallSignalingTest do
   @moduledoc """
   Docker-free unit tests for the Phase-1 call ring control plane (`RealtimeGateway.CallSignaling`), driven
@@ -126,32 +168,45 @@ defmodule RealtimeGateway.CallSignalingTest do
 
   alias RealtimeGateway.CallSignaling
   alias RealtimeGateway.CallSignalingMockClient, as: Mock
+  alias RealtimeGateway.CallSignalingStubs
 
   @caller "11111111-1111-1111-1111-111111111111"
   @callee "22222222-2222-2222-2222-222222222222"
   @stranger "33333333-3333-3333-3333-333333333333"
+  @app "44444444-4444-4444-8444-444444444444"
 
   setup do
     start_supervised!(%{id: Mock, start: {Mock, :start_link, []}})
     Mock.reset()
 
     prev = Application.get_env(:shared_infra, :conversation_client_adapter)
+    prev_user = Application.get_env(:shared_infra, :user_client_adapter)
+    prev_media = Application.get_env(:shared_infra, :media_client_adapter)
     Application.put_env(:shared_infra, :conversation_client_adapter, Mock)
     Application.put_env(:realtime_gateway, :call_test_pid, self())
 
     on_exit(fn ->
-      if prev,
-        do: Application.put_env(:shared_infra, :conversation_client_adapter, prev),
-        else: Application.delete_env(:shared_infra, :conversation_client_adapter)
-
+      restore(:conversation_client_adapter, prev)
+      restore(:user_client_adapter, prev_user)
+      restore(:media_client_adapter, prev_media)
       Application.delete_env(:realtime_gateway, :call_test_pid)
     end)
 
     :ok
   end
 
-  # Fake socket: CallSignaling only touches `.assigns.current_user_id` and `.endpoint`.
-  defp socket(user_id), do: %{assigns: %{current_user_id: user_id}, endpoint: RealtimeGateway.CallCaptureEndpoint}
+  defp restore(key, nil), do: Application.delete_env(:shared_infra, key)
+  defp restore(key, value), do: Application.put_env(:shared_infra, key, value)
+
+  # Point the caller-profile + avatar lookups at the given stubs for this test.
+  defp use_stubs(user_stub, media_stub) do
+    Application.put_env(:shared_infra, :user_client_adapter, user_stub)
+    Application.put_env(:shared_infra, :media_client_adapter, media_stub)
+  end
+
+  # Fake socket: CallSignaling touches `.assigns.current_user_id`, `.assigns.app_id`, and `.endpoint`.
+  defp socket(user_id),
+    do: %{assigns: %{current_user_id: user_id, app_id: @app}, endpoint: RealtimeGateway.CallCaptureEndpoint}
 
   defp invite! do
     assert {:reply, {:ok, %{call_id: call_id, room: room}}, _} =
@@ -180,6 +235,70 @@ defmodule RealtimeGateway.CallSignalingTest do
     assert attrs["caller_id"] == @caller
     assert attrs["callee_id"] == @callee
     assert attrs["type"] == "video"
+  end
+
+  # ---- caller name + avatar on the ring (the app_id fix + Change 2) ----------------------------
+
+  test "invite resolves the caller's display name (app-scoped profile) and presigns their avatar" do
+    use_stubs(CallSignalingStubs.NamedProfile, CallSignalingStubs.MediaOk)
+
+    assert {:reply, {:ok, _}, _} =
+             CallSignaling.handle_event(
+               "call:invite",
+               %{"callee_id" => @callee, "type" => "voice"},
+               socket(@caller)
+             )
+
+    assert_receive {:broadcast, "user:" <> _callee, "call:incoming", payload}
+    assert payload.caller_name == "Ada Lovelace"
+    assert payload.caller_avatar_url == "https://minio.local/ada.png?signed=1"
+  end
+
+  test "invite falls back to a short id for a cross-tenant / unknown caller, and omits the avatar" do
+    use_stubs(CallSignalingStubs.MissingProfile, CallSignalingStubs.MediaOk)
+
+    assert {:reply, {:ok, _}, _} =
+             CallSignaling.handle_event(
+               "call:invite",
+               %{"callee_id" => @callee, "type" => "voice"},
+               socket(@caller)
+             )
+
+    assert_receive {:broadcast, _topic, "call:incoming", payload}
+    # short(@caller) — "#" <> first 8 chars. Never crashes the ring.
+    assert payload.caller_name == "#" <> String.slice(@caller, 0, 8)
+    refute Map.has_key?(payload, :caller_avatar_url)
+  end
+
+  test "invite omits caller_avatar_url when the caller has no avatar (name still resolved)" do
+    use_stubs(CallSignalingStubs.NoAvatarProfile, CallSignalingStubs.MediaOk)
+
+    assert {:reply, {:ok, _}, _} =
+             CallSignaling.handle_event(
+               "call:invite",
+               %{"callee_id" => @callee, "type" => "voice"},
+               socket(@caller)
+             )
+
+    assert_receive {:broadcast, _topic, "call:incoming", payload}
+    assert payload.caller_name == "Ada Lovelace"
+    refute Map.has_key?(payload, :caller_avatar_url)
+  end
+
+  test "a media error while presigning the avatar still rings; the avatar is simply absent" do
+    use_stubs(CallSignalingStubs.NamedProfile, CallSignalingStubs.MediaError)
+
+    assert {:reply, {:ok, _}, _} =
+             CallSignaling.handle_event(
+               "call:invite",
+               %{"callee_id" => @callee, "type" => "voice"},
+               socket(@caller)
+             )
+
+    # The ring is NOT lost — a media hiccup must never block a call.
+    assert_receive {:broadcast, "user:#{@callee}", "call:incoming", payload}
+    assert payload.caller_name == "Ada Lovelace"
+    refute Map.has_key?(payload, :caller_avatar_url)
   end
 
   test "inviting yourself is rejected without persisting" do
@@ -298,6 +417,38 @@ defmodule RealtimeGateway.CallSignalingTest do
 
     assert length(parts) == 3
     assert Enum.any?(Mock.log(), &match?({:group_create, _}, &1))
+  end
+
+  test "call:group_incoming carries the initiator's name + presigned avatar" do
+    seed_group_members([@owner, @m1, @m2])
+    use_stubs(CallSignalingStubs.NamedProfile, CallSignalingStubs.MediaOk)
+
+    assert {:reply, {:ok, _}, _} =
+             CallSignaling.handle_event(
+               "call:group_invite",
+               %{"conversation_id" => @conv, "type" => "voice"},
+               socket(@owner)
+             )
+
+    assert_receive {:broadcast, "user:" <> _u1, "call:group_incoming", p1}
+    assert p1.caller_name == "Ada Lovelace"
+    assert p1.caller_avatar_url == "https://minio.local/ada.png?signed=1"
+  end
+
+  test "call:group_incoming still rings (avatar absent) when the presign errors" do
+    seed_group_members([@owner, @m1, @m2])
+    use_stubs(CallSignalingStubs.NamedProfile, CallSignalingStubs.MediaError)
+
+    assert {:reply, {:ok, _}, _} =
+             CallSignaling.handle_event(
+               "call:group_invite",
+               %{"conversation_id" => @conv, "type" => "voice"},
+               socket(@owner)
+             )
+
+    assert_receive {:broadcast, "user:" <> _u1, "call:group_incoming", p1}
+    assert p1.caller_name == "Ada Lovelace"
+    refute Map.has_key?(p1, :caller_avatar_url)
   end
 
   test "call:group_join flips the call to ongoing and notifies the OTHER participants" do
