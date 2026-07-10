@@ -17,6 +17,7 @@ defmodule ApiGatewayWeb.V1.MessageController do
 
     with {:ok, _conversation} <- ConversationAuthz.authorize_conversation(conn, conversation_id),
          {:ok, sender_user_id} <- resolve_sender(conn, app_id, params),
+         :ok <- validate_media(conn, app_id, params),
          {:ok, message} <- send_message(conn, app_id, conversation_id, sender_user_id, params) do
       conn
       |> put_status(:created)
@@ -24,6 +25,12 @@ defmodule ApiGatewayWeb.V1.MessageController do
     else
       {:error, :not_found} ->
         not_found(conn)
+
+      # The caller attached a media_id they can't own / isn't a ready `message` asset in their app. This is
+      # asserting ownership of an id, not an existence-reveal concern (same reasoning as a1ce358's
+      # avatar_media_id) → 422, and no message is created.
+      {:error, :invalid_media} ->
+        ErrorResponse.unprocessable_entity(conn, "v1.invalid_media", "Invalid media attachment")
 
       {:error, :conversation_unavailable} ->
         ErrorResponse.service_unavailable(conn, "v1.unavailable")
@@ -35,6 +42,42 @@ defmodule ApiGatewayWeb.V1.MessageController do
         ErrorResponse.invalid_request(conn, "v1.invalid_request")
     end
   end
+
+  # A media attachment must be a READY `message` asset in the caller's app; an end-user actor must also OWN
+  # it (an app actor is tenant-scoped). No media_id → an ordinary text message (unchanged). Failure → 422.
+  defp validate_media(conn, app_id, params) do
+    case media_id_param(params) do
+      nil ->
+        :ok
+
+      media_id ->
+        case SharedInfra.MediaClient.get_asset(%{"media_id" => media_id, "app_id" => app_id}) do
+          {:ok, asset} ->
+            owner_ok =
+              case conn.assigns[:v1_user_id] do
+                uid when is_binary(uid) and uid != "" -> aget(asset, :owner_user_id) == uid
+                _ -> true
+              end
+
+            if aget(asset, :purpose) == "message" and aget(asset, :status) == "ready" and owner_ok,
+              do: :ok,
+              else: {:error, :invalid_media}
+
+          _ ->
+            {:error, :invalid_media}
+        end
+    end
+  end
+
+  defp media_id_param(params) do
+    case Map.get(params, "media_id") do
+      media_id when is_binary(media_id) and media_id != "" -> media_id
+      _ -> nil
+    end
+  end
+
+  defp aget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
+  defp aget(_map, _key), do: nil
 
   # Optional compound-keyset cursor pagination (additive — no cursor params → the unchanged recent page):
   #   forward backfill : after_created_at + after_id  (strictly-after, oldest→newest)
@@ -168,11 +211,17 @@ defmodule ApiGatewayWeb.V1.MessageController do
   end
 
   defp do_send(conversation_id, sender_user_id, params) do
+    media_id = media_id_param(params)
+
     SharedInfra.MessageClient.create_message(%{
       "conversation_id" => conversation_id,
       "sender_user_id" => sender_user_id,
-      "message_type" => Map.get(params, "message_type", "text"),
+      # A media attachment forces message_type "media" (the same vocabulary the socket path + frontend use);
+      # otherwise honour the caller's type, defaulting to "text". `body` doubles as the media caption.
+      "message_type" => if(media_id, do: "media", else: Map.get(params, "message_type", "text")),
+      "media_id" => media_id,
       "body" => Map.get(params, "body"),
+      # No object_key is injected into metadata for /v1 (it's inert legacy on the first-party path).
       "metadata" => Map.get(params, "metadata")
     })
   end

@@ -55,6 +55,12 @@ defmodule ApiGatewayWeb.Router do
     post "/conversations/:id/messages", MessageController, :create
     get "/conversations/:id/messages", MessageController, :index
 
+    # Media: presigned upload → complete → presigned download. Same authz model as the first-party
+    # /api/v1/media/* under V1Auth actor rules; never returns object_key.
+    post "/media/uploads", MediaController, :create_upload
+    post "/media/uploads/:media_id/complete", MediaController, :complete_upload
+    get "/media/:media_id/download", MediaController, :download
+
     # End-user call surface for integrator SDKs (end-user JWT actor required; a secret-key actor → 403
     # v1.end_user_only). Scoped to the caller's app: calls/links carry no app_id, so scope rides on
     # app-scoped user_ids (seat membership for calls, creator for links). Users are referred to by the

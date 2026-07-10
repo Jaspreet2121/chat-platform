@@ -196,7 +196,7 @@ defmodule ApiGatewayWeb.MediaController do
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, asset} <-
            SharedInfra.MediaClient.get_asset(%{"media_id" => media_id, "app_id" => session.app_id}),
-         :ok <- authorize_download(media_id, asset, session.user_id),
+         :ok <- ApiGatewayWeb.MediaAuthz.authorize_download(media_id, asset, session.user_id),
          {:ok, response} <-
            SharedInfra.MediaClient.get_download_url(%{
              "media_id" => media_id,
@@ -212,53 +212,6 @@ defmodule ApiGatewayWeb.MediaController do
       _ -> not_found(conn)
     end
   end
-
-  # Authorize a download by the asset's purpose (per the locked model):
-  #   message      → the conversation the media was SENT to (messages.media_id) → membership; if it isn't
-  #                  attached to a message yet (uploaded, not sent) → owner-only.
-  #   group_avatar → the asset's conversation_id (set on upload) → membership.
-  #   user_avatar  → already scoped to the caller's app_id by get_asset; an authenticated caller is enough
-  #                  (visibility rules are Phase 4).
-  defp authorize_download(media_id, asset, user_id) do
-    case aget(asset, :purpose) do
-      "message" -> authorize_message_media(media_id, asset, user_id)
-      "group_avatar" -> authorize_group_avatar(asset, user_id)
-      "user_avatar" -> :ok
-      _ -> {:error, :not_a_member}
-    end
-  end
-
-  defp authorize_message_media(media_id, asset, user_id) do
-    case SharedInfra.MessageClient.get_by_media_id(%{"media_id" => media_id}) do
-      {:ok, result} ->
-        case aget(result, :conversation_id) do
-          conversation_id when is_binary(conversation_id) -> membership(conversation_id, user_id)
-          # Attached to no readable conversation → fall back to owner-only.
-          _ -> owner_only(asset, user_id)
-        end
-
-      {:error, :message_unavailable} ->
-        {:error, :conversation_unavailable}
-
-      # Not attached to any message (uploaded, not sent) → only the owner may download it.
-      _ ->
-        owner_only(asset, user_id)
-    end
-  end
-
-  defp authorize_group_avatar(asset, user_id) do
-    case aget(asset, :conversation_id) do
-      conversation_id when is_binary(conversation_id) -> membership(conversation_id, user_id)
-      _ -> {:error, :not_a_member}
-    end
-  end
-
-  defp owner_only(asset, user_id) do
-    if aget(asset, :owner_user_id) == user_id, do: :ok, else: {:error, :not_a_member}
-  end
-
-  defp aget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
-  defp aget(_map, _key), do: nil
 
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "media.invalid_request")
 
