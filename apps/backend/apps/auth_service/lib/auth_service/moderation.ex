@@ -45,7 +45,8 @@ defmodule AuthService.Moderation do
         target_user = Accounts.get_user(target_id)
 
         cond do
-          is_nil(target_user) -> {:error, :user_not_found}
+          # A target outside the console's tenant is indistinguishable from a missing user → 404, no action.
+          is_nil(target_user) or not in_app?(target_user, app_of(attrs)) -> {:error, :user_not_found}
           is_nil(actor_user) -> {:error, :cannot_moderate_peer_or_superior}
           SharedInfra.IAM.can_moderate?(actor_user.role, target_user.role) -> :ok
           true -> {:error, :cannot_moderate_peer_or_superior}
@@ -79,11 +80,17 @@ defmodule AuthService.Moderation do
   # --- Reports ------------------------------------------------------------------------------------
 
   def list_reports(attrs) do
-    {where, params} =
+    # user_reports has NO app_id → scope to reports ABOUT this tenant's users (the subjects the console
+    # moderates), via reported_user_id → users_auth.app_id. Reports with a null/other-tenant subject are
+    # excluded. $1 is always the app; the optional status filter is $2.
+    {status_clause, params} =
       case present(attrs["status"]) do
-        nil -> {"", []}
-        status -> {"WHERE status = $1", [status]}
+        nil -> {"", [uuid_param(app_of(attrs))]}
+        status -> {" AND status = $2", [uuid_param(app_of(attrs)), status]}
       end
+
+    where =
+      "WHERE reported_user_id IN (SELECT id FROM users_auth WHERE app_id = $1)" <> status_clause
 
     page = page(attrs)
     page_size = 25
@@ -135,10 +142,12 @@ defmodule AuthService.Moderation do
   def update_report(attrs) do
     with {:ok, report_id} <- require_attr(attrs, "report_id"),
          {:ok, status} <- valid_report_status(attrs["status"]) do
+      # Only actionable if the report is about THIS tenant's user (cross-tenant → 0 rows → report_not_found).
       %Postgrex.Result{num_rows: n} =
         Repo.query!(
-          "UPDATE user_reports SET status = $1, updated_at = now() WHERE id = $2",
-          [status, uuid_param(report_id)]
+          "UPDATE user_reports SET status = $1, updated_at = now() WHERE id = $2 " <>
+            "AND reported_user_id IN (SELECT id FROM users_auth WHERE app_id = $3)",
+          [status, uuid_param(report_id), uuid_param(app_of(attrs))]
         )
 
       if n == 0 do
@@ -181,16 +190,24 @@ defmodule AuthService.Moderation do
   demotions serialize instead of both passing the count check and leaving zero roots.
   """
   def set_role(attrs) do
+    app = app_of(attrs)
+
     with {:ok, user_id} <- require_attr(attrs, "user_id"),
          {:ok, new_role} <- validate_role(attrs["role"]) do
       Repo.transaction(fn ->
-        # Lock every root row first (stable order) so concurrent demotions can't race to zero roots.
+        # Lock every root row first (stable order) so concurrent demotions can't race to zero roots —
+        # scoped to the console's tenant (roots are first-party admins).
         %Postgrex.Result{rows: root_rows} =
-          Repo.query!("SELECT id::text FROM users_auth WHERE role = 'root' FOR UPDATE")
+          Repo.query!("SELECT id::text FROM users_auth WHERE role = 'root' AND app_id = $1 FOR UPDATE", [
+            uuid_param(app)
+          ])
 
         root_count = length(root_rows)
 
-        case Repo.query!("SELECT role FROM users_auth WHERE id = $1 FOR UPDATE", [uuid_param(user_id)]) do
+        case Repo.query!("SELECT role FROM users_auth WHERE id = $1 AND app_id = $2 FOR UPDATE", [
+               uuid_param(user_id),
+               uuid_param(app)
+             ]) do
           %Postgrex.Result{rows: []} ->
             Repo.rollback(:user_not_found)
 
@@ -242,7 +259,7 @@ defmodule AuthService.Moderation do
     target_id = present(attrs["user_id"])
     actor_id = actor(attrs)
 
-    with {:ok, target} <- fetch_deletable(target_id),
+    with {:ok, target} <- fetch_deletable(target_id, app_of(attrs)),
          :ok <- guard_not_self(target_id, actor_id),
          :ok <- guard_not_privileged(target) do
       Repo.transaction(fn ->
@@ -272,12 +289,13 @@ defmodule AuthService.Moderation do
     end
   end
 
-  defp fetch_deletable(nil), do: {:error, :user_not_found}
+  defp fetch_deletable(nil, _app), do: {:error, :user_not_found}
 
-  defp fetch_deletable(user_id) do
+  defp fetch_deletable(user_id, app) do
     case Accounts.get_user(user_id) do
       nil -> {:error, :user_not_found}
-      user -> {:ok, user}
+      # A user outside the console's tenant → 404, no delete.
+      user -> if in_app?(user, app), do: {:ok, user}, else: {:error, :user_not_found}
     end
   rescue
     Ecto.Query.CastError -> {:error, :user_not_found}
@@ -334,7 +352,7 @@ defmodule AuthService.Moderation do
   """
   def user_detail(attrs) do
     with {:ok, user_id} <- require_attr(attrs, "user_id"),
-         {:ok, auth} <- fetch_auth(user_id) do
+         {:ok, auth} <- fetch_auth(user_id, app_of(attrs)) do
       {:ok,
        %{
          auth: auth,
@@ -352,12 +370,12 @@ defmodule AuthService.Moderation do
     Ecto.Query.CastError -> {:error, :user_not_found}
   end
 
-  defp fetch_auth(user_id) do
+  defp fetch_auth(user_id, app) do
     case Repo.query!(
            "SELECT id::text, phone_number, email, status, is_admin, " <>
              "to_char(created_at, #{@ts}) AS created_at, to_char(updated_at, #{@ts}) AS updated_at " <>
-             "FROM users_auth WHERE id = $1",
-           [uuid_param(user_id)]
+             "FROM users_auth WHERE id = $1 AND app_id = $2",
+           [uuid_param(user_id), uuid_param(app)]
          ) do
       %Postgrex.Result{rows: [[id, phone, email, status, is_admin, created_at, updated_at]]} ->
         {:ok,
@@ -512,6 +530,14 @@ defmodule AuthService.Moderation do
 
   defp actor(attrs), do: present(attrs["actor_user_id"])
   defp reason(attrs, default), do: present(attrs["reason"]) || default
+
+  # The tenant the admin console is scoped to (default tenant-zero when unset). The gateway injects
+  # "app_id"; every user/report lookup below is confined to it so the console can't touch another tenant.
+  defp app_of(attrs), do: SharedInfra.Tenancy.app_id_or_default(present(attrs["app_id"]))
+
+  # True iff a fetched user belongs to the console's tenant. A cross-tenant target is treated as absent.
+  defp in_app?(%{app_id: app_id}, app), do: app_id == app
+  defp in_app?(_user, _app), do: false
 
   defp page(attrs) do
     case Map.get(attrs, "page") do

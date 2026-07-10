@@ -26,73 +26,79 @@ defmodule ApiGatewayWeb.AdminModerationController do
 
   # --- Users ----------------------------------------------------------------------------------
   def list_users(conn, params) do
-    forward(conn, SharedInfra.AuthClient.list_users(take_paging(params)))
+    forward(conn, SharedInfra.AuthClient.list_users(scoped(take_paging(params))))
   end
 
   def get_user(conn, %{"id" => user_id}) do
-    forward(conn, SharedInfra.AuthClient.get_user_detail(%{"user_id" => user_id}))
+    forward(conn, SharedInfra.AuthClient.get_user_detail(scoped(%{"user_id" => user_id})))
   end
 
   def suspend_user(conn, %{"id" => user_id} = params) do
     forward(
       conn,
-      SharedInfra.AuthClient.suspend_user(%{
-        "user_id" => user_id,
-        "reason" => params["reason"],
-        "ends_at" => params["ends_at"],
-        "actor_user_id" => actor(conn)
-      })
+      SharedInfra.AuthClient.suspend_user(
+        scoped(%{
+          "user_id" => user_id,
+          "reason" => params["reason"],
+          "ends_at" => params["ends_at"],
+          "actor_user_id" => actor(conn)
+        })
+      )
     )
   end
 
   def reactivate_user(conn, %{"id" => user_id}) do
     forward(
       conn,
-      SharedInfra.AuthClient.reactivate_user(%{
-        "user_id" => user_id,
-        "actor_user_id" => actor(conn)
-      })
+      SharedInfra.AuthClient.reactivate_user(
+        scoped(%{"user_id" => user_id, "actor_user_id" => actor(conn)})
+      )
     )
   end
 
   def ban_user(conn, %{"id" => user_id} = params) do
     forward(
       conn,
-      SharedInfra.AuthClient.ban_user(%{
-        "user_id" => user_id,
-        "reason" => params["reason"],
-        "actor_user_id" => actor(conn)
-      })
+      SharedInfra.AuthClient.ban_user(
+        scoped(%{
+          "user_id" => user_id,
+          "reason" => params["reason"],
+          "actor_user_id" => actor(conn)
+        })
+      )
     )
   end
 
   # --- Messages -------------------------------------------------------------------------------
+  # Tenant gate (message_service admin_delete has no app_id): resolve the message's conversation tenant;
+  # a conversation outside the console's tenant → 404, no delete (same predicate the content viewer uses).
   def delete_message(conn, %{"id" => message_id} = params) do
-    case SharedInfra.MessageClient.admin_delete_message(%{
-           "message_id" => message_id,
-           "conversation_id" => params["conversation_id"]
-         }) do
-      {:ok, data} ->
-        # Best-effort audit (the delete already happened); record who removed what.
-        SharedInfra.AuthClient.write_audit(%{
-          "actor_user_id" => actor(conn),
-          "action" => "message.delete",
-          "target_type" => "message",
-          "target_id" => message_id,
-          "metadata" => %{"conversation_id" => params["conversation_id"]}
-        })
+    with :ok <- ensure_tenant_conversation(params["conversation_id"]),
+         {:ok, data} <-
+           SharedInfra.MessageClient.admin_delete_message(%{
+             "message_id" => message_id,
+             "conversation_id" => params["conversation_id"]
+           }) do
+      # Best-effort audit (the delete already happened); record who removed what.
+      SharedInfra.AuthClient.write_audit(%{
+        "actor_user_id" => actor(conn),
+        "action" => "message.delete",
+        "target_type" => "message",
+        "target_id" => message_id,
+        "metadata" => %{"conversation_id" => params["conversation_id"]}
+      })
 
-        json(conn, data)
-
-      {:error, reason} ->
-        error(conn, reason)
+      json(conn, data)
+    else
+      {:error, :not_found} -> ErrorResponse.not_found(conn, "admin.not_found", "Not found")
+      {:error, reason} -> error(conn, reason)
     end
   end
 
   # --- Reports --------------------------------------------------------------------------------
   def list_reports(conn, params) do
     result =
-      enrich_rows(SharedInfra.AuthClient.list_reports(take_paging(params)), :reports, %{
+      enrich_rows(SharedInfra.AuthClient.list_reports(scoped(take_paging(params))), :reports, %{
         reporter_user_id: :reporter,
         reported_user_id: :reported
       })
@@ -103,12 +109,14 @@ defmodule ApiGatewayWeb.AdminModerationController do
   def update_report(conn, %{"id" => report_id} = params) do
     forward(
       conn,
-      SharedInfra.AuthClient.update_report(%{
-        "report_id" => report_id,
-        "status" => params["status"],
-        "resolution" => params["resolution"],
-        "actor_user_id" => actor(conn)
-      })
+      SharedInfra.AuthClient.update_report(
+        scoped(%{
+          "report_id" => report_id,
+          "status" => params["status"],
+          "resolution" => params["resolution"],
+          "actor_user_id" => actor(conn)
+        })
+      )
     )
   end
 
@@ -116,11 +124,13 @@ defmodule ApiGatewayWeb.AdminModerationController do
   def set_user_role(conn, %{"id" => user_id} = params) do
     forward(
       conn,
-      SharedInfra.AuthClient.set_user_role(%{
-        "user_id" => user_id,
-        "role" => params["role"],
-        "actor_user_id" => actor(conn)
-      })
+      SharedInfra.AuthClient.set_user_role(
+        scoped(%{
+          "user_id" => user_id,
+          "role" => params["role"],
+          "actor_user_id" => actor(conn)
+        })
+      )
     )
   end
 
@@ -128,10 +138,9 @@ defmodule ApiGatewayWeb.AdminModerationController do
   def delete_user(conn, %{"id" => user_id}) do
     forward(
       conn,
-      SharedInfra.AuthClient.delete_user(%{
-        "user_id" => user_id,
-        "actor_user_id" => actor(conn)
-      })
+      SharedInfra.AuthClient.delete_user(
+        scoped(%{"user_id" => user_id, "actor_user_id" => actor(conn)})
+      )
     )
   end
 
@@ -230,4 +239,28 @@ defmodule ApiGatewayWeb.AdminModerationController do
   defp actor(conn), do: conn.assigns.admin_session.user_id
 
   defp take_paging(params), do: Map.take(params, ["page", "status", "q"])
+
+  # The admin console is the FIRST-PARTY product only → every user/report query is confined to tenant-zero
+  # (SharedInfra.Tenancy.default_app_id/0, the single source). A cross-tenant id then resolves to nothing →
+  # 404, no side effect. A cross-tenant *operations* view is a separate future route with its own controller.
+  defp scoped(attrs), do: Map.put(attrs, "app_id", SharedInfra.Tenancy.default_app_id())
+
+  # The message's conversation must belong to the console's tenant. Missing / cross-tenant / unresolvable
+  # → :not_found (404). messages.app_id is unreliable, so the tenant comes from the parent conversation.
+  defp ensure_tenant_conversation(conversation_id) when is_binary(conversation_id) and conversation_id != "" do
+    case SharedInfra.ConversationClient.get_conversation_app(%{"conversation_id" => conversation_id}) do
+      {:ok, %{app_id: app_id}} ->
+        if app_id == SharedInfra.Tenancy.default_app_id(), do: :ok, else: {:error, :not_found}
+
+      {:ok, map} when is_map(map) ->
+        if Map.get(map, "app_id") == SharedInfra.Tenancy.default_app_id(),
+          do: :ok,
+          else: {:error, :not_found}
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  defp ensure_tenant_conversation(_), do: {:error, :not_found}
 end

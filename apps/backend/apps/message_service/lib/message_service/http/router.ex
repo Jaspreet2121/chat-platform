@@ -94,12 +94,12 @@ defmodule MessageService.HTTP.Router do
 
   # Read-only admin analytics (gated upstream by the gateway's RequireAdmin + the internal TokenPlug).
   post "/internal/analytics/overview" do
-    send_result(conn, {:ok, MessageService.Analytics.overview()})
+    send_result(conn, {:ok, MessageService.Analytics.overview(Map.get(body(conn), "app_id"))})
   end
 
   post "/internal/analytics/timeseries" do
     days = MessageService.Analytics.normalize_days(Map.get(body(conn), "days"))
-    send_result(conn, {:ok, MessageService.Analytics.timeseries(days)})
+    send_result(conn, {:ok, MessageService.Analytics.timeseries(days, Map.get(body(conn), "app_id"))})
   end
 
   # Service health: own liveness + the dependencies this service owns (Postgres store + Kafka).

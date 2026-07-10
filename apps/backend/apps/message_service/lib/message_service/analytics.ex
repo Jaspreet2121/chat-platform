@@ -12,40 +12,60 @@ defmodule MessageService.Analytics do
 
   alias MessageService.Repo
 
+  # The admin console is first-party only → every count is scoped to a single tenant. `messages` has NO
+  # reliable app_id (default tenant-zero, never set by inserts), so message counts route through the parent
+  # CONVERSATION's app_id. Direct-app_id tables (users_auth, conversations, media_assets) filter in place.
+  # A nil app_id defaults to tenant-zero (fail-closed to first-party; the console always passes it).
   @doc "Totals + recent activity for the dashboard top cards (one map, a handful of grouped queries)."
-  def overview do
+  def overview(app_id \\ nil) do
+    app = SharedInfra.Tenancy.app_id_or_default(app_id)
+    p = [uuid_param(app)]
+
     %{
       totals: %{
-        users: scalar("SELECT count(*) FROM users_auth"),
-        conversations: scalar("SELECT count(*) FROM conversations"),
-        messages: scalar("SELECT count(*) FROM messages"),
-        media: scalar("SELECT count(*) FROM media_assets"),
-        storage_bytes: scalar("SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM media_assets")
+        users: scalar("SELECT count(*) FROM users_auth WHERE app_id = $1", p),
+        conversations: scalar("SELECT count(*) FROM conversations WHERE app_id = $1", p),
+        messages:
+          scalar(
+            "SELECT count(*) FROM messages m " <>
+              "JOIN conversations c ON c.id = m.conversation_id WHERE c.app_id = $1",
+            p
+          ),
+        media: scalar("SELECT count(*) FROM media_assets WHERE app_id = $1", p),
+        storage_bytes:
+          scalar("SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM media_assets WHERE app_id = $1", p)
       },
       activity: %{
-        messages_24h:
-          scalar("SELECT count(*) FROM messages WHERE created_at >= now() - interval '24 hours'"),
-        messages_7d:
-          scalar("SELECT count(*) FROM messages WHERE created_at >= now() - interval '7 days'"),
+        messages_24h: scalar(recent_messages_sql("24 hours"), p),
+        messages_7d: scalar(recent_messages_sql("7 days"), p),
         active_conversations_7d:
           scalar(
-            "SELECT count(DISTINCT conversation_id) FROM messages " <>
-              "WHERE created_at >= now() - interval '7 days'"
+            "SELECT count(DISTINCT m.conversation_id) FROM messages m " <>
+              "JOIN conversations c ON c.id = m.conversation_id " <>
+              "WHERE c.app_id = $1 AND m.created_at >= now() - interval '7 days'",
+            p
           )
       },
       auth: login_counts_7d()
     }
   end
 
-  @doc "Per-day series (signups, messages, conversations) over the last `days`, gap-filled."
-  def timeseries(days) do
+  # messages routed through the conversation for the tenant predicate (messages.app_id is unreliable).
+  defp recent_messages_sql(window) do
+    "SELECT count(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id " <>
+      "WHERE c.app_id = $1 AND m.created_at >= now() - interval '#{window}'"
+  end
+
+  @doc "Per-day series (signups, messages, conversations) over the last `days`, gap-filled — tenant-scoped."
+  def timeseries(days, app_id \\ nil) do
     bounded = days |> normalize_days()
+    app = SharedInfra.Tenancy.app_id_or_default(app_id)
 
     %{
       days: bounded,
-      signups: daily_series("users_auth", bounded),
-      messages: daily_series("messages", bounded),
-      conversations: daily_series("conversations", bounded)
+      signups: daily_series_app("users_auth", bounded, app),
+      messages: daily_series_messages(bounded, app),
+      conversations: daily_series_app("conversations", bounded, app)
     }
   end
 
@@ -60,9 +80,17 @@ defmodule MessageService.Analytics do
 
   def normalize_days(_), do: 30
 
-  defp scalar(sql) do
-    %Postgrex.Result{rows: [[value]]} = Repo.query!(sql)
+  defp scalar(sql, params) do
+    %Postgrex.Result{rows: [[value]]} = Repo.query!(sql, params)
     value || 0
+  end
+
+  # uuid columns need the 16-byte binary, not the string form.
+  defp uuid_param(value) when is_binary(value) do
+    case Ecto.UUID.dump(value) do
+      {:ok, binary} -> binary
+      :error -> value
+    end
   end
 
   defp login_counts_7d do
@@ -79,21 +107,42 @@ defmodule MessageService.Analytics do
     end)
   end
 
-  # `table` is always a hard-coded constant from this module — never user input.
-  defp daily_series(table, days) do
+  # Direct-app_id tables (users_auth, conversations). `table` is a hard-coded constant — never user input.
+  defp daily_series_app(table, days, app) do
     sql = """
     SELECT to_char(g, 'YYYY-MM-DD') AS date, COALESCE(c.cnt, 0)::int AS count
     FROM generate_series((now()::date - ($1::int - 1)), now()::date, interval '1 day') g
     LEFT JOIN (
       SELECT date_trunc('day', created_at)::date AS d, count(*) AS cnt
       FROM #{table}
-      WHERE created_at >= (now()::date - ($1::int - 1))
+      WHERE created_at >= (now()::date - ($1::int - 1)) AND app_id = $2
       GROUP BY d
     ) c ON c.d = g::date
     ORDER BY date
     """
 
-    %Postgrex.Result{rows: rows} = Repo.query!(sql, [days])
+    run_series(sql, [days, uuid_param(app)])
+  end
+
+  # messages routed through the parent conversation (messages.app_id is unreliable).
+  defp daily_series_messages(days, app) do
+    sql = """
+    SELECT to_char(g, 'YYYY-MM-DD') AS date, COALESCE(c.cnt, 0)::int AS count
+    FROM generate_series((now()::date - ($1::int - 1)), now()::date, interval '1 day') g
+    LEFT JOIN (
+      SELECT date_trunc('day', m.created_at)::date AS d, count(*) AS cnt
+      FROM messages m JOIN conversations conv ON conv.id = m.conversation_id
+      WHERE m.created_at >= (now()::date - ($1::int - 1)) AND conv.app_id = $2
+      GROUP BY d
+    ) c ON c.d = g::date
+    ORDER BY date
+    """
+
+    run_series(sql, [days, uuid_param(app)])
+  end
+
+  defp run_series(sql, params) do
+    %Postgrex.Result{rows: rows} = Repo.query!(sql, params)
     Enum.map(rows, fn [date, count] -> %{date: date, count: count} end)
   end
 end

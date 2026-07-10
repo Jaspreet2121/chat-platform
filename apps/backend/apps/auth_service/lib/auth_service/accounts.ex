@@ -134,6 +134,7 @@ defmodule AuthService.Accounts do
     page = page(opts)
     page_size = 25
     offset = (page - 1) * page_size
+    # Admin console is first-party only → always scope to the tenant (default tenant-zero when unset).
     {where, params} = list_filters(opts)
 
     # uuid columns must be ::text — raw Repo.query! returns uuid as a 16-byte binary that Jason can't encode.
@@ -198,12 +199,14 @@ defmodule AuthService.Accounts do
 
   # Builds the WHERE clause + positional params for the optional status filter and phone/email search.
   defp list_filters(opts) do
-    acc0 = {[], [], 1}
+    # app_id is ALWAYS $1 (tenant scope, default tenant-zero); optional filters take $2, $3.
+    app = SharedInfra.Tenancy.app_id_or_default(present(Map.get(opts, "app_id")))
+    {clauses, params, i} = {["ua.app_id = $1"], [uuid_param(app)], 2}
 
     {clauses, params, i} =
       case present(Map.get(opts, "status")) do
-        nil -> acc0
-        status -> {["status = $1"], [status], 2}
+        nil -> {clauses, params, i}
+        status -> {clauses ++ ["status = $#{i}"], params ++ [status], i + 1}
       end
 
     {clauses, params} =
@@ -215,8 +218,7 @@ defmodule AuthService.Accounts do
           {clauses ++ ["(phone_number ILIKE $#{i} OR email ILIKE $#{i})"], params ++ ["%#{q}%"]}
       end
 
-    where = if clauses == [], do: "", else: "WHERE " <> Enum.join(clauses, " AND ")
-    {where, params}
+    {"WHERE " <> Enum.join(clauses, " AND "), params}
   end
 
   defp page(opts) do
@@ -237,4 +239,12 @@ defmodule AuthService.Accounts do
 
   defp present(value) when is_binary(value) and value != "", do: value
   defp present(_), do: nil
+
+  # uuid columns need the 16-byte binary, not the string form.
+  defp uuid_param(value) when is_binary(value) do
+    case Ecto.UUID.dump(value) do
+      {:ok, binary} -> binary
+      :error -> value
+    end
+  end
 end

@@ -44,11 +44,16 @@ defmodule MessageService.MessageClientInProcess do
   def mark_delivered(attrs), do: Receipts.mark_delivered(attrs)
 
   @impl true
-  def analytics_overview(_attrs), do: {:ok, Analytics.overview()}
+  def analytics_overview(attrs), do: {:ok, Analytics.overview(Map.get(attrs, "app_id"))}
 
   @impl true
   def analytics_timeseries(attrs),
-    do: {:ok, Analytics.timeseries(Analytics.normalize_days(Map.get(attrs, "days")))}
+    do:
+      {:ok,
+       Analytics.timeseries(
+         Analytics.normalize_days(Map.get(attrs, "days")),
+         Map.get(attrs, "app_id")
+       )}
 
   @impl true
   def admin_delete_message(attrs), do: Messages.admin_delete_message(attrs)

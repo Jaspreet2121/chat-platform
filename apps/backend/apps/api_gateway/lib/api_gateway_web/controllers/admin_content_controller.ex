@@ -30,7 +30,8 @@ defmodule ApiGatewayWeb.AdminContentController do
   def conversations(conn, params) do
     case SharedInfra.ConversationClient.admin_list_conversations(%{
            "q" => params["q"],
-           "page" => params["page"]
+           "page" => params["page"],
+           "app_id" => tenant()
          }) do
       {:ok, data} ->
         json(conn, data)
@@ -45,7 +46,10 @@ defmodule ApiGatewayWeb.AdminContentController do
 
   # A given user's conversations (metadata only — who they've chatted with). Console-access gated.
   def user_conversations(conn, %{"id" => user_id}) do
-    case SharedInfra.ConversationClient.admin_user_conversations(%{"user_id" => user_id}) do
+    case SharedInfra.ConversationClient.admin_user_conversations(%{
+           "user_id" => user_id,
+           "app_id" => tenant()
+         }) do
       {:ok, data} ->
         json(conn, data)
 
@@ -62,19 +66,27 @@ defmodule ApiGatewayWeb.AdminContentController do
     unmasked? = "content.read" in (Map.get(session, :permissions) || [])
     app_id = tenant_app_id(conversation_id)
 
-    case SharedInfra.MessageClient.list_messages(%{
-           "conversation_id" => conversation_id,
-           "limit" => limit(params)
-         }) do
-      {:ok, timeline} ->
-        messages = Map.get(timeline, :messages) || Map.get(timeline, "messages") || []
-        respond(conn, session, conversation_id, app_id, messages, unmasked?)
+    # FIRST-PARTY ONLY: the console never reads an integrator conversation's content. A conversation outside
+    # tenant-zero (or an unknown/unresolvable id) → 404, before any message is fetched or audited.
+    cond do
+      app_id != tenant() ->
+        ErrorResponse.not_found(conn, "admin.not_found", "Not found")
 
-      {:error, :message_unavailable} ->
-        ErrorResponse.service_unavailable(conn, "admin.unavailable")
+      true ->
+        case SharedInfra.MessageClient.list_messages(%{
+               "conversation_id" => conversation_id,
+               "limit" => limit(params)
+             }) do
+          {:ok, timeline} ->
+            messages = Map.get(timeline, :messages) || Map.get(timeline, "messages") || []
+            respond(conn, session, conversation_id, app_id, messages, unmasked?)
 
-      {:error, _reason} ->
-        ErrorResponse.invalid_request(conn, "admin.invalid_request")
+          {:error, :message_unavailable} ->
+            ErrorResponse.service_unavailable(conn, "admin.unavailable")
+
+          {:error, _reason} ->
+            ErrorResponse.invalid_request(conn, "admin.invalid_request")
+        end
     end
   end
 
@@ -252,6 +264,11 @@ defmodule ApiGatewayWeb.AdminContentController do
   rescue
     _ -> nil
   end
+
+  # The console's tenant — FIRST-PARTY ONLY (tenant-zero, the single source in SharedInfra.Tenancy). Never
+  # relax this to read another tenant's content; a cross-tenant OPERATIONS view (per-app counts/usage) is a
+  # SEPARATE future route (`/api/v1/admin/platform/*`) with its OWN controller containing NO content code.
+  defp tenant, do: SharedInfra.Tenancy.default_app_id()
 
   defp mget(m, key), do: Map.get(m, key, Map.get(m, Atom.to_string(key)))
 

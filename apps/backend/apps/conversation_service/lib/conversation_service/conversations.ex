@@ -86,13 +86,23 @@ defmodule ConversationService.Conversations do
     end
   end
 
+  # Admin console is first-party only → ALWAYS scope to the tenant ($1); the optional search is $2.
   defp admin_conv_filter(attrs) do
+    app = SharedInfra.Tenancy.app_id_or_default(get_attr(attrs, "app_id"))
+
     case attrs["q"] || attrs[:q] do
       q when is_binary(q) and q != "" ->
-        {"WHERE (c.title ILIKE $1 OR c.id::text ILIKE $1)", ["%#{q}%"]}
+        {"WHERE c.app_id = $1 AND (c.title ILIKE $2 OR c.id::text ILIKE $2)", [app_uuid(app), "%#{q}%"]}
 
       _ ->
-        {"", []}
+        {"WHERE c.app_id = $1", [app_uuid(app)]}
+    end
+  end
+
+  defp app_uuid(value) do
+    case Ecto.UUID.dump(value) do
+      {:ok, binary} -> binary
+      :error -> value
     end
   end
 
@@ -107,6 +117,9 @@ defmodule ConversationService.Conversations do
       # uuid columns need the 16-byte binary param (Postgrex can't infer a string for `= $1`).
       case Ecto.UUID.dump(to_string(get_attr(attrs, "user_id") || "")) do
         {:ok, uuid_bin} ->
+          # Admin console is first-party only → only this tenant's conversations ($2).
+          app_bin = app_uuid(SharedInfra.Tenancy.app_id_or_default(get_attr(attrs, "app_id")))
+
           sql =
             "SELECT c.id::text, c.type, c.title, c.status, " <>
               "to_char(c.updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS last_activity, " <>
@@ -120,9 +133,10 @@ defmodule ConversationService.Conversations do
               "   ORDER BY o.joined_at LIMIT 1) AS other_name " <>
               "FROM conversations c " <>
               "JOIN conversation_participants me ON me.conversation_id = c.id AND me.user_id = $1 " <>
+              "WHERE c.app_id = $2 " <>
               "ORDER BY c.updated_at DESC LIMIT 100"
 
-          %Postgrex.Result{rows: rows} = Repo.query!(sql, [uuid_bin])
+          %Postgrex.Result{rows: rows} = Repo.query!(sql, [uuid_bin, app_bin])
 
           {:ok,
            %{
