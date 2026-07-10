@@ -50,7 +50,8 @@ export function OnboardingStep({ userId, onDone, onSkip }: OnboardingStepProps) 
       const upload = await createMediaUpload({
         filename: file.name,
         content_type: contentType,
-        size_bytes: compressed.size
+        size_bytes: compressed.size,
+        purpose: "user_avatar"
       });
       const put = await fetch(upload.upload_url, {
         method: "PUT",
@@ -83,7 +84,8 @@ export function OnboardingStep({ userId, onDone, onSkip }: OnboardingStepProps) 
       await updateMe({
         display_name: name,
         bio: bio.trim(),
-        ...(pending ? { avatar_media_id: pending.mediaId, avatar_object_key: pending.objectKey } : {})
+        // Only the media_id — the server resolves object_key from the (now user_avatar) media_assets row.
+        ...(pending ? { avatar_media_id: pending.mediaId } : {})
       });
       onDone();
     } catch (saveError) {

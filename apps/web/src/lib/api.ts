@@ -30,10 +30,19 @@ export type CreateMessageInput = {
   replyToMessageId?: string;
 };
 
+export type MediaUploadPurpose = "message" | "user_avatar" | "group_avatar";
+
 export type CreateMediaUploadInput = {
   filename: string;
   content_type: string;
   size_bytes: number;
+  // REQUIRED, no default: the backend records this on the media_assets row and enforces per-purpose
+  // (a `message` upload is membership-checked when conversation_id is supplied; `group_avatar` needs
+  // owner/admin). Making it required means a new call-site can't silently inherit "message" — the bug
+  // that broke avatar changes when the frontend omitted it and the server defaulted to "message".
+  purpose: MediaUploadPurpose;
+  // Required for `message` + `group_avatar` (scopes the upload to the conversation); absent for `user_avatar`.
+  conversation_id?: string;
 };
 
 export type CreateConversationInput = {
@@ -352,14 +361,14 @@ export function getMe() {
 export type UpdateProfileInput = {
   display_name?: string;
   bio?: string;
-  // "" on the avatar fields = REMOVE the photo (the update path treats empty-string as an explicit
-  // clear → nulls the columns). A normal id sets it; omitted = unchanged.
+  // "" = REMOVE the photo (the update path treats empty-string as an explicit clear → nulls the column).
+  // A normal id sets it; omitted = unchanged. avatar_object_key is NO LONGER sent — the server resolves
+  // object_key from the media_assets row (bee9562); the gateway strips any key the client sends.
   avatar_media_id?: string;
-  avatar_object_key?: string;
 };
 
 // Update the signed-in user's profile (PATCH /me). Only send the fields being changed (the gateway
-// allow-lists display_name/bio/avatar_media_id/avatar_object_key and rejects an empty body).
+// allow-lists display_name/bio/avatar_media_id and rejects an empty body).
 export function updateMe(input: UpdateProfileInput) {
   return request<UserProfile>("/api/v1/users/me", {
     method: "PATCH",

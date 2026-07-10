@@ -78,7 +78,8 @@ export function MyProfileModal({ onClose, profile, userId, onSaved }: MyProfileM
       const upload = await createMediaUpload({
         filename: file.name,
         content_type: contentType,
-        size_bytes: compressed.size
+        size_bytes: compressed.size,
+        purpose: "user_avatar"
       });
 
       const put = await fetch(upload.upload_url, {
@@ -113,7 +114,8 @@ export function MyProfileModal({ onClose, profile, userId, onSaved }: MyProfileM
       const updated = await updateMe({
         display_name: name,
         bio: bio.trim(),
-        ...(pending ? { avatar_media_id: pending.mediaId, avatar_object_key: pending.objectKey } : {})
+        // Only the media_id — the server resolves object_key from the (now user_avatar) media_assets row.
+        ...(pending ? { avatar_media_id: pending.mediaId } : {})
       });
       onSaved(updated);
       onClose();
@@ -129,13 +131,13 @@ export function MyProfileModal({ onClose, profile, userId, onSaved }: MyProfileM
   // A photo is removable when one is currently set (server avatar or a just-picked one).
   const hasPhoto = Boolean(previewUrl);
 
-  // Remove the avatar → revert to the gradient initials. Sends empty-string avatar fields, which the
-  // profile update path treats as an explicit clear (nulls the columns). Saves immediately.
+  // Remove the avatar → revert to the gradient initials. Sends empty-string avatar_media_id, which the
+  // profile update path treats as an explicit clear (nulls the column). Saves immediately.
   async function handleRemovePhoto() {
     setIsSaving(true);
     setError("");
     try {
-      const updated = await updateMe({ avatar_media_id: "", avatar_object_key: "" });
+      const updated = await updateMe({ avatar_media_id: "" });
       setPending(null);
       onSaved(updated);
     } catch (removeError) {

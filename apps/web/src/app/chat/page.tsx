@@ -1067,7 +1067,9 @@ export default function ChatPage() {
     const upload = await createMediaUpload({
       filename: file.name,
       content_type: contentType,
-      size_bytes: uploadFile.size
+      size_bytes: uploadFile.size,
+      purpose: "message",
+      conversation_id: selectedConversationId
     });
 
     setMediaStatus("Uploading...");

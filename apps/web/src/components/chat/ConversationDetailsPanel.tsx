@@ -280,7 +280,9 @@ export function ConversationDetailsPanel({
       const upload = await createMediaUpload({
         filename: file.name,
         content_type: contentType,
-        size_bytes: compressed.size
+        size_bytes: compressed.size,
+        purpose: "group_avatar",
+        conversation_id: conversationId
       });
       const put = await fetch(upload.upload_url, {
         method: "PUT",
