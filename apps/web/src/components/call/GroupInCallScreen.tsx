@@ -55,7 +55,10 @@ function Tile({
   mirror?: boolean;
   selfLabel?: string;
 }) {
-  const profile = useUserProfile(selfLabel ? null : identity);
+  // Fetch by identity for EVERY tile — including self (identity = currentUserId, already primed in the
+  // useUserProfile cache by chat/page.tsx's getMe→primeUserProfile, so this is a cache hit, no new request).
+  // `selfLabel` now only overrides the NAME ("You"); the avatar comes from the same source as other tiles.
+  const profile = useUserProfile(identity);
   const ref = useRef<HTMLVideoElement>(null);
   const name = selfLabel ?? profile?.display_name?.trim() ?? `${identity.slice(0, 8)}…`;
 
@@ -79,7 +82,7 @@ function Tile({
       />
       {!videoTrack && (
         <div className="flex h-full w-full items-center justify-center">
-          <Avatar id={identity} name={name} imageUrl={selfLabel ? undefined : profile?.avatar_url} size="lg" />
+          <Avatar id={identity} name={name} imageUrl={profile?.avatar_url} size="lg" />
         </div>
       )}
       <span className="absolute bottom-1.5 left-2 max-w-[85%] truncate rounded bg-black/40 px-1.5 py-0.5 text-xs font-medium text-white/90">

@@ -5,6 +5,7 @@ import { Mic, MicOff, PhoneOff, SwitchCamera, UserPlus, Video, VideoOff } from "
 import type { LocalVideoTrack, RemoteVideoTrack } from "livekit-client";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
+import { useUserProfile } from "../chat/useUserProfile";
 
 export type InCallScreenProps = {
   peerName: string;
@@ -59,6 +60,9 @@ export function InCallScreen({
   onAddParticipants,
   cameraFacing
 }: InCallScreenProps) {
+  // The peer's cached profile (same person the caller/callee already has from the DM → cache hit, no
+  // round-trip). Falls back to initials when absent. Used for every avatar placeholder below (voice + video).
+  const peerAvatarUrl = useUserProfile(peerId)?.avatar_url;
   const [elapsed, setElapsed] = useState(0);
   const startedAt = useRef<number | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -109,7 +113,7 @@ export function InCallScreen({
         className="fixed inset-0 z-[60] flex flex-col items-center justify-between bg-black/80 p-8 backdrop-blur-md animate-fade-in"
       >
         <div className="flex flex-1 flex-col items-center justify-center gap-5 text-center">
-          <Avatar id={peerId} name={peerName} size="lg" />
+          <Avatar id={peerId} name={peerName} imageUrl={peerAvatarUrl} size="lg" />
           <div>
             <h2 className="text-2xl font-semibold text-white">{peerName}</h2>
             <p className="mt-1 text-sm font-medium text-white/70" aria-live="polite">
@@ -235,7 +239,7 @@ export function InCallScreen({
             </>
           ) : (
             <>
-              <Avatar id={peerId} name={peerName} size="lg" />
+              <Avatar id={peerId} name={peerName} imageUrl={peerAvatarUrl} size="lg" />
               <p className="text-sm font-medium text-white/70" aria-live="polite">
                 {connecting ? <span className="animate-pulse">Connecting…</span> : "Camera off"}
               </p>
@@ -248,7 +252,7 @@ export function InCallScreen({
       {!pipActive && (
         <button type="button" onClick={toggleEnlarged} aria-label="Swap video" className={pipBoxCls}>
           {mainIsSelf ? (
-            <Avatar id={peerId} name={peerName} size="md" />
+            <Avatar id={peerId} name={peerName} imageUrl={peerAvatarUrl} size="md" />
           ) : (
             <VideoOff className="h-6 w-6 text-white/60" aria-hidden />
           )}
