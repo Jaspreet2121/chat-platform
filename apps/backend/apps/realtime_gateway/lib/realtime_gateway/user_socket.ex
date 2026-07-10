@@ -7,10 +7,21 @@ defmodule RealtimeGateway.UserSocket do
 
   @impl true
   def connect(params, socket, _connect_info) do
-    if socket_auth_persistence_enabled?() do
-      authenticated_connect(params, socket)
-    else
-      placeholder_connect(params, socket)
+    result =
+      if socket_auth_persistence_enabled?() do
+        authenticated_connect(params, socket)
+      else
+        placeholder_connect(params, socket)
+      end
+
+    # Once the identity (user_id + app_id) is assigned, enforce the concurrent-connection cap. Over the
+    # per-user OR per-app limit → refuse the handshake. The returned socket_ref identifies THIS socket in
+    # the connection counter; the user channel refreshes it (heartbeat) and releases it on disconnect.
+    with {:ok, socket} <- result do
+      case RealtimeGateway.Limits.check_connection(socket) do
+        {:ok, socket_ref} -> {:ok, assign(socket, :socket_ref, socket_ref)}
+        :error -> {:error, %{reason: "connection_limit"}}
+      end
     end
   end
 

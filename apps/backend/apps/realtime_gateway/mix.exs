@@ -26,6 +26,8 @@ defmodule RealtimeGateway.MixProject do
     [
       {:phoenix, "~> 1.7"},
       {:phoenix_pubsub, "~> 2.1"},
+      # Already transitive via Phoenix; declared explicitly since RealtimeGateway.Limits emits telemetry.
+      {:telemetry, "~> 1.0"},
       {:shared_infra, in_umbrella: true}
     ]
   end

@@ -1,12 +1,14 @@
 defmodule RealtimeGateway.ConversationChannel do
   use Phoenix.Channel
 
+  alias RealtimeGateway.Limits
   alias RealtimeGateway.Presence
   alias RealtimeGateway.TopicAuthorization
 
   @impl true
   def join("conversation:" <> conversation_id = topic, _payload, socket) do
-    with :ok <- TopicAuthorization.authorize_join(topic, socket) do
+    with :ok <- Limits.check_join(socket),
+         :ok <- TopicAuthorization.authorize_join(topic, socket) do
       socket = assign(socket, :conversation_id, conversation_id)
       send(self(), :after_join)
 
@@ -79,73 +81,103 @@ defmodule RealtimeGateway.ConversationChannel do
     :ok
   end
 
+  # EPHEMERAL bucket (typing, receipts, live-location): over the limit → dropped SILENTLY ({:noreply}).
+  # WRITE bucket (message create/update/delete, reactions): over the limit → an error reply carrying
+  # retry_after, the socket STAYS alive (the SDK backs off). See RealtimeGateway.Limits.
+
   @impl true
   def handle_in("typing_started", payload, socket) do
-    reply = conversation_reply("typing_started", payload, socket)
-    broadcast_from(socket, "presence_updated", Map.put(reply, :typing, true))
+    with :ok <- Limits.check_ephemeral(socket) do
+      reply = conversation_reply("typing_started", payload, socket)
+      broadcast_from(socket, "presence_updated", Map.put(reply, :typing, true))
 
-    {:reply, {:ok, reply}, socket}
+      {:reply, {:ok, reply}, socket}
+    end
   end
 
   def handle_in("typing:start", _payload, socket) do
-    typing_event("typing_started", socket)
+    with :ok <- Limits.check_ephemeral(socket) do
+      typing_event("typing_started", socket)
+    end
   end
 
   def handle_in("typing:stop", _payload, socket) do
-    typing_event("typing_stopped", socket)
+    with :ok <- Limits.check_ephemeral(socket) do
+      typing_event("typing_stopped", socket)
+    end
   end
 
   def handle_in("typing_stopped", payload, socket) do
-    reply = conversation_reply("typing_stopped", payload, socket)
-    broadcast_from(socket, "presence_updated", Map.put(reply, :typing, false))
+    with :ok <- Limits.check_ephemeral(socket) do
+      reply = conversation_reply("typing_stopped", payload, socket)
+      broadcast_from(socket, "presence_updated", Map.put(reply, :typing, false))
 
-    {:reply, {:ok, reply}, socket}
+      {:reply, {:ok, reply}, socket}
+    end
   end
 
   def handle_in("message_read", payload, socket) do
-    reply = conversation_reply("message_read", payload, socket)
-    # Persist FIRST so the receipt survives a reload, THEN broadcast for the live tick. One path:
-    # the socket mark is the durable mark (no separate REST call needed from the client).
-    persist_receipt(:read, payload, socket)
-    broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "read"))
+    with :ok <- Limits.check_ephemeral(socket) do
+      reply = conversation_reply("message_read", payload, socket)
+      # Persist FIRST so the receipt survives a reload, THEN broadcast for the live tick. One path:
+      # the socket mark is the durable mark (no separate REST call needed from the client).
+      persist_receipt(:read, payload, socket)
+      broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "read"))
 
-    {:reply, {:ok, reply}, socket}
+      {:reply, {:ok, reply}, socket}
+    end
   end
 
   def handle_in("message_delivered", payload, socket) do
-    reply = conversation_reply("message_delivered", payload, socket)
-    persist_receipt(:delivered, payload, socket)
-    broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "delivered"))
+    with :ok <- Limits.check_ephemeral(socket) do
+      reply = conversation_reply("message_delivered", payload, socket)
+      persist_receipt(:delivered, payload, socket)
+      broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "delivered"))
 
-    {:reply, {:ok, reply}, socket}
+      {:reply, {:ok, reply}, socket}
+    end
   end
 
   def handle_in("message:create", payload, socket) do
-    create_message(payload, socket)
+    with :ok <- Limits.check_write(socket) do
+      create_message(payload, socket)
+    end
   end
 
   def handle_in("message:new", payload, socket) do
-    create_message(payload, socket)
+    with :ok <- Limits.check_write(socket) do
+      create_message(payload, socket)
+    end
   end
 
   def handle_in("message:update", payload, socket) do
-    update_message(payload, socket)
+    with :ok <- Limits.check_write(socket) do
+      update_message(payload, socket)
+    end
   end
 
   def handle_in("message:delete", payload, socket) do
-    delete_message(payload, socket)
+    with :ok <- Limits.check_write(socket) do
+      delete_message(payload, socket)
+    end
   end
 
   def handle_in("reaction:set", payload, socket) do
-    set_reaction(payload, socket)
+    with :ok <- Limits.check_write(socket) do
+      set_reaction(payload, socket)
+    end
   end
 
   def handle_in("reaction:remove", payload, socket) do
-    remove_reaction(payload, socket)
+    with :ok <- Limits.check_write(socket) do
+      remove_reaction(payload, socket)
+    end
   end
 
   def handle_in("live_location:update", payload, socket) do
-    update_live_location(payload, socket)
+    with :ok <- Limits.check_ephemeral(socket) do
+      update_live_location(payload, socket)
+    end
   end
 
   defp set_reaction(payload, socket) do

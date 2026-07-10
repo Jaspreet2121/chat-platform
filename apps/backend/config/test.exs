@@ -54,5 +54,9 @@ config :shared_infra,
   rate_limiter_adapter: SharedInfra.RateLimiter.InMemoryAdapter,
   rate_limiter_fail_open: true
 
+# The /socket connection counter uses in-process ETS in tests (deterministic, no Redis). Prod defaults to
+# :redis (multi-node); RT_RUNTIME_BACKEND overrides either way — see RealtimeGateway.ConnectionCounter.
+config :realtime_gateway, connection_counter_backend: :ets
+
 config :media_service,
   media_storage_adapter: MediaService.Storage.QueryPlanAdapter

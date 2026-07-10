@@ -51,6 +51,54 @@ defmodule SharedInfra.RedisKV do
 
   def del(_key), do: {:error, :invalid_args}
 
+  # --- sorted-set primitives (used by the realtime connection counter) -------------------------
+  # A sorted set scored by a unix timestamp gives PER-MEMBER expiry: prune members whose score is older
+  # than a stale cutoff, so a crashed/leaked socket entry ages out on its own (a plain SET's members share
+  # one key TTL and would leak; INCR/DECR can under/over-count on a missed decrement). All ZSET replies are
+  # integers, which the existing RESP parser already handles.
+
+  @doc "ZADD key score member, then EXPIRE key ttl (add or refresh a member scored by `score`). :ok | {:error}."
+  def zset_touch(key, member, score, ttl_seconds)
+      when is_binary(key) and key != "" and is_binary(member) and member != "" and
+             is_integer(score) and is_integer(ttl_seconds) and ttl_seconds > 0 do
+    with_connection(fn conn ->
+      with {:ok, _} <- command(conn, ["ZADD", key, Integer.to_string(score), member]),
+           {:ok, _} <- command(conn, ["EXPIRE", key, Integer.to_string(ttl_seconds)]) do
+        :ok
+      end
+    end)
+  end
+
+  def zset_touch(_key, _member, _score, _ttl), do: {:error, :invalid_args}
+
+  @doc "Prune members scored below `min_keep` (stale), then ZCARD the survivors. {:ok, count} | {:error}."
+  def zset_count(key, min_keep) when is_binary(key) and key != "" and is_integer(min_keep) do
+    with_connection(fn conn ->
+      with {:ok, _} <-
+             command(conn, ["ZREMRANGEBYSCORE", key, "-inf", "(" <> Integer.to_string(min_keep)]),
+           {:ok, count} when is_integer(count) <- command(conn, ["ZCARD", key]) do
+        {:ok, count}
+      else
+        {:error, reason} -> {:error, reason}
+        _ -> {:error, :unexpected_redis_response}
+      end
+    end)
+  end
+
+  def zset_count(_key, _min_keep), do: {:error, :invalid_args}
+
+  @doc "ZREM key member (drop a member — the immediate decrement on a clean disconnect). :ok | {:error}."
+  def zset_remove(key, member) when is_binary(key) and key != "" and is_binary(member) and member != "" do
+    with_connection(fn conn ->
+      case command(conn, ["ZREM", key, member]) do
+        {:ok, _} -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end)
+  end
+
+  def zset_remove(_key, _member), do: {:error, :invalid_args}
+
   # --- connection ------------------------------------------------------------------------------
 
   defp with_connection(fun) do

@@ -194,6 +194,14 @@ config :media_service, :minio,
 
 config :realtime_gateway, :redis, url: System.get_env("REDIS_URL") || "redis://localhost:6379/0"
 
+# /socket connection-counter backend: :redis (multi-node, a shared sorted set) or :ets (single-node,
+# in-process). RT_RUNTIME_BACKEND overrides at runtime; test.exs forces :ets. The per-user/per-app socket
+# caps and the join/write/ephemeral rate limits are read from RT_* env at the call site (the V1_RATE_LIMIT
+# precedent) — see RealtimeGateway.Limits — so no compile-time bake and no runtime.exs wiring is required.
+config :realtime_gateway,
+  connection_counter_backend:
+    if(System.get_env("RT_RUNTIME_BACKEND") == "ets", do: :ets, else: :redis)
+
 # Trustworthy realtime socket identity requires BOTH REALTIME_AUTH_DB_BACKED=true AND
 # AUTH_SESSION_DB_BACKED=true. Enabling REALTIME_AUTH_DB_BACKED WITHOUT
 # AUTH_SESSION_DB_BACKED is a misconfiguration: the socket now FAILS CLOSED (rejects the
