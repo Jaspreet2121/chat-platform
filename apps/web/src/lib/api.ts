@@ -1028,3 +1028,118 @@ export function searchMessages(query: string, page = 1) {
     `/api/v1/search/messages?q=${encodeURIComponent(query)}&page=${encodeURIComponent(page)}`
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Integrator dashboard — apps, API keys, webhooks. All session-authenticated (first-party owner
+// session) + app-owner gated server-side (:not_owner → 403). `app_id` selects which OWNED app to act
+// as; omitted → the session's default app. Shapes mirror the deployed controllers exactly.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+export type IntegratorApp = {
+  app_id: string;
+  name: string;
+  // Registered apps are always "live" (their test data lives in a hidden per-app twin).
+  mode: string;
+  created_at?: string;
+};
+
+// GET /api/v1/apps → the apps this user owns (newest first).
+export function listApps() {
+  return request<{ apps: IntegratorApp[] }>("/api/v1/apps").then((r) => r.apps ?? []);
+}
+
+// POST /api/v1/apps → a new app with a DISTINCT live app_id. Returns {app_id, name, mode}.
+export function createApp(name: string) {
+  return request<IntegratorApp>("/api/v1/apps", {
+    method: "POST",
+    body: JSON.stringify({ name })
+  });
+}
+
+// Masked key row (GET /api/v1/api-keys). `key_prefix` is the non-secret display slice (e.g.
+// "sk_live_1a2b3c4d"); the secret itself is NEVER returned here. Revoked keys stay listed (revoked=true).
+export type ApiKeySummary = {
+  id: string;
+  name: string;
+  key_prefix: string;
+  created_at: string;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+  revoked?: boolean;
+};
+
+// POST /api/v1/api-keys response — the ONLY time the plaintext secret (`api_key`, the full `sk_…`) is
+// returned. Show it once; never persist it.
+export type ApiKeyCreated = ApiKeySummary & { app_id: string; mode: string; api_key: string };
+
+function appQuery(appId?: string) {
+  return appId ? `?app_id=${encodeURIComponent(appId)}` : "";
+}
+
+export function listApiKeys(appId?: string) {
+  return request<{ api_keys: ApiKeySummary[] }>(`/api/v1/api-keys${appQuery(appId)}`).then(
+    (r) => r.api_keys ?? []
+  );
+}
+
+export function createApiKey(input: { name: string; mode: "live" | "test"; app_id?: string }) {
+  return request<ApiKeyCreated>("/api/v1/api-keys", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+// DELETE /api/v1/api-keys/:id (app_id via query, mirroring the controller's param resolution).
+export function revokeApiKey(id: string, appId?: string) {
+  return request<{ id: string; revoked: boolean }>(
+    `/api/v1/api-keys/${encodeURIComponent(id)}${appQuery(appId)}`,
+    { method: "DELETE" }
+  );
+}
+
+// The only webhook event types the backend accepts (unknown types are dropped server-side).
+export const WEBHOOK_EVENT_TYPES = ["message.created", "conversation.created"] as const;
+
+export type WebhookEndpoint = {
+  id: string;
+  app_id: string;
+  url: string;
+  enabled: boolean;
+  event_types: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+// POST response — `signing_secret` is returned ONCE (create only; list/update never include it).
+export type WebhookCreated = WebhookEndpoint & { signing_secret: string };
+
+export function listWebhooks(appId?: string) {
+  return request<{ webhook_endpoints: WebhookEndpoint[] }>(
+    `/api/v1/webhooks/endpoints${appQuery(appId)}`
+  ).then((r) => r.webhook_endpoints ?? []);
+}
+
+export function createWebhook(input: { url: string; event_types?: string[]; app_id?: string }) {
+  return request<WebhookCreated>("/api/v1/webhooks/endpoints", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+// PATCH — enable/disable or change event_types (app_id in the body, like create).
+export function updateWebhook(
+  id: string,
+  input: { enabled?: boolean; event_types?: string[]; app_id?: string }
+) {
+  return request<WebhookEndpoint>(`/api/v1/webhooks/endpoints/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export function deleteWebhook(id: string, appId?: string) {
+  return request<{ id: string; deleted: boolean }>(
+    `/api/v1/webhooks/endpoints/${encodeURIComponent(id)}${appQuery(appId)}`,
+    { method: "DELETE" }
+  );
+}
