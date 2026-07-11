@@ -72,9 +72,13 @@ defmodule ApiGatewayWeb.V1.ConversationController do
              "created_by" => created_by,
              "participant_user_ids" => participant_user_ids
            }) do
+      # Live-update each non-creator participant's inbox — only on a genuine insert (an idempotent direct
+      # returning an existing thread carries created:false → no broadcast). Fire-and-forget.
+      ApiGatewayWeb.ConversationBroadcast.broadcast_created(conversation)
+
       conn
       |> put_status(:created)
-      |> json(conversation)
+      |> json(ApiGatewayWeb.ConversationBroadcast.strip_internal(conversation))
     else
       {:error, :conversation_unavailable} ->
         ErrorResponse.service_unavailable(conn, "v1.unavailable")

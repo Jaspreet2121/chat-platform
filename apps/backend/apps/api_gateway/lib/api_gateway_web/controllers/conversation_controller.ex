@@ -14,9 +14,12 @@ defmodule ApiGatewayWeb.ConversationController do
   defp placeholder_create_conversation(conn, params) do
     with :ok <- require_fields(params, ["type", "participant_user_ids"]),
          {:ok, response} <- SharedInfra.ConversationClient.create_conversation(params) do
+      # Placeholder (persistence off) never carries :created → no broadcast; dev-only, no real sockets.
+      ApiGatewayWeb.ConversationBroadcast.broadcast_created(response)
+
       conn
       |> put_status(:created)
-      |> json(response)
+      |> json(ApiGatewayWeb.ConversationBroadcast.strip_internal(response))
     else
       _ -> invalid_request(conn)
     end
@@ -31,9 +34,12 @@ defmodule ApiGatewayWeb.ConversationController do
            params
            |> Map.put("created_by", session.user_id)
            |> SharedInfra.ConversationClient.create_conversation() do
+      # Live-update each non-creator participant's inbox on a genuine insert (idempotent direct → no-op).
+      ApiGatewayWeb.ConversationBroadcast.broadcast_created(response)
+
       conn
       |> put_status(:created)
-      |> json(response)
+      |> json(ApiGatewayWeb.ConversationBroadcast.strip_internal(response))
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)

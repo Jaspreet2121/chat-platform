@@ -541,10 +541,12 @@ defmodule ConversationService.Conversations do
             response.participant_user_ids
           )
 
-          {:ok, response}
+          # Surface whether this was a genuine INSERT vs. a returned-existing direct, so the gateway can
+          # broadcast conversation_created ONLY on a real insert (never on an idempotent direct return).
+          {:ok, Map.put(response, :created, true)}
 
         {:ok, response, :existing} ->
-          {:ok, response}
+          {:ok, Map.put(response, :created, false)}
 
         {:error, _reason} ->
           {:error, :conversation_invalid}
