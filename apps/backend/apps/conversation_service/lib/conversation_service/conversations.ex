@@ -543,6 +543,10 @@ defmodule ConversationService.Conversations do
 
           # Surface whether this was a genuine INSERT vs. a returned-existing direct, so the gateway can
           # broadcast conversation_created ONLY on a real insert (never on an idempotent direct return).
+          # `created` MUST live here as a MAP FIELD (not in conversation_response/2 — that builder is SHARED
+          # by both the :created and :existing paths, so it can't set it) and NOT as a 3rd tuple element (a
+          # tuple element can't cross the ConversationClientHttp boundary; a map field does — see the
+          # round-trip test). This is the value ApiGatewayWeb.ConversationBroadcast gates the broadcast on.
           {:ok, Map.put(response, :created, true)}
 
         {:ok, response, :existing} ->

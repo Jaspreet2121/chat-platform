@@ -27,8 +27,11 @@ defmodule ApiGatewayWeb.V1.ConversationCreatedBroadcastTest do
 
   defmodule ConvStub do
     @moduledoc false
-    # Echoes the resolved participants + created_by back (that's what the fan-out reads), and reports
-    # created true/false from a per-test toggle so the idempotent-direct path can be exercised.
+    # Shape copied from conversation_service conversation_response/2 + create_conversation_in_db's
+    # `Map.put(response, :created, …)`: `created` is a MAP FIELD (the real service produces exactly this).
+    # Echoes the resolved participants + created_by (what the fan-out reads); the per-test toggle drives
+    # the idempotent-direct path. The `round_trip/1` tests below additionally push this through the real
+    # HTTP encode/decode so the shape can't drift from the wire.
     def create_conversation(attrs) do
       {:ok,
        %{
@@ -162,4 +165,60 @@ defmodule ApiGatewayWeb.V1.ConversationCreatedBroadcastTest do
              created_at: "t"
            }) == :ok
   end
+  # ---- HTTP round-trip: prove `created` (a MAP FIELD, per conversation_response/2 + create_conversation_in_db's
+  # Map.put) survives the real encode_result → JSON → decode_result path prod uses (ConversationClientHttp),
+  # and that broadcast_created then fires. This is the guard the earlier stub couldn't be: it drives the REAL
+  # wire shape, not a hand-made one.
+  defp round_trip(resp) do
+    {:ok, decoded} =
+      {:ok, resp}
+      |> SharedInfra.InternalApi.encode_result()
+      |> Jason.encode!()
+      |> Jason.decode!()
+      |> SharedInfra.InternalApi.decode_result()
+
+    decoded
+  end
+
+  # The exact shape create_conversation returns: conversation_response/2 fields + created (map field) +
+  # participant_user_ids = INTERNAL uuids.
+  defp service_response(created?) do
+    %{
+      conversation_id: "conv-new",
+      tenant_id: nil,
+      type: "group",
+      title: "Team",
+      created_by: @creator,
+      participant_user_ids: [@creator, @bob, @carol],
+      created_at: "2026-07-11T00:00:00Z",
+      created: created?
+    }
+  end
+
+  test "created survives the HTTP round-trip → broadcast_created fires to non-creator participants" do
+    decoded = round_trip(service_response(true))
+    # The flag genuinely crossed the wire as a map field.
+    assert decoded.created == true
+
+    subscribe(@bob)
+    subscribe(@carol)
+    subscribe(@creator)
+    ConversationBroadcast.broadcast_created(decoded)
+
+    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_created", payload: row}, 1000
+    assert row.conversation_id == "conv-new"
+    assert row.unread_count == 0
+    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_created"}, 1000
+    refute_receive %Phoenix.Socket.Broadcast{event: "conversation_created"}, 200
+  end
+
+  test "created:false survives the round-trip → NO broadcast (idempotent direct)" do
+    decoded = round_trip(service_response(false))
+    assert decoded.created == false
+
+    subscribe(@bob)
+    ConversationBroadcast.broadcast_created(decoded)
+    refute_receive %Phoenix.Socket.Broadcast{event: "conversation_created"}, 300
+  end
+
 end
