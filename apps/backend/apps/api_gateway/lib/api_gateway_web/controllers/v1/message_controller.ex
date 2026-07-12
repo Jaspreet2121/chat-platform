@@ -79,6 +79,102 @@ defmodule ApiGatewayWeb.V1.MessageController do
   defp aget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
   defp aget(_map, _key), do: nil
 
+  @doc """
+  PATCH /v1/conversations/:id/messages/:message_id  {body: "new text"} — edit a message.
+
+  AUTHOR-ONLY, for BOTH actors. The message service's `authorize_author` gate (shared with the socket path)
+  only lets the original sender edit; an app actor therefore edits AS a user it names via `sender` (the same
+  external-id convention as create) and can still only touch THAT user's own messages. `:message_forbidden`
+  (not your message) and "no such message" both collapse to **404** — same no-existence-reveal rule the rest
+  of /v1 uses, and it also avoids telling an integrator that a message they can't touch exists.
+
+  On success the updated message is broadcast on `conversation:<id>` as `message_updated` — the SAME event
+  name + payload the socket path emits, so an already-connected first-party client updates live with no change.
+  """
+  def update(conn, %{"id" => conversation_id, "message_id" => message_id} = params) do
+    app_id = conn.assigns.v1_app_id
+
+    with {:ok, _conversation} <- ConversationAuthz.authorize_conversation(conn, conversation_id),
+         {:ok, actor_user_id} <- resolve_sender(conn, app_id, params),
+         {:ok, body} <- fetch_edit_body(params),
+         {:ok, message} <-
+           SharedInfra.MessageClient.update_message(%{
+             "conversation_id" => conversation_id,
+             "message_id" => message_id,
+             "actor_user_id" => actor_user_id,
+             "body" => body
+           }) do
+      fan_out_mutation(conversation_id, "message_updated", message)
+      json(conn, message)
+    else
+      {:error, :invalid_body} -> ErrorResponse.invalid_request(conn, "v1.invalid_request")
+      other -> mutation_error(conn, other)
+    end
+  end
+
+  @doc """
+  DELETE /v1/conversations/:id/messages/:message_id — SOFT-delete a message.
+
+  Never a row removal: the service sets `status="deleted"` + `deleted_at`, so the message survives as a
+  tombstone and threads/grouping don't develop gaps. Author-only for both actors (see `update/2`);
+  not-yours / unknown / cross-tenant all → 404. Broadcasts `message_deleted` on `conversation:<id>` — again
+  the socket path's exact event + tombstone payload.
+  """
+  def delete(conn, %{"id" => conversation_id, "message_id" => message_id} = params) do
+    app_id = conn.assigns.v1_app_id
+
+    with {:ok, _conversation} <- ConversationAuthz.authorize_conversation(conn, conversation_id),
+         {:ok, actor_user_id} <- resolve_sender(conn, app_id, params),
+         {:ok, message} <-
+           SharedInfra.MessageClient.delete_message(%{
+             "conversation_id" => conversation_id,
+             "message_id" => message_id,
+             "actor_user_id" => actor_user_id
+           }) do
+      fan_out_mutation(conversation_id, "message_deleted", message)
+      json(conn, message)
+    else
+      other -> mutation_error(conn, other)
+    end
+  end
+
+  # Not the author, no such message, or a cross-tenant/unknown conversation → an indistinguishable 404.
+  defp mutation_error(conn, error) do
+    case error do
+      {:error, :message_unavailable} -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
+      {:error, :conversation_unavailable} -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
+      {:error, :message_forbidden} -> not_found(conn)
+      {:error, :not_found} -> not_found(conn)
+      {:error, :message_not_found} -> not_found(conn)
+      {:error, :invalid_request} -> ErrorResponse.invalid_request(conn, "v1.invalid_request")
+      _ -> not_found(conn)
+    end
+  end
+
+  defp fetch_edit_body(params) do
+    case Map.get(params, "body") do
+      body when is_binary(body) and body != "" -> {:ok, body}
+      _ -> {:error, :invalid_body}
+    end
+  end
+
+  # Edit/delete broadcast on the CONVERSATION topic only — exactly what the socket's message:update /
+  # message:delete do (they use broadcast_from on the conversation topic and do NOT mirror to user:<id>).
+  # Deliberately NOT mirrored to user topics: the SDK routes both topics into the SAME channel and, unlike
+  # `message_created`, updates/deletes are not de-duplicated by id — a mirror would emit message.updated /
+  # message.deleted TWICE to any client watching the conversation. Fire-and-forget (never fails the request).
+  defp fan_out_mutation(conversation_id, event, message) do
+    Task.start(fn ->
+      try do
+        ApiGatewayWeb.Endpoint.broadcast("conversation:" <> conversation_id, event, message)
+      rescue
+        _ -> :ok
+      end
+    end)
+
+    :ok
+  end
+
   # Optional compound-keyset cursor pagination (additive — no cursor params → the unchanged recent page):
   #   forward backfill : after_created_at + after_id  (strictly-after, oldest→newest)
   #   history scroll   : before_created_at + before_id (strictly-before, newest→older)

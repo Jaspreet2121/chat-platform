@@ -54,6 +54,10 @@ defmodule ApiGatewayWeb.Router do
     get "/conversations/:id", ConversationController, :show
     post "/conversations/:id/messages", MessageController, :create
     get "/conversations/:id/messages", MessageController, :index
+    # Edit + SOFT-delete (author-only; the row survives as a tombstone). Both broadcast the socket path's
+    # exact events (message_updated / message_deleted) so connected clients update live.
+    patch "/conversations/:id/messages/:message_id", MessageController, :update
+    delete "/conversations/:id/messages/:message_id", MessageController, :delete
 
     # Media: presigned upload → complete → presigned download. Same authz model as the first-party
     # /api/v1/media/* under V1Auth actor rules; never returns object_key.
