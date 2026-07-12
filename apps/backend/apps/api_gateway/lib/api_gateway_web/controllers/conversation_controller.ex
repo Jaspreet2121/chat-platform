@@ -1,6 +1,8 @@
 defmodule ApiGatewayWeb.ConversationController do
   use ApiGatewayWeb, :controller
 
+  require Logger
+
   alias ApiGatewayWeb.ErrorResponse
 
   def create(conn, params) do
@@ -15,6 +17,8 @@ defmodule ApiGatewayWeb.ConversationController do
     with :ok <- require_fields(params, ["type", "participant_user_ids"]),
          {:ok, response} <- SharedInfra.ConversationClient.create_conversation(params) do
       # Placeholder (persistence off) never carries :created → no broadcast; dev-only, no real sockets.
+      # TEMPORARY DIAGNOSTIC (BROADCAST_DEBUG) — remove once the broadcast is confirmed firing.
+      Logger.info("BROADCAST_DEBUG controller(first-party/placeholder) passing: #{inspect(response)}")
       ApiGatewayWeb.ConversationBroadcast.broadcast_created(response)
 
       conn
@@ -35,6 +39,8 @@ defmodule ApiGatewayWeb.ConversationController do
            |> Map.put("created_by", session.user_id)
            |> SharedInfra.ConversationClient.create_conversation() do
       # Live-update each non-creator participant's inbox on a genuine insert (idempotent direct → no-op).
+      # TEMPORARY DIAGNOSTIC (BROADCAST_DEBUG) — remove once the broadcast is confirmed firing.
+      Logger.info("BROADCAST_DEBUG controller(first-party/db) passing: #{inspect(response)}")
       ApiGatewayWeb.ConversationBroadcast.broadcast_created(response)
 
       conn

@@ -11,6 +11,8 @@ defmodule ApiGatewayWeb.V1.ConversationController do
 
   use ApiGatewayWeb, :controller
 
+  require Logger
+
   alias ApiGatewayWeb.ErrorResponse
   alias ApiGatewayWeb.V1.ConversationAuthz
 
@@ -74,6 +76,8 @@ defmodule ApiGatewayWeb.V1.ConversationController do
            }) do
       # Live-update each non-creator participant's inbox — only on a genuine insert (an idempotent direct
       # returning an existing thread carries created:false → no broadcast). Fire-and-forget.
+      # TEMPORARY DIAGNOSTIC (BROADCAST_DEBUG) — remove once the broadcast is confirmed firing.
+      Logger.info("BROADCAST_DEBUG controller(/v1) passing: #{inspect(conversation)}")
       ApiGatewayWeb.ConversationBroadcast.broadcast_created(conversation)
 
       conn
