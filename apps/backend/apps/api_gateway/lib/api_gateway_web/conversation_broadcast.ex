@@ -22,47 +22,32 @@ defmodule ApiGatewayWeb.ConversationBroadcast do
 
   @doc "Broadcast conversation_created to non-creator participants iff the response is a genuine insert."
   def broadcast_created(response) when is_map(response) do
-    # TEMPORARY DIAGNOSTIC LOGGING (BROADCAST_DEBUG) — remove once conversation_created is confirmed firing.
-    Logger.info("BROADCAST_DEBUG entry: #{inspect(response)}")
-
     if cget(response, :created) == true do
       created_by = cget(response, :created_by)
       participants = cget(response, :participant_user_ids) || []
       row = inbox_row(response)
 
-      Logger.info(
-        "BROADCAST_DEBUG gate PASSED — participants=#{inspect(participants)} creator=#{inspect(created_by)} row=#{inspect(row)}"
-      )
-
       Task.start(fn ->
         try do
-          targets = Enum.reject(participants, &(is_nil(&1) or &1 == "" or &1 == created_by))
-          # If this is [] the fan-out is a silent no-op — that alone would explain "nothing broadcasts".
-          Logger.info("BROADCAST_DEBUG targets after excluding creator: #{inspect(targets)}")
-
-          Enum.each(targets, fn user_id ->
-            Logger.info("BROADCAST_DEBUG → user:#{user_id}")
-            result = ApiGatewayWeb.Endpoint.broadcast("user:" <> user_id, "conversation_created", row)
-            Logger.info("BROADCAST_DEBUG broadcast result for user:#{user_id}: #{inspect(result)}")
+          participants
+          |> Enum.reject(&(is_nil(&1) or &1 == "" or &1 == created_by))
+          |> Enum.each(fn user_id ->
+            ApiGatewayWeb.Endpoint.broadcast("user:" <> user_id, "conversation_created", row)
           end)
         rescue
-          # This rescue previously swallowed EVERYTHING silently — the most likely blind spot.
+          # Fire-and-forget must never fail the create — but it must not vanish either. This rescue used to
+          # swallow every exception silently, which is precisely what made a broken fan-out undiagnosable.
           error ->
-            Logger.info("BROADCAST_DEBUG RESCUED inside task: #{inspect(error)}")
+            Logger.error("conversation_created broadcast failed: #{Exception.message(error)}")
             :ok
         end
       end)
-    else
-      Logger.info("BROADCAST_DEBUG SKIPPED: created=#{inspect(cget(response, :created))}")
     end
 
     :ok
   end
 
-  def broadcast_created(other) do
-    Logger.info("BROADCAST_DEBUG entry — response is NOT A MAP: #{inspect(other)}")
-    :ok
-  end
+  def broadcast_created(_response), do: :ok
 
   @doc "Drop the internal `:created` flag before the response is rendered to the client (kept API-stable)."
   def strip_internal(response) when is_map(response), do: Map.drop(response, [:created, "created"])
