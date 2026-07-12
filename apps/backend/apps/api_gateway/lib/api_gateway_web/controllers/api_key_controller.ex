@@ -41,28 +41,10 @@ defmodule ApiGatewayWeb.ApiKeyController do
   # Resolve the app_id to act AS: the optional `app_id` param, which the caller must OWN (or the default
   # app, which stays open for backward-compat); no param → the session's app_id (tenant-zero). A caller
   # can NEVER act as an app_id they don't own → {:error, :not_owner}.
-  defp resolve_target_app(session, params) do
-    case presence(Map.get(params, "app_id")) do
-      nil ->
-        {:ok, session.app_id}
-
-      requested ->
-        if requested == SharedInfra.Tenancy.default_app_id() do
-          {:ok, requested}
-        else
-          case SharedInfra.AuthClient.owns_app(%{
-                 "owner_user_id" => session.user_id,
-                 "app_id" => requested
-               }) do
-            {:ok, _} -> {:ok, requested}
-            _ -> {:error, :not_owner}
-          end
-        end
-    end
-  end
-
-  defp presence(value) when is_binary(value) and value != "", do: value
-  defp presence(_), do: nil
+  # THE ownership rule lives in ApiGatewayWeb.AppOwnerAuth (one copy, shared with the usage +
+  # deliveries endpoints). Behaviour is unchanged: not-owned app_id → {:error, :not_owner} → 403.
+  defp resolve_target_app(session, params),
+    do: ApiGatewayWeb.AppOwnerAuth.resolve_target_app(session, params)
 
   defp forbidden_app(conn),
     do: ErrorResponse.forbidden(conn, "api_key.forbidden_app", "You do not own this app")

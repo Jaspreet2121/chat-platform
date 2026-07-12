@@ -116,6 +116,32 @@ defmodule AuthService.Webhooks do
     Ecto.Query.CastError -> {:error, :webhook_invalid}
   end
 
+  @doc """
+  Owner-facing delivery log for ONE app (every status). `app_id` is mandatory — WebhookOutbox.list_deliveries
+  refuses to run unscoped, so a missing app_id yields an empty page, never another app's rows.
+  """
+  def list_deliveries(attrs) do
+    cursor =
+      case {Map.get(attrs, "cursor_ts"), Map.get(attrs, "cursor_id")} do
+        {ts, id} when is_binary(ts) and ts != "" and is_binary(id) and id != "" -> {ts, id}
+        _ -> nil
+      end
+
+    result =
+      SharedInfra.WebhookOutbox.list_deliveries(Repo,
+        app_id: presence(Map.get(attrs, "app_id")),
+        status: presence(Map.get(attrs, "status")),
+        endpoint_id: presence(Map.get(attrs, "endpoint_id")),
+        limit: to_int(Map.get(attrs, "limit"), 30),
+        cursor: cursor
+      )
+
+    {:ok, result}
+  rescue
+    Ecto.Query.CastError -> {:error, :webhook_invalid}
+    Postgrex.Error -> {:error, :webhook_invalid}
+  end
+
   def reenqueue_delivery(attrs) do
     with {:ok, id} <- fetch(attrs, "id") do
       case SharedInfra.WebhookOutbox.reenqueue(Repo, id, actor: actor(attrs)) do

@@ -1143,3 +1143,52 @@ export function deleteWebhook(id: string, appId?: string) {
     { method: "DELETE" }
   );
 }
+
+// ── Owner console: per-app usage counts + webhook delivery log ────────────────────────────────
+// Both are session-authenticated + app_owners-gated server-side (a not-owned app_id → 403), and every
+// query is scoped WHERE app_id — no cross-tenant data can appear.
+
+// Real counts (never estimates). `messages` is counted via the parent conversation, not messages.app_id.
+export type AppUsage = {
+  app_id: string;
+  users: number;
+  conversations: number;
+  messages: number;
+  storage_bytes: number;
+};
+
+export function fetchUsage(appId?: string) {
+  return request<AppUsage>(`/api/v1/usage${appQuery(appId)}`);
+}
+
+// One webhook_outbox row. METADATA ONLY — the outbox `payload` (the event body, which for
+// message.created carries message content) is never returned, nor is the endpoint's signing_secret.
+export type WebhookDelivery = {
+  id: string;
+  event_id: string;
+  event_type: string;
+  status: "pending" | "delivering" | "delivered" | "failed";
+  attempts: number;
+  last_error?: string | null;
+  endpoint_id: string;
+  endpoint_url?: string | null;
+  created_at: string;
+  delivered_at?: string | null;
+  next_attempt_at?: string | null;
+};
+
+export function listWebhookDeliveries(
+  appId?: string,
+  opts?: { status?: string; endpoint_id?: string; limit?: number; cursor?: string }
+) {
+  const params = new URLSearchParams();
+  if (appId) params.set("app_id", appId);
+  if (opts?.status) params.set("status", opts.status);
+  if (opts?.endpoint_id) params.set("endpoint_id", opts.endpoint_id);
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.cursor) params.set("cursor", opts.cursor);
+  const qs = params.toString();
+  return request<{ deliveries: WebhookDelivery[]; next_cursor: string | null }>(
+    `/api/v1/webhooks/deliveries${qs ? `?${qs}` : ""}`
+  );
+}

@@ -57,6 +57,8 @@ defmodule SharedInfra.AuthClient do
   @callback update_webhook_endpoint(attrs()) :: result()
   @callback delete_webhook_endpoint(attrs()) :: result()
   @callback list_failed_webhooks(attrs()) :: result()
+  @callback list_webhook_deliveries(attrs()) :: result()
+  @callback app_usage(attrs()) :: result()
   @callback reenqueue_webhook(attrs()) :: result()
   @callback reenqueue_webhooks_bulk(attrs()) :: result()
   @callback create_app(attrs()) :: result()
@@ -80,6 +82,8 @@ defmodule SharedInfra.AuthClient do
                       update_webhook_endpoint: 1,
                       delete_webhook_endpoint: 1,
                       list_failed_webhooks: 1,
+                      list_webhook_deliveries: 1,
+                      app_usage: 1,
                       reenqueue_webhook: 1,
                       reenqueue_webhooks_bulk: 1,
                       create_app: 1,
@@ -102,6 +106,12 @@ defmodule SharedInfra.AuthClient do
   def update_webhook_endpoint(attrs), do: adapter().update_webhook_endpoint(attrs)
   def delete_webhook_endpoint(attrs), do: adapter().delete_webhook_endpoint(attrs)
   def list_failed_webhooks(attrs), do: adapter().list_failed_webhooks(attrs)
+
+  @doc "Owner-facing webhook delivery log for ONE owned app (every status). app_id mandatory."
+  def list_webhook_deliveries(attrs), do: adapter().list_webhook_deliveries(attrs)
+
+  @doc "Owner-facing entity counts for ONE owned app: users/conversations/messages/storage_bytes."
+  def app_usage(attrs), do: adapter().app_usage(attrs)
   def reenqueue_webhook(attrs), do: adapter().reenqueue_webhook(attrs)
   def reenqueue_webhooks_bulk(attrs), do: adapter().reenqueue_webhooks_bulk(attrs)
   def create_app(attrs), do: adapter().create_app(attrs)

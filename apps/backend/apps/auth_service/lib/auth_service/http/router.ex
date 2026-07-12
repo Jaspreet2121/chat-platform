@@ -119,6 +119,14 @@ defmodule AuthService.HTTP.Router do
   end
 
   # Failed-delivery ops (Phase 4) — gateway gates these behind an ADMIN session; actor is the admin.
+  post "/internal/webhooks/outbox/deliveries" do
+    send_result(conn, AuthService.Webhooks.list_deliveries(body(conn)))
+  end
+
+  post "/internal/apps/usage" do
+    send_result(conn, AuthService.Apps.app_usage(body(conn)))
+  end
+
   post "/internal/webhooks/outbox/failed" do
     send_result(conn, AuthService.Webhooks.list_failed_deliveries(body(conn)))
   end

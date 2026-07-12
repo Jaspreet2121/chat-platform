@@ -89,6 +89,16 @@ defmodule ApiGatewayWeb.Router do
     get "/", AppController, :index
   end
 
+  # Owner console — per-app usage counts + the webhook delivery log. Same session + app_owners gate as
+  # /api-keys and /webhooks/endpoints (enforced in-controller via ApiGatewayWeb.AppOwnerAuth). NOT on /v1:
+  # /v1 is the integrator's end-user/secret-key API; these are the owner's own console.
+  scope "/api/v1", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/usage", UsageController, :index
+    get "/webhooks/deliveries", WebhookEndpointController, :deliveries
+  end
+
   scope "/api/v1/api-keys", ApiGatewayWeb do
     pipe_through :api
 

@@ -5,6 +5,7 @@ import { AppWindow, Loader2, Plus } from "lucide-react";
 import { IntegratorApp, createApp, listApps } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { KeysPanel } from "./KeysPanel";
+import { UsagePanel } from "./UsagePanel";
 import { WebhooksPanel } from "./WebhooksPanel";
 
 export default function DashboardPage() {
@@ -120,6 +121,7 @@ export default function DashboardPage() {
               </p>
             </div>
             {/* `key` forces a fresh fetch when the selected app changes. */}
+            <UsagePanel key={`usage-${selected.app_id}`} app={selected} />
             <KeysPanel key={`keys-${selected.app_id}`} app={selected} />
             <WebhooksPanel key={`hooks-${selected.app_id}`} app={selected} />
           </>

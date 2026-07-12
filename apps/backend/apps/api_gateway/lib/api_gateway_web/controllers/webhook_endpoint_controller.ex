@@ -51,6 +51,64 @@ defmodule ApiGatewayWeb.WebhookEndpointController do
     end
   end
 
+  @doc """
+  GET /api/v1/webhooks/deliveries?app_id=&status=&endpoint_id=&limit=&cursor= — the OWNER-facing delivery
+  log for one owned app (every status, not just failed). Same ownership gate as the endpoint routes.
+
+  Scoped `WHERE app_id = <owned app>` in SQL, so another app's rows can never appear. Metadata only — the
+  outbox `payload` (which carries the event body, incl. message content) is never selected, and no
+  `signing_secret` is joined in. Keyset cursor (created_at,id), default limit 30, cap 100.
+  """
+  def deliveries(conn, params) do
+    with {:ok, session} <- app_session(conn),
+         {:ok, app_id} <- resolve_target_app(session, params),
+         {cursor_ts, cursor_id} <- decode_cursor(Map.get(params, "cursor")),
+         {:ok, result} <-
+           SharedInfra.AuthClient.list_webhook_deliveries(%{
+             "app_id" => app_id,
+             "status" => Map.get(params, "status"),
+             "endpoint_id" => Map.get(params, "endpoint_id"),
+             "limit" => Map.get(params, "limit"),
+             "cursor_ts" => cursor_ts,
+             "cursor_id" => cursor_id
+           }) do
+      json(conn, %{
+        deliveries: cget(result, :items) || [],
+        next_cursor: encode_cursor(cget(result, :next_cursor))
+      })
+    else
+      {:error, :not_owner} -> forbidden_app(conn)
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      _ -> ErrorResponse.invalid_request(conn, "webhook.invalid_request")
+    end
+  end
+
+  # Opaque base64 keyset cursor over "created_at|id" — the SAME encoding AdminWebhookController uses.
+  defp encode_cursor(nil), do: nil
+
+  defp encode_cursor(next) when is_map(next) do
+    ts = cget(next, :created_at)
+    id = cget(next, :id)
+    if is_binary(ts) and is_binary(id), do: Base.url_encode64("#{ts}|#{id}", padding: false), else: nil
+  end
+
+  defp encode_cursor(_), do: nil
+
+  defp decode_cursor(value) when is_binary(value) and value != "" do
+    with {:ok, raw} <- Base.url_decode64(value, padding: false),
+         [ts, id] <- String.split(raw, "|", parts: 2) do
+      {ts, id}
+    else
+      _ -> {nil, nil}
+    end
+  end
+
+  defp decode_cursor(_), do: {nil, nil}
+
+  defp cget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
+  defp cget(_map, _key), do: nil
+
   # PATCH /api/v1/webhooks/endpoints/:id — enable/disable or change event_types.
   def update(conn, %{"id" => id} = params) do
     with {:ok, session} <- app_session(conn),
@@ -94,28 +152,10 @@ defmodule ApiGatewayWeb.WebhookEndpointController do
   # Resolve the app_id to act AS: the optional `app_id` param, which the caller must OWN (or the default
   # app, open for backward-compat); no param → the session's app_id. Same rule + app_owners gate as
   # ApiKeyController — a caller can NEVER manage webhooks for an app they don't own → {:error, :not_owner}.
-  defp resolve_target_app(session, params) do
-    case presence(Map.get(params, "app_id")) do
-      nil ->
-        {:ok, session.app_id}
-
-      requested ->
-        if requested == SharedInfra.Tenancy.default_app_id() do
-          {:ok, requested}
-        else
-          case SharedInfra.AuthClient.owns_app(%{
-                 "owner_user_id" => session.user_id,
-                 "app_id" => requested
-               }) do
-            {:ok, _} -> {:ok, requested}
-            _ -> {:error, :not_owner}
-          end
-        end
-    end
-  end
-
-  defp presence(value) when is_binary(value) and value != "", do: value
-  defp presence(_), do: nil
+  # THE ownership rule lives in ApiGatewayWeb.AppOwnerAuth (one copy, shared with the usage +
+  # deliveries endpoints). Behaviour is unchanged: not-owned app_id → {:error, :not_owner} → 403.
+  defp resolve_target_app(session, params),
+    do: ApiGatewayWeb.AppOwnerAuth.resolve_target_app(session, params)
 
   defp app_session(conn) do
     with {:ok, authorization} <- authorization_header(conn) do

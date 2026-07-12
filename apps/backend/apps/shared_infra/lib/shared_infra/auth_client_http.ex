@@ -61,6 +61,11 @@ defmodule SharedInfra.AuthClientHttp do
 
   @impl true
   def list_failed_webhooks(attrs), do: post("/internal/webhooks/outbox/failed", attrs)
+  @impl true
+  def list_webhook_deliveries(attrs), do: post("/internal/webhooks/outbox/deliveries", attrs)
+
+  @impl true
+  def app_usage(attrs), do: post("/internal/apps/usage", attrs)
 
   @impl true
   def reenqueue_webhook(attrs), do: post("/internal/webhooks/outbox/reenqueue", attrs)

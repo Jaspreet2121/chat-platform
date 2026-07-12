@@ -179,6 +179,78 @@ defmodule SharedInfra.WebhookOutbox do
   end
 
   @doc """
+  OWNER-FACING delivery log for ONE app — every status (not just failed), keyset-paginated exactly like
+  `list_failed/2` (`ORDER BY created_at DESC, id DESC`, cursor `{created_at_iso, id}`).
+
+  `:app_id` is MANDATORY and is the tenant boundary: without it this returns an EMPTY page rather than
+  running an unscoped query, so an owner console can never accidentally read another app's deliveries.
+  opts: :app_id (required), :status, :endpoint_id, :limit (<=100), :cursor {created_at_iso, id}.
+
+  NEVER selects `payload` — the outbox payload carries the event body (a message.created payload contains
+  MESSAGE CONTENT), and this is a metadata log. `signing_secret` is likewise never joined in.
+  """
+  def list_deliveries(repo, opts \\ []) do
+    case Keyword.get(opts, :app_id) do
+      app_id when is_binary(app_id) and app_id != "" -> do_list_deliveries(repo, app_id, opts)
+      # No app scope → refuse to query. An unscoped delivery list is a cross-tenant leak by construction.
+      _ -> %{items: [], next_cursor: nil, count: 0}
+    end
+  end
+
+  defp do_list_deliveries(repo, app_id, opts) do
+    limit = opts |> Keyword.get(:limit, 30) |> min(100) |> max(1)
+    {where, params, n} = {["o.app_id = $1::text::uuid"], [app_id], 1}
+
+    {where, params, n} =
+      case Keyword.get(opts, :status) do
+        v when v in ["pending", "delivering", "delivered", "failed"] ->
+          {where ++ ["o.status = $#{n + 1}"], params ++ [v], n + 1}
+
+        _ ->
+          {where, params, n}
+      end
+
+    {where, params, n} =
+      case Keyword.get(opts, :endpoint_id) do
+        v when is_binary(v) and v != "" ->
+          {where ++ ["o.endpoint_id = $#{n + 1}::text::uuid"], params ++ [v], n + 1}
+
+        _ ->
+          {where, params, n}
+      end
+
+    {where, params, n} =
+      case Keyword.get(opts, :cursor) do
+        {ts, id} when is_binary(ts) and is_binary(id) ->
+          {where ++ ["(o.created_at, o.id) < ($#{n + 1}::text::timestamptz, $#{n + 2}::text::uuid)"],
+           params ++ [ts, id], n + 2}
+
+        _ ->
+          {where, params, n}
+      end
+
+    sql =
+      "SELECT o.id::text, o.event_id::text, o.event_type, o.status, o.attempts, o.last_error, " <>
+        "o.endpoint_id::text, e.url AS endpoint_url, o.created_at::text, o.delivered_at::text, " <>
+        "o.next_attempt_at::text " <>
+        "FROM webhook_outbox o LEFT JOIN webhook_endpoints e ON e.id = o.endpoint_id " <>
+        "WHERE #{Enum.join(where, " AND ")} ORDER BY o.created_at DESC, o.id DESC LIMIT $#{n + 1}"
+
+    %{rows: rows, columns: cols} = repo.query!(sql, params ++ [limit])
+    items = Enum.map(rows, fn r -> cols |> Enum.zip(r) |> Map.new() end)
+
+    next_cursor =
+      if length(items) == limit and items != [] do
+        last = List.last(items)
+        %{"created_at" => last["created_at"], "id" => last["id"]}
+      else
+        nil
+      end
+
+    %{items: items, next_cursor: next_cursor, count: length(items)}
+  end
+
+  @doc """
   Reset ONE failed row → pending (attempts=0, REUSING event_id so an integrator's dedupe on
   x-webhook-event-id still holds), locked FOR UPDATE SKIP LOCKED. Idempotent: a non-failed / locked /
   missing row is a no-op. Returns {:ok, :reenqueued} | {:ok, :noop, reason} | {:error, term}.

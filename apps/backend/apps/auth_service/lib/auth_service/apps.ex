@@ -108,6 +108,51 @@ defmodule AuthService.Apps do
     prefix <> "-" <> (:crypto.strong_rand_bytes(4) |> Base.encode16(case: :lower))
   end
 
+  @doc """
+  Owner-facing ENTITY COUNTS for ONE app: `%{users, conversations, messages, storage_bytes}`.
+
+  Every number is a real query — nothing is estimated. `app_id` is mandatory and is the tenant boundary.
+
+  MESSAGES are counted via the PARENT CONVERSATION (`JOIN conversations c ON c.id = m.conversation_id
+  WHERE c.app_id`), never `messages.app_id`. `messages.app_id` is stamped from the conversation on write
+  today, but rows written before that stamp landed carry the tenant-zero default — the conversation is the
+  authoritative tenant of a message either way, so the join is correct for ALL rows, old and new.
+
+  NOTE: counts only. No message content is read, and nothing here is cross-tenant.
+  """
+  def app_usage(attrs) do
+    with {:ok, app_id} <- fetch(attrs, "app_id") do
+      {:ok,
+       %{
+         app_id: app_id,
+         users: scalar("SELECT count(*) FROM users_auth WHERE app_id = $1::text::uuid", app_id),
+         conversations:
+           scalar("SELECT count(*) FROM conversations WHERE app_id = $1::text::uuid", app_id),
+         messages:
+           scalar(
+             "SELECT count(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id " <>
+               "WHERE c.app_id = $1::text::uuid",
+             app_id
+           ),
+         storage_bytes:
+           scalar(
+             "SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM media_assets WHERE app_id = $1::text::uuid",
+             app_id
+           )
+       }}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :app_invalid}
+    Postgrex.Error -> {:error, :app_invalid}
+  end
+
+  defp scalar(sql, app_id) do
+    case Repo.query(sql, [app_id]) do
+      {:ok, %{rows: [[value]]}} when is_integer(value) -> value
+      _ -> 0
+    end
+  end
+
   defp fetch(attrs, key) do
     case Map.get(attrs, key) do
       value when is_binary(value) and value != "" -> {:ok, value}

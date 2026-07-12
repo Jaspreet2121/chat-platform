@@ -62,6 +62,11 @@ defmodule AuthService.AuthClientInProcess do
 
   @impl true
   def list_failed_webhooks(attrs), do: Webhooks.list_failed_deliveries(attrs)
+  @impl true
+  def list_webhook_deliveries(attrs), do: Webhooks.list_deliveries(attrs)
+
+  @impl true
+  def app_usage(attrs), do: AuthService.Apps.app_usage(attrs)
 
   @impl true
   def reenqueue_webhook(attrs), do: Webhooks.reenqueue_delivery(attrs)
