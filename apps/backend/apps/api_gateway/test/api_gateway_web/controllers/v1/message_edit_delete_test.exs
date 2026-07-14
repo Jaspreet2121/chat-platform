@@ -43,6 +43,10 @@ defmodule ApiGatewayWeb.V1.MessageEditDeleteTest do
        }}
     end
 
+    # The service refuses an edit to a soft-deleted message (no resurrect).
+    def update_message(%{"actor_user_id" => "u-author", "message_id" => "msg-deleted"}),
+      do: {:error, :message_deleted}
+
     def update_message(_attrs), do: {:error, :message_forbidden}
 
     def delete_message(%{"actor_user_id" => "u-author", "message_id" => "msg-1"}) do
@@ -217,5 +221,20 @@ defmodule ApiGatewayWeb.V1.MessageEditDeleteTest do
                "sender" => "ext-not-author",
                "body" => "x"
              })
+  end
+  test "editing a SOFT-DELETED message → 404 (gone; the tombstone is never resurrected), no broadcast" do
+    subscribe_conv()
+
+    conn =
+      MessageController.update(end_user_conn(:patch, @author), %{
+        "id" => @conv,
+        "message_id" => "msg-deleted",
+        "body" => "back from the dead"
+      })
+
+    # 404, indistinguishable from an author mismatch — a deleted message is simply gone.
+    assert conn.status == 404
+    assert Jason.decode!(conn.resp_body)["error"]["code"] == "v1.not_found"
+    refute_receive %Phoenix.Socket.Broadcast{event: "message_updated"}, 300
   end
 end

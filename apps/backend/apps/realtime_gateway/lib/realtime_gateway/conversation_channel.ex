@@ -311,6 +311,9 @@ defmodule RealtimeGateway.ConversationChannel do
     else
       {:error, :missing_user} -> unauthorized_reply(socket)
       {:error, :message_forbidden} -> forbidden_reply(socket)
+      # A soft-deleted message accepts no update (an edit would resurrect the tombstone). Distinct error
+      # reply; the socket stays connected, exactly like every other rejected event.
+      {:error, :message_deleted} -> deleted_reply(socket)
       {:error, :message_unavailable} -> unavailable_reply(socket)
       _ -> invalid_event_reply(socket)
     end
@@ -343,6 +346,9 @@ defmodule RealtimeGateway.ConversationChannel do
     else
       {:error, :missing_user} -> unauthorized_reply(socket)
       {:error, :message_forbidden} -> forbidden_reply(socket)
+      # A live-location patch on a soft-deleted message is refused too — the SAME author gate
+      # (fetch_own_message) covers :metadata updates, not just body edits.
+      {:error, :message_deleted} -> deleted_reply(socket)
       {:error, :message_unavailable} -> unavailable_reply(socket)
       _ -> invalid_event_reply(socket)
     end
@@ -404,6 +410,12 @@ defmodule RealtimeGateway.ConversationChannel do
     {:reply,
      {:error, %{code: "realtime.forbidden", message: "You can only modify your own messages"}},
      socket}
+  end
+
+  # A soft-deleted message accepts no update (body edit OR live-location metadata patch) — editing it would
+  # resurrect the tombstone. The socket stays alive; the client just gets a rejected reply.
+  defp deleted_reply(socket) do
+    {:reply, {:error, %{code: "realtime.message_deleted", message: "This message was deleted"}}, socket}
   end
 
   defp invalid_event_reply(socket) do

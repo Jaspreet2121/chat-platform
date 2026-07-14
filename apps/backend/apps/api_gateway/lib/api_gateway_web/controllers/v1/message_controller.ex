@@ -299,6 +299,9 @@ defmodule ApiGatewayWeb.V1.MessageController do
       {:error, :message_unavailable} -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
       {:error, :conversation_unavailable} -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
       {:error, :message_forbidden} -> not_found(conn)
+      # A soft-deleted message is GONE — editing it would resurrect the tombstone. 404, same as an
+      # author mismatch, so a caller can't distinguish the two.
+      {:error, :message_deleted} -> not_found(conn)
       {:error, :not_found} -> not_found(conn)
       {:error, :message_not_found} -> not_found(conn)
       {:error, :invalid_request} -> ErrorResponse.invalid_request(conn, "v1.invalid_request")

@@ -263,6 +263,9 @@ defmodule ApiGatewayWeb.MessageController do
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :message_unavailable} -> service_unavailable(conn)
       {:error, :message_forbidden} -> forbidden(conn)
+      # A soft-deleted message is GONE — an edit would resurrect the tombstone. 404, not 403: it isn't a
+      # permission problem (you DO own it), the message simply no longer exists to edit.
+      {:error, :message_deleted} -> not_found(conn)
       _ -> invalid_request(conn)
     end
   end
@@ -396,6 +399,9 @@ defmodule ApiGatewayWeb.MessageController do
   defp present?(value), do: not is_nil(value) and value != ""
 
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "message.invalid_request")
+
+  defp not_found(conn),
+    do: ErrorResponse.not_found(conn, "message.not_found", "Message not found")
 
   defp service_unavailable(conn),
     do: ErrorResponse.service_unavailable(conn, "message.unavailable")

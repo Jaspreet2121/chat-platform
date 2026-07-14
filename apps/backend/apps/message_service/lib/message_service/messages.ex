@@ -302,10 +302,31 @@ defmodule MessageService.Messages do
     }
 
     case MessageStore.get_message(fetch_attrs) do
-      {:ok, %{sender_user_id: ^actor_user_id} = message} -> {:ok, message}
-      {:ok, _message} -> {:error, :message_forbidden}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{sender_user_id: ^actor_user_id} = message} ->
+        # AUTHOR CONFIRMED — now refuse a soft-deleted message. A body edit sets status="edited" +
+        # edited_at, which would RESURRECT the tombstone (there is no un-delete flow; the only place
+        # deleted_at is cleared is a fresh insert). This gate covers BOTH update modes (:body edits and
+        # :metadata / live-location patches) because it is the single gate on update_message_in_store —
+        # a deleted message accepts no update of any kind.
+        if soft_deleted?(message), do: {:error, :message_deleted}, else: {:ok, message}
+
+      # Checked BEFORE the deleted state on purpose: a NON-author must not be able to distinguish
+      # "deleted" from "not yours" (the socket surfaces those as different errors). They always get
+      # :message_forbidden; only the author ever learns the message is deleted.
+      {:ok, _message} ->
+        {:error, :message_forbidden}
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  # `deleted_at` is the AUTHORITATIVE marker: only the delete path sets it, and — unlike `status` — it
+  # SURVIVES a body edit (which overwrites status with "edited" but never clears deleted_at). So this also
+  # refuses further edits to any row already resurrected by this bug before the fix. `status` is checked too,
+  # belt-and-braces, in case a store variant sets one without the other.
+  defp soft_deleted?(message) do
+    Map.get(message, :deleted_at) != nil or Map.get(message, :status) == "deleted"
   end
 
   defp delete_message_in_store(attrs) do
