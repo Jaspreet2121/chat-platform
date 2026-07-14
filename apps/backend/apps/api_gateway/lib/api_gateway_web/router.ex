@@ -59,6 +59,13 @@ defmodule ApiGatewayWeb.Router do
     patch "/conversations/:id/messages/:message_id", MessageController, :update
     delete "/conversations/:id/messages/:message_id", MessageController, :delete
 
+    # Reactions (one per user — PUT upserts, DELETE removes the caller's) + per-message read/delivered
+    # receipts. Both END-USER only (a server has no opinion to react with and doesn't read messages) and
+    # both broadcast the socket path's exact events: reaction_updated / receipt_updated.
+    put "/conversations/:id/messages/:message_id/reactions", MessageController, :set_reaction
+    delete "/conversations/:id/messages/:message_id/reactions", MessageController, :remove_reaction
+    post "/conversations/:id/messages/:message_id/receipts", MessageController, :receipt
+
     # Media: presigned upload → complete → presigned download. Same authz model as the first-party
     # /api/v1/media/* under V1Auth actor rules; never returns object_key.
     post "/media/uploads", MediaController, :create_upload

@@ -138,6 +138,161 @@ defmodule ApiGatewayWeb.V1.MessageController do
     end
   end
 
+  # --- reactions ---------------------------------------------------------------------------------
+  #
+  # END-USER ONLY (403 v1.end_user_only for a secret-key actor). A reaction is inherently a person's
+  # opinion — a server has none to express — so, like receipts, this refuses an app actor rather than
+  # inventing a user for it. (An integrator that genuinely needs to react ON BEHALF of a user could later
+  # name them via the `sender` convention; deliberately not guessed at that here.)
+  #
+  # One reaction PER USER: add_reaction is an UPSERT — a second emoji from the same user REPLACES their
+  # first, and remove takes no emoji (there's only ever one to remove).
+
+  @doc "PUT /v1/conversations/:id/messages/:message_id/reactions  {emoji} — set the caller's reaction."
+  def set_reaction(conn, %{"id" => conversation_id, "message_id" => message_id} = params) do
+    with {:ok, user_id} <- require_end_user(conn),
+         {:ok, _conversation} <- ConversationAuthz.authorize_conversation(conn, conversation_id),
+         {:ok, emoji} <- fetch_emoji(params),
+         {:ok, aggregate} <-
+           SharedInfra.MessageClient.add_reaction(%{
+             "conversation_id" => conversation_id,
+             "message_id" => message_id,
+             "user_id" => user_id,
+             "emoji" => emoji
+           }) do
+      broadcast_reaction(conversation_id, aggregate)
+      json(conn, reaction_frame(aggregate))
+    else
+      {:error, :end_user_only} -> end_user_only(conn)
+      {:error, :invalid_emoji} -> ErrorResponse.invalid_request(conn, "v1.invalid_request")
+      other -> mutation_error(conn, other)
+    end
+  end
+
+  @doc "DELETE /v1/conversations/:id/messages/:message_id/reactions — remove the caller's reaction."
+  def remove_reaction(conn, %{"id" => conversation_id, "message_id" => message_id}) do
+    with {:ok, user_id} <- require_end_user(conn),
+         {:ok, _conversation} <- ConversationAuthz.authorize_conversation(conn, conversation_id),
+         {:ok, aggregate} <-
+           SharedInfra.MessageClient.remove_reaction(%{
+             "conversation_id" => conversation_id,
+             "message_id" => message_id,
+             "user_id" => user_id
+           }) do
+      broadcast_reaction(conversation_id, aggregate)
+      json(conn, reaction_frame(aggregate))
+    else
+      {:error, :end_user_only} -> end_user_only(conn)
+      other -> mutation_error(conn, other)
+    end
+  end
+
+  # --- receipts ----------------------------------------------------------------------------------
+
+  @doc """
+  POST /v1/conversations/:id/messages/:message_id/receipts  {type: "read"|"delivered"} — per-message
+  receipt (NOT a watermark). END-USER ONLY: a secret-key actor doesn't read messages → 403 v1.end_user_only,
+  the same posture as GET /v1/conversations. Persisted first, then broadcast (matching the socket path).
+  """
+  def receipt(conn, %{"id" => conversation_id, "message_id" => message_id} = params) do
+    with {:ok, user_id} <- require_end_user(conn),
+         {:ok, _conversation} <- ConversationAuthz.authorize_conversation(conn, conversation_id),
+         {:ok, type} <- fetch_receipt_type(params),
+         {:ok, _receipt} <- mark_receipt(type, conversation_id, message_id, user_id) do
+      fan_out_mutation(
+        conversation_id,
+        "receipt_updated",
+        receipt_frame(type, conversation_id, message_id, user_id)
+      )
+
+      json(conn, %{message_id: message_id, receipt_type: to_string(type), status: "accepted"})
+    else
+      {:error, :end_user_only} ->
+        end_user_only(conn)
+
+      {:error, :invalid_type} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "v1.invalid_receipt_type",
+          ~s(type must be "read" or "delivered")
+        )
+
+      other ->
+        mutation_error(conn, other)
+    end
+  end
+
+  defp mark_receipt(:read, conversation_id, message_id, user_id),
+    do:
+      SharedInfra.MessageClient.mark_read(%{
+        "conversation_id" => conversation_id,
+        "message_id" => message_id,
+        "user_id" => user_id
+      })
+
+  defp mark_receipt(:delivered, conversation_id, message_id, user_id),
+    do:
+      SharedInfra.MessageClient.mark_delivered(%{
+        "conversation_id" => conversation_id,
+        "message_id" => message_id,
+        "user_id" => user_id
+      })
+
+  # The socket's reaction_updated frame, byte for byte: {message_id, reactions: [{emoji, count}]}. The
+  # aggregate is COMPLETE — clients REPLACE their local reactions with it, never merge.
+  defp broadcast_reaction(conversation_id, aggregate),
+    do: fan_out_mutation(conversation_id, "reaction_updated", reaction_frame(aggregate))
+
+  defp reaction_frame(aggregate) do
+    %{
+      message_id: rget(aggregate, :message_id),
+      reactions: rget(aggregate, :reactions) || []
+    }
+  end
+
+  # The socket's receipt_updated frame, byte for byte (conversation_reply/3 + :receipt_type). NOTE the
+  # message_id is NESTED under `payload` — the SDK reads payload.payload.message_id. Flattening it here
+  # would fork the wire protocol between the socket and /v1, so it stays nested.
+  defp receipt_frame(type, conversation_id, message_id, user_id) do
+    %{
+      event: if(type == :read, do: "message_read", else: "message_delivered"),
+      conversation_id: conversation_id,
+      user_id: user_id,
+      payload: %{"message_id" => message_id},
+      status: "accepted",
+      receipt_type: to_string(type)
+    }
+  end
+
+  # Reactions + receipts are END-USER only: V1Auth sets :v1_user_id iff the credential is an end-user JWT.
+  defp require_end_user(conn) do
+    case conn.assigns[:v1_user_id] do
+      user_id when is_binary(user_id) and user_id != "" -> {:ok, user_id}
+      _ -> {:error, :end_user_only}
+    end
+  end
+
+  defp end_user_only(conn),
+    do: ErrorResponse.forbidden(conn, "v1.end_user_only", "This endpoint requires an end-user token")
+
+  defp fetch_emoji(params) do
+    case Map.get(params, "emoji") do
+      emoji when is_binary(emoji) and emoji != "" -> {:ok, emoji}
+      _ -> {:error, :invalid_emoji}
+    end
+  end
+
+  defp fetch_receipt_type(params) do
+    case Map.get(params, "type") do
+      "read" -> {:ok, :read}
+      "delivered" -> {:ok, :delivered}
+      _ -> {:error, :invalid_type}
+    end
+  end
+
+  defp rget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
+  defp rget(_map, _key), do: nil
+
   # Not the author, no such message, or a cross-tenant/unknown conversation → an indistinguishable 404.
   defp mutation_error(conn, error) do
     case error do
