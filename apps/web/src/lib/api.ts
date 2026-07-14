@@ -1097,8 +1097,18 @@ export function revokeApiKey(id: string, appId?: string) {
   );
 }
 
-// The only webhook event types the backend accepts (unknown types are dropped server-side).
-export const WEBHOOK_EVENT_TYPES = ["message.created", "conversation.created"] as const;
+// The only webhook event types the backend accepts (unknown types are dropped server-side). Mirrors the
+// server registry in AuthService.Webhooks — keep the two in step.
+// call.started = the call was ANSWERED (connected). call.declined = an active refusal; call.missed = a ring
+// timeout or a caller cancel — an integrator records those differently, so they are separate types.
+export const WEBHOOK_EVENT_TYPES = [
+  "message.created",
+  "conversation.created",
+  "call.started",
+  "call.ended",
+  "call.missed",
+  "call.declined",
+] as const;
 
 export type WebhookEndpoint = {
   id: string;

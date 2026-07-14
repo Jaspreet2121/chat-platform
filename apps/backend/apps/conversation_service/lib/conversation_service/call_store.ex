@@ -52,21 +52,22 @@ defmodule ConversationService.CallStore do
     _ -> {:error, :call_invalid}
   end
 
-  @doc "Caller answered → accepted + answered_at. attrs: \"call_id\"."
+  @doc "Caller answered → accepted + answered_at. attrs: \"call_id\". Emits the `call.started` webhook."
   def mark_answered(attrs),
-    do: transition(attrs, %{status: "accepted", answered_at: DateTime.utc_now()})
+    do: transition(attrs, %{status: "accepted", answered_at: DateTime.utc_now()}, "call.started")
 
-  @doc "Callee rejected → declined. attrs: \"call_id\"."
+  @doc "Callee rejected → declined. attrs: \"call_id\". Emits `call.declined` (an ACTIVE refusal — distinct
+  from `call.missed`, which is a timeout; an integrator logs those differently)."
   def mark_declined(attrs),
-    do: transition(attrs, %{status: "declined", ended_at: DateTime.utc_now()})
+    do: transition(attrs, %{status: "declined", ended_at: DateTime.utc_now()}, "call.declined")
 
-  @doc "Never answered (timeout / caller cancel while ringing) → missed. attrs: \"call_id\"."
+  @doc "Never answered (timeout / caller cancel while ringing) → missed. attrs: \"call_id\". Emits `call.missed`."
   def mark_missed(attrs),
-    do: transition(attrs, %{status: "missed", ended_at: DateTime.utc_now()})
+    do: transition(attrs, %{status: "missed", ended_at: DateTime.utc_now()}, "call.missed")
 
-  @doc "Call finished (hang up) → ended. attrs: \"call_id\"."
+  @doc "Call finished (hang up) → ended. attrs: \"call_id\". Emits `call.ended` (with duration_seconds)."
   def mark_ended(attrs),
-    do: transition(attrs, %{status: "ended", ended_at: DateTime.utc_now()})
+    do: transition(attrs, %{status: "ended", ended_at: DateTime.utc_now()}, "call.ended")
 
   @doc "Fetch a single call by id. attrs: \"call_id\". → {:ok, call} | {:error, :call_not_found}."
   def get_call(attrs) do
@@ -851,27 +852,105 @@ defmodule ConversationService.CallStore do
     |> Map.new()
   end
 
-  # A lifecycle transition: fetch the call, apply the status/timestamp patch.
-  defp transition(attrs, patch) do
+  # A lifecycle transition: fetch the call, apply the status/timestamp patch, and (when the transition has a
+  # webhook event) emit it.
+  #
+  # TRANSACTIONAL OUTBOX: the emit runs in the SAME transaction as the status update, mirroring
+  # conversation.created (conversations.ex). A webhook for a call that never actually transitioned would be a
+  # lie to the integrator's server, so the two commit together or not at all. The converse also holds — the
+  # outbox INSERT raises on failure, which rolls the status change back — which is the price of atomicity and
+  # the same trade the conversation path already makes.
+  defp transition(attrs, patch, webhook_event \\ nil) do
     with :ok <- persistence(),
          {:ok, call_id} <- required(attrs, "call_id") do
-      case Repo.get(Call, call_id) do
-        nil ->
-          {:error, :call_not_found}
+      Repo.transaction(fn ->
+        case Repo.get(Call, call_id) do
+          nil ->
+            Repo.rollback(:call_not_found)
 
-        %Call{} = call ->
-          call
-          |> Call.status_changeset(patch)
-          |> Repo.update()
-          |> case do
-            {:ok, updated} -> {:ok, response(updated)}
-            {:error, _changeset} -> {:error, :call_invalid}
-          end
-      end
+          %Call{} = call ->
+            case call |> Call.status_changeset(patch) |> Repo.update() do
+              {:ok, updated} ->
+                emit_call_webhook(webhook_event, updated)
+                response(updated)
+
+              {:error, _changeset} ->
+                Repo.rollback(:call_invalid)
+            end
+        end
+      end)
     end
   rescue
     _ -> {:error, :call_invalid}
   end
+
+  defp emit_call_webhook(nil, _call), do: :ok
+
+  defp emit_call_webhook(event_type, %Call{} = call) do
+    case call_identities(call) do
+      {:ok, app_id, caller_external_id, callee_external_id} ->
+        SharedInfra.WebhookOutbox.emit(
+          Repo,
+          app_id,
+          event_type,
+          call_webhook_payload(call, caller_external_id, callee_external_id)
+        )
+
+      :error ->
+        # No resolvable tenant (a user row vanished) → no webhook. We do NOT fail the call transition over
+        # it: hanging up must still work. An unattributable event is dropped rather than sent to the wrong app.
+        :ok
+    end
+  end
+
+  # THE TENANT + IDENTITY SOURCE. `calls` has NO app_id column, and conversation_id is NULL for a link call
+  # (069) — so the conversation cannot be the tenant source without silently dropping every link call. The
+  # caller's `users_auth` row can: app_id is NOT NULL there, and it carries the external_id in the same row.
+  # Both parties are always in the same app (the socket is app-scoped), so caller.app_id IS the call's tenant.
+  defp call_identities(%Call{caller_id: caller_id, callee_id: callee_id})
+       when is_binary(caller_id) and is_binary(callee_id) do
+    case Repo.query(
+           """
+           SELECT caller.app_id::text, caller.external_id, callee.external_id
+           FROM users_auth caller
+           JOIN users_auth callee ON callee.id = $2::text::uuid
+           WHERE caller.id = $1::text::uuid
+           """,
+           [caller_id, callee_id]
+         ) do
+      {:ok, %{rows: [[app_id, caller_external_id, callee_external_id]]}} when is_binary(app_id) ->
+        {:ok, app_id, caller_external_id, callee_external_id}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp call_identities(_call), do: :error
+
+  # METADATA ONLY. No room_name, no LiveKit token, no media, no message content — an integrator's server gets
+  # the fact of the call, never the means to join it.
+  defp call_webhook_payload(%Call{} = call, caller_external_id, callee_external_id) do
+    %{
+      call_id: call.id,
+      type: call.type,
+      kind: call.kind || "direct",
+      caller_external_id: caller_external_id,
+      callee_external_id: callee_external_id,
+      conversation_id: call.conversation_id,
+      started_at: iso8601(call.answered_at),
+      ended_at: iso8601(call.ended_at),
+      # Only a call that was actually ANSWERED has a duration. A missed/declined call was never connected, so
+      # it gets nil rather than a misleading 0.
+      duration_seconds: duration_seconds(call),
+      reason: call.status
+    }
+  end
+
+  defp duration_seconds(%Call{answered_at: %DateTime{} = answered, ended_at: %DateTime{} = ended}),
+    do: max(DateTime.diff(ended, answered, :second), 0)
+
+  defp duration_seconds(_call), do: nil
 
   defp response(%Call{} = call) do
     %{

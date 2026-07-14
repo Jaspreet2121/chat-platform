@@ -12,7 +12,16 @@ defmodule AuthService.Webhooks do
   alias AuthService.Schemas.WebhookEndpoint
 
   # The event-type registry — adding a new event type is a one-line change here (Phase 2 emits these).
-  @event_types ["message.created", "conversation.created"]
+  # call.started fires when a call is ANSWERED (connected); call.declined is an ACTIVE refusal, distinct from
+  # call.missed (ring timeout / caller cancel) — an integrator records those differently.
+  @event_types [
+    "message.created",
+    "conversation.created",
+    "call.started",
+    "call.ended",
+    "call.missed",
+    "call.declined"
+  ]
 
   def event_types, do: @event_types
 
