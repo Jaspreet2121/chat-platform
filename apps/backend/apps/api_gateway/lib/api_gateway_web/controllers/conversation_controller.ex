@@ -204,6 +204,14 @@ defmodule ApiGatewayWeb.ConversationController do
              "avatar_media_id" => params["avatar_media_id"],
              "avatar_object_key" => params["avatar_object_key"]
            }) do
+      # TITLE trigger: a group rename (group_profiles.name — the source of truth the inbox now COALESCEs to)
+      # must reach every participant's inbox live. Also covers a photo change, which alters the same row.
+      ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+        conversation_id,
+        session.user_id,
+        :title
+      )
+
       json(conn, with_group_avatar_url(response, session.app_id))
     else
       {:error, :session_invalid} -> session_invalid(conn)
@@ -382,6 +390,15 @@ defmodule ApiGatewayWeb.ConversationController do
            |> Map.put("conversation_id", conversation_id)
            |> Map.put("actor_user_id", session.user_id)
            |> SharedInfra.ConversationClient.add_participant() do
+      # Every participant's row changes (the participant set moved) — INCLUDING the newly added member, who is
+      # now an active participant and so gets a row from inbox_rows. That is how the conversation APPEARS in
+      # their inbox: via conversation_updated, NOT conversation_created (the conversation already existed).
+      ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+        conversation_id,
+        session.user_id,
+        :participant
+      )
+
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)
@@ -419,6 +436,16 @@ defmodule ApiGatewayWeb.ConversationController do
              "user_id" => user_id,
              "actor_user_id" => session.user_id
            }) do
+      # The REMAINING members get an updated row; the REMOVED member gets one final frame carrying
+      # `removed: true` (they are no longer an active participant, so they have no inbox row to send — without
+      # this their inbox would keep a dead entry until a refetch).
+      ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+        conversation_id,
+        session.user_id,
+        :participant,
+        removed_user_id: user_id
+      )
+
       json(conn, response)
     else
       {:error, :session_invalid} -> session_invalid(conn)

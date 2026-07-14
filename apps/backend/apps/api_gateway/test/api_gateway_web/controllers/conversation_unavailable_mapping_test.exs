@@ -45,6 +45,7 @@ defmodule ApiGatewayWeb.ConversationUnavailableMappingTest.ConvUnavailableStub d
   def create_conversation(_attrs), do: {:error, :conversation_unavailable}
   @impl true
   def list_conversations(_attrs), do: {:error, :conversation_unavailable}
+  def inbox_rows(_attrs), do: {:error, :conversation_unavailable}
   @impl true
   def get_conversation(_attrs), do: {:error, :conversation_unavailable}
   @impl true

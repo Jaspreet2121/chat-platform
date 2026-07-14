@@ -57,6 +57,71 @@ defmodule ApiGatewayWeb.V1.ConversationController do
     end
   end
 
+  @doc """
+  PATCH /v1/conversations/:id — rename a GROUP.
+
+  Writes `group_profiles.name`, the single source of truth for a group's name (the inbox and the detail view
+  both resolve through it), by reusing the existing owner/admin-gated `set_group_profile` — no second write
+  path, and therefore no second authz rule to keep in step.
+
+  END-USER token only (same rule as receipts): the rename is owner/admin-gated INSIDE the conversation
+  service, and an app-actor token has no user to authorize. A DIRECT chat has no name to set — the service
+  rejects it (`ensure_group`), surfaced here as 422.
+  """
+  def update(conn, %{"id" => conversation_id} = params) do
+    with {:ok, user_id} <- require_end_user(conn),
+         {:ok, _authorized} <- ConversationAuthz.authorize_conversation(conn, conversation_id),
+         {:ok, title} <- fetch_title(params),
+         {:ok, response} <-
+           SharedInfra.ConversationClient.set_group_profile(%{
+             "conversation_id" => conversation_id,
+             "actor_user_id" => user_id,
+             "name" => title
+           }) do
+      # Every participant's inbox row carries the title — push the new one live.
+      ApiGatewayWeb.ConversationBroadcast.broadcast_updated(conversation_id, user_id, :title)
+
+      json(conn, %{conversation_id: conversation_id, title: Map.get(response, :name) || title})
+    else
+      {:error, :end_user_only} ->
+        ErrorResponse.forbidden(conn, "v1.end_user_only", "This endpoint requires an end-user token")
+
+      {:error, :invalid_title} ->
+        ErrorResponse.unprocessable_entity(conn, "v1.invalid_title", "title must be a non-empty string")
+
+      # ensure_group/1 — a direct chat has no title to set.
+      {:error, :conversation_invalid} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "v1.invalid_conversation",
+          "Only a group conversation can be renamed"
+        )
+
+      {:error, :conversation_forbidden} ->
+        ErrorResponse.forbidden(conn, "v1.not_owner", "Only the group owner can rename this conversation")
+
+      {:error, :conversation_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "v1.unavailable")
+
+      _ ->
+        ErrorResponse.not_found(conn, "v1.not_found", "Not found")
+    end
+  end
+
+  defp require_end_user(conn) do
+    case conn.assigns[:v1_user_id] do
+      user_id when is_binary(user_id) and user_id != "" -> {:ok, user_id}
+      _ -> {:error, :end_user_only}
+    end
+  end
+
+  defp fetch_title(params) do
+    case Map.get(params, "title") do
+      title when is_binary(title) and title != "" -> {:ok, title}
+      _ -> {:error, :invalid_title}
+    end
+  end
+
   def create(conn, params) do
     app_id = conn.assigns.v1_app_id
 

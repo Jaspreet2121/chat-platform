@@ -34,6 +34,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Conversations.admin_user_conversations(body(conn)))
   end
 
+  post "/internal/conversations/inbox_rows" do
+    send_result(conn, ConversationService.Conversations.inbox_rows(body(conn)))
+  end
+
   post "/internal/conversations/get" do
     send_result(conn, ConversationService.Conversations.get_conversation(body(conn)))
   end

@@ -286,6 +286,23 @@ defmodule ConversationService.Conversations do
 
   defp group_avatar(_), do: nil
 
+  # The ONE place a conversation's display name is resolved (the Elixir twin of the inbox SQL's
+  # COALESCE(gp.name, c.title)): `group_profiles.name` is the source of truth for a group — it is what
+  # `set_group_profile` writes — and `conversations.title` is the fallback. A DIRECT chat has no
+  # group_profiles row at all (see maybe_create_group_profile/1), so it always resolves to c.title.
+  #
+  # Resolving on READ rather than writing the name to two columns is deliberate: two writable copies of a
+  # name is a drift source, and every group renamed BEFORE this change already has the right value in
+  # gp.name — reading it fixes them all with no backfill.
+  defp resolved_title(%{type: "group", id: id, title: title}) do
+    case GroupProfileStore.get_group_profile(id) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      _ -> title
+    end
+  end
+
+  defp resolved_title(%{title: title}), do: title
+
   defp fetch_active_conversation(conversation_id) do
     case ConversationStore.get_conversation(conversation_id) do
       nil -> {:error, :conversation_not_found}
@@ -336,7 +353,9 @@ defmodule ConversationService.Conversations do
       # (a conversation not in the caller's app_id → 404).
       app_id: conversation.app_id,
       type: conversation.type,
-      title: conversation.title,
+      # SAME resolution as the inbox SQL's COALESCE(gp.name, c.title) — detail and inbox must never disagree
+      # about a group's name (see resolved_title/1).
+      title: resolved_title(conversation),
       created_by: conversation.created_by,
       participants: participants,
       # Group photo id/key (nil for DMs / no photo) — the gateway presigns into group_avatar_url.
@@ -377,6 +396,98 @@ defmodule ConversationService.Conversations do
     Ecto.Query.CastError -> {:error, :conversation_invalid}
   end
 
+  @doc """
+  The inbox rows for ONE conversation as seen by EACH of `user_ids` — what the gateway broadcasts as
+  `conversation_updated` (one frame per participant, each carrying THAT user's own view).
+
+  Not a counts-only endpoint, because an inbox row is per-user in more than just its unread count: the
+  preview and the activity timestamp are filtered by the SAME per-participant `cleared_before` /
+  `auto_delete_seconds` window (see `@inbox_sql`). A user who cleared their history must not be shown a
+  preview of a message they can no longer see, so the broadcaster cannot build one shared row + per-user
+  counts. It gets a whole row per user, from the SAME SQL the inbox list runs.
+
+  Returns `%{rows: [row_with_user_id]}` — a LIST, not a `%{user_id => …}` map: the internal-API envelope
+  re-atomizes map keys (`String.to_existing_atom`), and user-id keys are UUIDs, not atoms.
+
+  Users who are no longer active participants (`left_at` set) simply have no row — a removed member is
+  absent from the result rather than being reported with a zero count.
+  """
+  def inbox_rows(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, user_ids} <- required_user_ids(attrs) do
+      if conversation_persistence_enabled?() do
+        with {:ok, conversation_uuid} <- dump_uuid(conversation_id),
+             {:ok, user_uuids} <- dump_uuids(user_ids) do
+          {:ok, %{rows: query_inbox_rows(user_uuids, conversation_uuid)}}
+        end
+      else
+        {:ok, %{rows: []}}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :conversation_invalid}
+  end
+
+  # THE ONE inbox-row query. Both the inbox list (one user, every conversation) and the per-user broadcast
+  # rows (one conversation, many users) run THIS text. A second copy of the unread/preview rules would drift,
+  # and a drifted unread count is a wrong badge on every client — so the two callers differ ONLY in the two
+  # bind params:
+  #
+  #   $1 = user_ids   (uuid[])         — one user for the list, every participant for a broadcast
+  #   $2 = conversation_id (uuid|NULL) — NULL for the list ("every conversation I'm in"), one id to broadcast
+  #
+  # Everything is keyed on the JOINED `cp` row (not on `$1`), which is what lets one text serve both: the
+  # unread count excludes YOUR OWN messages (`m.sender_user_id <> cp.user_id` — so a sender's own unread never
+  # increases when they send) and the ones you have READ, and both the preview and the unread window honour
+  # YOUR clear-chat (`cleared_before`) and YOUR disappearing-message setting (`auto_delete_seconds`).
+  #
+  # TITLE resolves as COALESCE(gp.name, c.title): `group_profiles.name` is the source of truth for a group's
+  # name (it is what `set_group_profile` writes), and `conversations.title` is the fallback — and the only
+  # value a DIRECT chat has, since no group_profiles row is ever created for one. This COALESCE is why a
+  # renamed group now shows its new name in the inbox: previously the list read `c.title`, which the rename
+  # path never touched.
+  @inbox_sql """
+  SELECT cp.user_id::text, c.id::text, c.type, COALESCE(gp.name, c.title),
+         lm.body, lm.message_type, lm.metadata->>'content_type',
+         to_char(COALESCE(lm.created_at, c.updated_at) AT TIME ZONE 'UTC',
+                 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+         COALESCE(un.unread, 0)::int,
+         gp.avatar_media_id::text, gp.avatar_object_key
+  FROM conversations c
+  JOIN conversation_participants cp
+    ON cp.conversation_id = c.id AND cp.user_id = ANY($1::uuid[]) AND cp.left_at IS NULL
+  LEFT JOIN group_profiles gp ON gp.conversation_id = c.id
+  LEFT JOIN LATERAL (
+    SELECT m.body, m.message_type, m.metadata, m.created_at
+    FROM messages m
+    WHERE m.conversation_id = c.id
+      AND m.deleted_at IS NULL
+      AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before)
+      AND (cp.auto_delete_seconds IS NULL
+           OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds))
+    ORDER BY m.created_at DESC
+    LIMIT 1
+  ) lm ON true
+  LEFT JOIN LATERAL (
+    SELECT count(*) AS unread
+    FROM messages m
+    WHERE m.conversation_id = c.id
+      AND m.deleted_at IS NULL
+      AND m.sender_user_id <> cp.user_id
+      AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before)
+      AND (cp.auto_delete_seconds IS NULL
+           OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds))
+      AND NOT EXISTS (
+        SELECT 1 FROM message_receipts r
+        WHERE r.conversation_id = c.id AND r.message_id = m.message_id
+          AND r.user_id = cp.user_id AND (r.status = 'read' OR r.read_at IS NOT NULL)
+      )
+  ) un ON true
+  WHERE c.status = 'active'
+    AND ($2::uuid IS NULL OR c.id = $2::uuid)
+  ORDER BY COALESCE(lm.created_at, c.updated_at) DESC
+  """
+
   # WhatsApp-style list rows straight from the shared store (one query, lateral joins):
   #   * last VISIBLE message (body/type/content-type) — the caller's clear-chat / auto-delete window
   #     applies, so previews agree with their timeline;
@@ -387,53 +498,32 @@ defmodule ConversationService.Conversations do
   defp list_rows_with_activity(user_id) do
     {:ok, user_uuid} = Ecto.UUID.dump(user_id)
 
-    %Postgrex.Result{rows: rows} =
-      ConversationService.Repo.query!(
-        """
-        SELECT c.id::text, c.type, c.title,
-               lm.body, lm.message_type, lm.metadata->>'content_type',
-               to_char(COALESCE(lm.created_at, c.updated_at) AT TIME ZONE 'UTC',
-                       'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-               COALESCE(un.unread, 0)::int,
-               gp.avatar_media_id::text, gp.avatar_object_key
-        FROM conversations c
-        JOIN conversation_participants cp
-          ON cp.conversation_id = c.id AND cp.user_id = $1 AND cp.left_at IS NULL
-        LEFT JOIN group_profiles gp ON gp.conversation_id = c.id
-        LEFT JOIN LATERAL (
-          SELECT m.body, m.message_type, m.metadata, m.created_at
-          FROM messages m
-          WHERE m.conversation_id = c.id
-            AND m.deleted_at IS NULL
-            AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before)
-            AND (cp.auto_delete_seconds IS NULL
-                 OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds))
-          ORDER BY m.created_at DESC
-          LIMIT 1
-        ) lm ON true
-        LEFT JOIN LATERAL (
-          SELECT count(*) AS unread
-          FROM messages m
-          WHERE m.conversation_id = c.id
-            AND m.deleted_at IS NULL
-            AND m.sender_user_id <> $1
-            AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before)
-            AND (cp.auto_delete_seconds IS NULL
-                 OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds))
-            AND NOT EXISTS (
-              SELECT 1 FROM message_receipts r
-              WHERE r.conversation_id = c.id AND r.message_id = m.message_id
-                AND r.user_id = $1 AND (r.status = 'read' OR r.read_at IS NOT NULL)
-            )
-        ) un ON true
-        WHERE c.status = 'active'
-        ORDER BY COALESCE(lm.created_at, c.updated_at) DESC
-        """,
-        [user_uuid]
-      )
+    # One user, every conversation → the conversation filter ($2) is NULL.
+    user_uuid
+    |> List.wrap()
+    |> query_inbox_rows(nil)
+    |> Enum.map(&Map.delete(&1, :user_id))
+  end
 
-    Enum.map(rows, fn [id, type, title, body, message_type, content_type, activity_at, unread, avatar_media_id, avatar_object_key] ->
+  defp query_inbox_rows(user_uuids, conversation_uuid) do
+    %Postgrex.Result{rows: rows} =
+      ConversationService.Repo.query!(@inbox_sql, [user_uuids, conversation_uuid])
+
+    Enum.map(rows, fn [
+                        user_id,
+                        id,
+                        type,
+                        title,
+                        body,
+                        message_type,
+                        content_type,
+                        activity_at,
+                        unread,
+                        avatar_media_id,
+                        avatar_object_key
+                      ] ->
       %{
+        user_id: user_id,
         conversation_id: id,
         type: type,
         title: title,
@@ -445,6 +535,35 @@ defmodule ConversationService.Conversations do
         group_avatar_media_id: avatar_media_id,
         group_avatar_object_key: avatar_object_key
       }
+    end)
+  end
+
+  defp required_user_ids(attrs) do
+    case get_attr(attrs, "user_ids") do
+      ids when is_list(ids) and ids != [] ->
+        case Enum.filter(ids, &(is_binary(&1) and &1 != "")) do
+          [] -> {:error, :conversation_invalid}
+          valid -> {:ok, Enum.uniq(valid)}
+        end
+
+      _ ->
+        {:error, :conversation_invalid}
+    end
+  end
+
+  defp dump_uuid(id) do
+    case Ecto.UUID.dump(id) do
+      {:ok, uuid} -> {:ok, uuid}
+      :error -> {:error, :conversation_invalid}
+    end
+  end
+
+  defp dump_uuids(ids) do
+    Enum.reduce_while(ids, {:ok, []}, fn id, {:ok, acc} ->
+      case Ecto.UUID.dump(id) do
+        {:ok, uuid} -> {:cont, {:ok, [uuid | acc]}}
+        :error -> {:halt, {:error, :conversation_invalid}}
+      end
     end)
   end
 

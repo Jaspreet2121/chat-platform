@@ -42,6 +42,13 @@ defmodule ApiGatewayWeb.MessageController do
            params
            |> Map.put("sender_user_id", session.user_id)
            |> SharedInfra.MessageClient.create_message() do
+      # Live inbox: new preview + updated_at for all, +1 unread for everyone but the sender.
+      ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+        conversation_id,
+        session.user_id,
+        :message
+      )
+
       conn
       |> put_status(:created)
       |> json(response)
@@ -330,12 +337,25 @@ defmodule ApiGatewayWeb.MessageController do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         # BEFORE the write: re-reading an already-read message leaves unread unchanged, and an identical
+         # inbox row must not be re-broadcast on every such call.
+         unread_before <-
+           ApiGatewayWeb.ConversationBroadcast.unread_before(conversation_id, session.user_id),
          {:ok, response} <-
            SharedInfra.MessageClient.mark_read(%{
              "conversation_id" => conversation_id,
              "message_id" => message_id,
              "user_id" => session.user_id
            }) do
+      # Only the READER's badge changed → fan out to them alone, and only if it actually moved.
+      ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+        conversation_id,
+        session.user_id,
+        :receipt,
+        only: [session.user_id],
+        skip_if_unread: unread_before
+      )
+
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)

@@ -52,6 +52,9 @@ defmodule ApiGatewayWeb.Router do
     post "/conversations", ConversationController, :create
     get "/conversations", ConversationController, :index
     get "/conversations/:id", ConversationController, :show
+    # Rename a GROUP (owner/admin-gated in the conversation service; end-user token only). Broadcasts
+    # conversation_updated so every participant's inbox shows the new title live.
+    patch "/conversations/:id", ConversationController, :update
     post "/conversations/:id/messages", MessageController, :create
     get "/conversations/:id/messages", MessageController, :index
     # Edit + SOFT-delete (author-only; the row survives as a tombstone). Both broadcast the socket path's

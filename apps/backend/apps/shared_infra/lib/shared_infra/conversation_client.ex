@@ -18,6 +18,7 @@ defmodule SharedInfra.ConversationClient do
 
   @callback create_conversation(attrs()) :: result()
   @callback list_conversations(attrs()) :: result()
+  @callback inbox_rows(attrs()) :: result()
   @callback get_conversation(attrs()) :: result()
   @callback add_participant(attrs()) :: result()
   @callback remove_participant(attrs()) :: result()
@@ -91,6 +92,13 @@ defmodule SharedInfra.ConversationClient do
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
+
+  @doc """
+  The inbox row for ONE conversation as seen by EACH of `user_ids` — one round-trip for a whole fan-out.
+  Each row carries that user's OWN unread_count/preview/updated_at (all three are per-participant; see
+  ConversationService.Conversations.inbox_rows/1). Powers the `conversation_updated` broadcast.
+  """
+  def inbox_rows(attrs), do: adapter().inbox_rows(attrs)
   def admin_list_conversations(attrs), do: adapter().admin_list_conversations(attrs)
   def admin_user_conversations(attrs), do: adapter().admin_user_conversations(attrs)
   def get_conversation(attrs), do: adapter().get_conversation(attrs)

@@ -18,6 +18,9 @@ defmodule ConversationService.ConversationClientInProcess do
   def list_conversations(attrs), do: Conversations.list_conversations(attrs)
 
   @impl true
+  def inbox_rows(attrs), do: Conversations.inbox_rows(attrs)
+
+  @impl true
   def admin_list_conversations(attrs), do: Conversations.admin_list_conversations(attrs)
 
   @impl true

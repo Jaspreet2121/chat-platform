@@ -1,5 +1,8 @@
 defmodule ApiGatewayWeb.ConversationBroadcast do
   @moduledoc """
+  The gateway's inbox broadcasts: `conversation_created` (below) and `conversation_updated` (delegated to
+  `SharedInfra.ConversationBroadcast`, which the realtime channel shares).
+
   Fan a freshly-created conversation onto each participant's `user:<id>` topic, so a client's inbox can
   live-update without a refetch. Shared by the `/v1` and first-party create controllers so the logic can't
   drift between them.
@@ -48,6 +51,28 @@ defmodule ApiGatewayWeb.ConversationBroadcast do
   end
 
   def broadcast_created(_response), do: :ok
+
+  @doc """
+  Broadcast `conversation_updated` to a conversation's participants — the live-inbox event behind FOUR
+  triggers (`:message`, `:receipt`, `:title`, `:participant`).
+
+  Delegates to `SharedInfra.ConversationBroadcast`, which owns the fan-out because the realtime channel
+  (a different umbrella app, which cannot see ApiGatewayWeb) needs the SAME logic — one implementation, three
+  callers, no chance of three different unread counts. This wrapper just supplies our endpoint. See there for
+  the per-user row rationale and the `:only` / `:skip_if_unread` / `:removed_user_id` options.
+  """
+  def broadcast_updated(conversation_id, actor_user_id, trigger, opts \\ []) do
+    SharedInfra.ConversationBroadcast.broadcast_updated(
+      ApiGatewayWeb.Endpoint,
+      conversation_id,
+      actor_user_id,
+      trigger,
+      opts
+    )
+  end
+
+  @doc "The reader's unread count BEFORE a mark_read — pass as `:skip_if_unread` so a no-op read is silent."
+  defdelegate unread_before(conversation_id, user_id), to: SharedInfra.ConversationBroadcast
 
   @doc "Drop the internal `:created` flag before the response is rendered to the client (kept API-stable)."
   def strip_internal(response) when is_map(response), do: Map.drop(response, [:created, "created"])

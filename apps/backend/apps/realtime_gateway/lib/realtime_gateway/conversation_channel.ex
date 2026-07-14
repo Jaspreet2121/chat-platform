@@ -119,10 +119,17 @@ defmodule RealtimeGateway.ConversationChannel do
   def handle_in("message_read", payload, socket) do
     with :ok <- Limits.check_ephemeral(socket) do
       reply = conversation_reply("message_read", payload, socket)
+
+      # Snapshot the reader's unread BEFORE the write: this handler fires once PER MESSAGE, and re-marking an
+      # already-read message changes nothing. Without this, a client re-reading an open thread would spray an
+      # identical inbox row on every frame. nil (unknown) simply means "don't skip".
+      unread_before = reader_unread_before(socket)
+
       # Persist FIRST so the receipt survives a reload, THEN broadcast for the live tick. One path:
       # the socket mark is the durable mark (no separate REST call needed from the client).
       persist_receipt(:read, payload, socket)
       broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "read"))
+      notify_inbox_read(socket, unread_before)
 
       {:reply, {:ok, reply}, socket}
     end
@@ -243,6 +250,15 @@ defmodule RealtimeGateway.ConversationChannel do
            |> SharedInfra.MessageClient.create_message() do
       broadcast_from(socket, "message_created", response)
       notify_user_topics(socket, sender_user_id, response)
+      # Live INBOX row (distinct from the message fan-out above: that wakes an OPEN thread, this wakes every
+      # participant's conversation LIST). Per-user unread, fire-and-forget, shared with the HTTP paths.
+      SharedInfra.ConversationBroadcast.broadcast_updated(
+        socket.endpoint,
+        socket.assigns.conversation_id,
+        sender_user_id,
+        :message
+      )
+
       {:reply, {:ok, response}, socket}
     else
       {:error, :missing_user} ->
@@ -462,6 +478,38 @@ defmodule RealtimeGateway.ConversationChannel do
   # Durably record a read/delivered receipt for the marking user via the message client (in-process or
   # HTTP). Best-effort: persistence is gated by MESSAGE_DB_BACKED on the message side, so plain
   # `mix test` (persistence off) takes the placeholder path with no DB. Never blocks the live broadcast.
+  # The reader's unread count BEFORE the receipt is written (nil when the user can't be resolved → "don't
+  # skip"). See notify_inbox_read/2.
+  defp reader_unread_before(socket) do
+    case current_user_id(socket) do
+      {:ok, user_id} ->
+        SharedInfra.ConversationBroadcast.unread_before(socket.assigns.conversation_id, user_id)
+
+      _ ->
+        nil
+    end
+  end
+
+  # Live INBOX after a read: only the READER's badge changed, so fan out to them alone rather than waking all
+  # N participants on every read — and only when the count ACTUALLY moved (re-reading an already-read message
+  # is a no-op that must not re-broadcast an identical row).
+  defp notify_inbox_read(socket, unread_before) do
+    case current_user_id(socket) do
+      {:ok, user_id} ->
+        SharedInfra.ConversationBroadcast.broadcast_updated(
+          socket.endpoint,
+          socket.assigns.conversation_id,
+          user_id,
+          :receipt,
+          only: [user_id],
+          skip_if_unread: unread_before
+        )
+
+      _ ->
+        :ok
+    end
+  end
+
   defp persist_receipt(status, payload, socket) do
     with {:ok, user_id} <- current_user_id(socket),
          message_id when is_binary(message_id) and message_id != "" <-

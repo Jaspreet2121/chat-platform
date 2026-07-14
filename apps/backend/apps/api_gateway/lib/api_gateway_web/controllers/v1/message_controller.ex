@@ -198,12 +198,18 @@ defmodule ApiGatewayWeb.V1.MessageController do
     with {:ok, user_id} <- require_end_user(conn),
          {:ok, _conversation} <- ConversationAuthz.authorize_conversation(conn, conversation_id),
          {:ok, type} <- fetch_receipt_type(params),
+         # Snapshot the reader's unread BEFORE the write — re-reading an already-read message changes
+         # nothing, and an unchanged inbox row must not be re-broadcast. Only for :read; a :delivered
+         # receipt never moves an unread count.
+         unread_before <- receipt_unread_before(type, conversation_id, user_id),
          {:ok, _receipt} <- mark_receipt(type, conversation_id, message_id, user_id) do
       fan_out_mutation(
         conversation_id,
         "receipt_updated",
         receipt_frame(type, conversation_id, message_id, user_id)
       )
+
+      notify_inbox_read(type, conversation_id, user_id, unread_before)
 
       json(conn, %{message_id: message_id, receipt_type: to_string(type), status: "accepted"})
     else
@@ -430,6 +436,23 @@ defmodule ApiGatewayWeb.V1.MessageController do
   # SOCKET; a controller has no socket to exclude, so the sender's OTHER conversation-topic subscribers
   # (e.g. another tab) WILL receive it. That is intentional + safe — the SDK reconciles by real
   # message_id, and a sender's other tabs SHOULD see it. The user:<id> mirror still EXCLUDES the sender.
+  # Only a READ moves an unread count (a delivered receipt never does), and only the READER's count moves —
+  # so the inbox fan-out goes to them alone, and only when the count ACTUALLY changed. Broadcasting to all N
+  # participants on every read would be pure noise at message volume.
+  defp receipt_unread_before(:read, conversation_id, user_id),
+    do: ApiGatewayWeb.ConversationBroadcast.unread_before(conversation_id, user_id)
+
+  defp receipt_unread_before(_type, _conversation_id, _user_id), do: nil
+
+  defp notify_inbox_read(:read, conversation_id, user_id, unread_before) do
+    ApiGatewayWeb.ConversationBroadcast.broadcast_updated(conversation_id, user_id, :receipt,
+      only: [user_id],
+      skip_if_unread: unread_before
+    )
+  end
+
+  defp notify_inbox_read(_type, _conversation_id, _user_id, _unread_before), do: :ok
+
   defp fan_out(conversation_id, sender_user_id, message) do
     Task.start(fn ->
       try do
@@ -439,6 +462,11 @@ defmodule ApiGatewayWeb.V1.MessageController do
         _ -> :ok
       end
     end)
+
+    # ...and the INBOX row (new preview, new updated_at, +1 unread for everyone but the sender — the unread
+    # SQL excludes your own messages, so no special-casing here). Separate from the message fan-out above:
+    # that one tells an OPEN thread about a message; this one tells every participant's INBOX.
+    ApiGatewayWeb.ConversationBroadcast.broadcast_updated(conversation_id, sender_user_id, :message)
 
     :ok
   end

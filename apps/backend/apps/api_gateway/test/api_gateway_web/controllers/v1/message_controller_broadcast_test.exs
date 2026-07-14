@@ -34,6 +34,47 @@ defmodule ApiGatewayWeb.V1.MessageControllerBroadcastTest do
          ]
        }}
     end
+
+    # Per-user inbox rows for the conversation_updated fan-out. The SENDER's row has unread 0 (your own
+    # message never counts against you); the other participant's is 1. Mirrors what the real SQL returns.
+    @impl true
+    def inbox_rows(%{"user_ids" => user_ids}) do
+      rows =
+        Enum.map(user_ids, fn user_id ->
+          %{
+            user_id: user_id,
+            conversation_id: "11111111-1111-4111-8111-111111111111",
+            type: "direct",
+            title: nil,
+            last_message_preview: "hello",
+            last_message_kind: "text",
+            unread_count: if(user_id == "22222222-2222-4222-8222-222222222222", do: 0, else: 1),
+            updated_at: "2026-07-14T10:00:00.000000Z"
+          }
+        end)
+
+      {:ok, %{rows: rows}}
+    end
+  end
+
+  # get_conversation works (so the send is authorized) but the inbox-row fetch raises — proving a broken
+  # fan-out cannot take the primary action down with it.
+  defmodule ExplodingConvStub do
+    @moduledoc false
+    @behaviour SharedInfra.ConversationClient
+    @impl true
+    def get_conversation_app(_attrs), do: {:ok, %{}}
+    @impl true
+    def get_conversation(_attrs),
+      do:
+        {:ok,
+         %{
+           app_id: "44444444-4444-4444-8444-444444444444",
+           participants: [%{user_id: "22222222-2222-4222-8222-222222222222"}]
+         }}
+
+    @impl true
+    def inbox_rows(_attrs), do: raise("inbox_rows is down")
   end
 
   defmodule MsgStub do
@@ -102,16 +143,52 @@ defmodule ApiGatewayWeb.V1.MessageControllerBroadcastTest do
     assert payload == MsgStub.message()
   end
 
-  test "a send mirrors to a NON-sender participant's user topic but NOT the sender's" do
+  test "a send mirrors message_created to a NON-sender participant's user topic but NOT the sender's" do
     Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@other}")
-    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@sender}")
 
     MessageController.create(v1_conn(), send_body())
 
     # The other participant gets the mirror…
     assert_receive %Phoenix.Socket.Broadcast{event: "message_created"}, 1000
-    # …and the sender never does (excluded, exactly like the socket path).
-    refute_receive %Phoenix.Socket.Broadcast{}, 300
+  end
+
+  # DELIBERATE CHANGE (conversation.updated): the sender's user topic used to receive NOTHING at all, and this
+  # test asserted exactly that. It still receives no message_created — but it DOES now receive
+  # conversation_updated, because the sender's own INBOX ROW changed too (new preview, new updated_at, the
+  # conversation jumps to the top of their list). What must never happen is the sender's UNREAD going up.
+  test "message_created is still NOT mirrored to the sender — but conversation_updated IS, with unread 0" do
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@sender}")
+
+    MessageController.create(v1_conn(), send_body())
+
+    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_updated", payload: payload}, 1000
+    assert payload["unread_count"] == 0
+    assert payload["last_message_preview"] == "hello"
+    # The routing key is not part of the wire frame.
+    refute Map.has_key?(payload, "user_id")
+
+    refute_receive %Phoenix.Socket.Broadcast{event: "message_created"}, 300
+  end
+
+  test "a send fans conversation_updated to EVERY participant, each with THEIR OWN unread" do
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@other}")
+
+    MessageController.create(v1_conn(), send_body())
+
+    # The non-sender's row carries unread 1 (the message they haven't read); the sender's carries 0 (asserted
+    # above). Same conversation, different rows — the whole point of the per-user fan-out.
+    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_updated", payload: payload}, 1000
+    assert payload["unread_count"] == 1
+    assert payload["conversation_id"] == @conversation_id
+  end
+
+  test "a broadcast failure NEVER fails the send (fire-and-forget)" do
+    # inbox_rows blows up → the conversation_updated fan-out dies in its Task and is logged, but the 201 for
+    # the primary action still goes out.
+    Application.put_env(:shared_infra, :conversation_client_adapter, ExplodingConvStub)
+
+    conn = MessageController.create(v1_conn(), send_body())
+    assert conn.status == 201
   end
 
   test "a repeated POST with the SAME Idempotency-Key broadcasts exactly ONCE" do
