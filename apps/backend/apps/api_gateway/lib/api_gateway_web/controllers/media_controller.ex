@@ -162,6 +162,13 @@ defmodule ApiGatewayWeb.MediaController do
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :media_unavailable} -> service_unavailable(conn)
       {:error, :not_found} -> not_found(conn)
+      # REAL uploaded bytes over the cap (HEAD-verified at complete). Object deleted, asset NOT ready.
+      # 413 — the same mapping create_upload already uses for an over-cap CLAIM.
+      {:error, :media_too_large} -> too_large(conn)
+      # The presigned PUT never happened → nothing to complete.
+      {:error, :upload_not_found} -> not_found(conn)
+      # Unverifiable (storage unreachable) → FAIL CLOSED, never mark ready. Transient: retry complete.
+      {:error, :verify_failed} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
   end

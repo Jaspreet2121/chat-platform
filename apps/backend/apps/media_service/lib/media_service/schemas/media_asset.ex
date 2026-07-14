@@ -77,4 +77,17 @@ defmodule MediaService.Schemas.MediaAsset do
     |> change(status: status, updated_at: updated_at)
     |> validate_inclusion(:status, @statuses)
   end
+
+  @doc """
+  Flip to `ready` AND record the REAL measured object size (from a HEAD at complete), replacing the size the
+  client merely CLAIMED at create. Usage metering sums `size_bytes`, so storing the claim would let an app
+  under-report its storage forever.
+  """
+  def ready_changeset(%__MODULE__{} = asset, real_size_bytes, updated_at)
+      when is_integer(real_size_bytes) and real_size_bytes >= 0 do
+    asset
+    |> change(status: "ready", size_bytes: real_size_bytes, updated_at: updated_at)
+    |> validate_inclusion(:status, @statuses)
+    |> validate_number(:size_bytes, greater_than_or_equal_to: 0)
+  end
 end

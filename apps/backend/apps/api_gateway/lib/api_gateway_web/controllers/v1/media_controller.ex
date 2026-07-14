@@ -69,6 +69,15 @@ defmodule ApiGatewayWeb.V1.MediaController do
            }) do
       json(conn, complete_view(response))
     else
+      # The REAL uploaded bytes exceed the cap (verified by a HEAD at complete — the claimed size_bytes is
+      # advisory). The object has been deleted and the asset is NOT ready. 413, the same code create_upload
+      # already returns for an over-cap CLAIM.
+      {:error, :media_too_large} -> too_large(conn)
+      # The presigned PUT never happened — nothing to complete.
+      {:error, :upload_not_found} -> not_found(conn)
+      # Could not verify the object (storage unreachable). We FAIL CLOSED and do not mark it ready; this is
+      # transient, so 503 tells the client to simply call complete again.
+      {:error, :verify_failed} -> service_unavailable(conn)
       # Unknown / cross-tenant / wrong-owner (end_user) → opaque 404. Completing a `ready` asset succeeds
       # (idempotent). Service failures also collapse to 404 here (no partial-state reveal).
       _ -> not_found(conn)

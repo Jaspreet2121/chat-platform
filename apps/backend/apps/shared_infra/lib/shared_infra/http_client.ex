@@ -44,6 +44,40 @@ defmodule SharedInfra.HttpClient do
     do_request(:get, url(base_url, path), headers(), nil, unavailable, decode_opts)
   end
 
+  @doc """
+  HEAD an ABSOLUTE url (e.g. a presigned object-storage URL) and return the raw status + response headers.
+
+  Unlike `post_result/4` / `get_result/3` this is NOT an internal-service JSON call: no internal token, no
+  envelope decoding. It exists so a caller can read a response header (e.g. `content-length`) and tell
+  200 / 404 / transport-error apart — which is exactly what verifying a completed upload needs.
+  """
+  @spec head(String.t()) :: {:ok, non_neg_integer(), list()} | {:error, term()}
+  def head(url) when is_binary(url), do: raw_request(:head, url)
+
+  @doc "DELETE an ABSOLUTE url (e.g. a presigned object). Returns the raw status. See `head/1`."
+  @spec delete(String.t()) :: {:ok, non_neg_integer(), list()} | {:error, term()}
+  def delete(url) when is_binary(url), do: raw_request(:delete, url)
+
+  defp raw_request(method, url) do
+    ensure_req_started()
+
+    case Req.request(
+           method: method,
+           url: url,
+           decode_body: false,
+           retry: false,
+           connect_options: [timeout: connect_timeout()],
+           receive_timeout: receive_timeout()
+         ) do
+      {:ok, %Req.Response{status: status, headers: headers}} -> {:ok, status, headers}
+      {:error, reason} -> {:error, reason}
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    kind, value -> {:error, {kind, value}}
+  end
+
   defp do_request(method, url, headers, body, unavailable, decode_opts) do
     ensure_req_started()
 

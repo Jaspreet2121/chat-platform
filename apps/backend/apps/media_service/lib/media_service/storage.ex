@@ -12,10 +12,21 @@ defmodule MediaService.Storage do
   @callback create_upload(attrs()) :: result()
   @callback complete_upload(attrs()) :: result()
   @callback get_download_url(attrs()) :: result()
+  @callback head_object(attrs()) :: result()
+  @callback delete_object(attrs()) :: result()
 
   def create_upload(attrs), do: adapter().create_upload(attrs)
   def complete_upload(attrs), do: adapter().complete_upload(attrs)
   def get_download_url(attrs), do: adapter().get_download_url(attrs)
+
+  @doc """
+  The REAL byte size of a stored object: `{:ok, %{size_bytes: n}}` | `{:error, :upload_not_found}` (the PUT
+  never happened) | `{:error, :verify_failed}` (unreachable / unreadable — callers must fail CLOSED).
+  """
+  def head_object(attrs), do: adapter().head_object(attrs)
+
+  @doc "Remove a stored object. Best-effort cleanup after a rejected upload."
+  def delete_object(attrs), do: adapter().delete_object(attrs)
 
   defp adapter do
     Application.get_env(
@@ -44,6 +55,12 @@ defmodule MediaService.Storage.QueryPlanAdapter do
 
   @impl true
   def get_download_url(_attrs), do: {:error, :media_storage_unavailable}
+
+  @impl true
+  def head_object(_attrs), do: {:error, :media_storage_unavailable}
+
+  @impl true
+  def delete_object(_attrs), do: {:error, :media_storage_unavailable}
 end
 
 defmodule MediaService.Storage.MinioAdapter do
@@ -100,6 +117,77 @@ defmodule MediaService.Storage.MinioAdapter do
        }}
     end
   end
+
+  @impl true
+  def head_object(%{"object_key" => object_key}) when is_binary(object_key) and object_key != "" do
+    with {:ok, config} <- config(),
+         {:ok, url} <- presigned_url("HEAD", object_key, internal(config)),
+         {:ok, status, headers} <- SharedInfra.HttpClient.head(url) do
+      case status do
+        200 ->
+          case content_length(headers) do
+            nil -> {:error, :verify_failed}
+            size -> {:ok, %{object_key: object_key, size_bytes: size}}
+          end
+
+        # The PUT never happened (or the key is wrong) — there is nothing to complete.
+        404 ->
+          {:error, :upload_not_found}
+
+        # Anything else (403 on a bad signature, 5xx from MinIO) is UNVERIFIABLE, not "fine".
+        _other ->
+          {:error, :verify_failed}
+      end
+    else
+      {:error, :upload_not_found} -> {:error, :upload_not_found}
+      # A transport / config failure must NOT read as "no object" — fail closed.
+      _ -> {:error, :verify_failed}
+    end
+  end
+
+  def head_object(_attrs), do: {:error, :verify_failed}
+
+  @impl true
+  def delete_object(%{"object_key" => object_key}) when is_binary(object_key) and object_key != "" do
+    with {:ok, config} <- config(),
+         {:ok, url} <- presigned_url("DELETE", object_key, internal(config)),
+         {:ok, status, _headers} <- SharedInfra.HttpClient.delete(url) do
+      # S3/MinIO DELETE is idempotent: 204 on success, 404 if already gone — both mean "not there".
+      if status in [200, 202, 204, 404], do: :ok, else: {:error, :media_storage_unavailable}
+    else
+      _ -> {:error, :media_storage_unavailable}
+    end
+  end
+
+  def delete_object(_attrs), do: {:error, :media_storage_unavailable}
+
+  # THE ENDPOINT SUBTLETY. `presigned_url/3` signs against `public_endpoint || endpoint` because a BROWSER
+  # PUT/GET must have the SigV4 host match the host it actually connects to. A SERVER-SIDE HEAD/DELETE runs
+  # from the media service, which reaches MinIO directly on the internal network — so signing against the
+  # public host while connecting internally would make the Host header disagree with the signed host and
+  # MinIO would reject it (SignatureDoesNotMatch). Dropping :public_endpoint makes presigned_url fall back
+  # to :endpoint for BOTH the signature and the URL it builds, so they always agree.
+  defp internal(config), do: Keyword.put(config, :public_endpoint, nil)
+
+  defp content_length(headers) do
+    headers
+    |> Enum.find_value(fn {name, value} ->
+      if String.downcase(to_string(name)) == "content-length", do: value
+    end)
+    |> normalize_header_value()
+    |> case do
+      nil -> nil
+      raw -> case Integer.parse(to_string(raw)) do
+               {size, _} when size >= 0 -> size
+               _ -> nil
+             end
+    end
+  end
+
+  # Req returns header values as a LIST of strings (e.g. {"content-length", ["42"]}).
+  defp normalize_header_value([value | _]), do: value
+  defp normalize_header_value([]), do: nil
+  defp normalize_header_value(value), do: value
 
   defp presigned_url(method, object_key, config) do
     now = Keyword.get(config, :now) || DateTime.utc_now()
@@ -329,4 +417,12 @@ defmodule MediaService.Storage.InMemoryAdapter do
         :ok
     end
   end
+  # In-memory: nothing is really stored, so verification is not meaningful here. Tests that exercise the
+  # size-verification path swap in their own adapter (see MediaService.CompleteVerifyTest).
+  @impl true
+  def head_object(_attrs), do: {:error, :verify_failed}
+
+  @impl true
+  def delete_object(_attrs), do: :ok
+
 end

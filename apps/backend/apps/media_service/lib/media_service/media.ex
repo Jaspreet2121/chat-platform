@@ -228,7 +228,9 @@ defmodule MediaService.Media do
         {:error, :not_found}
 
       %MediaAsset{owner_user_id: ^owner_user_id} = asset ->
-        mark_ready(asset)
+        with {:ok, real_size} <- verify_uploaded_size(asset) do
+          mark_ready(asset, real_size)
+        end
 
       %MediaAsset{} ->
         # A different owner's asset — 404, never reveal that it exists.
@@ -239,13 +241,59 @@ defmodule MediaService.Media do
     Ecto.Query.CastError -> {:error, :not_found}
   end
 
-  # Idempotent: an already-ready asset returns success without a redundant write.
-  defp mark_ready(%MediaAsset{status: "ready"} = asset),
+  @doc """
+  Verify the ACTUAL uploaded bytes before an asset may become `ready`.
+
+  `create_upload` caps on the size the CLIENT CLAIMS, but the bytes go straight to storage via a presigned
+  PUT — the backend never sees them. So a client could claim 100 bytes, PUT 5 GB, and complete. The claim is
+  advisory; THIS is the security boundary: HEAD the object for its real `Content-Length` and enforce
+  `max_size_bytes()` on that.
+
+  Cap-only, deliberately: we do NOT require the real size to match the claim. Under-claiming while staying
+  within the cap is harmless, and an exact-match rule would break clients whose compression/encoding shifts
+  the byte count. The cap is what protects storage.
+
+  FAILS CLOSED. An unverifiable upload (transport error, unreadable header, unexpected status) is NEVER
+  marked ready — `:verify_failed` is transient and the client may simply call complete again.
+
+  HONEST LIMITATION: the bytes are uploaded BEFORE they can be rejected, then deleted. An attacker can still
+  burn BANDWIDTH and briefly occupy storage. What is closed is PERMANENT storage abuse: an over-cap object is
+  removed and its asset never becomes `ready`, so it can never be attached to a message or downloaded. A
+  content-length-range condition on the upload itself would reject at the edge, but that needs a POST-policy
+  (form upload) instead of a presigned PUT — the stronger future option, out of scope here.
+  """
+  def verify_uploaded_size(%MediaAsset{} = asset) do
+    case Storage.head_object(%{"object_key" => asset.object_key}) do
+      {:ok, %{size_bytes: real_size}} when is_integer(real_size) ->
+        if real_size > max_size_bytes() do
+          # Over cap: remove the bytes (best-effort) and refuse. A FAILED cleanup must still refuse — an
+          # orphaned object is far better than a ready, usable over-cap asset.
+          _ = Storage.delete_object(%{"object_key" => asset.object_key})
+          {:error, :media_too_large}
+        else
+          {:ok, real_size}
+        end
+
+      # The presigned PUT never happened — there is nothing to complete.
+      {:error, :upload_not_found} ->
+        {:error, :upload_not_found}
+
+      # Unverifiable → fail closed.
+      _ ->
+        {:error, :verify_failed}
+    end
+  end
+
+  # Idempotent: an already-ready asset returns success without a redundant write (and without re-HEADing —
+  # the size was already verified when it first became ready).
+  defp mark_ready(%MediaAsset{status: "ready"} = asset, _real_size),
     do: {:ok, complete_response(%{"media_id" => asset.id})}
 
-  defp mark_ready(%MediaAsset{} = asset) do
+  defp mark_ready(%MediaAsset{} = asset, real_size) do
     asset
-    |> MediaAsset.status_changeset("ready", DateTime.utc_now())
+    # Overwrite size_bytes with the MEASURED size, not the client's claim — usage metering sums this column,
+    # so a false claim would otherwise under-report (or inflate) an app's storage forever.
+    |> MediaAsset.ready_changeset(real_size, DateTime.utc_now())
     |> Repo.update()
     |> case do
       {:ok, updated} -> {:ok, complete_response(%{"media_id" => updated.id})}
