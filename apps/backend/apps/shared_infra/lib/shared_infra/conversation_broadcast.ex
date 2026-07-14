@@ -9,9 +9,8 @@ defmodule SharedInfra.ConversationBroadcast do
   parameter (`endpoint.broadcast/3`; any Phoenix endpoint, no Phoenix dependency here).
   `ApiGatewayWeb.ConversationBroadcast` is a thin delegate that supplies `ApiGatewayWeb.Endpoint`.
 
-  FOUR triggers feed it: `:message`, `:receipt`, `:title`, `:participant`. Every broadcast is tagged with its
-  trigger in the CONV_UPDATED_DEBUG log line, so a silent failure names WHICH path broke instead of costing
-  another debugging saga.
+  FOUR triggers feed it: `:message`, `:receipt`, `:title`, `:participant`. The trigger is carried purely so a
+  FAILURE names which of the four paths went dark — the success path is silent.
 
   PER-USER, not one shared row: unread_count, the preview and updated_at are ALL per-participant (a user who
   cleared their history sees a different preview AND a different count than the person beside them). So this
@@ -46,9 +45,12 @@ defmodule SharedInfra.ConversationBroadcast do
       try do
         do_broadcast_updated(endpoint, conversation_id, actor_user_id, trigger, opts)
       rescue
+        # Fire-and-forget must never fail the caller — but it must not VANISH either. A silent rescue is
+        # exactly what made the last broken fan-out undiagnosable, so this one line stays. The trigger tag
+        # names which of the four paths broke.
         error ->
           Logger.error(
-            "CONV_UPDATED_DEBUG trigger=#{trigger} conv=#{conversation_id} FAILED: #{Exception.message(error)}"
+            "conversation_updated (#{trigger}) conv=#{conversation_id} broadcast failed: #{Exception.message(error)}"
           )
 
           :ok
@@ -101,10 +103,6 @@ defmodule SharedInfra.ConversationBroadcast do
     # The removed member's final frame goes out regardless of the row fetch below — they HAVE no row to fetch
     # (inbox_rows requires an active participant), and their inbox must not keep a dead entry.
     if is_binary(removed_user_id) and removed_user_id != "" do
-      Logger.info(
-        "CONV_UPDATED_DEBUG trigger=#{trigger} conv=#{conversation_id} → user:#{removed_user_id} REMOVED"
-      )
-
       endpoint.broadcast("user:" <> removed_user_id, "conversation_updated", %{
         "conversation_id" => conversation_id,
         "removed" => true
@@ -117,24 +115,21 @@ defmodule SharedInfra.ConversationBroadcast do
              "conversation_id" => conversation_id,
              "user_ids" => targets
            }) do
-      Logger.info(
-        "CONV_UPDATED_DEBUG trigger=#{trigger} conv=#{conversation_id} fanout=#{inspect(targets)}"
-      )
-
       result
       |> rows()
-      |> Enum.each(&broadcast_row(endpoint, &1, conversation_id, trigger, skip_if_unread))
+      |> Enum.each(&broadcast_row(endpoint, &1, skip_if_unread))
     else
       other ->
+        # No rows → NOBODY's inbox updated. Keep the trigger tag: it names which path went dark.
         Logger.error(
-          "CONV_UPDATED_DEBUG trigger=#{trigger} conv=#{conversation_id} row fetch failed: #{inspect(other)}"
+          "conversation_updated (#{trigger}) conv=#{conversation_id} row fetch failed: #{inspect(other)}"
         )
 
         :ok
     end
   end
 
-  defp broadcast_row(endpoint, row, conversation_id, trigger, skip_if_unread) do
+  defp broadcast_row(endpoint, row, skip_if_unread) do
     user_id = cget(row, :user_id)
     unread = cget(row, :unread_count)
 
@@ -144,17 +139,9 @@ defmodule SharedInfra.ConversationBroadcast do
 
       # The count did not move (e.g. re-reading an already-read message) — an identical row is noise.
       not is_nil(skip_if_unread) and unread == skip_if_unread ->
-        Logger.info(
-          "CONV_UPDATED_DEBUG trigger=#{trigger} conv=#{conversation_id} → user:#{user_id} SKIPPED (unread unchanged at #{unread})"
-        )
-
         :ok
 
       true ->
-        Logger.info(
-          "CONV_UPDATED_DEBUG trigger=#{trigger} conv=#{conversation_id} → user:#{user_id} unread=#{unread}"
-        )
-
         endpoint.broadcast("user:" <> user_id, "conversation_updated", updated_row(row))
     end
   end
