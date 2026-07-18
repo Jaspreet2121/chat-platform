@@ -99,6 +99,60 @@ defmodule ConversationService.CallWebhooksTest do
   # --- tests ---
 
   @tag :postgres_integration
+  test "the SHARED ConversationClient path (what /v1 accept calls) emits call.started" do
+    # /v1 CallController.accept calls SharedInfra.ConversationClient.mark_call_answered — NOT CallStore
+    # directly. This asserts the in-process adapter delegates to the emitting path, closing the composition:
+    # controller → ConversationClient.mark_call_answered → CallStore.mark_answered → webhook. (The controller's
+    # authz/guard live in ApiGatewayWeb.V1.CallAcceptRejectTest.)
+    {app_id, caller, callee} = setup_app()
+    call_id = call!(caller, callee)
+
+    assert {:ok, _} = SharedInfra.ConversationClient.mark_call_answered(%{"call_id" => call_id})
+    assert [%{event_type: "call.started", app_id: ^app_id}] = outbox(app_id)
+
+    # And reject via the same client surface emits call.declined.
+    {app_id2, caller2, callee2} = setup_app()
+    call_id2 = call!(caller2, callee2)
+    assert {:ok, _} = SharedInfra.ConversationClient.mark_call_declined(%{"call_id" => call_id2})
+    assert [%{event_type: "call.declined"}] = outbox(app_id2)
+  end
+
+  @tag :postgres_integration
+  test "expected_status guard: answering a non-ringing call is refused ATOMICALLY, emits NO webhook" do
+    # This is the race-closer the /v1 accept path relies on (a row-locked source-status re-check), independent
+    # of the controller's fast-path check. A call that already ended must not be un-ended NOR re-emit
+    # call.started, even if the caller passes expected_status="ringing".
+    {app_id, caller, callee} = setup_app()
+    call_id = call!(caller, callee)
+
+    # Drive it to ended first (emits call.ended).
+    assert {:ok, _} = CallStore.mark_answered(%{"call_id" => call_id})
+    assert {:ok, _} = CallStore.mark_ended(%{"call_id" => call_id})
+
+    before = outbox(app_id)
+
+    # Now an accept WITH the precondition: the current status is "ended", not "ringing" → conflict, no write.
+    assert {:error, :call_conflict} =
+             CallStore.mark_answered(%{"call_id" => call_id, "expected_status" => "ringing"})
+
+    # No new webhook, and the call is still ended (never resurrected to accepted).
+    assert outbox(app_id) == before
+    assert %{rows: [["ended"]]} = Repo.query!("SELECT status FROM calls WHERE id = $1::text::uuid", [call_id])
+  end
+
+  @tag :postgres_integration
+  test "expected_status guard: a MATCHING status (ringing) still transitions + emits normally" do
+    {app_id, caller, callee} = setup_app()
+    call_id = call!(caller, callee)
+
+    # Ringing, precondition matches → the accept goes through and emits call.started, exactly as the plain path.
+    assert {:ok, _} =
+             CallStore.mark_answered(%{"call_id" => call_id, "expected_status" => "ringing"})
+
+    assert [%{event_type: "call.started"}] = outbox(app_id)
+  end
+
+  @tag :postgres_integration
   test "answered → call.started, tenant-scoped, with EXTERNAL ids (never internal uuids)" do
     {app_id, caller, callee} = setup_app()
     call_id = call!(caller, callee, type: "video")

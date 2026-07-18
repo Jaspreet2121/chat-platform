@@ -81,6 +81,9 @@ defmodule ApiGatewayWeb.Router do
     # integrator's external_id in and out.
     post "/calls", CallController, :create
     post "/calls/:id/token", CallController, :token
+    # Callee answers / declines a ringing direct call — notifies the caller, emits the call.* webhook.
+    post "/calls/:id/accept", CallController, :accept
+    post "/calls/:id/reject", CallController, :reject
     post "/calls/:id/end", CallController, :end_call
     get "/calls/:id", CallController, :show
     post "/call-links", CallController, :create_link

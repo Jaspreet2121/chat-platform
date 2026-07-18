@@ -860,15 +860,31 @@ defmodule ConversationService.CallStore do
   # lie to the integrator's server, so the two commit together or not at all. The converse also holds — the
   # outbox INSERT raises on failure, which rolls the status change back — which is the price of atomicity and
   # the same trade the conversation path already makes.
+  #
+  # OPTIONAL ATOMIC PRECONDITION: an `"expected_status"` in attrs makes the transition conditional — the row
+  # is locked FOR UPDATE and the patch applies ONLY if the CURRENT status equals it, else `:call_conflict`.
+  # This closes a check-then-act race: without it, two concurrent accepts both read "ringing" and both emit
+  # call.started, and a cancel racing an accept can un-end the call. The lock serializes concurrent
+  # transitions on the SAME call, and the source-status guard is re-checked while holding it. Callers that do
+  # NOT pass expected_status (the socket signaling + group-call paths) keep the exact prior behaviour — plain
+  # unlocked get + unconditional patch — so this is a hardening of the /v1 answer path, not a state-machine
+  # change for the existing callers.
   defp transition(attrs, patch, webhook_event \\ nil) do
     with :ok <- persistence(),
          {:ok, call_id} <- required(attrs, "call_id") do
+      expected = get(attrs, "expected_status")
+
       Repo.transaction(fn ->
-        case Repo.get(Call, call_id) do
+        case load_for_transition(call_id, expected) do
           nil ->
             Repo.rollback(:call_not_found)
 
-          %Call{} = call ->
+          # The precondition was requested but the current status doesn't match (already answered / ended /
+          # cancelled by the time we hold the lock) → refuse without touching the row or re-emitting anything.
+          {:conflict, _call} ->
+            Repo.rollback(:call_conflict)
+
+          {:ok, call} ->
             case call |> Call.status_changeset(patch) |> Repo.update() do
               {:ok, updated} ->
                 emit_call_webhook(webhook_event, updated)
@@ -882,6 +898,26 @@ defmodule ConversationService.CallStore do
     end
   rescue
     _ -> {:error, :call_invalid}
+  end
+
+  # No precondition (socket / group callers): the original plain fetch, unchanged.
+  defp load_for_transition(call_id, nil) do
+    case Repo.get(Call, call_id) do
+      nil -> nil
+      %Call{} = call -> {:ok, call}
+    end
+  end
+
+  # Precondition requested (the /v1 answer path): lock the row so a concurrent transition blocks, then
+  # re-check the source status while holding the lock.
+  defp load_for_transition(call_id, expected) when is_binary(expected) do
+    query = from(c in Call, where: c.id == ^call_id, lock: "FOR UPDATE")
+
+    case Repo.one(query) do
+      nil -> nil
+      %Call{status: ^expected} = call -> {:ok, call}
+      %Call{} = call -> {:conflict, call}
+    end
   end
 
   defp emit_call_webhook(nil, _call), do: :ok

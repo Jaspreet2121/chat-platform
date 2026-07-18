@@ -24,6 +24,8 @@ defmodule ApiGatewayWeb.V1.CallController do
   """
   use ApiGatewayWeb, :controller
 
+  require Logger
+
   alias ApiGatewayWeb.ErrorResponse
 
   # POST /v1/calls  { callee_external_id, type: "voice"|"video" } — start a direct call. Resolves the callee
@@ -64,6 +66,24 @@ defmodule ApiGatewayWeb.V1.CallController do
       _ -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
     end
   end
+
+  # POST /v1/calls/:id/accept — the CALLEE answers a ringing direct call. Flips it to `accepted` (which emits
+  # the `call.started` webhook via the shared CallStore path, 21811e2) and broadcasts `call:accepted` to the
+  # CALLER so their ring resolves and they get the room. The callee then mints a token via POST .../token.
+  # → { call_id, room, status: "accepted" }.
+  def accept(conn, %{"id" => call_id}) when is_binary(call_id) and call_id != "" do
+    respond_to_ring(conn, call_id, :accept)
+  end
+
+  def accept(conn, _params), do: ErrorResponse.invalid_request(conn, "v1.invalid_request")
+
+  # POST /v1/calls/:id/reject — the CALLEE declines a ringing direct call. Flips it to `declined` (emits the
+  # `call.declined` webhook) and broadcasts `call:rejected` to the CALLER. → { call_id, status: "declined" }.
+  def reject(conn, %{"id" => call_id}) when is_binary(call_id) and call_id != "" do
+    respond_to_ring(conn, call_id, :reject)
+  end
+
+  def reject(conn, _params), do: ErrorResponse.invalid_request(conn, "v1.invalid_request")
 
   # POST /v1/calls/:id/token — mint a LiveKit token so the end-user can join call :id (they must be a seat).
   # Not authorized / cross-tenant / missing → 404.
@@ -183,6 +203,119 @@ defmodule ApiGatewayWeb.V1.CallController do
       do: :ok,
       else: {:error, :app_only}
   end
+
+  # accept/reject share everything but the transition, the caller event, and the response — so one path.
+  defp respond_to_ring(conn, call_id, action) do
+    with :ok <- require_end_user(conn),
+         {:ok, call} <- callee_ringing_call(call_id, conn.assigns[:v1_user_id]),
+         {:ok, _} <- transition_for(action, call_id) do
+      # Resolve the caller's ring only AFTER the state actually changed — never announce an accept that
+      # didn't commit. Fire-and-forget: the response must not fail if PubSub hiccups.
+      notify_caller(action, cget(call, :caller_id), call_id, cget(call, :room_name))
+      json(conn, ring_response(action, call_id, cget(call, :room_name)))
+    else
+      {:error, :app_only} ->
+        app_only(conn)
+
+      # The callee owns this call but it is no longer ringing (already answered / ended / cancelled). 409, NOT
+      # 404: the legit callee should learn "too late", and we must never let a second transition un-end it or
+      # re-emit the webhook. (A NON-callee never reaches this branch — see callee_ringing_call.)
+      {:error, :not_ringing} ->
+        ErrorResponse.conflict(conn, "v1.call_not_ringing", "This call is no longer ringing")
+
+      # The status transition failed at the service (e.g. the call vanished in a race) — transient.
+      {:error, :unavailable} ->
+        ErrorResponse.service_unavailable(conn, "v1.unavailable")
+
+      # Not the callee / not a direct call / cross-tenant / missing → 404, no existence reveal.
+      _ ->
+        not_found(conn)
+    end
+  end
+
+  # Authorize a ring response: the acting user must be THIS direct call's callee, and it must still be
+  # ringing. The order matters — the callee check runs BEFORE the status check, so a non-callee only ever
+  # gets :not_found (never a 409 that would reveal the call's state). Comparing v1_user_id (resolved within
+  # v1_app_id) to callee_id is also the tenant seal: a cross-tenant user's internal id can't match.
+  defp callee_ringing_call(call_id, user_id) do
+    with {:ok, call} <- SharedInfra.ConversationClient.get_call(%{"call_id" => call_id}),
+         :callee <- ring_role(call, user_id),
+         "ringing" <- cget(call, :status) do
+      {:ok, call}
+    else
+      # Reached ONLY after the callee check passed (the status wasn't "ringing") → a real conflict.
+      status when is_binary(status) -> {:error, :not_ringing}
+      # get_call failed, or ring_role returned :not_callee / :not_direct → opaque 404.
+      _ -> {:error, :not_found}
+    end
+  end
+
+  # accept/reject are DIRECT 1:1 verbs. A group/link call answers via its own join flow, and its "callee_id"
+  # isn't the single answerer — so anything but a direct call where user_id IS the callee is rejected here.
+  defp ring_role(call, user_id) do
+    cond do
+      (cget(call, :kind) || "direct") != "direct" -> :not_direct
+      is_binary(user_id) and user_id == cget(call, :callee_id) -> :callee
+      true -> :not_callee
+    end
+  end
+
+  # The SAME shared boundary the socket accept/reject uses — the status transition (and its webhook) is
+  # identical whether answered via socket or /v1. `expected_status: "ringing"` makes the transition ATOMIC:
+  # the callee_ringing_call check above is only a fast-path 409, and this closes the check-then-act race
+  # (two concurrent accepts, or a cancel racing an accept) by re-checking the status under a row lock in the
+  # service. A lost race → :call_conflict → the same 409 as the fast-path.
+  defp transition_for(:accept, call_id),
+    do:
+      normalize_transition(
+        SharedInfra.ConversationClient.mark_call_answered(%{
+          "call_id" => call_id,
+          "expected_status" => "ringing"
+        })
+      )
+
+  defp transition_for(:reject, call_id),
+    do:
+      normalize_transition(
+        SharedInfra.ConversationClient.mark_call_declined(%{
+          "call_id" => call_id,
+          "expected_status" => "ringing"
+        })
+      )
+
+  defp normalize_transition({:ok, _} = ok), do: ok
+  # The atomic guard lost the race (the call left "ringing" under the lock) → the same conflict the fast-path
+  # returns.
+  defp normalize_transition({:error, :call_conflict}), do: {:error, :not_ringing}
+  defp normalize_transition(_), do: {:error, :unavailable}
+
+  # Resolve the CALLER's ring: call:accepted hands them the room; call:rejected just tells them it's off.
+  # Reaches the caller's SDK because RealtimeGateway.UserSocket is mounted on ApiGatewayWeb.Endpoint (one
+  # endpoint, one PubSub) — the same path conversation_created / message_created fan out on.
+  defp notify_caller(:accept, caller_id, call_id, room),
+    do: broadcast_caller(caller_id, "call:accepted", %{call_id: call_id, room: room})
+
+  defp notify_caller(:reject, caller_id, call_id, _room),
+    do: broadcast_caller(caller_id, "call:rejected", %{call_id: call_id})
+
+  defp broadcast_caller(caller_id, event, payload) when is_binary(caller_id) and caller_id != "" do
+    Task.start(fn ->
+      try do
+        ApiGatewayWeb.Endpoint.broadcast("user:" <> caller_id, event, payload)
+      rescue
+        # Fire-and-forget must never fail the response — but a silent drop would leave the caller ringing
+        # until the 35s timeout, so it must not vanish either.
+        error -> Logger.error("call #{event} broadcast to caller failed: #{Exception.message(error)}")
+      end
+    end)
+
+    :ok
+  end
+
+  defp broadcast_caller(_caller_id, _event, _payload), do: :ok
+
+  defp ring_response(:accept, call_id, room), do: %{call_id: call_id, room: room, status: "accepted"}
+  defp ring_response(:reject, call_id, _room), do: %{call_id: call_id, status: "declined"}
 
   # Fetch the call ONLY if `user_id` is a seat of it — this IS the tenant seal (see @moduledoc). Any failure
   # (missing / cross-tenant / not authorized) collapses to :not_found → 404, no existence reveal.
