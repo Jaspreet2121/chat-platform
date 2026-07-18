@@ -38,6 +38,10 @@ defmodule RealtimeGateway.ConversationChannel do
       # Bridge presence to Redis for the (separate-node) notification service. Best-effort, non-
       # blocking — never slows or breaks presence tracking; the TTL self-heals a missed cleanup.
       write_presence_marker(user_id, socket.assigns.conversation_id)
+      # Per-conversation "viewing now": tell the OTHER members of THIS conversation that the user opened it.
+      # Conversation-scoped (broadcast on this conversation's topic only) → no cross-conversation leak, and
+      # every recipient is already a member (they're joined to the topic). broadcast_from excludes the opener.
+      broadcast_viewing(socket, user_id, true)
       Process.send_after(self(), :presence_heartbeat, @presence_heartbeat_ms)
     end
 
@@ -62,6 +66,14 @@ defmodule RealtimeGateway.ConversationChannel do
          conversation_id when is_binary(conversation_id) <-
            Map.get(socket.assigns, :conversation_id) do
       clear_presence_marker(user_id, conversation_id)
+      # Tell the remaining members the user stopped viewing. From terminate we can't broadcast_from (the
+      # socket is going away), so broadcast on the conversation topic directly — the leaver's own channel is
+      # dead, so a self-copy is harmless and the SDK dedups by (conversation, user) anyway.
+      socket.endpoint.broadcast(
+        "conversation:" <> conversation_id,
+        "conversation_viewing",
+        %{conversation_id: conversation_id, user_id: user_id, viewing: false}
+      )
     end
 
     :ok
@@ -78,6 +90,17 @@ defmodule RealtimeGateway.ConversationChannel do
 
   defp clear_presence_marker(user_id, conversation_id) do
     Task.start(fn -> SharedInfra.PresenceMarker.clear(user_id, conversation_id) end)
+    :ok
+  end
+
+  # "Viewing now" to the other members of this conversation (broadcast_from excludes the opener's socket).
+  defp broadcast_viewing(socket, user_id, viewing) do
+    broadcast_from(socket, "conversation_viewing", %{
+      conversation_id: socket.assigns.conversation_id,
+      user_id: user_id,
+      viewing: viewing
+    })
+
     :ok
   end
 

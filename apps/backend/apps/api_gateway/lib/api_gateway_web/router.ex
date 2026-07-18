@@ -52,6 +52,8 @@ defmodule ApiGatewayWeb.Router do
     post "/conversations", ConversationController, :create
     get "/conversations", ConversationController, :index
     get "/conversations/:id", ConversationController, :show
+    # Presence snapshot (online/last-seen) for the caller's contacts — privacy-filtered, end-user token.
+    get "/presence", PresenceController, :index
     # Rename a GROUP (owner/admin-gated in the conversation service; end-user token only). Broadcasts
     # conversation_updated so every participant's inbox shows the new title live.
     patch "/conversations/:id", ConversationController, :update
@@ -114,6 +116,8 @@ defmodule ApiGatewayWeb.Router do
 
     get "/usage", UsageController, :index
     get "/webhooks/deliveries", WebhookEndpointController, :deliveries
+    # First-party presence snapshot for the web app (session-authed; privacy-filtered, fail-closed).
+    get "/presence", PresenceController, :index
   end
 
   scope "/api/v1/api-keys", ApiGatewayWeb do

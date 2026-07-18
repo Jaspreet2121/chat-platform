@@ -25,6 +25,29 @@ defmodule SharedInfra.RedisKV do
 
   def put(_key, _value, _ttl), do: {:error, :invalid_args}
 
+  @doc """
+  SET key value with a TTL AND return the PREVIOUS value atomically (`SET ... EX ttl GET`, Redis 6.2+).
+
+  `{:ok, :was_absent}` when the key did not exist (an offline→online TRANSITION), `{:ok, {:was_present, old}}`
+  when it did (a heartbeat refresh — the TTL is still refreshed either way), `{:error, reason}` on failure.
+  Lets the caller broadcast a presence change ONLY on the transition, in one round-trip, with no read-modify-
+  write race.
+  """
+  def put_get(key, value, ttl_seconds)
+      when is_binary(key) and key != "" and is_binary(value) and is_integer(ttl_seconds) and
+             ttl_seconds > 0 do
+    with_connection(fn conn ->
+      case command(conn, ["SET", key, value, "EX", Integer.to_string(ttl_seconds), "GET"]) do
+        {:ok, :null} -> {:ok, :was_absent}
+        {:ok, old} when is_binary(old) -> {:ok, {:was_present, old}}
+        {:ok, _other} -> {:ok, :was_absent}
+        {:error, reason} -> {:error, reason}
+      end
+    end)
+  end
+
+  def put_get(_key, _value, _ttl), do: {:error, :invalid_args}
+
   @doc "GET key. {:ok, value} for a hit, :miss for a nil/absent key, {:error, reason} on failure."
   def get(key) when is_binary(key) and key != "" do
     with_connection(fn conn ->

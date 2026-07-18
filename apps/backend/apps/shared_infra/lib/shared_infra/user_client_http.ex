@@ -23,6 +23,9 @@ defmodule SharedInfra.UserClientHttp do
   @impl true
   def update_current_profile(attrs), do: post("/internal/profiles/update", attrs)
 
+  @impl true
+  def last_seen_visibility(attrs), do: post("/internal/privacy/last_seen_visibility", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs, unavailable: @unavailable)
   end

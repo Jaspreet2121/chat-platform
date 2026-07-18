@@ -25,6 +25,9 @@ defmodule SharedInfra.ConversationClientHttp do
   def inbox_rows(attrs), do: post("/internal/conversations/inbox_rows", attrs)
 
   @impl true
+  def shares_conversation?(attrs), do: post("/internal/conversations/shares", attrs)
+
+  @impl true
   def admin_list_conversations(attrs), do: post("/internal/conversations/admin_list", attrs)
 
   @impl true

@@ -38,6 +38,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Conversations.inbox_rows(body(conn)))
   end
 
+  post "/internal/conversations/shares" do
+    send_result(conn, ConversationService.Conversations.shares_conversation?(body(conn)))
+  end
+
   post "/internal/conversations/get" do
     send_result(conn, ConversationService.Conversations.get_conversation(body(conn)))
   end

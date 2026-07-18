@@ -19,6 +19,7 @@ defmodule SharedInfra.ConversationClient do
   @callback create_conversation(attrs()) :: result()
   @callback list_conversations(attrs()) :: result()
   @callback inbox_rows(attrs()) :: result()
+  @callback shares_conversation?(attrs()) :: result()
   @callback get_conversation(attrs()) :: result()
   @callback add_participant(attrs()) :: result()
   @callback remove_participant(attrs()) :: result()
@@ -99,6 +100,9 @@ defmodule SharedInfra.ConversationClient do
   ConversationService.Conversations.inbox_rows/1). Powers the `conversation_updated` broadcast.
   """
   def inbox_rows(attrs), do: adapter().inbox_rows(attrs)
+
+  @doc "Do two users share an active conversation? (the presence 'contacts' edge). %{shares: bool}."
+  def shares_conversation?(attrs), do: adapter().shares_conversation?(attrs)
   def admin_list_conversations(attrs), do: adapter().admin_list_conversations(attrs)
   def admin_user_conversations(attrs), do: adapter().admin_user_conversations(attrs)
   def get_conversation(attrs), do: adapter().get_conversation(attrs)

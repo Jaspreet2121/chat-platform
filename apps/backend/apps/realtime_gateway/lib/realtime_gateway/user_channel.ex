@@ -2,6 +2,7 @@ defmodule RealtimeGateway.UserChannel do
   use Phoenix.Channel
 
   alias RealtimeGateway.Limits
+  alias RealtimeGateway.UserPresence, as: ChannelPresence
   alias RealtimeGateway.TopicAuthorization
 
   # The user topic is the connection's lifecycle channel: every client joins user:<id> on app open, so it's
@@ -14,12 +15,16 @@ defmodule RealtimeGateway.UserChannel do
     with :ok <- Limits.check_join(socket),
          :ok <- TopicAuthorization.authorize_join(topic, socket) do
       socket = assign(socket, :topic_user_id, user_id)
+      socket = assign(socket, :presence_subs, MapSet.new())
       # App-level presence: joining the user topic means the app is open → mark it foreground for the
       # notification service (skip web-push while the app is open ANYWHERE — in-app covers it). The
       # client refreshes/clears via app:foreground / app:background below; the TTL self-heals.
       mark_app(user_id)
       # Refresh this socket's connection-counter slot now and on a periodic heartbeat.
       Limits.touch_connection(socket)
+      # DISPLAY presence: mark this user ONLINE and, if this is a fresh online (not a heartbeat/reconnect),
+      # broadcast it to authorized subscribers. Distinct from the app marker above (push-suppression).
+      ChannelPresence.mark_online_and_broadcast(socket)
       Process.send_after(self(), :conn_heartbeat, @conn_heartbeat_ms)
 
       {:ok,
@@ -31,6 +36,37 @@ defmodule RealtimeGateway.UserChannel do
        }, socket}
     end
   end
+
+  # A client tells the gateway WHOSE presence it wants (the people in its inbox / open chat). Each target is
+  # authorized (shared conversation AND the target's visibility permits) BEFORE the socket is subscribed —
+  # unauthorized targets are silently dropped (never an existence/visibility reveal). The authorized set is
+  # returned, and an initial snapshot for each is pushed immediately so the client doesn't wait for the next
+  # transition.
+  @impl true
+  def handle_in("presence:subscribe", %{"user_ids" => user_ids}, socket) when is_list(user_ids) do
+    case Limits.check_ephemeral(socket) do
+      :ok ->
+        {socket, authorized} = ChannelPresence.subscribe(socket, user_ids)
+        {:reply, {:ok, %{subscribed: authorized}}, socket}
+
+      dropped ->
+        dropped
+    end
+  end
+
+  def handle_in("presence:subscribe", _payload, socket),
+    do: {:reply, {:error, %{reason: "invalid_request"}}, socket}
+
+  @impl true
+  def handle_in("presence:unsubscribe", %{"user_ids" => user_ids}, socket) when is_list(user_ids) do
+    case Limits.check_ephemeral(socket) do
+      :ok -> {:reply, {:ok, %{}}, ChannelPresence.unsubscribe(socket, user_ids)}
+      dropped -> dropped
+    end
+  end
+
+  def handle_in("presence:unsubscribe", _payload, socket),
+    do: {:reply, {:error, %{reason: "invalid_request"}}, socket}
 
   # Client heartbeat while the page is visible → refresh the app-foreground marker within its TTL.
   @impl true
@@ -73,7 +109,33 @@ defmodule RealtimeGateway.UserChannel do
   @impl true
   def handle_info(:conn_heartbeat, socket) do
     Limits.touch_connection(socket)
+    # Refresh the online marker's TTL so it never lapses mid-session. mark_online is a no-op broadcast when
+    # already online (the common case) — it re-broadcasts ONLY if the key had expired (a genuine transition).
+    ChannelPresence.mark_online_and_broadcast(socket)
     Process.send_after(self(), :conn_heartbeat, @conn_heartbeat_ms)
+    {:noreply, socket}
+  end
+
+  # A presence transition for a user this socket SUBSCRIBED to. RE-AUTHORIZE the delivery (off-process) before
+  # forwarding: a subscription is authorized at subscribe time, but the viewer may have SINCE lost the shared
+  # conversation or the target may have tightened visibility — "authorize every delivery" so a stale
+  # subscription can't keep leaking. The push happens via {:presence_forward, …} once authorized.
+  @impl true
+  def handle_info(%Phoenix.Socket.Broadcast{topic: "presence:" <> _, event: event, payload: payload}, socket) do
+    ChannelPresence.forward_if_authorized(socket, event, payload)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_info({:presence_forward, event, payload}, socket) do
+    push(socket, event, payload)
+    {:noreply, socket}
+  end
+
+  # The initial snapshot for a freshly-subscribed target (read off-process, handed back here to push).
+  @impl true
+  def handle_info({:presence_snapshot, payload}, socket) do
+    push(socket, "presence_updated", payload)
     {:noreply, socket}
   end
 
@@ -95,8 +157,13 @@ defmodule RealtimeGateway.UserChannel do
   @impl true
   def terminate(_reason, socket) do
     case Map.get(socket.assigns, :topic_user_id) do
-      user_id when is_binary(user_id) -> clear_app(user_id)
-      _ -> :ok
+      user_id when is_binary(user_id) ->
+        clear_app(user_id)
+        # DISPLAY presence: mark offline (+ stamp last_seen) and broadcast to authorized subscribers.
+        ChannelPresence.clear_online_and_broadcast(socket)
+
+      _ ->
+        :ok
     end
 
     # Immediate connection-counter decrement (the fast path); the counter's score-aging is the safety net

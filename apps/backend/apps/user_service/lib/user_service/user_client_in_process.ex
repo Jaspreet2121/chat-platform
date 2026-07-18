@@ -18,4 +18,7 @@ defmodule UserService.UserClientInProcess do
 
   @impl true
   def update_current_profile(attrs), do: Profiles.update_current_profile(attrs)
+
+  @impl true
+  def last_seen_visibility(attrs), do: UserService.Privacy.last_seen_visibility(attrs)
 end

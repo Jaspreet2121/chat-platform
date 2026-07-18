@@ -412,6 +412,7 @@ defmodule ConversationService.Conversations do
   Users who are no longer active participants (`left_at` set) simply have no row — a removed member is
   absent from the result rather than being reported with a zero count.
   """
+
   def inbox_rows(attrs) do
     with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
          {:ok, user_ids} <- required_user_ids(attrs) do
@@ -422,6 +423,47 @@ defmodule ConversationService.Conversations do
         end
       else
         {:ok, %{rows: []}}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :conversation_invalid}
+  end
+
+  @doc """
+  Do two users SHARE any active conversation? — the "contacts" relation for presence (WhatsApp semantics: you
+  can see the presence of people you're in a conversation with). Both must be ACTIVE participants (left_at
+  NULL) of the SAME conversation. Read-only self-join; returns `%{shares: boolean}`.
+  """
+  def shares_conversation?(attrs) do
+    with {:ok, user_a} <- required_attr(attrs, "user_a"),
+         {:ok, user_b} <- required_attr(attrs, "user_b") do
+      cond do
+        not conversation_persistence_enabled?() ->
+          {:ok, %{shares: false}}
+
+        user_a == user_b ->
+          # A user always "shares" with themselves — but presence-of-self is never gated, so this is moot;
+          # return false so the caller never treats self as a contact edge.
+          {:ok, %{shares: false}}
+
+        true ->
+          with {:ok, a} <- dump_uuid(user_a), {:ok, b} <- dump_uuid(user_b) do
+            %Postgrex.Result{rows: [[shares]]} =
+              ConversationService.Repo.query!(
+                """
+                SELECT EXISTS (
+                  SELECT 1
+                  FROM conversation_participants pa
+                  JOIN conversation_participants pb ON pb.conversation_id = pa.conversation_id
+                  WHERE pa.user_id = $1 AND pa.left_at IS NULL
+                    AND pb.user_id = $2 AND pb.left_at IS NULL
+                )
+                """,
+                [a, b]
+              )
+
+            {:ok, %{shares: shares}}
+          end
       end
     end
   rescue

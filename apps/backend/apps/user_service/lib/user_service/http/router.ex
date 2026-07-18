@@ -29,6 +29,10 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Profiles.update_current_profile(body(conn)))
   end
 
+  post "/internal/privacy/last_seen_visibility" do
+    send_result(conn, UserService.Privacy.last_seen_visibility(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "user", status: "ok", deps: %{}}})
   end
