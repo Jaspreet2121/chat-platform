@@ -869,7 +869,7 @@ defmodule ConversationService.CallStore do
   # NOT pass expected_status (the socket signaling + group-call paths) keep the exact prior behaviour — plain
   # unlocked get + unconditional patch — so this is a hardening of the /v1 answer path, not a state-machine
   # change for the existing callers.
-  defp transition(attrs, patch, webhook_event \\ nil) do
+  defp transition(attrs, patch, webhook_event) do
     with :ok <- persistence(),
          {:ok, call_id} <- required(attrs, "call_id") do
       expected = get(attrs, "expected_status")
