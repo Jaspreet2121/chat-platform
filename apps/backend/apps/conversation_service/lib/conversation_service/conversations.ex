@@ -1,4 +1,5 @@
 defmodule ConversationService.Conversations do
+  require Logger
   @moduledoc """
   Conversation metadata boundary.
   """
@@ -730,12 +731,7 @@ defmodule ConversationService.Conversations do
            :ok <- maybe_create_group_profile(conversation) do
         # TRANSACTIONAL OUTBOX: emit conversation.created in the SAME transaction (same Repo) as the
         # conversation + participant inserts, scoped to the conversation's app_id. Atomic with the write.
-        SharedInfra.WebhookOutbox.emit(
-          Repo,
-          conversation.app_id,
-          "conversation.created",
-          conversation_event(conversation, participant_user_ids)
-        )
+        emit_conversation_created(conversation, participant_user_ids)
 
         conversation_response(conversation, participant_user_ids)
       else
@@ -831,14 +827,55 @@ defmodule ConversationService.Conversations do
     end
   end
 
-  defp conversation_event(conversation, participant_user_ids) do
-    %{
-      "conversation_id" => conversation.id,
-      "type" => conversation.type,
-      "title" => conversation.title,
-      "created_by" => conversation.created_by,
-      "participant_user_ids" => participant_user_ids
-    }
+  # Webhooks speak the integrator's EXTERNAL ids (see message_store's emit for the full rationale). All
+  # participants + the creator resolve in ONE batch query under the conversation's app_id. The drop rule:
+  #   * creator unresolvable → the WHOLE event is dropped (created_by is attribution; an unattributable
+  #     event must never emit with an internal or blank id — the call webhooks' rule);
+  #   * a PARTICIPANT unresolvable → that participant is OMITTED but the event still emits (participants
+  #     are an enumeration, not attribution — a stale or first-party member shouldn't suppress the event).
+  defp emit_conversation_created(conversation, participant_user_ids) do
+    externals =
+      external_ids_for(conversation.app_id, Enum.uniq([conversation.created_by | participant_user_ids]))
+
+    case Map.fetch(externals, conversation.created_by) do
+      {:ok, creator_external_id} ->
+        SharedInfra.WebhookOutbox.emit(Repo, conversation.app_id, "conversation.created", %{
+          "conversation_id" => conversation.id,
+          "type" => conversation.type,
+          "title" => conversation.title,
+          "created_by_external_id" => creator_external_id,
+          "participant_external_ids" =>
+            participant_user_ids |> Enum.map(&Map.get(externals, &1)) |> Enum.reject(&is_nil/1)
+        })
+
+      :error ->
+        Logger.warning(
+          "conversation.created webhook dropped: creator #{conversation.created_by} has no external_id in app #{conversation.app_id}"
+        )
+
+        :ok
+    end
+  end
+
+  # internal user_id → external_id for a batch of users, ONE query, scoped to the app (the same direct
+  # users_auth read the call webhooks use — same Postgres, cross-service read precedent). Users without an
+  # external_id (first-party phone/email users) are simply absent from the result map.
+  defp external_ids_for(app_id, user_ids) do
+    with {:ok, app_bin} <- Ecto.UUID.dump(app_id),
+         {:ok, id_bins} <- dump_uuids(user_ids) do
+      %Postgrex.Result{rows: rows} =
+        Repo.query!(
+          "SELECT id::text, external_id FROM users_auth " <>
+            "WHERE app_id = $1 AND id = ANY($2) AND external_id IS NOT NULL",
+          [app_bin, id_bins]
+        )
+
+      Map.new(rows, fn [id, external_id] -> {id, external_id} end)
+    else
+      _ -> %{}
+    end
+  rescue
+    _ -> %{}
   end
 
   # Idempotent direct create. Compute the canonical pair key, return the existing thread if present,

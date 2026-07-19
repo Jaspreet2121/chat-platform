@@ -770,6 +770,7 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
 end
 
 defmodule MessageService.MessageStore.PostgresAdapter do
+  require Logger
   @moduledoc """
   Postgres-backed message store adapter (durability backend).
 
@@ -815,7 +816,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
 
           case Repo.insert(changeset) do
             {:ok, message} ->
-              SharedInfra.WebhookOutbox.emit(Repo, app_id, "message.created", message_event(message))
+              emit_message_created(app_id, message)
               message_response(message)
 
             {:error, _changeset} ->
@@ -847,12 +848,54 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   defp message_conversation_id(attrs),
     do: Map.get(attrs, "conversation_id") || Map.get(attrs, :conversation_id)
 
+  # Webhooks speak the integrator's EXTERNAL ids — the ids they mint tokens with and pass to /v1. An
+  # internal uuid is meaningless to them and a boundary leak, so the sender is resolved to their external
+  # id UNDER THE CONVERSATION'S app_id (the authoritative tenant, in scope from this same transaction).
+  # Unresolvable — the user row is gone, or it's a first-party (phone/email) user with no external_id —
+  # → the event is DROPPED, never emitted with an internal or blank id (the call webhooks'
+  # unattributable-drop rule). Cost: one indexed PK lookup inside the write txn.
+  defp emit_message_created(app_id, %Message{} = message) do
+    case sender_external_id(app_id, message.sender_user_id) do
+      {:ok, external_id} ->
+        SharedInfra.WebhookOutbox.emit(
+          Repo,
+          app_id,
+          "message.created",
+          message_event(message, external_id)
+        )
+
+      :drop ->
+        Logger.warning(
+          "message.created webhook dropped: sender #{message.sender_user_id} has no external_id in app #{app_id}"
+        )
+
+        :ok
+    end
+  end
+
+  defp sender_external_id(app_id, user_id)
+       when is_binary(app_id) and app_id != "" and is_binary(user_id) and user_id != "" do
+    case Repo.query(
+           "SELECT external_id FROM users_auth " <>
+             "WHERE id = $1::text::uuid AND app_id = $2::text::uuid AND external_id IS NOT NULL",
+           [user_id, app_id]
+         ) do
+      {:ok, %{rows: [[external_id]]}} when is_binary(external_id) and external_id != "" ->
+        {:ok, external_id}
+
+      _ ->
+        :drop
+    end
+  end
+
+  defp sender_external_id(_app_id, _user_id), do: :drop
+
   # The `data` body an integrator receives for message.created (the worker wraps it in the signed envelope).
-  defp message_event(%Message{} = message) do
+  defp message_event(%Message{} = message, sender_external_id) do
     %{
       "message_id" => message.message_id,
       "conversation_id" => message.conversation_id,
-      "sender_user_id" => message.sender_user_id,
+      "sender_external_id" => sender_external_id,
       "message_type" => message.message_type,
       "body" => message.body,
       "created_at" => to_iso(message.created_at)

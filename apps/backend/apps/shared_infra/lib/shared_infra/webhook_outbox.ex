@@ -70,7 +70,8 @@ defmodule SharedInfra.WebhookOutbox do
           "  WHERE status IN ('pending','delivering') AND next_attempt_at <= now() " <>
           "  ORDER BY next_attempt_at LIMIT $1 FOR UPDATE SKIP LOCKED ) " <>
           "RETURNING id::text, app_id::text, endpoint_id::text, event_id::text, event_type, " <>
-          "          payload, attempts, created_at::text",
+          "          payload, attempts, " <>
+          "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')",
         [limit, @visibility_seconds]
       )
 
