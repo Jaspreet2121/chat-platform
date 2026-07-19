@@ -4,6 +4,7 @@ import { ReactNode, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
+  Boxes,
   Activity,
   BarChart3,
   LayoutDashboard,
@@ -11,7 +12,8 @@ import {
   LogOut,
   MessagesSquare,
   ShieldAlert,
-  ShieldCheck
+  ShieldCheck,
+  Webhook
 } from "lucide-react";
 import { getCurrentSession } from "@/lib/api";
 import { clearSessionTokens, hasAccessToken } from "@/lib/session";
@@ -27,6 +29,10 @@ const nav: { href: string; label: string; icon: typeof Activity; exact: boolean;
   { href: "/admin/moderation", label: "Moderation", icon: ShieldAlert, exact: false },
   { href: "/admin/roles", label: "Roles", icon: ShieldCheck, exact: false, perm: "roles.manage" },
   { href: "/admin/content", label: "Content", icon: MessagesSquare, exact: false },
+  // Surface-3 platform ops. apps.view / webhooks.view = root+admin+support (read-only support by IAM
+  // design); moderator sees neither. Mutations (re-enqueue) are separately webhooks.manage server-side.
+  { href: "/admin/apps", label: "Apps", icon: Boxes, exact: false, perm: "apps.view" },
+  { href: "/admin/webhooks", label: "Webhooks", icon: Webhook, exact: false, perm: "webhooks.view" },
   { href: "/admin/health", label: "Health", icon: Activity, exact: false }
 ];
 

@@ -1202,3 +1202,78 @@ export function listWebhookDeliveries(
     `/api/v1/webhooks/deliveries${qs ? `?${qs}` : ""}`
   );
 }
+
+// --- Admin platform ops (Surface 3): cross-tenant apps overview + webhook dead-letter ops --------
+// Apps list: apps.view (root/admin/support). Webhook failed list: webhooks.view; re-enqueue mutations:
+// webhooks.manage (root/admin only). Counts + metadata only — the backend never returns key material,
+// signing secrets, or webhook payloads.
+
+export type AdminApp = {
+  app_id: string;
+  name: string;
+  created_at?: string | null;
+  // A test twin exists for this live app (twins fold into the parent row — keys.test counts the twin's keys).
+  test_twin: boolean;
+  owner?: { user_id: string; display: string } | null;
+  counts: { users: number; conversations: number; messages: number; storage_bytes: number };
+  api_keys: { live: number; test: number; revoked: number };
+  webhooks: { total: number; enabled: number };
+};
+
+export function getAdminApps(q?: string) {
+  const query = q && q.trim() !== "" ? `?q=${encodeURIComponent(q.trim())}` : "";
+  return request<{ apps: AdminApp[] }>(`/api/v1/admin/apps${query}`);
+}
+
+export type FailedWebhook = {
+  id: string;
+  event_id: string;
+  event_type: string;
+  app_id: string;
+  endpoint_url?: string | null;
+  attempts: number;
+  last_error?: string | null;
+  next_attempt_at?: string | null;
+  created_at: string;
+};
+
+export type FailedWebhooksPage = {
+  data: FailedWebhook[];
+  count: number;
+  next_cursor?: string | null;
+};
+
+export function getAdminFailedWebhooks(params: {
+  appId?: string;
+  eventType?: string;
+  cursor?: string;
+  limit?: number;
+} = {}) {
+  const query = new URLSearchParams();
+  if (params.appId) query.set("app_id", params.appId);
+  if (params.eventType) query.set("event_type", params.eventType);
+  if (params.cursor) query.set("cursor", params.cursor);
+  if (params.limit) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return request<FailedWebhooksPage>(`/api/v1/admin/webhooks/outbox/failed${qs ? `?${qs}` : ""}`);
+}
+
+export function reenqueueWebhook(id: string) {
+  return request<{ status: string }>(
+    `/api/v1/admin/webhooks/outbox/${encodeURIComponent(id)}/reenqueue`,
+    { method: "POST" }
+  );
+}
+
+export function reenqueueWebhooksBulk(params: { appId?: string; eventType?: string; limit?: number } = {}) {
+  const query = new URLSearchParams();
+  if (params.appId) query.set("app_id", params.appId);
+  if (params.eventType) query.set("event_type", params.eventType);
+  if (params.limit) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return request<{ reenqueued?: number; count?: number }>(
+    `/api/v1/admin/webhooks/outbox/reenqueue_bulk${qs ? `?${qs}` : ""}`,
+    { method: "POST" }
+  );
+}
+

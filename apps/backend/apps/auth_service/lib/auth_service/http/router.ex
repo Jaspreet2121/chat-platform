@@ -63,6 +63,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Apps.list_apps(body(conn)))
   end
 
+  post "/internal/apps/admin_list" do
+    send_result(conn, AuthService.Apps.admin_list_apps(body(conn)))
+  end
+
   post "/internal/apps/owns" do
     send_result(conn, AuthService.Apps.owns_app(body(conn)))
   end

@@ -84,6 +84,9 @@ defmodule AuthService.AuthClientInProcess do
   def list_apps(attrs), do: AuthService.Apps.list_apps(attrs)
 
   @impl true
+  def admin_list_apps(attrs), do: AuthService.Apps.admin_list_apps(attrs)
+
+  @impl true
   def owns_app(attrs), do: AuthService.Apps.owns_app(attrs)
 
   @impl true

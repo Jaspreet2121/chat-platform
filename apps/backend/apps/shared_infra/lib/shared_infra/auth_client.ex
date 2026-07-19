@@ -64,6 +64,7 @@ defmodule SharedInfra.AuthClient do
   @callback reenqueue_webhooks_bulk(attrs()) :: result()
   @callback create_app(attrs()) :: result()
   @callback list_apps(attrs()) :: result()
+  @callback admin_list_apps(attrs()) :: result()
   @callback owns_app(attrs()) :: result()
 
   # Optional so the many test stubs that implement this behaviour don't all need to add them; the real
@@ -90,6 +91,7 @@ defmodule SharedInfra.AuthClient do
                       reenqueue_webhooks_bulk: 1,
                       create_app: 1,
                       list_apps: 1,
+                      admin_list_apps: 1,
                       owns_app: 1
 
   def current_session(attrs), do: adapter().current_session(attrs)
@@ -121,6 +123,9 @@ defmodule SharedInfra.AuthClient do
   def reenqueue_webhooks_bulk(attrs), do: adapter().reenqueue_webhooks_bulk(attrs)
   def create_app(attrs), do: adapter().create_app(attrs)
   def list_apps(attrs), do: adapter().list_apps(attrs)
+
+  @doc "Cross-tenant operator app list (admin console) — counts + metadata only, never secrets."
+  def admin_list_apps(attrs), do: adapter().admin_list_apps(attrs)
   def owns_app(attrs), do: adapter().owns_app(attrs)
   def request_otp(attrs), do: adapter().request_otp(attrs)
   def verify_otp(attrs), do: adapter().verify_otp(attrs)

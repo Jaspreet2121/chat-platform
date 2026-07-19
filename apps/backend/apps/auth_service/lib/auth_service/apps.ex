@@ -146,6 +146,147 @@ defmodule AuthService.Apps do
     Postgrex.Error -> {:error, :app_invalid}
   end
 
+  @doc """
+  Cross-tenant OPERATOR view (admin console, Surface 3): every LIVE app with owner identity, usage counts,
+  key/webhook aggregates, and its test twin's existence. Deliberately separate from the owner-scoped
+  `list_apps/1`, which stays untouched — this is the read-only overview billing will later consume.
+
+  BATCHED: seven fixed queries for the WHOLE list (GROUP BY app_id), never N-per-app. The message count keeps
+  the parent-conversation join (tenancy rides the conversation — the same rule the owner usage endpoint
+  established). Key/webhook counts FOLD the test twin's rows into its live parent (sk_test keys live under the
+  twin app_id by design, 054); usage counts are the LIVE app's own — the twin is a badge, not a row.
+
+  NEVER selects key hashes, key prefixes, or webhook signing secrets — counts and metadata only. Owner
+  identity = display_name → phone → email (what the moderation console already shows admins).
+  """
+  def admin_list_apps(attrs) do
+    q = Map.get(attrs, "q")
+
+    {where, params} =
+      case q do
+        v when is_binary(v) and v != "" -> {"AND (a.name ILIKE $1 OR a.id::text ILIKE $1)", ["%#{v}%"]}
+        _ -> {"", []}
+      end
+
+    %{rows: app_rows} =
+      Repo.query!(
+        "SELECT a.id::text, a.name, a.created_at::text, twin.id::text AS twin_id " <>
+          "FROM apps a LEFT JOIN apps twin ON twin.parent_app_id = a.id AND twin.mode = 'test' " <>
+          "WHERE a.mode = 'live' #{where} ORDER BY a.created_at DESC LIMIT 200",
+        params
+      )
+
+    owners = group_first(
+      "SELECT o.app_id::text, o.owner_user_id::text, COALESCE(p.display_name, u.phone_number, u.email) " <>
+        "FROM app_owners o JOIN users_auth u ON u.id = o.owner_user_id " <>
+        "LEFT JOIN user_profiles p ON p.user_id = o.owner_user_id ORDER BY o.created_at ASC")
+
+    users = group_count("SELECT app_id::text, count(*) FROM users_auth GROUP BY app_id")
+    convos = group_count("SELECT app_id::text, count(*) FROM conversations GROUP BY app_id")
+
+    messages =
+      group_count(
+        "SELECT c.app_id::text, count(*) FROM messages m " <>
+          "JOIN conversations c ON c.id = m.conversation_id GROUP BY c.app_id"
+      )
+
+    storage =
+      group_count(
+        "SELECT app_id::text, COALESCE(SUM(size_bytes), 0)::bigint FROM media_assets GROUP BY app_id"
+      )
+
+    keys = key_counts()
+    hooks = webhook_counts()
+
+    apps =
+      Enum.map(app_rows, fn [id, name, created_at, twin_id] ->
+        # Twin fold: sk_test keys + test webhook endpoints live under the TWIN app_id — attribute them to
+        # the live row the operator is looking at.
+        scope = if twin_id, do: [id, twin_id], else: [id]
+
+        %{
+          app_id: id,
+          name: name,
+          created_at: created_at,
+          test_twin: is_binary(twin_id),
+          owner: Map.get(owners, id),
+          counts: %{
+            users: Map.get(users, id, 0),
+            conversations: Map.get(convos, id, 0),
+            messages: Map.get(messages, id, 0),
+            storage_bytes: Map.get(storage, id, 0)
+          },
+          api_keys: sum_keys(keys, scope),
+          webhooks: sum_hooks(hooks, scope)
+        }
+      end)
+
+    {:ok, %{apps: apps}}
+  rescue
+    _ -> {:error, :app_invalid}
+  end
+
+  # app_id → %{user_id, display} for the FIRST (oldest) owner. Tenant zero and twins have no owner row → nil.
+  defp group_first(sql) do
+    %{rows: rows} = Repo.query!(sql, [])
+
+    Enum.reduce(rows, %{}, fn [app_id, user_id, display], acc ->
+      Map.put_new(acc, app_id, %{user_id: user_id, display: display || short_id(user_id)})
+    end)
+  end
+
+  defp group_count(sql) do
+    %{rows: rows} = Repo.query!(sql, [])
+    Map.new(rows, fn [app_id, n] -> {app_id, n} end)
+  end
+
+  # app_id → %{live, test, revoked}. Active keys split by mode; revoked counted separately (an operator
+  # cares that keys were cycled, but a revoked key is not a live credential).
+  defp key_counts do
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT app_id::text, mode, (revoked_at IS NOT NULL) AS revoked, count(*) " <>
+          "FROM api_keys GROUP BY app_id, mode, (revoked_at IS NOT NULL)",
+        []
+      )
+
+    Enum.reduce(rows, %{}, fn [app_id, mode, revoked, n], acc ->
+      key = if revoked, do: :revoked, else: if(mode == "test", do: :test, else: :live)
+      Map.update(acc, app_id, %{key => n}, &Map.update(&1, key, n, fn c -> c + n end))
+    end)
+  end
+
+  defp sum_keys(keys, app_ids) do
+    Enum.reduce(app_ids, %{live: 0, test: 0, revoked: 0}, fn id, acc ->
+      per = Map.get(keys, id, %{})
+      %{
+        live: acc.live + Map.get(per, :live, 0),
+        test: acc.test + Map.get(per, :test, 0),
+        revoked: acc.revoked + Map.get(per, :revoked, 0)
+      }
+    end)
+  end
+
+  defp webhook_counts do
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT app_id::text, count(*), count(*) FILTER (WHERE enabled) FROM webhook_endpoints GROUP BY app_id",
+        []
+      )
+
+    Map.new(rows, fn [app_id, total, enabled] -> {app_id, %{total: total, enabled: enabled}} end)
+  end
+
+  defp sum_hooks(hooks, app_ids) do
+    Enum.reduce(app_ids, %{total: 0, enabled: 0}, fn id, acc ->
+      per = Map.get(hooks, id, %{total: 0, enabled: 0})
+      %{total: acc.total + per.total, enabled: acc.enabled + per.enabled}
+    end)
+  end
+
+  defp short_id(nil), do: "unknown"
+  defp short_id(id), do: "#" <> String.slice(to_string(id), 0, 8)
+
   defp scalar(sql, app_id) do
     case Repo.query(sql, [app_id]) do
       {:ok, %{rows: [[value]]}} when is_integer(value) -> value

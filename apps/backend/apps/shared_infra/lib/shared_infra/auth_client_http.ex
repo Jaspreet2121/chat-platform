@@ -83,6 +83,9 @@ defmodule SharedInfra.AuthClientHttp do
   def list_apps(attrs), do: post("/internal/apps/list", attrs)
 
   @impl true
+  def admin_list_apps(attrs), do: post("/internal/apps/admin_list", attrs)
+
+  @impl true
   def owns_app(attrs), do: post("/internal/apps/owns", attrs)
 
   @impl true

@@ -284,6 +284,9 @@ defmodule ApiGatewayWeb.Router do
 
     get "/audit", AdminModerationController, :list_audit
 
+    # Cross-tenant apps overview (Surface 3; apps.view — root/admin/support read-only).
+    get "/apps", AdminAppsController, :index
+
     # Webhook failed-delivery ops (dead-letter inspection + idempotent / bulk re-enqueue).
     get "/webhooks/outbox/failed", AdminWebhookController, :failed
     post "/webhooks/outbox/:id/reenqueue", AdminWebhookController, :reenqueue
