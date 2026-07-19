@@ -15,7 +15,7 @@ defmodule RealtimeGateway.UserChannel do
     with :ok <- Limits.check_join(socket),
          :ok <- TopicAuthorization.authorize_join(topic, socket) do
       socket = assign(socket, :topic_user_id, user_id)
-      socket = assign(socket, :presence_subs, MapSet.new())
+      socket = assign(socket, :presence_subs, %{})
       # App-level presence: joining the user topic means the app is open → mark it foreground for the
       # notification service (skip web-push while the app is open ANYWHERE — in-app covers it). The
       # client refreshes/clears via app:foreground / app:background below; the TTL self-heals.

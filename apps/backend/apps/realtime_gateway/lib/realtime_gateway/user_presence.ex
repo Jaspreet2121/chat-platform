@@ -25,6 +25,10 @@ defmodule RealtimeGateway.UserPresence do
 
   require Logger
 
+  # Cap the targets a single subscribe frame may request — bounds the resolve-or-create side of external-id
+  # resolution and the per-frame work.
+  @max_targets 200
+
   import Phoenix.Socket, only: [assign: 3]
 
   alias SharedInfra.Presence, as: Store
@@ -34,13 +38,14 @@ defmodule RealtimeGateway.UserPresence do
   def mark_online_and_broadcast(socket) do
     user_id = current_user(socket)
     endpoint = socket.endpoint
+    app_id = app_id(socket)
 
     if is_binary(user_id) do
       Task.start(fn ->
         case Store.mark_online(user_id) do
           {:transition, :online} ->
             Logger.info("PRESENCE_DEBUG kind=online user=#{user_id} (transition) → broadcasting")
-            broadcast_presence(endpoint, user_id, true, nil)
+            broadcast_presence(endpoint, app_id, user_id, true, nil)
 
           :already_online ->
             :ok
@@ -60,6 +65,7 @@ defmodule RealtimeGateway.UserPresence do
   def clear_online_and_broadcast(socket) do
     user_id = current_user(socket)
     endpoint = socket.endpoint
+    app_id = app_id(socket)
 
     if is_binary(user_id) do
       now = System.system_time(:second)
@@ -67,7 +73,7 @@ defmodule RealtimeGateway.UserPresence do
       Task.start(fn ->
         Store.clear_online(user_id, now)
         Logger.info("PRESENCE_DEBUG kind=offline user=#{user_id} → broadcasting last_seen=#{now}")
-        broadcast_presence(endpoint, user_id, false, now)
+        broadcast_presence(endpoint, app_id, user_id, false, now)
       end)
     end
 
@@ -77,25 +83,35 @@ defmodule RealtimeGateway.UserPresence do
   @doc "Authorize + subscribe this socket to each requested target; push an initial snapshot for each."
   def subscribe(socket, user_ids) do
     me = current_user(socket)
-    requested = user_ids |> Enum.filter(&(is_binary(&1) and &1 != "")) |> Enum.uniq()
+    app_id = app_id(socket)
+
+    requested =
+      user_ids |> Enum.filter(&(is_binary(&1) and &1 != "")) |> Enum.uniq() |> Enum.take(@max_targets)
 
     {socket, authorized} =
-      Enum.reduce(requested, {socket, []}, fn target, {sock, acc} ->
+      Enum.reduce(requested, {socket, []}, fn external, {sock, acc} ->
         cond do
-          MapSet.member?(sock.assigns.presence_subs, target) ->
-            {sock, [target | acc]}
-
-          PresenceAuthz.can_see?(me, target) ->
-            # endpoint.subscribe runs in the CHANNEL process (this is called from handle_in), so the channel
-            # receives the presence:<target> broadcasts and forwards them (user_channel handle_info).
-            sock.endpoint.subscribe(topic(target))
-            sock = assign(sock, :presence_subs, MapSet.put(sock.assigns.presence_subs, target))
-            snapshot(target)
-            {sock, [target | acc]}
+          # presence_subs maps the EXTERNAL id the client speaks → the INTERNAL id the core is keyed on.
+          Map.has_key?(sock.assigns.presence_subs, external) ->
+            {sock, [external | acc]}
 
           true ->
-            # Not a contact / not permitted → dropped silently.
-            {sock, acc}
+            # THE FIX: the SDK sends an EXTERNAL id, but topic/authz/store are all INTERNAL-keyed. Resolve
+            # external → internal (within the socket's app) FIRST — this is why subscribe returned []: an
+            # internal-vs-external pair never matched in shares_conversation?. An id that doesn't resolve, or
+            # that the viewer may not see, is dropped silently (no existence/visibility reveal).
+            with {:ok, internal} when is_binary(internal) <- resolve_internal(external, app_id),
+                 true <- PresenceAuthz.can_see?(me, internal) do
+              # endpoint.subscribe runs in the CHANNEL process (called from handle_in), so the channel
+              # receives presence:<internal> broadcasts and forwards them (user_channel handle_info).
+              sock.endpoint.subscribe(topic(internal))
+              sock = assign(sock, :presence_subs, Map.put(sock.assigns.presence_subs, external, internal))
+              # Snapshot is authorized on the INTERNAL id but returned to the SDK under the EXTERNAL id.
+              snapshot(internal, external)
+              {sock, [external | acc]}
+            else
+              _ -> {sock, acc}
+            end
         end
       end)
 
@@ -106,14 +122,16 @@ defmodule RealtimeGateway.UserPresence do
     {socket, Enum.reverse(authorized)}
   end
 
-  @doc "Unsubscribe this socket from each target's presence."
+  @doc "Unsubscribe this socket from each target's presence (by the EXTERNAL id the client subscribed with)."
   def unsubscribe(socket, user_ids) do
-    Enum.reduce(user_ids, socket, fn target, sock ->
-      if is_binary(target) and MapSet.member?(sock.assigns.presence_subs, target) do
-        sock.endpoint.unsubscribe(topic(target))
-        assign(sock, :presence_subs, MapSet.delete(sock.assigns.presence_subs, target))
-      else
-        sock
+    Enum.reduce(user_ids, socket, fn external, sock ->
+      case is_binary(external) and Map.get(sock.assigns.presence_subs, external) do
+        internal when is_binary(internal) ->
+          sock.endpoint.unsubscribe(topic(internal))
+          assign(sock, :presence_subs, Map.delete(sock.assigns.presence_subs, external))
+
+        _ ->
+          sock
       end
     end)
   end
@@ -129,59 +147,105 @@ defmodule RealtimeGateway.UserPresence do
   """
   def forward_if_authorized(socket, event, payload) do
     me = current_user(socket)
-    target = Map.get(payload, "user_id") || Map.get(payload, :user_id)
+    # The re-auth runs on the INTERNAL id (the payload carries it alongside the external one); the id the SDK
+    # ultimately sees is the EXTERNAL `user_id`, with `internal_id` STRIPPED so no internal uuid ever leaks.
+    target_internal = Map.get(payload, "internal_id") || Map.get(payload, :internal_id)
     channel_pid = self()
 
     Task.start(fn ->
-      if is_binary(me) and is_binary(target) and PresenceAuthz.can_see?(me, target) do
-        send(channel_pid, {:presence_forward, event, payload})
+      if is_binary(me) and is_binary(target_internal) and PresenceAuthz.can_see?(me, target_internal) do
+        send(channel_pid, {:presence_forward, event, client_payload(payload)})
       end
     end)
 
     :ok
   end
 
+  # The wire frame for the SDK: the external id only, internal_id dropped.
+  defp client_payload(payload), do: Map.drop(payload, ["internal_id", :internal_id])
+
   @doc "The presence PubSub topic for a user (exposed for tests)."
   def topic(user_id), do: "presence:" <> user_id
 
   # --- internals ---
 
-  # Broadcast a transition on the target's topic, GATED on visibility != nobody (one check gating the whole
-  # broadcast — subscribers already passed the shared-conversation check at subscribe time).
-  defp broadcast_presence(endpoint, user_id, online, last_seen) do
-    if visible?(user_id) do
-      endpoint.broadcast(topic(user_id), "presence_updated", %{
-        "user_id" => user_id,
-        "online" => online,
-        "last_seen_at" => iso8601(last_seen)
-      })
-    else
-      Logger.info(
-        "PRESENCE_DEBUG kind=#{kind(online)} user=#{user_id} suppressed (visibility=nobody)"
-      )
+  # Broadcast a transition. The topic + authz are keyed on the INTERNAL id, but the frame the SDK ultimately
+  # sees must carry the EXTERNAL id — so resolve internal → external ONCE here and put BOTH in the payload
+  # (`internal_id` for the receiver's re-auth, `user_id` external for the client). If the user has no external
+  # id (a first-party phone/email user), there is no /v1 subscriber who could be watching them, so we skip —
+  # never broadcasting an internal uuid the SDK couldn't use anyway.
+  #
+  # GATED on visibility != nobody (one check gating the whole broadcast — subscribers already passed the
+  # shared-conversation check at subscribe, and every delivery is re-authorized at the receiver).
+  defp broadcast_presence(endpoint, app_id, user_id, online, last_seen) do
+    case resolve_external(user_id, app_id) do
+      external when is_binary(external) ->
+        if visible?(user_id) do
+          endpoint.broadcast(topic(user_id), "presence_updated", %{
+            "user_id" => external,
+            "internal_id" => user_id,
+            "online" => online,
+            "last_seen_at" => iso8601(last_seen)
+          })
+        else
+          Logger.info("PRESENCE_DEBUG kind=#{kind(online)} user=#{user_id} suppressed (visibility=nobody)")
+          :ok
+        end
 
-      :ok
+      _ ->
+        # No external id → no /v1 audience; nothing to broadcast (and never leak the internal id).
+        :ok
     end
   end
 
   # Read the target's current state OFF the channel process, then hand the snapshot back to the channel
-  # process (self()) to push — so a slow Redis never blocks the channel on subscribe.
-  defp snapshot(target) do
+  # process (self()) to push — so a slow Redis never blocks the channel on subscribe. Authorized on the
+  # INTERNAL id; returned to the SDK under the EXTERNAL id it subscribed with.
+  defp snapshot(internal, external) do
     channel_pid = self()
 
     Task.start(fn ->
-      online = Store.online?(target)
-      last_seen = if online, do: nil, else: Store.last_seen(target)
+      online = Store.online?(internal)
+      last_seen = if online, do: nil, else: Store.last_seen(internal)
 
       send(
         channel_pid,
         {:presence_snapshot,
-         %{"user_id" => target, "online" => online, "last_seen_at" => iso8601(last_seen)}}
+         %{"user_id" => external, "online" => online, "last_seen_at" => iso8601(last_seen)}}
       )
     end)
 
     :ok
   end
+
+  # external → internal within the socket's app (the SDK speaks external; topic/authz/store are internal).
+  # NOTE: resolve_external_user is resolve-OR-create; for real inbox targets the user already exists so no row
+  # is created. A bogus external id would create an inert orphan (shares no conversation → dropped); the
+  # per-subscribe target cap bounds it. A resolve-only variant is the cleaner future primitive.
+  defp resolve_internal(external, app_id) when is_binary(app_id) and app_id != "" do
+    case SharedInfra.AuthClient.resolve_external_user(%{"app_id" => app_id, "external_id" => external}) do
+      {:ok, res} -> {:ok, Map.get(res, :user_id) || Map.get(res, "user_id")}
+      _ -> :error
+    end
+  rescue
+    _ -> :error
+  end
+
+  defp resolve_internal(_external, _app_id), do: :error
+
+  # internal → external within the app (never creates). nil for a first-party user with no external id.
+  defp resolve_external(internal, app_id) when is_binary(app_id) and app_id != "" do
+    case SharedInfra.AuthClient.resolve_user_external_id(%{"app_id" => app_id, "user_id" => internal}) do
+      {:ok, res} -> Map.get(res, :external_id) || Map.get(res, "external_id")
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp resolve_external(_internal, _app_id), do: nil
+
+  defp app_id(socket), do: Map.get(socket.assigns, :app_id)
 
   defp visible?(user_id) do
     case SharedInfra.UserClient.last_seen_visibility(%{"user_id" => user_id}) do
