@@ -50,6 +50,10 @@ defmodule ApiGatewayWeb.V1.CallController do
          room = cget(call, :room_name),
          {:ok, jwt} <-
            SharedInfra.LiveKitToken.create(conn.assigns.v1_user_id, room, name: conn.assigns.v1_user_id) do
+      # RING THE CALLEE + arm the ring timeout — the two things the socket invite does that this path didn't,
+      # which left SDK-initiated calls ringing nobody, forever. Fire-and-forget: never fails the create.
+      ring_and_arm_timeout(app_id, call, conn.assigns.v1_user_id, callee_id)
+
       json(conn, %{
         call_id: cget(call, :id),
         room: room,
@@ -202,6 +206,49 @@ defmodule ApiGatewayWeb.V1.CallController do
     if conn.assigns[:v1_actor] == :end_user and is_binary(conn.assigns[:v1_user_id]),
       do: :ok,
       else: {:error, :app_only}
+  end
+
+  # Ring the callee (call:incoming + web push) and arm the ring timeout for a /v1-created call. Both reuse
+  # the SAME `RealtimeGateway.CallSignaling` implementations the socket invite uses — one ring payload, one
+  # timeout path — via the endpoint the socket is mounted on (one endpoint, one PubSub).
+  #
+  # Fire-and-forget in detached tasks: a resolve/broadcast/push hiccup must never fail the create (the caller
+  # already has their room + token), and the 35s timer must outlive this request process (Task.start is
+  # unlinked). The timeout calls the same `ring_timeout` the socket path uses: it re-checks status under way,
+  # so an accept/reject landing first makes it a no-op, and a fired timeout marks the call missed, writes the
+  # missed-call message (no-op here — /v1 calls carry no conversation), broadcasts call:missed to both
+  # parties, and emits the call.missed webhook via the shared CallStore transition.
+  #
+  # HONEST LIMITATION: this timer lives in THIS node's memory. A deploy/restart between create and +35s kills
+  # it, leaving the call `ringing` forever — nothing else marks stale ringing calls missed (verified: no
+  # sweep exists). The durable fix is a periodic stale-ringing sweep (the known "ghost-call auto-close"
+  # follow-up), deliberately not built in this slice.
+  defp ring_and_arm_timeout(app_id, call, caller_id, callee_id) do
+    call_id = cget(call, :id)
+
+    Task.start(fn ->
+      try do
+        RealtimeGateway.CallSignaling.ring_callee(ApiGatewayWeb.Endpoint, app_id, %{
+          call_id: call_id,
+          room: cget(call, :room_name),
+          caller_id: caller_id,
+          callee_id: callee_id,
+          type: cget(call, :type),
+          conversation_id: cget(call, :conversation_id)
+        })
+      rescue
+        # Never fail the create — but never vanish either (the callee simply wouldn't ring).
+        error -> Logger.error("v1 call ring failed for #{call_id}: #{Exception.message(error)}")
+      end
+    end)
+
+    Task.start(fn ->
+      Process.sleep(RealtimeGateway.CallSignaling.ring_timeout_ms())
+      # ring_timeout rescues internally; a still-ringing call → missed (idempotent re-check inside).
+      RealtimeGateway.CallSignaling.ring_timeout(call_id, ApiGatewayWeb.Endpoint)
+    end)
+
+    :ok
   end
 
   # accept/reject share everything but the transition, the caller event, and the response — so one path.

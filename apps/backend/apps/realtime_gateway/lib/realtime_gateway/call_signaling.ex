@@ -24,6 +24,14 @@ defmodule RealtimeGateway.CallSignaling do
   alias SharedInfra.ConversationClient
 
   @ring_timeout_ms 35_000
+
+  @doc """
+  The ring timeout. The socket invite arms it in the caller's channel process; the /v1 create path arms a
+  detached timer with the SAME value, read from here so the two can never drift. Config-overridable
+  (`:realtime_gateway, :call_ring_timeout_ms`) ONLY so tests can shrink it — nothing sets it in prod.
+  """
+  def ring_timeout_ms,
+    do: Application.get_env(:realtime_gateway, :call_ring_timeout_ms, @ring_timeout_ms)
   @call_events_topic "call.events.v1"
 
   @doc "Dispatch a `call:*` event from the user channel. Returns a `{:reply, reply, socket}` tuple."
@@ -65,24 +73,15 @@ defmodule RealtimeGateway.CallSignaling do
           {:ok, call} ->
             call_id = cget(call, :id)
             room = cget(call, :room_name)
-            {caller_name, caller_avatar_url} = resolve_caller(caller_id, app_id(socket))
 
-            broadcast(
-              socket,
-              callee_id,
-              "call:incoming",
-              %{
-                call_id: call_id,
-                room: room,
-                caller_id: caller_id,
-                caller_name: caller_name,
-                type: type,
-                conversation_id: cget(call, :conversation_id)
-              }
-              |> put_avatar(caller_avatar_url)
-            )
-
-            emit_incoming_push(callee_id, caller_name, type, call_id)
+            ring_callee(socket.endpoint, app_id(socket), %{
+              call_id: call_id,
+              room: room,
+              caller_id: caller_id,
+              callee_id: callee_id,
+              type: type,
+              conversation_id: cget(call, :conversation_id)
+            })
 
             # Server-side ring timeout (this = the caller's channel process). On fire we re-check status,
             # so accept/reject/cancel/hangup transitioning first makes it a no-op — no cross-process cancel.
@@ -97,6 +96,41 @@ defmodule RealtimeGateway.CallSignaling do
   end
 
   def invite(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  @doc """
+  Ring the CALLEE of a freshly-created direct call: resolve the caller's display name + avatar, broadcast
+  `call:incoming` to the callee's `user:<id>` topic, and emit the incoming-call web push (the only signal a
+  BACKGROUNDED or socketless callee gets). ONE implementation for both entry points — the socket
+  `call:invite` above and `POST /v1/calls` — so the wire payload can never fork between them.
+  """
+  def ring_callee(endpoint, app_id, %{
+        call_id: call_id,
+        room: room,
+        caller_id: caller_id,
+        callee_id: callee_id,
+        type: type,
+        conversation_id: conversation_id
+      }) do
+    {caller_name, caller_avatar_url} = resolve_caller(caller_id, app_id)
+
+    do_broadcast(
+      endpoint,
+      callee_id,
+      "call:incoming",
+      %{
+        call_id: call_id,
+        room: room,
+        caller_id: caller_id,
+        caller_name: caller_name,
+        type: type,
+        conversation_id: conversation_id
+      }
+      |> put_avatar(caller_avatar_url)
+    )
+
+    emit_incoming_push(callee_id, caller_name, type, call_id)
+    :ok
+  end
 
   # --- accept / reject (callee only) -------------------------------------------------------------
   defp accept(%{"call_id" => call_id}, socket) do
@@ -132,7 +166,7 @@ defmodule RealtimeGateway.CallSignaling do
   defp cancel(%{"call_id" => call_id}, socket) do
     with_call(call_id, socket, [:caller], fn call, _role ->
       _ = ConversationClient.mark_call_missed(%{"call_id" => call_id})
-      write_missed_message(call, socket)
+      write_missed_message(call, socket.endpoint)
       broadcast(socket, cget(call, :callee_id), "call:cancelled", %{call_id: call_id})
       {:reply, {:ok, %{call_id: call_id}}, socket}
     end)
@@ -156,14 +190,14 @@ defmodule RealtimeGateway.CallSignaling do
   Ring timeout (fired from the caller's channel via `handle_info`). Only marks missed if the call is STILL
   ringing (accept/reject/cancel/hangup already moved it → no-op), then broadcasts `call:missed` to both.
   """
-  def ring_timeout(call_id, socket) when is_binary(call_id) do
+  def ring_timeout(call_id, endpoint) when is_binary(call_id) and is_atom(endpoint) do
     case ConversationClient.get_call(%{"call_id" => call_id}) do
       {:ok, call} ->
         if cget(call, :status) == "ringing" do
           _ = ConversationClient.mark_call_missed(%{"call_id" => call_id})
-          write_missed_message(call, socket)
-          broadcast(socket, cget(call, :caller_id), "call:missed", %{call_id: call_id})
-          broadcast(socket, cget(call, :callee_id), "call:missed", %{call_id: call_id})
+          write_missed_message(call, endpoint)
+          do_broadcast(endpoint, cget(call, :caller_id), "call:missed", %{call_id: call_id})
+          do_broadcast(endpoint, cget(call, :callee_id), "call:missed", %{call_id: call_id})
         end
 
       _ ->
@@ -174,6 +208,9 @@ defmodule RealtimeGateway.CallSignaling do
   rescue
     _ -> :ok
   end
+
+  # The socket form (the channel's handle_info) — same logic, endpoint taken from the socket.
+  def ring_timeout(call_id, socket) when is_binary(call_id), do: ring_timeout(call_id, socket.endpoint)
 
   # ============================================================================================
   # Group calling (Phase 3). SEPARATE event set — no callee_id; membership + permission live in
@@ -668,12 +705,15 @@ defmodule RealtimeGateway.CallSignaling do
 
   defp with_call(_call_id, socket, _roles, _fun), do: reply_error(socket, "call.invalid_request")
 
-  defp broadcast(socket, user_id, event, payload) when is_binary(user_id) and user_id != "" do
-    socket.endpoint.broadcast("user:" <> user_id, event, payload)
+  defp broadcast(socket, user_id, event, payload),
+    do: do_broadcast(socket.endpoint, user_id, event, payload)
+
+  defp do_broadcast(endpoint, user_id, event, payload) when is_binary(user_id) and user_id != "" do
+    endpoint.broadcast("user:" <> user_id, event, payload)
     :ok
   end
 
-  defp broadcast(_socket, _user_id, _event, _payload), do: :ok
+  defp do_broadcast(_endpoint, _user_id, _event, _payload), do: :ok
 
   # Caller display name for the ring/push — best-effort (falls back to a short id). MUST pass the socket's
   # app_id: get_public_profile is app-scoped (a1ce358) and returns :profile_invalid without it, which is
@@ -751,13 +791,12 @@ defmodule RealtimeGateway.CallSignaling do
   # last-message/re-sort updates. sender = caller (so the existing own/other bubble alignment reads correct).
   # Requires the call row's conversation_id; if absent (call not tied to a conversation) we SKIP — the call
   # still shows in the Calls tab regardless.
-  defp write_missed_message(call, socket) do
+  defp write_missed_message(call, endpoint) do
     conversation_id = cget(call, :conversation_id)
     caller_id = cget(call, :caller_id)
     callee_id = cget(call, :callee_id)
 
     if is_binary(conversation_id) and conversation_id != "" and is_binary(caller_id) do
-      endpoint = socket.endpoint
       call_type = if cget(call, :type) == "video", do: "video", else: "voice"
 
       attrs = %{
