@@ -5,6 +5,11 @@ defmodule UserService.PrivacyLastSeenTest do
   """
   use UserService.DataCase, async: false
 
+  # DB-backed (DataCase checks out a real Repo) → opt-in like every other Postgres test, so the default
+  # `mix test` stays Docker-free. (This tag was MISSING at first — the tests ran green only because the
+  # authoring machine had a test Postgres up, and failed on any machine without one.)
+  @moduletag :postgres_integration
+
   alias UserService.Privacy
 
   setup do

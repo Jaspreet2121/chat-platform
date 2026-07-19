@@ -5,6 +5,10 @@ defmodule ConversationService.SharesConversationTest do
   """
   use ConversationService.DataCase, async: false
 
+  # DB-backed → opt-in like every other Postgres test, so the default `mix test` stays Docker-free.
+  # (Missing at first — green only while the authoring machine had a test Postgres up.)
+  @moduletag :postgres_integration
+
   alias ConversationService.Conversations
 
   @app_id "00000000-0000-0000-0000-000000000001"
