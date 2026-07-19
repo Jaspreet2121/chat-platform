@@ -23,8 +23,7 @@ defmodule RealtimeGateway.UserPresence do
 
   require Logger
 
-  # Cap the targets a single subscribe frame may request — bounds the resolve-or-create side of external-id
-  # resolution and the per-frame work.
+  # Cap the targets a single subscribe frame may request — bounds the per-frame resolve/authz work.
   @max_targets 200
 
   import Phoenix.Socket, only: [assign: 3]
@@ -211,11 +210,10 @@ defmodule RealtimeGateway.UserPresence do
   end
 
   # external → internal within the socket's app (the SDK speaks external; topic/authz/store are internal).
-  # NOTE: resolve_external_user is resolve-OR-create; for real inbox targets the user already exists so no row
-  # is created. A bogus external id would create an inert orphan (shares no conversation → dropped); the
-  # per-subscribe target cap bounds it. A resolve-only variant is the cleaner future primitive.
+  # Resolve-ONLY (the "cleaner future primitive" the old note here wished for): a subscribe is a REFERENCE,
+  # so a bogus external id is simply dropped — no orphan user row is ever created.
   defp resolve_internal(external, app_id) when is_binary(app_id) and app_id != "" do
-    case SharedInfra.AuthClient.resolve_external_user(%{"app_id" => app_id, "external_id" => external}) do
+    case SharedInfra.AuthClient.lookup_external_user(%{"app_id" => app_id, "external_id" => external}) do
       {:ok, res} -> {:ok, Map.get(res, :user_id) || Map.get(res, "user_id")}
       _ -> :error
     end

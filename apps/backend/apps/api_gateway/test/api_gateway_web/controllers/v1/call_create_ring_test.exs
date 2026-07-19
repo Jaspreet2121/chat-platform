@@ -23,14 +23,15 @@ defmodule ApiGatewayWeb.V1.CallCreateRingTest do
   @room "call-11111111-1111-4111-8111-111111111111"
 
   defmodule AuthStub do
-    # "bob_ext" resolves to the callee; "self_ext" resolves to the CALLER (the self-call case).
-    def resolve_external_user(%{"external_id" => "bob_ext"}),
+    # LOOKUP (resolve-only — create switched off resolve-or-create): "bob_ext" → the callee,
+    # "self_ext" → the CALLER (the self-call case), anything else → :user_not_found (never creates).
+    def lookup_external_user(%{"external_id" => "bob_ext"}),
       do: {:ok, %{user_id: "33333333-3333-4333-8333-333333333333"}}
 
-    def resolve_external_user(%{"external_id" => "self_ext"}),
+    def lookup_external_user(%{"external_id" => "self_ext"}),
       do: {:ok, %{user_id: "22222222-2222-4222-8222-222222222222"}}
 
-    def resolve_external_user(_), do: {:error, :not_found}
+    def lookup_external_user(_), do: {:error, :user_not_found}
   end
 
   defmodule ConvStub do
@@ -200,6 +201,17 @@ defmodule ApiGatewayWeb.V1.CallCreateRingTest do
 
     refute_receive %Phoenix.Socket.Broadcast{event: "call:missed"}, 500
     refute Enum.any?(ConvStub.log(), &match?({:missed, _}, &1))
+  end
+
+  test "a BOGUS callee_external_id → 404: no user created, no call row, no ring (the lookup fix)" do
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@callee}")
+
+    conn = create!(%{"callee_external_id" => "ghost_nobody", "type" => "voice"})
+
+    # Previously this CREATED an inert user and "rang" nobody (resolve-or-create); now it is an opaque 404.
+    assert conn.status == 404
+    refute_receive %Phoenix.Socket.Broadcast{}, 200
+    refute Enum.any?(ConvStub.log(), &match?({:create, _}, &1))
   end
 
   test "a self-call is still refused — and rings nobody" do

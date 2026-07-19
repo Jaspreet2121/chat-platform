@@ -81,6 +81,23 @@ defmodule AuthService.Accounts do
   def resolve_or_create_external_user(_app_id, _external_id), do: {:error, :user_invalid}
 
   @doc """
+  Resolve-ONLY twin of `resolve_or_create_external_user/2`, for LOOKUP/reference contexts (a GET, a callee
+  check, a presence subscribe): the SAME `(app_id, external_id)` scoping and the same lookup, but an unknown
+  id is `{:error, :user_not_found}` — never a created row. JIT provisioning stays exclusive to the WRITE
+  contexts (message sender / media owner / conversation participants), where creating on first sight is the
+  point; a read path creating user rows was the defect this exists to close.
+  """
+  def lookup_external_user(app_id, external_id)
+      when is_binary(app_id) and app_id != "" and is_binary(external_id) and external_id != "" do
+    case get_external_user(app_id, external_id) do
+      %UserAuth{id: id} -> {:ok, %{user_id: id}}
+      nil -> {:error, :user_not_found}
+    end
+  end
+
+  def lookup_external_user(_app_id, _external_id), do: {:error, :user_not_found}
+
+  @doc """
   Reverse of `resolve_or_create_external_user`: map an internal `user_id` back to the integrator's
   `external_id` WITHIN an app. The `app_id` scope makes this double as a tenant check — a user_id that
   doesn't belong to `app_id` (cross-tenant, or a phone/email session user with no external_id) → `:not_found`.

@@ -17,10 +17,11 @@ defmodule ApiGatewayWeb.V1.PresenceReadIdTest do
   @bob_internal "22222222-2222-4222-8222-222222222222"
 
   defmodule AuthStub do
-    def resolve_external_user(%{"external_id" => "bob_ext"}),
+    # Resolve-ONLY (a GET must never create a user row): known id resolves, anything else :user_not_found.
+    def lookup_external_user(%{"external_id" => "bob_ext"}),
       do: {:ok, %{user_id: "22222222-2222-4222-8222-222222222222"}}
 
-    def resolve_external_user(_), do: {:error, :not_found}
+    def lookup_external_user(_), do: {:error, :user_not_found}
   end
 
   defmodule PresenceStub do
@@ -94,6 +95,15 @@ defmodule ApiGatewayWeb.V1.PresenceReadIdTest do
     assert conn.status == 200
     %{"presence" => [entry]} = Jason.decode!(conn.resp_body)
     assert entry == %{"user_id" => "ghost", "online" => false, "last_seen_at" => nil}
+  end
+
+  test "a MIX of real + bogus ids: real resolves, bogus reads offline, order preserved" do
+    conn = PresenceController.index(v1_conn("bob_ext,ghost"), %{"user_ids" => "bob_ext,ghost"})
+    assert conn.status == 200
+
+    %{"presence" => [bob, ghost]} = Jason.decode!(conn.resp_body)
+    assert bob["user_id"] == "bob_ext" and bob["online"] == true
+    assert ghost == %{"user_id" => "ghost", "online" => false, "last_seen_at" => nil}
   end
 
   test "an app actor (no v1_user_id) → 403" do

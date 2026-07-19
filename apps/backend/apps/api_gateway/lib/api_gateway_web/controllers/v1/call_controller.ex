@@ -15,8 +15,9 @@ defmodule ApiGatewayWeb.V1.CallController do
   (fail closed, never an existence reveal).
 
   external_id BOUNDARY: integrators refer to their users by their OWN `external_id`. Inbound ids are resolved
-  to internal user_ids via `AuthClient.resolve_external_user`; any user id we RETURN is mapped back to
-  `external_id` via `AuthClient.resolve_user_external_id` — internal user_ids never cross the /v1 boundary.
+  to internal user_ids via `AuthClient.lookup_external_user` (resolve-ONLY — a callee is a reference, never a
+  provisioning site); any user id we RETURN is mapped back to `external_id` via
+  `AuthClient.resolve_user_external_id` — internal user_ids never cross the /v1 boundary.
 
   Reuses the same CallStore boundary the internal flows use (create_call / mark_call_ended /
   leave_group_call / create_call_link / get_call_link / join_call_link / get_call / call_participant? /
@@ -37,8 +38,13 @@ defmodule ApiGatewayWeb.V1.CallController do
     with :ok <- require_end_user(conn),
          {:ok, type} <- fetch_type(params),
          {:ok, callee_ext} <- fetch_nonempty(params, "callee_external_id"),
+         # LOOKUP, not resolve-or-create: a callee is a REFERENCE to an existing user, not a provisioning
+         # site. Previously a bogus callee_external_id CREATED an inert user row and "rang" nobody — a
+         # deliberate BEHAVIOUR CHANGE: an unknown callee is now 404 (the same opaque not-found the rest of
+         # /v1 uses). JIT creation still happens where it belongs (message sender / media owner /
+         # conversation participants).
          {:ok, %{} = callee} <-
-           SharedInfra.AuthClient.resolve_external_user(%{"app_id" => app_id, "external_id" => callee_ext}),
+           SharedInfra.AuthClient.lookup_external_user(%{"app_id" => app_id, "external_id" => callee_ext}),
          callee_id = cget(callee, :user_id),
          :ok <- refute_self(conn.assigns.v1_user_id, callee_id),
          {:ok, call} <-
@@ -66,6 +72,8 @@ defmodule ApiGatewayWeb.V1.CallController do
       {:error, :invalid_type} -> ErrorResponse.invalid_request(conn, "v1.invalid_request")
       {:error, :missing} -> ErrorResponse.invalid_request(conn, "v1.invalid_request")
       {:error, :self_call} -> ErrorResponse.invalid_request(conn, "v1.invalid_request")
+      # Unknown callee_external_id → opaque 404 (no existence reveal, no row created).
+      {:error, :user_not_found} -> not_found(conn)
       {:error, :livekit_not_configured} -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
       _ -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
     end

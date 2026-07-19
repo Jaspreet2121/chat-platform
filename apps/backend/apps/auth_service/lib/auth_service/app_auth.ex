@@ -69,6 +69,14 @@ defmodule AuthService.AppAuth do
     end
   end
 
+  @doc "Resolve-ONLY external-user lookup → {:ok, %{user_id}} | {:error, :user_not_found}. Never creates."
+  def lookup_external_user(attrs) do
+    with {:ok, app_id} <- fetch(attrs, "app_id"),
+         {:ok, external_id} <- fetch(attrs, "external_id") do
+      Accounts.lookup_external_user(app_id, external_id)
+    end
+  end
+
   @doc """
   Reverse map an internal `user_id` back to the integrator's `external_id` within an app →
   {:ok, %{user_id, external_id}} | {:error, :not_found}. Used to keep internal user_ids OUT of /v1

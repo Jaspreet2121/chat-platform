@@ -93,6 +93,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.AppAuth.resolve_external_user(body(conn)))
   end
 
+  post "/internal/app_auth/lookup_user" do
+    send_result(conn, AuthService.AppAuth.lookup_external_user(body(conn)))
+  end
+
   post "/internal/app_auth/resolve_user_external_id" do
     send_result(conn, AuthService.AppAuth.resolve_user_external_id(body(conn)))
   end

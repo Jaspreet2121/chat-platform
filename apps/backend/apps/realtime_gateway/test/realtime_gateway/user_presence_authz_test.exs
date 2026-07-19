@@ -19,11 +19,12 @@ defmodule RealtimeGateway.UserPresenceAuthzTest do
   @app "55555555-5555-4555-8555-555555555555"
 
   defmodule AuthStub do
-    # external "bob_p5gb30p8" ↔ internal @target_internal; anything else is unknown.
-    def resolve_external_user(%{"external_id" => "bob_p5gb30p8"}),
+    # external "bob_p5gb30p8" ↔ internal @target_internal; anything else is unknown. Resolve-ONLY:
+    # subscribe is a reference context — a bogus id is dropped, never provisioned.
+    def lookup_external_user(%{"external_id" => "bob_p5gb30p8"}),
       do: {:ok, %{user_id: "22222222-2222-4222-8222-222222222222"}}
 
-    def resolve_external_user(_), do: {:error, :not_found}
+    def lookup_external_user(_), do: {:error, :user_not_found}
 
     def resolve_user_external_id(%{"user_id" => "22222222-2222-4222-8222-222222222222"}),
       do: {:ok, %{external_id: "bob_p5gb30p8"}}

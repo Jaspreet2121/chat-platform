@@ -43,6 +43,9 @@ defmodule AuthService.AuthClientInProcess do
   def resolve_external_user(attrs), do: AppAuth.resolve_external_user(attrs)
 
   @impl true
+  def lookup_external_user(attrs), do: AppAuth.lookup_external_user(attrs)
+
+  @impl true
   def resolve_user_external_id(attrs), do: AppAuth.resolve_user_external_id(attrs)
 
   @impl true

@@ -58,8 +58,10 @@ defmodule ApiGatewayWeb.V1.PresenceController do
 
   defp offline(user_id), do: %{user_id: user_id, online: false, last_seen_at: nil}
 
+  # Resolve-ONLY: this is a GET — an unknown external id must read as offline, never CREATE a user row
+  # (which the resolve-or-create variant would). Outcome identical to before: nil → offline under the id.
   defp resolve_internal(external, app_id) when is_binary(app_id) and app_id != "" and is_binary(external) do
-    case SharedInfra.AuthClient.resolve_external_user(%{"app_id" => app_id, "external_id" => external}) do
+    case SharedInfra.AuthClient.lookup_external_user(%{"app_id" => app_id, "external_id" => external}) do
       {:ok, res} -> Map.get(res, :user_id) || Map.get(res, "user_id")
       _ -> nil
     end

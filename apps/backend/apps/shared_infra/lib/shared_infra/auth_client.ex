@@ -50,6 +50,7 @@ defmodule SharedInfra.AuthClient do
   @callback verify_api_key(attrs()) :: result()
   @callback mint_app_user_token(attrs()) :: result()
   @callback resolve_external_user(attrs()) :: result()
+  @callback lookup_external_user(attrs()) :: result()
   @callback resolve_user_external_id(attrs()) :: result()
   @callback verify_app_user_token(attrs()) :: result()
   @callback create_webhook_endpoint(attrs()) :: result()
@@ -76,6 +77,7 @@ defmodule SharedInfra.AuthClient do
                       verify_api_key: 1,
                       mint_app_user_token: 1,
                       resolve_external_user: 1,
+                      lookup_external_user: 1,
                       verify_app_user_token: 1,
                       create_webhook_endpoint: 1,
                       list_webhook_endpoints: 1,
@@ -99,6 +101,9 @@ defmodule SharedInfra.AuthClient do
   def verify_api_key(attrs), do: adapter().verify_api_key(attrs)
   def mint_app_user_token(attrs), do: adapter().mint_app_user_token(attrs)
   def resolve_external_user(attrs), do: adapter().resolve_external_user(attrs)
+
+  @doc "Resolve-ONLY external-id lookup (never creates) — for read/reference contexts. :user_not_found on miss."
+  def lookup_external_user(attrs), do: adapter().lookup_external_user(attrs)
   def resolve_user_external_id(attrs), do: adapter().resolve_user_external_id(attrs)
   def verify_app_user_token(attrs), do: adapter().verify_app_user_token(attrs)
   def create_webhook_endpoint(attrs), do: adapter().create_webhook_endpoint(attrs)
