@@ -19,8 +19,6 @@ defmodule RealtimeGateway.UserPresence do
   Redis I/O runs OFF the channel process (Task.start) so presence never blocks realtime; the online store
   (`SharedInfra.Presence`) is fail-CLOSED on read (never a phantom "online").
 
-  PRESENCE_DEBUG logging is intentionally IN (removed in a follow-up once verified in prod), tagged per
-  mechanism so a silent failure names which path broke.
   """
 
   require Logger
@@ -44,7 +42,6 @@ defmodule RealtimeGateway.UserPresence do
       Task.start(fn ->
         case Store.mark_online(user_id) do
           {:transition, :online} ->
-            Logger.info("PRESENCE_DEBUG kind=online user=#{user_id} (transition) → broadcasting")
             broadcast_presence(endpoint, app_id, user_id, true, nil)
 
           :already_online ->
@@ -52,7 +49,7 @@ defmodule RealtimeGateway.UserPresence do
 
           :error ->
             # Fail-closed: a store error does NOT broadcast a maybe-online. The next heartbeat retries.
-            Logger.error("PRESENCE_DEBUG kind=online user=#{user_id} store error (no broadcast)")
+            Logger.error("presence: mark_online store error for #{user_id} (no broadcast)")
             :ok
         end
       end)
@@ -72,7 +69,6 @@ defmodule RealtimeGateway.UserPresence do
 
       Task.start(fn ->
         Store.clear_online(user_id, now)
-        Logger.info("PRESENCE_DEBUG kind=offline user=#{user_id} → broadcasting last_seen=#{now}")
         broadcast_presence(endpoint, app_id, user_id, false, now)
       end)
     end
@@ -114,10 +110,6 @@ defmodule RealtimeGateway.UserPresence do
             end
         end
       end)
-
-    Logger.info(
-      "PRESENCE_DEBUG kind=subscribe user=#{me} requested=#{inspect(requested)} authorized=#{inspect(Enum.reverse(authorized))}"
-    )
 
     {socket, Enum.reverse(authorized)}
   end
@@ -188,7 +180,7 @@ defmodule RealtimeGateway.UserPresence do
             "last_seen_at" => iso8601(last_seen)
           })
         else
-          Logger.info("PRESENCE_DEBUG kind=#{kind(online)} user=#{user_id} suppressed (visibility=nobody)")
+          # Visibility is "nobody" → not broadcast (a normal outcome, not a failure).
           :ok
         end
 
@@ -271,6 +263,4 @@ defmodule RealtimeGateway.UserPresence do
   defp iso8601(nil), do: nil
   defp iso8601(unix) when is_integer(unix), do: unix |> DateTime.from_unix!() |> DateTime.to_iso8601()
 
-  defp kind(true), do: "online"
-  defp kind(false), do: "offline"
 end
