@@ -43,7 +43,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (status !== "unauthenticated" || redirectedRef.current) return;
     redirectedRef.current = true;
-    router.replace(LOGIN_ROUTE);
+    // Carry the destination so a dashboard deep-link round-trips through login back HERE (the login's
+    // safeRedirect guard allows it — same-origin path). Logout below stays a plain /login on purpose.
+    router.replace(`${LOGIN_ROUTE}?redirect=/dashboard`);
   }, [status, router]);
 
   function handleLogout() {

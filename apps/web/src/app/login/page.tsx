@@ -275,8 +275,10 @@ function LoginForm() {
               Enter your phone number
             </h1>
             <p className="mt-1 text-sm text-muted">
-              We&apos;ll text you a one-time code. No password — if you&apos;re new, your account is
-              created automatically.
+              {/* Same flow either way — only the framing changes when arriving from /developers. */}
+              {redirectTo.startsWith("/dashboard")
+                ? "Sign in to manage your apps & API keys. No password — if you're new, your account is created automatically."
+                : "We'll text you a one-time code. No password — if you're new, your account is created automatically."}
             </p>
           </div>
 
@@ -301,6 +303,13 @@ function LoginForm() {
           </p>
         </Card>
       )}
+      {/* The one place the chat app points at the developer surface — a quiet link, not a redesign. */}
+      <p className="mt-4 text-center text-xs text-faint">
+        Building an integration?{" "}
+        <a href="/developers" className="font-medium text-brand-hover hover:underline">
+          Growblic for developers
+        </a>
+      </p>
     </AuthLayout>
   );
 }
