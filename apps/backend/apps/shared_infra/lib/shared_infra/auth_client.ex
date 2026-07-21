@@ -60,6 +60,7 @@ defmodule SharedInfra.AuthClient do
   @callback list_failed_webhooks(attrs()) :: result()
   @callback list_webhook_deliveries(attrs()) :: result()
   @callback app_usage(attrs()) :: result()
+  @callback app_usage_period(attrs()) :: result()
   @callback reenqueue_webhook(attrs()) :: result()
   @callback reenqueue_webhooks_bulk(attrs()) :: result()
   @callback create_app(attrs()) :: result()
@@ -87,6 +88,7 @@ defmodule SharedInfra.AuthClient do
                       list_failed_webhooks: 1,
                       list_webhook_deliveries: 1,
                       app_usage: 1,
+                      app_usage_period: 1,
                       reenqueue_webhook: 1,
                       reenqueue_webhooks_bulk: 1,
                       create_app: 1,
@@ -119,6 +121,7 @@ defmodule SharedInfra.AuthClient do
 
   @doc "Owner-facing entity counts for ONE owned app: users/conversations/messages/storage_bytes."
   def app_usage(attrs), do: adapter().app_usage(attrs)
+  def app_usage_period(attrs), do: adapter().app_usage_period(attrs)
   def reenqueue_webhook(attrs), do: adapter().reenqueue_webhook(attrs)
   def reenqueue_webhooks_bulk(attrs), do: adapter().reenqueue_webhooks_bulk(attrs)
   def create_app(attrs), do: adapter().create_app(attrs)

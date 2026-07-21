@@ -135,6 +135,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Apps.app_usage(body(conn)))
   end
 
+  post "/internal/apps/usage_period" do
+    send_result(conn, AuthService.Apps.app_usage_period(body(conn)))
+  end
+
   post "/internal/webhooks/outbox/failed" do
     send_result(conn, AuthService.Webhooks.list_failed_deliveries(body(conn)))
   end

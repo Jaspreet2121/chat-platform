@@ -72,6 +72,9 @@ defmodule AuthService.AuthClientInProcess do
   def app_usage(attrs), do: AuthService.Apps.app_usage(attrs)
 
   @impl true
+  def app_usage_period(attrs), do: AuthService.Apps.app_usage_period(attrs)
+
+  @impl true
   def reenqueue_webhook(attrs), do: Webhooks.reenqueue_delivery(attrs)
 
   @impl true

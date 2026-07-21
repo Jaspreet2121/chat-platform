@@ -19,12 +19,22 @@ defmodule ApiGatewayWeb.UsageController do
   alias ApiGatewayWeb.AppOwnerAuth
   alias ApiGatewayWeb.ErrorResponse
 
-  # GET /api/v1/usage → {app_id, users, conversations, messages, storage_bytes}
+  # GET /api/v1/usage → {app_id, users, conversations, messages, storage_bytes}          (lifetime, as ever)
+  # GET /api/v1/usage?period=YYYY-MM → the PERIOD meter instead: {messages_sent,
+  #   active_users_by_messages, call_seconds, storage_bytes_snapshot, period_start/end}. Additive — the
+  #   parameterless response is byte-identical to before. Malformed or not-yet-started period → 422.
   def index(conn, params) do
     with {:ok, _session, app_id} <- AppOwnerAuth.resolve_owned_app(conn, params),
-         {:ok, usage} <- SharedInfra.AuthClient.app_usage(%{"app_id" => app_id}) do
+         {:ok, usage} <- fetch_usage(app_id, Map.get(params, "period")) do
       json(conn, usage)
     else
+      {:error, :invalid_period} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "usage.invalid_period",
+          ~s(period must be "YYYY-MM" and not in the future)
+        )
+
       {:error, :not_owner} ->
         ErrorResponse.forbidden(conn, "usage.forbidden_app", "You do not own this app")
 
@@ -38,4 +48,10 @@ defmodule ApiGatewayWeb.UsageController do
         ErrorResponse.invalid_request(conn, "usage.invalid_request")
     end
   end
+
+  # No period → the lifetime counts (unchanged contract). With a period → the monthly meter.
+  defp fetch_usage(app_id, nil), do: SharedInfra.AuthClient.app_usage(%{"app_id" => app_id})
+
+  defp fetch_usage(app_id, period),
+    do: SharedInfra.AuthClient.app_usage_period(%{"app_id" => app_id, "period" => period})
 end

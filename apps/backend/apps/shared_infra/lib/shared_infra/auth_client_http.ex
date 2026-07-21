@@ -71,6 +71,9 @@ defmodule SharedInfra.AuthClientHttp do
   def app_usage(attrs), do: post("/internal/apps/usage", attrs)
 
   @impl true
+  def app_usage_period(attrs), do: post("/internal/apps/usage_period", attrs)
+
+  @impl true
   def reenqueue_webhook(attrs), do: post("/internal/webhooks/outbox/reenqueue", attrs)
 
   @impl true

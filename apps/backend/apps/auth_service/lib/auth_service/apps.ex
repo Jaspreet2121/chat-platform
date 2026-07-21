@@ -147,6 +147,113 @@ defmodule AuthService.Apps do
   end
 
   @doc """
+  PERIOD usage for ONE app — the billing meter (Phase 1: measurement only). For a calendar month (UTC,
+  `period` = "YYYY-MM"; start inclusive, next-month-start exclusive):
+
+    * `messages_sent` — messages created in the period, counted via the PARENT CONVERSATION (the same
+      tenancy rule as `app_usage/1`: `messages.app_id` is not trusted).
+    * `active_users_by_messages` — DISTINCT senders in the period. Named honestly: this is sender-MAU
+      (users_auth has no activity timestamp, and Phase 1 adds no hot-path writes), so lurkers who only
+      read are NOT counted. Conservative by construction.
+    * `call_seconds` — SUM(ended_at - answered_at) over ANSWERED calls, attributed to the month of
+      `answered_at` (a call spanning the boundary bills entirely to the month it was answered in — one
+      simple, disputable-proof rule). Missed/declined (never answered) and still-ongoing calls (no
+      ended_at yet) contribute zero. Calls carry no app_id — tenancy via the CALLER's users_auth row
+      (both parties are always the same app; the established call_identities rule). Seconds, not
+      minutes: minutes are presentation.
+    * `storage_bytes_snapshot` — the CURRENT storage total (storage is a stock, not a period flow;
+      the name says snapshot so nobody bills it as one).
+
+  TEST-TWIN EXCLUSION is by construction, not by predicate: 054's design isolates test mode BY app_id
+  (a test key resolves to the twin's own app_id), so measuring a live app_id can never include sk_test
+  rows — messages, senders, calls, and media under a test key all carry the twin's app_id.
+
+  The measured window is echoed back (`period_start`/`period_end`) so a consumer knows exactly what was
+  metered. A malformed or not-yet-started period → `{:error, :invalid_period}`. A period before the app
+  existed simply measures zeros.
+
+  READ-ONLY. No plans, no limits, no enforcement here (Phases 2/3).
+  """
+  def app_usage_period(attrs) do
+    with {:ok, app_id} <- fetch(attrs, "app_id"),
+         {:ok, period} <- fetch(attrs, "period"),
+         {:ok, period_start, period_end} <- parse_period(period) do
+      {:ok,
+       %{
+         app_id: app_id,
+         period: period,
+         period_start: DateTime.to_iso8601(period_start),
+         period_end: DateTime.to_iso8601(period_end),
+         messages_sent:
+           period_scalar(
+             "SELECT count(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id " <>
+               "WHERE c.app_id = $1::text::uuid AND m.created_at >= $2 AND m.created_at < $3",
+             app_id,
+             period_start,
+             period_end
+           ),
+         active_users_by_messages:
+           period_scalar(
+             "SELECT count(DISTINCT m.sender_user_id) FROM messages m " <>
+               "JOIN conversations c ON c.id = m.conversation_id " <>
+               "WHERE c.app_id = $1::text::uuid AND m.created_at >= $2 AND m.created_at < $3",
+             app_id,
+             period_start,
+             period_end
+           ),
+         call_seconds:
+           period_scalar(
+             "SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (cl.ended_at - cl.answered_at)))::bigint, 0) " <>
+               "FROM calls cl JOIN users_auth u ON u.id = cl.caller_id " <>
+               "WHERE u.app_id = $1::text::uuid AND cl.answered_at >= $2 AND cl.answered_at < $3 " <>
+               "AND cl.ended_at IS NOT NULL",
+             app_id,
+             period_start,
+             period_end
+           ),
+         storage_bytes_snapshot:
+           scalar(
+             "SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM media_assets WHERE app_id = $1::text::uuid",
+             app_id
+           )
+       }}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :app_invalid}
+    Postgrex.Error -> {:error, :app_invalid}
+  end
+
+  # "YYYY-MM" → {start_of_month, start_of_next_month} in UTC. The CURRENT (partial) month is allowed; a
+  # month that hasn't started yet is rejected — there is nothing to measure and accepting it invites
+  # "why is next month zero" tickets.
+  defp parse_period(period) do
+    with %{"y" => y, "m" => m} <-
+           Regex.named_captures(~r/^(?<y>\d{4})-(?<m>0[1-9]|1[0-2])$/, period),
+         {year, ""} <- Integer.parse(y),
+         {month, ""} <- Integer.parse(m),
+         {:ok, first} <- Date.new(year, month, 1) do
+      period_start = DateTime.new!(first, ~T[00:00:00], "Etc/UTC")
+      next = if month == 12, do: Date.new!(year + 1, 1, 1), else: Date.new!(year, month + 1, 1)
+      period_end = DateTime.new!(next, ~T[00:00:00], "Etc/UTC")
+
+      if DateTime.compare(period_start, DateTime.utc_now()) == :gt do
+        {:error, :invalid_period}
+      else
+        {:ok, period_start, period_end}
+      end
+    else
+      _ -> {:error, :invalid_period}
+    end
+  end
+
+  defp period_scalar(sql, app_id, period_start, period_end) do
+    case Repo.query(sql, [app_id, period_start, period_end]) do
+      {:ok, %{rows: [[value]]}} when is_integer(value) -> value
+      _ -> 0
+    end
+  end
+
+  @doc """
   Cross-tenant OPERATOR view (admin console, Surface 3): every LIVE app with owner identity, usage counts,
   key/webhook aggregates, and its test twin's existence. Deliberately separate from the owner-scoped
   `list_apps/1`, which stays untouched — this is the read-only overview billing will later consume.

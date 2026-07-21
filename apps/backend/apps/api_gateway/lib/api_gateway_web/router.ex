@@ -286,6 +286,8 @@ defmodule ApiGatewayWeb.Router do
 
     # Cross-tenant apps overview (Surface 3; apps.view — root/admin/support read-only).
     get "/apps", AdminAppsController, :index
+    # Period meter for one app (billing Phase 1 — measurement only; same fn as the owner endpoint).
+    get "/apps/:id/usage", AdminAppsController, :usage
 
     # Webhook failed-delivery ops (dead-letter inspection + idempotent / bulk re-enqueue).
     get "/webhooks/outbox/failed", AdminWebhookController, :failed
