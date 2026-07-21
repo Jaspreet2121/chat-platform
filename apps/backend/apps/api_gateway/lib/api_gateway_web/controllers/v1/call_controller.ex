@@ -121,6 +121,10 @@ defmodule ApiGatewayWeb.V1.CallController do
     with :ok <- require_end_user(conn),
          {:ok, call} <- authorized_call(call_id, conn.assigns.v1_user_id),
          {:ok, status} <- terminate(call, call_id, conn.assigns.v1_user_id) do
+      # The socket hangup's SECOND half, previously missing here: tell the OTHER party (call:ended), so
+      # their client resolves instead of sitting "connected" forever. Direct calls only ("ended") — a
+      # group/link leave has its own lifecycle events. Fire-and-forget via the same helper accept/reject use.
+      if status == "ended", do: notify_peer_ended(call, call_id, conn.assigns.v1_user_id)
       json(conn, %{status: status})
     else
       {:error, :app_only} -> app_only(conn)
@@ -368,6 +372,16 @@ defmodule ApiGatewayWeb.V1.CallController do
   end
 
   defp broadcast_caller(_caller_id, _event, _payload), do: :ok
+
+  # Mirror of the socket hangup's peer pick: the actor's counterpart on the call row.
+  defp notify_peer_ended(call, call_id, actor_user_id) do
+    other =
+      if actor_user_id == cget(call, :caller_id),
+        do: cget(call, :callee_id),
+        else: cget(call, :caller_id)
+
+    broadcast_caller(other, "call:ended", %{call_id: call_id})
+  end
 
   defp ring_response(:accept, call_id, room), do: %{call_id: call_id, room: room, status: "accepted"}
   defp ring_response(:reject, call_id, _room), do: %{call_id: call_id, status: "declined"}
