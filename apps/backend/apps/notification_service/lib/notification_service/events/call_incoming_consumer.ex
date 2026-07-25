@@ -39,19 +39,48 @@ defmodule NotificationService.Events.CallIncomingConsumer do
   defp handle_value(value) do
     case Jason.decode(value) do
       {:ok, %{"type" => "call.incoming"} = event} ->
-        SharedInfra.Correlation.put(event["correlation_id"])
-        PushSender.push_incoming_call(event)
-        # Android leg, side by side — same suppression, its own token set.
-        FcmSender.push_incoming_call(event)
+        dispatch(event)
 
-      {:ok, _other} ->
-        # Unknown event type on the shared call topic — ignore (still committed by the caller).
-        :ok
+      {:ok, inner} when is_binary(inner) ->
+        # A JSON *string* on this topic means a DOUBLE-ENCODED event — the exact shape the gateway shipped
+        # before its producer passed the map (that bug hid here for weeks because this clause used to
+        # ignore silently). ONE defensive re-decode so any in-flight legacy events still push — and any
+        # producer regressing the same way shows up in the logs instead of a black hole.
+        case Jason.decode(inner) do
+          {:ok, %{"type" => "call.incoming"} = event} ->
+            Logger.warning(
+              "notification: DOUBLE-ENCODED call event (legacy/regressed producer) — dispatched after re-decode"
+            )
+
+            dispatch(event)
+
+          _ ->
+            log_unrecognised(inner)
+        end
+
+      {:ok, other} ->
+        log_unrecognised(other)
 
       {:error, reason} ->
         Logger.warning("notification: call event JSON decode failed, skipping: #{inspect(reason)}")
     end
   rescue
     error -> Logger.warning("notification: call event handling raised, ignored: #{inspect(error)}")
+  end
+
+  defp dispatch(event) do
+    SharedInfra.Correlation.put(event["correlation_id"])
+    PushSender.push_incoming_call(event)
+    # Android leg, side by side — same suppression, its own token set.
+    FcmSender.push_incoming_call(event)
+  end
+
+  # An unrecognised event on this topic must NEVER be invisible again (still committed by the caller —
+  # best-effort semantics unchanged). Truncated: enough to identify the producer, never a payload dump.
+  defp log_unrecognised(value) do
+    Logger.warning(
+      "notification: unrecognised event on call.events.v1 ignored: " <>
+        inspect(value, limit: 5, printable_limit: 120)
+    )
   end
 end

@@ -840,15 +840,17 @@ defmodule RealtimeGateway.CallSignaling do
       Task.start(fn ->
         SharedInfra.Correlation.put(correlation)
 
-        value =
-          Jason.encode!(%{
-            "type" => "call.incoming",
-            "call_id" => call_id,
-            "callee_id" => callee_id,
-            "caller_name" => caller_name,
-            "call_type" => type,
-            "correlation_id" => correlation
-          })
+        # The MAP, not a pre-encoded string: BrodProducer JSON-encodes its value itself (its documented
+        # contract — message_service passes a map too). Encoding here produced DOUBLE-encoded events the
+        # notification consumer silently ignored — zero call pushes ever fired.
+        value = %{
+          "type" => "call.incoming",
+          "call_id" => call_id,
+          "callee_id" => callee_id,
+          "caller_name" => caller_name,
+          "call_type" => type,
+          "correlation_id" => correlation
+        }
 
         # The GATEWAY'S OWN brod client — the producer's default is :message_service_kafka_client, which
         # exists only in the message-service release; producing without this option is exactly the bug that
