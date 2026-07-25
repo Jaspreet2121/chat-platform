@@ -850,7 +850,22 @@ defmodule RealtimeGateway.CallSignaling do
             "correlation_id" => correlation
           })
 
-        SharedInfra.Kafka.Producer.produce(@call_events_topic, callee_id, value)
+        # The GATEWAY'S OWN brod client — the producer's default is :message_service_kafka_client, which
+        # exists only in the message-service release; producing without this option is exactly the bug that
+        # made call pushes silently never fire (see RealtimeGateway.Application.kafka_children/0).
+        case SharedInfra.Kafka.Producer.produce(@call_events_topic, callee_id, value,
+               client: RealtimeGateway.Application.kafka_client_name()
+             ) do
+          {:ok, _} ->
+            :ok
+
+          {:error, reason} ->
+            # Fire-and-forget stays (a push hiccup must never break the ring) — but resilience is not
+            # invisibility: a dead client / broker shows up in the logs instead of vanishing.
+            Logger.warning(
+              "call.incoming push produce failed (call #{call_id}): #{inspect(reason)}"
+            )
+        end
       end)
     end
 
@@ -859,7 +874,10 @@ defmodule RealtimeGateway.CallSignaling do
     _ -> :ok
   end
 
-  defp call_push_enabled? do
+  # Public (doc-hidden) so RealtimeGateway.Application's brod-client gate reuses THIS predicate — one
+  # definition of "call push is on", no drift between the producer and its client's supervision.
+  @doc false
+  def call_push_enabled? do
     Application.get_env(:realtime_gateway, :call_push_enabled, false) ||
       System.get_env("CALL_PUSH_ENABLED") in ["true", "1", "yes"]
   end
