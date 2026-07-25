@@ -10,6 +10,10 @@ defmodule RealtimeGateway.CallSignalingMockClient do
   def log, do: Agent.get(__MODULE__, & &1.log) |> Enum.reverse()
   def group_call, do: Agent.get(__MODULE__, &(&1.group && &1.group.call))
 
+  # Block state for the call ring + missed-pill suppression (ring_callee / write_missed_message consult this).
+  def set_blocked(v), do: Agent.update(__MODULE__, &Map.put(&1, :blocked, v))
+  def either_blocked?(_attrs), do: {:ok, %{blocked: Agent.get(__MODULE__, &Map.get(&1, :blocked, false))}}
+
   # --- group calling (Phase 3) — mirrors CallStore's {:ok, %{call, participants, member_ids}} shapes ----
   # The conversation's members are seeded by the test via :group_members (the real fn reads the DB).
   def create_group_call(%{"initiator_id" => initiator} = attrs) do
@@ -464,6 +468,69 @@ defmodule RealtimeGateway.CallSignalingTest do
   test "an unknown call:* event → call.invalid_event" do
     assert {:reply, {:error, %{code: "call.invalid_event"}}, _} =
              CallSignaling.handle_event("call:teleport", %{}, socket(@caller))
+  end
+
+  # ---- blocking: a blocked caller rings NOTHING and leaves NOTHING in the blocker's chat ----------
+  describe "blocked calls" do
+    @conv_b "ffffffff-ffff-4fff-8fff-ffffffffffff"
+
+    defp ring! do
+      CallSignaling.ring_callee(RealtimeGateway.CallCaptureEndpoint, @app, %{
+        call_id: "call_1",
+        room: "room_1",
+        caller_id: @caller,
+        callee_id: @callee,
+        type: "voice",
+        conversation_id: @conv_b
+      })
+    end
+
+    defp missed_call,
+      do: %{
+        id: "call_1",
+        caller_id: @caller,
+        callee_id: @callee,
+        type: "voice",
+        conversation_id: @conv_b,
+        status: "missed"
+      }
+
+    test "a blocked caller's ring is SUPPRESSED — the callee never gets call:incoming or a push" do
+      use_stubs(CallSignalingStubs.NamedProfile, CallSignalingStubs.MediaOk)
+      Mock.set_blocked(true)
+
+      assert :ok = ring!()
+      refute_receive {:broadcast, _topic, "call:incoming", _}, 200
+    end
+
+    test "not blocked → the ring goes through (control)" do
+      use_stubs(CallSignalingStubs.NamedProfile, CallSignalingStubs.MediaOk)
+      Mock.set_blocked(false)
+
+      assert :ok = ring!()
+      assert_receive {:broadcast, "user:#{@callee}", "call:incoming", _}, 500
+    end
+
+    test "a blocked caller ringing out leaves NO missed pill (the reject/cancel/timeout pill is suppressed)" do
+      prev = Application.get_env(:shared_infra, :message_client_adapter)
+      Application.put_env(:shared_infra, :message_client_adapter, RealtimeGateway.CallPillCaptureClient)
+      on_exit(fn -> restore(:message_client_adapter, prev) end)
+      Mock.set_blocked(true)
+
+      # write_missed_message is the ONE function reject/2, cancel/2 and ring_timeout all share.
+      assert :ok = CallSignaling.write_missed_message(missed_call(), RealtimeGateway.CallCaptureEndpoint)
+      refute_receive {:pill, _}, 150
+    end
+
+    test "not blocked → a missed call DOES write its pill (control)" do
+      prev = Application.get_env(:shared_infra, :message_client_adapter)
+      Application.put_env(:shared_infra, :message_client_adapter, RealtimeGateway.CallPillCaptureClient)
+      on_exit(fn -> restore(:message_client_adapter, prev) end)
+      Mock.set_blocked(false)
+
+      assert :ok = CallSignaling.write_missed_message(missed_call(), RealtimeGateway.CallCaptureEndpoint)
+      assert_receive {:pill, _}, 500
+    end
   end
 
   # ---- group calling (Phase 3) ------------------------------------------------------------------

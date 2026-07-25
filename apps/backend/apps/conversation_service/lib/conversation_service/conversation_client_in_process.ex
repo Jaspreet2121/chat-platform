@@ -66,6 +66,21 @@ defmodule ConversationService.ConversationClientInProcess do
   def authorize_send(attrs), do: ConversationService.Participants.authorize_send(attrs)
 
   @impl true
+  def block_user(attrs), do: ConversationService.Blocks.block(attrs)
+
+  @impl true
+  def unblock_user(attrs), do: ConversationService.Blocks.unblock(attrs)
+
+  @impl true
+  def list_blocks(attrs), do: ConversationService.Blocks.list_blocks(attrs)
+
+  @impl true
+  def either_blocked?(attrs), do: ConversationService.Blocks.either_blocked?(attrs)
+
+  @impl true
+  def direct_peer_blocked?(attrs), do: ConversationService.Blocks.direct_peer_blocked?(attrs)
+
+  @impl true
   def create_call(attrs), do: ConversationService.CallStore.create_call(attrs)
 
   @impl true

@@ -63,6 +63,15 @@ defmodule SharedInfra.ConversationClient do
   @callback approve_link_participant(attrs()) :: result()
   @callback deny_link_participant(attrs()) :: result()
 
+  # User blocking (safety). block/unblock/list back the first-party management endpoints; either_blocked? is
+  # the symmetric hot-path check (messages/calls/presence/profile); direct_peer_blocked? gates a DIRECT
+  # conversation's typing/viewing + the message drop.
+  @callback block_user(attrs()) :: result()
+  @callback unblock_user(attrs()) :: result()
+  @callback list_blocks(attrs()) :: result()
+  @callback either_blocked?(attrs()) :: result()
+  @callback direct_peer_blocked?(attrs()) :: result()
+
   # Optional so existing test stubs of this behaviour don't all need it; the real adapters implement it.
   @optional_callbacks get_conversation_app: 1,
                       get_call_conversation: 1,
@@ -89,7 +98,12 @@ defmodule SharedInfra.ConversationClient do
                       get_call_link: 1,
                       join_call_link: 1,
                       approve_link_participant: 1,
-                      deny_link_participant: 1
+                      deny_link_participant: 1,
+                      block_user: 1,
+                      unblock_user: 1,
+                      list_blocks: 1,
+                      either_blocked?: 1,
+                      direct_peer_blocked?: 1
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
@@ -116,6 +130,18 @@ defmodule SharedInfra.ConversationClient do
   def set_participant_role(attrs), do: adapter().set_participant_role(attrs)
   def set_group_settings(attrs), do: adapter().set_group_settings(attrs)
   def authorize_send(attrs), do: adapter().authorize_send(attrs)
+
+  @doc "Block/unblock/list — the first-party block management endpoints. %{blocker_user_id, blocked_user_id}."
+  def block_user(attrs), do: adapter().block_user(attrs)
+  def unblock_user(attrs), do: adapter().unblock_user(attrs)
+  def list_blocks(attrs), do: adapter().list_blocks(attrs)
+
+  @doc "Symmetric either-direction block check (%{user_a, user_b} → %{blocked}). Messages/calls/presence/profile."
+  def either_blocked?(attrs), do: adapter().either_blocked?(attrs)
+
+  @doc "Is `user_id`'s DIRECT peer in `conversation_id` blocked? (%{conversation_id, user_id} → %{blocked})."
+  def direct_peer_blocked?(attrs), do: adapter().direct_peer_blocked?(attrs)
+
   def get_call_conversation(attrs), do: adapter().get_call_conversation(attrs)
   def create_call(attrs), do: adapter().create_call(attrs)
   def mark_call_answered(attrs), do: adapter().mark_call_answered(attrs)

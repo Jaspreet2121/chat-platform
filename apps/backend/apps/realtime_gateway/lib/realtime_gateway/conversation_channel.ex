@@ -28,6 +28,12 @@ defmodule RealtimeGateway.ConversationChannel do
 
   @impl true
   def handle_info(:after_join, socket) do
+    # Resolve ONCE at join whether this is a DIRECT conversation with a blocked peer (either direction), and
+    # cache it in assigns. It gates the ephemeral typing/"viewing" signals below so a blocker never sees "X is
+    # typing…" from someone they blocked. A mid-session block/unblock takes effect on the NEXT join — ephemeral
+    # and low-stakes, not worth a per-keystroke recheck. Direct conversations only (false for groups/unknown).
+    socket = assign(socket, :dm_blocked, resolve_dm_blocked(socket))
+
     with {:ok, user_id} <- current_user_id(socket),
          {:ok, _ref} <-
            Presence.track(socket, user_id, %{
@@ -68,12 +74,15 @@ defmodule RealtimeGateway.ConversationChannel do
       clear_presence_marker(user_id, conversation_id)
       # Tell the remaining members the user stopped viewing. From terminate we can't broadcast_from (the
       # socket is going away), so broadcast on the conversation topic directly — the leaver's own channel is
-      # dead, so a self-copy is harmless and the SDK dedups by (conversation, user) anyway.
-      socket.endpoint.broadcast(
-        "conversation:" <> conversation_id,
-        "conversation_viewing",
-        %{conversation_id: conversation_id, user_id: user_id, viewing: false}
-      )
+      # dead, so a self-copy is harmless and the SDK dedups by (conversation, user) anyway. Suppressed for a
+      # blocked DM peer, symmetric with the viewing(true) we withheld at join.
+      unless Map.get(socket.assigns, :dm_blocked, false) do
+        socket.endpoint.broadcast(
+          "conversation:" <> conversation_id,
+          "conversation_viewing",
+          %{conversation_id: conversation_id, user_id: user_id, viewing: false}
+        )
+      end
     end
 
     :ok
@@ -94,14 +103,44 @@ defmodule RealtimeGateway.ConversationChannel do
   end
 
   # "Viewing now" to the other members of this conversation (broadcast_from excludes the opener's socket).
+  # Suppressed for a blocked DM peer (see broadcast_presence_signal/3).
   defp broadcast_viewing(socket, user_id, viewing) do
-    broadcast_from(socket, "conversation_viewing", %{
+    broadcast_presence_signal(socket, "conversation_viewing", %{
       conversation_id: socket.assigns.conversation_id,
       user_id: user_id,
       viewing: viewing
     })
 
     :ok
+  end
+
+  # Ephemeral presence signal (typing / "viewing now") to the OTHER members. In a DIRECT conversation where the
+  # peer is blocked (either direction), the blocker must not see "X is typing…"/viewing, so this no-ops — the
+  # sender's own reply still returns {:ok}, only the fan-out is withheld. `dm_blocked` was resolved at join.
+  defp broadcast_presence_signal(socket, event, payload) do
+    unless Map.get(socket.assigns, :dm_blocked, false) do
+      broadcast_from(socket, event, payload)
+    end
+
+    :ok
+  end
+
+  # Is this a DIRECT conversation whose peer is blocked (either direction)? Resolved once at join. Fail-open
+  # (error → false = don't suppress) — a check glitch must not silently swallow typing for a legitimate chat.
+  defp resolve_dm_blocked(socket) do
+    with {:ok, user_id} <- current_user_id(socket),
+         conversation_id when is_binary(conversation_id) <- Map.get(socket.assigns, :conversation_id),
+         {:ok, result} <-
+           SharedInfra.ConversationClient.direct_peer_blocked?(%{
+             "conversation_id" => conversation_id,
+             "user_id" => user_id
+           }) do
+      (Map.get(result, :blocked) || Map.get(result, "blocked")) == true
+    else
+      _ -> false
+    end
+  rescue
+    _ -> false
   end
 
   # EPHEMERAL bucket (typing, receipts, live-location): over the limit → dropped SILENTLY ({:noreply}).
@@ -112,7 +151,7 @@ defmodule RealtimeGateway.ConversationChannel do
   def handle_in("typing_started", payload, socket) do
     with :ok <- Limits.check_ephemeral(socket) do
       reply = conversation_reply("typing_started", payload, socket)
-      broadcast_from(socket, "presence_updated", Map.put(reply, :typing, true))
+      broadcast_presence_signal(socket, "presence_updated", Map.put(reply, :typing, true))
 
       {:reply, {:ok, reply}, socket}
     end
@@ -133,7 +172,7 @@ defmodule RealtimeGateway.ConversationChannel do
   def handle_in("typing_stopped", payload, socket) do
     with :ok <- Limits.check_ephemeral(socket) do
       reply = conversation_reply("typing_stopped", payload, socket)
-      broadcast_from(socket, "presence_updated", Map.put(reply, :typing, false))
+      broadcast_presence_signal(socket, "presence_updated", Map.put(reply, :typing, false))
 
       {:reply, {:ok, reply}, socket}
     end
@@ -260,27 +299,35 @@ defmodule RealtimeGateway.ConversationChannel do
     with :ok <- validate_message_payload(payload),
          {:ok, sender_user_id} <- current_user_id(socket),
          # SERVER-SIDE only-admins-can-send enforcement on the realtime path too — a plain member in a
-         # locked group can't send even by pushing the socket event directly.
-         {:ok, _} <-
+         # locked group can't send even by pushing the socket event directly. This SAME call also carries the
+         # BLOCK disposition: for a DIRECT chat the recipient has blocked, it returns delivery: "drop".
+         {:ok, disposition} <-
            SharedInfra.ConversationClient.authorize_send(%{
              "conversation_id" => socket.assigns.conversation_id,
              "user_id" => sender_user_id
            }),
+         dropped? = dropped?(disposition),
          {:ok, response} <-
            payload
            |> Map.put("conversation_id", socket.assigns.conversation_id)
            |> Map.put("sender_user_id", sender_user_id)
+           |> put_delivery(dropped?)
            |> SharedInfra.MessageClient.create_message() do
-      broadcast_from(socket, "message_created", response)
-      notify_user_topics(socket, sender_user_id, response)
-      # Live INBOX row (distinct from the message fan-out above: that wakes an OPEN thread, this wakes every
-      # participant's conversation LIST). Per-user unread, fire-and-forget, shared with the HTTP paths.
-      SharedInfra.ConversationBroadcast.broadcast_updated(
-        socket.endpoint,
-        socket.assigns.conversation_id,
-        sender_user_id,
-        :message
-      )
+      # A DROPPED (blocked) message returns a canonical single-tick ack to the SENDER but fans out to NOBODY —
+      # the blocker never receives it (nothing persisted, nothing broadcast). Everything below is the delivery
+      # the blocker must not get, so it is skipped entirely.
+      unless dropped? do
+        broadcast_from(socket, "message_created", response)
+        notify_user_topics(socket, sender_user_id, response)
+        # Live INBOX row (distinct from the message fan-out above: that wakes an OPEN thread, this wakes every
+        # participant's conversation LIST). Per-user unread, fire-and-forget, shared with the HTTP paths.
+        SharedInfra.ConversationBroadcast.broadcast_updated(
+          socket.endpoint,
+          socket.assigns.conversation_id,
+          sender_user_id,
+          :message
+        )
+      end
 
       {:reply, {:ok, response}, socket}
     else
@@ -336,6 +383,17 @@ defmodule RealtimeGateway.ConversationChannel do
   rescue
     _ -> :ok
   end
+
+  # The send gate's disposition: delivery: "drop" means the recipient blocked the sender (DIRECT chat).
+  defp dropped?(disposition) when is_map(disposition),
+    do: Map.get(disposition, :delivery) == "drop" or Map.get(disposition, "delivery") == "drop"
+
+  defp dropped?(_disposition), do: false
+
+  # SERVER-controlled flag: set it on a drop, and STRIP any client-injected value on the allow path (a client
+  # must never be able to force a synthesize).
+  defp put_delivery(attrs, true), do: Map.put(attrs, "delivery_disposition", "drop")
+  defp put_delivery(attrs, false), do: Map.delete(attrs, "delivery_disposition")
 
   defp update_message(payload, socket) do
     with :ok <- validate_update_payload(payload),
@@ -477,7 +535,7 @@ defmodule RealtimeGateway.ConversationChannel do
         occurred_at: now_iso8601()
       }
 
-      broadcast_from(socket, event, payload)
+      broadcast_presence_signal(socket, event, payload)
       {:reply, {:ok, Map.put(payload, :event, event)}, socket}
     else
       {:error, :missing_user} ->

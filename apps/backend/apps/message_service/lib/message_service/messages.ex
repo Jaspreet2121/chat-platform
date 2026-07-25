@@ -26,10 +26,21 @@ defmodule MessageService.Messages do
   @callback delete_message(message_attrs()) :: result()
 
   def create_message(attrs) do
-    if message_persistence_enabled?() do
-      create_message_in_store(attrs)
-    else
-      placeholder_send_message(attrs)
+    cond do
+      # BLOCK DROP: a DIRECT message whose recipient has blocked the sender. Return a well-formed canonical
+      # message to the SENDER (single tick) but persist and publish NOTHING — the message never exists
+      # server-side, so the blocker can never receive it via ANY path (socket fan-out, timeline read, reconnect
+      # catch-up, or push). The `delivery_disposition => "drop"` flag is set SERVER-SIDE by the send gate
+      # (ConversationService.Participants.authorize_send); a client can at most drop its own message. WhatsApp
+      # semantics: the sender sees "sent" and learns nothing.
+      get_attr(attrs, "delivery_disposition") == "drop" ->
+        synthesize_dropped(attrs)
+
+      message_persistence_enabled?() ->
+        create_message_in_store(attrs)
+
+      true ->
+        placeholder_send_message(attrs)
     end
   end
 
@@ -158,6 +169,39 @@ defmodule MessageService.Messages do
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  # The block-drop ack: a CANONICAL message (byte-identical shape to a real create's message_response, per
+  # Android contract §4.1 — message_id, created_at, status, receipt/reaction aggregates, all of it) that the
+  # sender's outbox replaces its PENDING row from, WITHOUT persisting or publishing. A partial ack would leave
+  # the outbox stuck PENDING, which itself reveals the block. The message_id is a real timeuuid from the SAME
+  # generator a real create uses — well-formed and unique — there is simply no row behind it. Runs regardless
+  # of message_persistence (it never touches the store).
+  defp synthesize_dropped(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, sender_user_id} <- required_attr(attrs, "sender_user_id"),
+         {:ok, message_type} <- required_attr(attrs, "message_type"),
+         {:ok, media_id} <- media_id(attrs, message_type),
+         {:ok, caption} <- caption(attrs, message_type),
+         {:ok, body} <- message_body(attrs, message_type, caption),
+         {:ok, metadata} <- metadata(attrs, message_type, media_id, caption) do
+      message = %{
+        conversation_id: conversation_id,
+        message_id: generate_timeuuid(),
+        sender_user_id: sender_user_id,
+        message_type: message_type,
+        body: body,
+        media_id: media_id,
+        reply_to_message_id: get_attr(attrs, "reply_to_message_id"),
+        status: "active",
+        metadata: metadata,
+        created_at: now(),
+        edited_at: nil,
+        deleted_at: nil
+      }
+
+      {:ok, message_response(message)}
     end
   end
 

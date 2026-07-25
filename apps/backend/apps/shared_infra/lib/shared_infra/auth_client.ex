@@ -36,6 +36,8 @@ defmodule SharedInfra.AuthClient do
   @callback delete_user(attrs()) :: result()
   @callback list_reports(attrs()) :: result()
   @callback update_report(attrs()) :: result()
+  # User-submitted safety report (first-party POST /api/v1/reports) → the existing user_reports table.
+  @callback create_report(attrs()) :: result()
   @callback write_audit(attrs()) :: result()
   @callback list_audit(attrs()) :: result()
 
@@ -97,7 +99,8 @@ defmodule SharedInfra.AuthClient do
                       create_app: 1,
                       list_apps: 1,
                       admin_list_apps: 1,
-                      owns_app: 1
+                      owns_app: 1,
+                      create_report: 1
 
   def current_session(attrs), do: adapter().current_session(attrs)
   def persistence_enabled?, do: adapter().persistence_enabled?()
@@ -147,6 +150,7 @@ defmodule SharedInfra.AuthClient do
   def delete_user(attrs), do: adapter().delete_user(attrs)
   def list_reports(attrs), do: adapter().list_reports(attrs)
   def update_report(attrs), do: adapter().update_report(attrs)
+  def create_report(attrs), do: adapter().create_report(attrs)
   def write_audit(attrs), do: adapter().write_audit(attrs)
   def list_audit(attrs), do: adapter().list_audit(attrs)
 

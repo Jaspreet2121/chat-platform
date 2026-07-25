@@ -109,15 +109,35 @@ defmodule ConversationService.Participants do
             end
 
           _ ->
-            {:ok, %{authorized: true}}
+            # DIRECT (or an unresolved conversation): allowed to send, UNLESS the recipient has blocked the
+            # sender (either direction) — then DROP delivery. The caller returns a synthetic single-tick
+            # success and skips the fan-out, so the sender sees "sent" and learns nothing (WhatsApp). This is
+            # the ONE per-message hook both send paths already hit, and the check is LOCAL to this service
+            # (no cross-service round-trip). direct_peer_blocked?/2 is false for groups/unknown, so a blocked
+            # user can still post to a shared GROUP — the block is not over-applied.
+            if direct_peer_blocked?(conversation_id, user_id),
+              do: {:ok, %{authorized: true, delivery: "drop"}},
+              else: {:ok, %{authorized: true}}
         end
       else
         {:ok, %{authorized: true}}
       end
     end
   rescue
-    # Fail OPEN on a malformed id / transient error — never block a legitimate send on a check glitch.
+    # Fail OPEN on a malformed id / transient error — never block a legitimate send on a check glitch (a block
+    # check that raises therefore delivers the message rather than dropping it; acceptable per the design).
     _ -> {:ok, %{authorized: true}}
+  end
+
+  # LOCAL block check (same service, same shared Postgres) — no cross-service call on the message hot path.
+  defp direct_peer_blocked?(conversation_id, user_id) do
+    case ConversationService.Blocks.direct_peer_blocked?(%{
+           "conversation_id" => conversation_id,
+           "user_id" => user_id
+         }) do
+      {:ok, %{blocked: true}} -> true
+      _ -> false
+    end
   end
 
   defp validate_settable_role(role) when role in ["admin", "member"], do: {:ok, role}

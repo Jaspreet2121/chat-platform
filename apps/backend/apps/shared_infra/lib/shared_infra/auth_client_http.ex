@@ -134,6 +134,9 @@ defmodule SharedInfra.AuthClientHttp do
   def update_report(attrs), do: post("/internal/admin/reports/update", attrs)
 
   @impl true
+  def create_report(attrs), do: post("/internal/reports/create", attrs)
+
+  @impl true
   def write_audit(attrs), do: post("/internal/admin/audit/write", attrs)
 
   @impl true

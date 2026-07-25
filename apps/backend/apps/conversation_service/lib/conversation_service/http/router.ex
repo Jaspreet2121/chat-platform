@@ -181,6 +181,26 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.CallStore.deny_link_participant(body(conn)))
   end
 
+  post "/internal/blocks/create" do
+    send_result(conn, ConversationService.Blocks.block(body(conn)))
+  end
+
+  post "/internal/blocks/delete" do
+    send_result(conn, ConversationService.Blocks.unblock(body(conn)))
+  end
+
+  post "/internal/blocks/list" do
+    send_result(conn, ConversationService.Blocks.list_blocks(body(conn)))
+  end
+
+  post "/internal/blocks/either" do
+    send_result(conn, ConversationService.Blocks.either_blocked?(body(conn)))
+  end
+
+  post "/internal/blocks/direct_peer" do
+    send_result(conn, ConversationService.Blocks.direct_peer_blocked?(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "conversation", status: "ok", deps: %{}}})
   end

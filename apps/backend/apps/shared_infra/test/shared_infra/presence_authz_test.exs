@@ -14,12 +14,14 @@ defmodule SharedInfra.PresenceAuthzTest do
   @target "22222222-2222-4222-8222-222222222222"
 
   defmodule ConvStub do
-    def start_link, do: Agent.start_link(fn -> %{shares: true, error: false} end, name: __MODULE__)
+    def start_link, do: Agent.start_link(fn -> %{shares: true, blocked: false, error: false} end, name: __MODULE__)
     def set(key, v), do: Agent.update(__MODULE__, &Map.put(&1, key, v))
     def shares_conversation?(_attrs) do
       s = Agent.get(__MODULE__, & &1)
       if s.error, do: {:error, :conversation_unavailable}, else: {:ok, %{shares: s.shares}}
     end
+
+    def either_blocked?(_attrs), do: {:ok, %{blocked: Agent.get(__MODULE__, & &1.blocked)}}
   end
 
   defmodule UserStub do
@@ -87,6 +89,20 @@ defmodule SharedInfra.PresenceAuthzTest do
     UserStub.set(:visibility, "contacts")
     ConvStub.set(:error, true)
     refute PresenceAuthz.can_see?(@viewer, @target)
+  end
+
+  test "a BLOCK hides presence — even WITH a shared conversation and visibility 'contacts' (both ways)" do
+    UserStub.set(:visibility, "contacts")
+    ConvStub.set(:shares, true)
+    ConvStub.set(:blocked, true)
+    refute PresenceAuthz.can_see?(@viewer, @target)
+  end
+
+  test "no block → presence follows the normal shares + visibility rule" do
+    UserStub.set(:visibility, "contacts")
+    ConvStub.set(:shares, true)
+    ConvStub.set(:blocked, false)
+    assert PresenceAuthz.can_see?(@viewer, @target)
   end
 
   test "a user always sees their OWN presence (no gating)" do

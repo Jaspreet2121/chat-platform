@@ -135,6 +135,21 @@ defmodule SharedInfra.ConversationClientHttp do
   @impl true
   def authorize_send(attrs), do: post("/internal/conversations/authorize_send", attrs)
 
+  @impl true
+  def block_user(attrs), do: post("/internal/blocks/create", attrs)
+
+  @impl true
+  def unblock_user(attrs), do: post("/internal/blocks/delete", attrs)
+
+  @impl true
+  def list_blocks(attrs), do: post("/internal/blocks/list", attrs)
+
+  @impl true
+  def either_blocked?(attrs), do: post("/internal/blocks/either", attrs)
+
+  @impl true
+  def direct_peer_blocked?(attrs), do: post("/internal/blocks/direct_peer", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs, unavailable: @unavailable)
   end

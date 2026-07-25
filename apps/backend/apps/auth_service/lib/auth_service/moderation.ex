@@ -137,6 +137,39 @@ defmodule AuthService.Moderation do
      }}
   end
 
+  @doc """
+  Create a USER-submitted report (the first-party POST /api/v1/reports). Lands in the SAME `user_reports`
+  table `list_reports/1` reads, so a new row surfaces in the admin console with ZERO admin-side change — the
+  console scopes by `reported_user_id`'s `app_id`, which this row satisfies. The reporter is the session user
+  (set by the gateway); `reason` is validated against the fixed set and `details` capped at the gateway.
+  status defaults to 'open'. An unknown reported user / conversation trips the FK → `:report_invalid`.
+  """
+  def create_report(attrs) do
+    with {:ok, reporter} <- require_attr(attrs, "reporter_user_id"),
+         {:ok, reported} <- require_attr(attrs, "reported_user_id"),
+         {:ok, reason} <- require_attr(attrs, "reason") do
+      %Postgrex.Result{rows: [[id]]} =
+        Repo.query!(
+          "INSERT INTO user_reports " <>
+            "(reporter_user_id, reported_user_id, conversation_id, reported_message_id, reason, details) " <>
+            "VALUES ($1, $2, $3, $4, $5, $6) RETURNING id::text",
+          [
+            uuid_param(reporter),
+            uuid_param(reported),
+            uuid_param(present(attrs["conversation_id"])),
+            present(attrs["reported_message_id"]),
+            reason,
+            present(attrs["details"])
+          ]
+        )
+
+      {:ok, %{report_id: id}}
+    end
+  rescue
+    # FK violation (reported user / conversation doesn't exist) → invalid, never a 500.
+    Postgrex.Error -> {:error, :report_invalid}
+  end
+
   @report_statuses ~w(open reviewing resolved dismissed)
 
   def update_report(attrs) do

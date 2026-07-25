@@ -37,7 +37,7 @@ defmodule ApiGatewayWeb.UserController do
              "user_id" => user_id,
              "app_id" => session_app(session)
            }) do
-      json(conn, with_avatar_url(response))
+      json(conn, present_profile(session.user_id, user_id, response))
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
@@ -201,7 +201,7 @@ defmodule ApiGatewayWeb.UserController do
              "user_id" => user_id,
              "app_id" => session_app(session)
            }) do
-      json(conn, with_avatar_url(response))
+      json(conn, present_profile(session.user_id, user_id, response))
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
@@ -311,6 +311,40 @@ defmodule ApiGatewayWeb.UserController do
   # Best-effort: any missing field or media error just leaves the profile unchanged (no avatar_url).
   # NOTE: not yet gated by `profile_photo_visibility` (the privacy module is a placeholder today) —
   # avatar visibility gating is a tracked follow-up.
+  # Profile as the CALLER may see it. If there's a block in EITHER direction, the account still exists (name
+  # shown) but the avatar is hidden — identical to what a caller sees for a user with no avatar, so the block
+  # is never revealed (and never leaks "you are blocked"). Last-seen/online is a SEPARATE surface, hidden by
+  # SharedInfra.PresenceAuthz. Otherwise the normal presigned-avatar profile.
+  defp present_profile(caller_id, target_id, profile) when is_map(profile) do
+    if either_blocked?(caller_id, target_id) do
+      # Skip the presign entirely and drop the raw avatar id (so the client can't resolve it itself) + the
+      # internal app_id; avatar_url: nil is the same shape a genuinely-avatarless profile returns.
+      profile
+      |> Map.drop([:avatar_media_id, "avatar_media_id", :avatar_object_key, "avatar_object_key", :app_id])
+      |> Map.put(:avatar_url, nil)
+    else
+      with_avatar_url(profile)
+    end
+  end
+
+  defp present_profile(_caller_id, _target_id, other), do: other
+
+  defp either_blocked?(caller_id, target_id)
+       when is_binary(caller_id) and is_binary(target_id) do
+    case SharedInfra.ConversationClient.either_blocked?(%{
+           "user_a" => caller_id,
+           "user_b" => target_id
+         }) do
+      {:ok, %{blocked: true}} -> true
+      {:ok, %{"blocked" => true}} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp either_blocked?(_caller_id, _target_id), do: false
+
   defp with_avatar_url(profile) when is_map(profile) do
     media_id = Map.get(profile, :avatar_media_id)
     app_id = Map.get(profile, :app_id)

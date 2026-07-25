@@ -2,6 +2,46 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-07-26] User blocking + first-party reporting (Tier-2 safety)
+
+- **Context:** blocking didn't exist; reporting was half-built (the `user_reports` table + the admin read
+  existed, but no user-facing create). Both are cross-cutting — a block that only hides the UI is worthless.
+- **Decision — `user_blocks` owned by conversation-service** ([ConversationService.Blocks](../../apps/backend/apps/conversation_service/lib/conversation_service/blocks.ex),
+  migration [075](../../infra/docker/postgres/init/075_user_blocks.sql)), exposed via `SharedInfra.ConversationClient`.
+  The hottest enforcement — the per-message send gate ([`Participants.authorize_send`](../../apps/backend/apps/conversation_service/lib/conversation_service/participants.ex))
+  — already runs there, so the block check is a LOCAL indexed query: no cross-service round-trip, **no cache**.
+  realtime-gateway (calls/presence) + the gateway (profile/endpoints) have no Repo and reach it via the client.
+  Reports create lives with the existing moderation reads ([`AuthService.Moderation.create_report`](../../apps/backend/apps/auth_service/lib/auth_service/moderation.ex)),
+  so the admin console picks new rows up unchanged.
+- **Decision — either-direction (symmetric) semantics** (`either_blocked?/1`): a block severs the 1-on-1
+  channel BOTH ways, which is coherent and can't be probed to reveal which side blocked.
+- **Decision — messages use DROP-AT-CREATE with a synthetic success**, not accept-and-drop-at-fan-out. For a
+  DIRECT chat the recipient blocked, the send gate returns `delivery: "drop"`; the sender gets a CANONICAL
+  single-tick ack ([`Messages.synthesize_dropped`](../../apps/backend/apps/message_service/lib/message_service/messages.ex))
+  and NOTHING is persisted/published/fanned. One decision point, zero leak surface — the message never exists
+  server-side, so no fan-out leg, timeline read, reconnect catch-up, or push can leak it to the blocker.
+- **ACCEPTED TRADE-OFF (do not mistake for a bug):** because a blocked-DM message is never persisted, it is
+  ABSENT FROM THE SENDER'S OWN SERVER HISTORY. On a fresh install or a second device, the sender's
+  messages-sent-while-blocked do not appear (the client keeps only its local optimistic echo). This is a
+  deliberate-probe signal — a determined sender could infer a block by noticing their sent messages don't
+  sync. We accept it: the alternative (persist + filter the blocker's every read/catch-up/fan-out leg) trades
+  a faint probe signal for a large silent-leak surface, and leaking the message to the blocker is the worse
+  failure for a safety feature. Single-device senders never notice.
+- **Enforcement points:** messages (drop at `authorize_send`); calls (ring + FCM push suppressed in
+  `CallSignaling.ring_callee`, AND the missed pill suppressed in `write_missed_message` so reject/cancel/timeout
+  all leave nothing in the blocker's chat); presence (`SharedInfra.PresenceAuthz.can_see?`, both directions,
+  subscribe + read); profile/by-phone (avatar redacted, account still exists, never leaks "blocked"); typing/
+  "viewing" (gated at join via `direct_peer_blocked?`). NOT over-applied to groups — a blocked user still
+  posts to a shared group and the blocker sees it.
+- **Reports:** `POST /api/v1/reports` — reason ∈ {spam,harassment,impersonation,other}, details capped 2000,
+  per-reporter rate-limited (`SharedInfra.RateLimiter`). "Report and block" = two client calls, no combined
+  endpoint.
+- **Status:** Implemented + tested. Docker-free suites green across all affected apps (message_service 68,
+  shared_infra 96, conversation_service 25, api_gateway block/report/profile/message-drop + typing/call suites);
+  block/report SQL + the create_report→list_reports round-trip are `@tag :postgres_integration` (DB-gated). No
+  new compile warnings. Pre-existing offline-env failures (placeholder-path + DB-backed channel tests + one
+  `PushSubscriptionsTest`) are unrelated (confirmed against a stashed baseline).
+
 ## [2026-06-24] Demo/echo OTP delivery mode for local testing (flag-gated, default-off)
 
 - **Context:** completing an OTP login locally needs the code, but it's SMS-only + stored hashed

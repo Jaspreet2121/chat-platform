@@ -138,6 +138,9 @@ defmodule AuthService.AuthClientInProcess do
   def update_report(attrs), do: Moderation.update_report(attrs)
 
   @impl true
+  def create_report(attrs), do: Moderation.create_report(attrs)
+
+  @impl true
   def write_audit(attrs), do: Moderation.write_audit(attrs)
 
   @impl true

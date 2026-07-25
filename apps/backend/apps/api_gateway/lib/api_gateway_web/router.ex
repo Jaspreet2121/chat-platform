@@ -171,6 +171,24 @@ defmodule ApiGatewayWeb.Router do
     post "/", InviteController, :create
   end
 
+  # User blocking (safety; session-authed — the blocker is always the session user). Enforcement is
+  # server-wide (messages, calls, presence, profile, typing); this is just the block-list management.
+  scope "/api/v1/blocks", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/", BlockController, :index
+    post "/", BlockController, :create
+    delete "/:user_id", BlockController, :delete
+  end
+
+  # User reporting (safety; session-authed). Lands in the existing user_reports table for the admin console.
+  # Per-REPORTER rate limiting is enforced IN the controller (the OTP plug is IP-keyed; reports are user-keyed).
+  scope "/api/v1/reports", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/", ReportController, :create
+  end
+
   # Push registration (session-gated; upsert/delete the caller's own device — browser or handset).
   scope "/api/v1/push", ApiGatewayWeb do
     pipe_through :api

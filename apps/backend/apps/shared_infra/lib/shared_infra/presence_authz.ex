@@ -23,6 +23,10 @@ defmodule SharedInfra.PresenceAuthz do
     cond do
       # A user always sees their own presence (moot for subscribe, but never gate self).
       viewer_id == target_id -> true
+      # A block hides presence BOTH ways (either direction) — checked before visibility/shared-conversation so
+      # a blocked user is invisible even in a conversation you still share. Enforced at BOTH subscribe-time and
+      # read-time (this is the single rule), so it can't drift between them.
+      either_blocked?(viewer_id, target_id) -> false
       not visible?(target_id) -> false
       true -> shares_conversation?(viewer_id, target_id)
     end
@@ -42,6 +46,21 @@ defmodule SharedInfra.PresenceAuthz do
 
       _ ->
         false
+    end
+  rescue
+    _ -> false
+  end
+
+  # Either-direction block between viewer and target. Fail-OPEN (error → false = "no block"): a block-check
+  # glitch just declines to hide by block; presence is still gated by shares_conversation? below, which fails
+  # CLOSED — and a full ConversationClient outage hides everyone there anyway, so nothing leaks.
+  defp either_blocked?(viewer_id, target_id) do
+    case SharedInfra.ConversationClient.either_blocked?(%{
+           "user_a" => viewer_id,
+           "user_b" => target_id
+         }) do
+      {:ok, result} -> cget(result, :blocked) == true
+      _ -> false
     end
   rescue
     _ -> false

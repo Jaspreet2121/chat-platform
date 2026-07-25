@@ -111,26 +111,49 @@ defmodule RealtimeGateway.CallSignaling do
         type: type,
         conversation_id: conversation_id
       }) do
-    {caller_name, caller_avatar_url} = resolve_caller(caller_id, app_id)
+    if call_blocked?(caller_id, callee_id) do
+      # Either party has blocked the other: ring NOTHING and push NOTHING — the callee never learns of the
+      # call. The caller's client shows "ringing" until the 35s ring-timeout resolves it (missed),
+      # indistinguishable from an unanswered call, so the block is never revealed. The timeout also writes NO
+      # missed pill into the (blocked) chat — that suppression lives in write_missed_message/2. One point here
+      # covers BOTH the socket invite and the /v1 REST create (they both ring through here).
+      :ok
+    else
+      {caller_name, caller_avatar_url} = resolve_caller(caller_id, app_id)
 
-    do_broadcast(
-      endpoint,
-      callee_id,
-      "call:incoming",
-      %{
-        call_id: call_id,
-        room: room,
-        caller_id: caller_id,
-        caller_name: caller_name,
-        type: type,
-        conversation_id: conversation_id
-      }
-      |> put_avatar(caller_avatar_url)
-    )
+      do_broadcast(
+        endpoint,
+        callee_id,
+        "call:incoming",
+        %{
+          call_id: call_id,
+          room: room,
+          caller_id: caller_id,
+          caller_name: caller_name,
+          type: type,
+          conversation_id: conversation_id
+        }
+        |> put_avatar(caller_avatar_url)
+      )
 
-    emit_incoming_push(callee_id, caller_name, type, call_id)
-    :ok
+      emit_incoming_push(callee_id, caller_name, type, call_id)
+      :ok
+    end
   end
+
+  # Symmetric block check for the call ring + the missed pill. Fail-open (ring on a check glitch), mirroring
+  # the message send gate — a transient block-check failure must not silently swallow a legitimate call.
+  defp call_blocked?(caller_id, callee_id) when is_binary(caller_id) and is_binary(callee_id) do
+    case ConversationClient.either_blocked?(%{"user_a" => caller_id, "user_b" => callee_id}) do
+      {:ok, %{blocked: true}} -> true
+      {:ok, %{"blocked" => true}} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp call_blocked?(_caller_id, _callee_id), do: false
 
   # --- accept / reject (callee only) -------------------------------------------------------------
   defp accept(%{"call_id" => call_id}, socket) do
@@ -807,7 +830,11 @@ defmodule RealtimeGateway.CallSignaling do
     caller_id = cget(call, :caller_id)
     callee_id = cget(call, :callee_id)
 
-    if is_binary(conversation_id) and conversation_id != "" and is_binary(caller_id) do
+    # BLOCK: a blocked call must leave NOTHING in the (blocker's) chat. This is the ONE pill-writing function
+    # every terminal path shares — reject/2, cancel/2, and the 35s ring_timeout — so the check here covers all
+    # of them: a blocked caller ringing out (timeout), or cancelling, writes no "Missed call" pill.
+    if is_binary(conversation_id) and conversation_id != "" and is_binary(caller_id) and
+         not call_blocked?(caller_id, callee_id) do
       call_type = if cget(call, :type) == "video", do: "video", else: "voice"
 
       attrs = %{

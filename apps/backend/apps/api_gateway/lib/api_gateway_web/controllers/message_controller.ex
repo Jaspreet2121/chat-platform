@@ -32,22 +32,30 @@ defmodule ApiGatewayWeb.MessageController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          :ok <- authorize_membership(conversation_id, session.user_id),
-         # SERVER-SIDE only-admins-can-send enforcement (a member can't bypass via the API).
-         {:ok, _} <-
+         # SERVER-SIDE only-admins-can-send enforcement (a member can't bypass via the API). This SAME call
+         # also carries the BLOCK disposition: for a DIRECT chat the recipient has blocked, delivery: "drop".
+         {:ok, disposition} <-
            SharedInfra.ConversationClient.authorize_send(%{
              "conversation_id" => conversation_id,
              "user_id" => session.user_id
            }),
+         dropped? = dropped?(disposition),
          {:ok, response} <-
            params
            |> Map.put("sender_user_id", session.user_id)
+           |> put_delivery(dropped?)
            |> SharedInfra.MessageClient.create_message() do
-      # Live inbox: new preview + updated_at for all, +1 unread for everyone but the sender.
-      ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
-        conversation_id,
-        session.user_id,
-        :message
-      )
+      # A DROPPED (blocked) message returns a canonical single-tick ack to the SENDER but reaches the blocker
+      # through NO path: nothing persisted, and the inbox fan-out below (which would wake the blocker's list)
+      # is skipped. The sender learns nothing.
+      unless dropped? do
+        # Live inbox: new preview + updated_at for all, +1 unread for everyone but the sender.
+        ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+          conversation_id,
+          session.user_id,
+          :message
+        )
+      end
 
       conn
       |> put_status(:created)
@@ -417,6 +425,17 @@ defmodule ApiGatewayWeb.MessageController do
   end
 
   defp present?(value), do: not is_nil(value) and value != ""
+
+  # The send gate's disposition: delivery: "drop" means the recipient blocked the sender (DIRECT chat).
+  defp dropped?(disposition) when is_map(disposition),
+    do: Map.get(disposition, :delivery) == "drop" or Map.get(disposition, "delivery") == "drop"
+
+  defp dropped?(_disposition), do: false
+
+  # SERVER-controlled flag: set on a drop, STRIP any client-injected value otherwise (a client must never be
+  # able to force the synthesize path).
+  defp put_delivery(params, true), do: Map.put(params, "delivery_disposition", "drop")
+  defp put_delivery(params, false), do: Map.delete(params, "delivery_disposition")
 
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "message.invalid_request")
 

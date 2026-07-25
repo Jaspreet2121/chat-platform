@@ -192,6 +192,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Moderation.update_report(body(conn)))
   end
 
+  post "/internal/reports/create" do
+    send_result(conn, AuthService.Moderation.create_report(body(conn)))
+  end
+
   post "/internal/admin/audit/write" do
     send_result(conn, AuthService.Moderation.write_audit(body(conn)))
   end
