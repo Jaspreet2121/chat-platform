@@ -115,6 +115,22 @@ defmodule RealtimeGateway.CallCaptureEndpoint do
   end
 end
 
+defmodule RealtimeGateway.CallPillCaptureClient do
+  @moduledoc """
+  Captures the missed-call pill that `write_missed_message/2` writes via `SharedInfra.MessageClient`. Sends
+  each `create_message` attrs to the test pid so a test can assert the pill's exact shape AND count (exactly
+  one; none). Returns {:ok, response} so the pill's message_created fan-out proceeds.
+  """
+  def create_message(attrs) do
+    case Application.get_env(:realtime_gateway, :call_test_pid) do
+      pid when is_pid(pid) -> send(pid, {:pill, attrs})
+      _ -> :ok
+    end
+
+    {:ok, Map.put(attrs, "message_id", "pill_1")}
+  end
+end
+
 defmodule RealtimeGateway.CallSignalingStubs do
   @moduledoc "UserClient / MediaClient stand-ins for the caller-profile + avatar-presign path (no @behaviour)."
 
@@ -174,6 +190,7 @@ defmodule RealtimeGateway.CallSignalingTest do
   @callee "22222222-2222-2222-2222-222222222222"
   @stranger "33333333-3333-3333-3333-333333333333"
   @app "44444444-4444-4444-8444-444444444444"
+  @dm_conv "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 
   setup do
     start_supervised!(%{id: Mock, start: {Mock, :start_link, []}})
@@ -333,6 +350,82 @@ defmodule RealtimeGateway.CallSignalingTest do
     assert_receive {:broadcast, "user:" <> caller, "call:rejected", %{call_id: ^call_id}}
     assert caller == @caller
     assert Enum.any?(Mock.log(), &match?({:decline, _}, &1))
+  end
+
+  # ---- FIX 1: a decline writes the SAME missed pill a cancel/timeout writes (WhatsApp semantics — a
+  # declined call is indistinguishable from a missed one; the caller must not learn they were declined) ----
+  describe "decline writes the missed-call pill" do
+    setup do
+      prev = Application.get_env(:shared_infra, :message_client_adapter)
+      Application.put_env(:shared_infra, :message_client_adapter, RealtimeGateway.CallPillCaptureClient)
+      on_exit(fn -> restore(:message_client_adapter, prev) end)
+      :ok
+    end
+
+    # A first-party call carries a conversation_id (unlike /v1). Seed one directly so write_missed_message
+    # doesn't skip (it no-ops for a conversation-less call).
+    defp seed_dm_call do
+      Mock.create_call(%{
+        "caller_id" => @caller,
+        "callee_id" => @callee,
+        "type" => "voice",
+        "conversation_id" => @dm_conv
+      })
+    end
+
+    test "reject writes EXACTLY ONE missed pill — same body + metadata status as a missed call" do
+      seed_dm_call()
+
+      assert {:reply, {:ok, _}, _} =
+               CallSignaling.handle_event("call:reject", %{"call_id" => "call_1"}, socket(@callee))
+
+      # The caller is told the call is off …
+      assert_receive {:broadcast, "user:#{@caller}", "call:rejected", %{call_id: "call_1"}}
+
+      # … and the chat gets a pill IDENTICAL to a missed call's: sender = caller, type "call", body + metadata
+      # status "missed". The client can't tell a decline from a miss.
+      assert_receive {:pill, attrs}
+      assert attrs["message_type"] == "call"
+      assert attrs["sender_user_id"] == @caller
+      assert attrs["conversation_id"] == @dm_conv
+      assert attrs["body"] == "Missed voice call"
+      assert attrs["metadata"]["status"] == "missed"
+      assert attrs["metadata"]["call_type"] == "voice"
+
+      # Exactly one — never a second pill.
+      refute_receive {:pill, _}, 100
+
+      # It fans out as an ordinary message_created (open clients append it live).
+      assert_receive {:broadcast, "conversation:#{@dm_conv}", "message_created", _}
+    end
+
+    test "a ring-timeout AFTER a reject writes NO second pill (the double-write guarantee)" do
+      seed_dm_call()
+
+      assert {:reply, {:ok, _}, _} =
+               CallSignaling.handle_event("call:reject", %{"call_id" => "call_1"}, socket(@callee))
+
+      assert_receive {:pill, _}
+      flush_broadcasts()
+
+      # The 35s timer fires late. mark_call_declined already moved the call to "declined", so ring_timeout's
+      # status re-check (only writes when status == "ringing") makes it a no-op — no mark_missed, no pill.
+      assert :ok = CallSignaling.ring_timeout("call_1", RealtimeGateway.CallCaptureEndpoint)
+
+      refute_receive {:pill, _}, 150
+      refute Enum.any?(Mock.log(), &match?({:miss, _}, &1))
+    end
+
+    test "cancel still writes exactly one missed pill (the reference path is unchanged)" do
+      seed_dm_call()
+
+      assert {:reply, {:ok, _}, _} =
+               CallSignaling.handle_event("call:cancel", %{"call_id" => "call_1"}, socket(@caller))
+
+      assert_receive {:pill, attrs}
+      assert attrs["metadata"]["status"] == "missed"
+      refute_receive {:pill, _}, 100
+    end
   end
 
   test "caller hangup notifies the OTHER party (callee)" do

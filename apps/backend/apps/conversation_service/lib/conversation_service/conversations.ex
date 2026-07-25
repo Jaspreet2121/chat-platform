@@ -359,9 +359,11 @@ defmodule ConversationService.Conversations do
       title: resolved_title(conversation),
       created_by: conversation.created_by,
       participants: participants,
-      # Group photo id/key (nil for DMs / no photo) — the gateway presigns into group_avatar_url.
+      # Group photo id (nil for DMs / no photo) — the gateway presigns into group_avatar_url FROM THIS media_id
+      # (with_group_avatar_url/2). The raw object_key is NOT emitted: no consumer reads it (the gateway presigns
+      # from the media_id, the web reads the presigned url), and clients must never see a raw storage key
+      # (Android contract §8.6).
       group_avatar_media_id: group_avatar && group_avatar.avatar_media_id,
-      group_avatar_object_key: group_avatar && group_avatar.avatar_object_key,
       # Group admin setting — the client locks the composer for non-admins when true.
       only_admins_can_send: only_admins_can_send,
       # Group-call permission — the client gates the "start call" button (Phase-3).
@@ -495,7 +497,7 @@ defmodule ConversationService.Conversations do
          to_char(COALESCE(lm.created_at, c.updated_at) AT TIME ZONE 'UTC',
                  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
          COALESCE(un.unread, 0)::int,
-         gp.avatar_media_id::text, gp.avatar_object_key
+         gp.avatar_media_id::text
   FROM conversations c
   JOIN conversation_participants cp
     ON cp.conversation_id = c.id AND cp.user_id = ANY($1::uuid[]) AND cp.left_at IS NULL
@@ -562,8 +564,7 @@ defmodule ConversationService.Conversations do
                         content_type,
                         activity_at,
                         unread,
-                        avatar_media_id,
-                        avatar_object_key
+                        avatar_media_id
                       ] ->
       %{
         user_id: user_id,
@@ -574,9 +575,11 @@ defmodule ConversationService.Conversations do
         last_message_kind: message_kind(message_type, content_type),
         unread_count: unread,
         updated_at: activity_at,
-        # Group photo id/key (nil for DMs / no photo) — the gateway presigns into group_avatar_url.
-        group_avatar_media_id: avatar_media_id,
-        group_avatar_object_key: avatar_object_key
+        # Group photo id (nil for DMs / no photo) — the gateway presigns into group_avatar_url FROM THIS
+        # media_id. The raw object_key is NOT emitted: it has no consumer and must never reach a client
+        # (Android §8.6). This row also feeds the conversation_updated broadcast frame, which had been leaking
+        # the key on the wire (see SharedInfra.ConversationBroadcast.updated_row/1's guard).
+        group_avatar_media_id: avatar_media_id
       }
     end)
   end

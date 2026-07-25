@@ -155,6 +155,11 @@ defmodule RealtimeGateway.CallSignaling do
   defp reject(%{"call_id" => call_id}, socket) do
     with_call(call_id, socket, [:callee], fn call, _role ->
       _ = ConversationClient.mark_call_declined(%{"call_id" => call_id})
+      # WhatsApp semantics: a DECLINED call must be INDISTINGUISHABLE from a missed one in the chat — the
+      # caller must never learn they were actively declined. So reject writes the SAME missed pill cancel
+      # writes (identical body + metadata status: "missed"), through the same create+broadcast path. No client
+      # change. 1-on-1 only; group decline/leave writes no pill (a separate follow-up).
+      write_missed_message(call, socket.endpoint)
       broadcast(socket, cget(call, :caller_id), "call:rejected", %{call_id: call_id})
       {:reply, {:ok, %{call_id: call_id}}, socket}
     end)
@@ -789,9 +794,15 @@ defmodule RealtimeGateway.CallSignaling do
   # SAME create+broadcast path as a normal message (MessageClient.create_message → message_created fan-out to
   # the conversation topic + both parties' user:<id>), so open clients get it live and the conversation row's
   # last-message/re-sort updates. sender = caller (so the existing own/other bubble alignment reads correct).
-  # Requires the call row's conversation_id; if absent (call not tied to a conversation) we SKIP — the call
-  # still shows in the Calls tab regardless.
-  defp write_missed_message(call, endpoint) do
+  # Requires the call row's conversation_id; if absent (call not tied to a conversation, e.g. every /v1 call)
+  # we SKIP — the call still shows in the Calls tab regardless.
+  #
+  # PUBLIC (doc-hidden): also reused by the first-party REST decline endpoint
+  # (ApiGatewayWeb.CallController.reject/2) so a decline that arrives while the app is CLOSED writes the SAME
+  # missed pill as the socket path — one definition of "the missed-call pill", no drift between the two entry
+  # points. Takes a plain call map (from ConversationClient.get_call) + any Phoenix endpoint.
+  @doc false
+  def write_missed_message(call, endpoint) do
     conversation_id = cget(call, :conversation_id)
     caller_id = cget(call, :caller_id)
     callee_id = cget(call, :callee_id)

@@ -180,9 +180,15 @@ defmodule SharedInfra.ConversationBroadcast do
   # The broadcast payload = the inbox row, minus the routing key (user_id) that told us WHERE to send it.
   # String keys: this is a wire frame, and it must look identical whether the row came back from the
   # in-process adapter (atom keys) or over internal HTTP (string keys).
+  #
+  # This builder passes through EVERY remaining row field indiscriminately, so it must also drop
+  # `group_avatar_object_key` — a raw object-store path that must never reach a client (Android contract §8.6;
+  # the client renders the group photo from the presigned `group_avatar_url` / the media_id, never the object
+  # key). The conversation_service row no longer emits it (Conversations.inbox_rows — root cause); this is the
+  # wire-frame guard so a future row source can't reintroduce the leak here.
   defp updated_row(row) do
     row
-    |> Map.drop([:user_id, "user_id"])
+    |> Map.drop([:user_id, "user_id", :group_avatar_object_key, "group_avatar_object_key"])
     |> Map.new(fn {key, value} -> {to_string(key), value} end)
   end
 

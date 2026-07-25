@@ -44,7 +44,12 @@ defmodule SharedInfra.ConversationBroadcastTest do
             last_message_preview: "hello",
             last_message_kind: "text",
             unread_count: if(user_id == @alice, do: 0, else: 2),
-            updated_at: "2026-07-14T10:00:00.000000Z"
+            updated_at: "2026-07-14T10:00:00.000000Z",
+            # A group row carries the avatar's media_id (the client renders from the presigned group_avatar_url);
+            # the raw object_key must NEVER reach the wire frame (Android §8.6). Real rows no longer emit it, but
+            # the frame builder must strip it regardless — this row includes it to prove the guard.
+            group_avatar_media_id: "gm-1",
+            group_avatar_object_key: "groups/secret/avatar.jpg"
           }
         end)
 
@@ -93,6 +98,17 @@ defmodule SharedInfra.ConversationBroadcastTest do
     refute Map.has_key?(payload, :user_id)
     assert payload["title"] == "Launch"
     assert payload["conversation_id"] == @conversation
+  end
+
+  test "the wire frame NEVER carries the raw group-avatar object key (Android §8.6 — clients see the url)" do
+    ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message)
+
+    assert_receive {:broadcast, _topic, "conversation_updated", payload}, 500
+    # The raw object-store path must not leak on the wire, in either key form.
+    refute Map.has_key?(payload, "group_avatar_object_key")
+    refute Map.has_key?(payload, :group_avatar_object_key)
+    # media_id is an opaque id (not a storage path) and rides along; the object key is the only leak.
+    assert payload["group_avatar_media_id"] == "gm-1"
   end
 
   test ":only limits the fan-out to the changed user (the receipt trigger — no waking all N inboxes)" do

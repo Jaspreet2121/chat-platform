@@ -6,6 +6,8 @@ defmodule ApiGatewayWeb.CallController do
   """
   use ApiGatewayWeb, :controller
 
+  require Logger
+
   alias ApiGatewayWeb.ErrorResponse
 
   # GET /api/v1/calls → { "calls": [ …, counterpart_id, counterpart_name ] } for the current user.
@@ -55,6 +57,45 @@ defmodule ApiGatewayWeb.CallController do
 
   def token(conn, _params), do: ErrorResponse.invalid_request(conn, "calls.room_required")
 
+  # POST /api/v1/calls/:id/reject — the CALLEE declines a ringing 1-on-1 call from the FIRST-PARTY app.
+  #
+  # WHY THIS EXISTS (the closed-app gap): with incoming-call FCM live, the callee's handset rings while the app
+  # (and its socket) is CLOSED. Tapping Decline then has NO socket to push `call:reject` over, so without this
+  # the decline is simply lost and the call resolves as a server ring-TIMEOUT (missed) 35s later. This is
+  # Decline's session-authed REST path — mirroring the socket handler's semantics EXACTLY
+  # (RealtimeGateway.CallSignaling.reject/2): mark the call declined, tell the caller (`call:rejected`), and
+  # write the SAME missed pill (indistinguishable from a missed call — see write_missed_message). Reusing the
+  # shared primitives (ConversationClient.mark_call_declined + CallSignaling.write_missed_message), not a
+  # second implementation.
+  #
+  # reject ONLY (not accept/end): a dismissed incoming-call notification never brings the socket up, so the
+  # decline has no other way home. accept/end self-heal — accepting inherently foregrounds the app, its socket
+  # connects, and the socket handlers apply — so they need no closed-app REST twin.
+  #
+  # Errors: not the callee → 403 forbidden; unknown call → 404; a call that already left "ringing" (the 35s
+  # timeout won the race, or a double-tap) → idempotent 200 with NO second transition/pill/broadcast. A decline
+  # arriving after the timeout MUST NOT 500 or double-write the pill.
+  def reject(conn, %{"id" => call_id}) when is_binary(call_id) and call_id != "" do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, call} <- fetch_call(call_id),
+         :ok <- ensure_callee(call, session.user_id) do
+      decline_ringing_call(conn, call, call_id)
+    else
+      {:error, :not_found} ->
+        ErrorResponse.not_found(conn, "calls.not_found", "Call not found")
+
+      {:error, :forbidden} ->
+        ErrorResponse.forbidden(conn, "calls.forbidden", "Only the callee can decline this call")
+
+      _ ->
+        ErrorResponse.unauthorized(conn, "auth.unauthorized", "Invalid or missing session")
+    end
+  end
+
+  def reject(conn, _params), do: ErrorResponse.invalid_request(conn, "calls.invalid_request")
+
   # Call-authorize a LiveKit token request. The room is "call-"<>call_id; we resolve the call row and check
   # the user belongs to it: GROUP calls authorize on a `group_call_participants` row (invited or joined —
   # an added non-member is authorized for THIS call only); DIRECT calls authorize on caller/callee. Anything
@@ -100,6 +141,73 @@ defmodule ApiGatewayWeb.CallController do
       _ -> {:error, :session_invalid}
     end
   end
+
+  # --- first-party decline (reject/2) helpers ----------------------------------------------------
+
+  defp fetch_call(call_id) do
+    case SharedInfra.ConversationClient.get_call(%{"call_id" => call_id}) do
+      {:ok, call} -> {:ok, call}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  # 1-on-1 only: the direct call's callee is the single answerer. A group call (kind != "direct") has no single
+  # callee, so a decline there fails closed to 403 — group decline/leave is a separate flow (its own follow-up).
+  defp ensure_callee(call, user_id) do
+    if (cget(call, :kind) || "direct") == "direct" and is_binary(user_id) and
+         user_id == cget(call, :callee_id),
+       do: :ok,
+       else: {:error, :forbidden}
+  end
+
+  defp decline_ringing_call(conn, call, call_id) do
+    if cget(call, :status) == "ringing" do
+      # `expected_status` makes the transition ATOMIC: if the 35s ring-timeout (or another device) already
+      # moved the call out of "ringing" under the row lock, mark_call_declined returns :call_conflict and we
+      # treat the whole thing as an idempotent success — the timeout already wrote its missed pill, and a
+      # second pill must never appear. This is the closed-app decline's race guard.
+      case SharedInfra.ConversationClient.mark_call_declined(%{
+             "call_id" => call_id,
+             "expected_status" => "ringing"
+           }) do
+        {:ok, _} ->
+          notify_caller_rejected(cget(call, :caller_id), call_id)
+          # The SAME missed pill the socket reject writes (one definition, no drift) — a REST decline and a
+          # socket decline are indistinguishable in the chat, and both are indistinguishable from a missed call.
+          RealtimeGateway.CallSignaling.write_missed_message(call, ApiGatewayWeb.Endpoint)
+          json(conn, %{call_id: call_id})
+
+        {:error, :call_conflict} ->
+          json(conn, %{call_id: call_id})
+
+        _ ->
+          ErrorResponse.service_unavailable(conn, "calls.unavailable")
+      end
+    else
+      # Already terminal (declined / missed / ended / answered) → idempotent success, no side effects. A decline
+      # after the ring-timeout is normal (closed app), and must never 500 or re-write the pill.
+      json(conn, %{call_id: call_id})
+    end
+  end
+
+  # Resolve the caller's ring with `call:rejected`. Reaches the caller's SDK because RealtimeGateway.UserSocket
+  # is mounted on ApiGatewayWeb.Endpoint (one endpoint, one PubSub) — the same path the /v1 twin and the socket
+  # handler use. Fire-and-forget: a PubSub hiccup must never fail the decline (the call IS already declined),
+  # but it must not vanish either (the caller would otherwise ring to the 35s timeout).
+  defp notify_caller_rejected(caller_id, call_id) when is_binary(caller_id) and caller_id != "" do
+    Task.start(fn ->
+      try do
+        ApiGatewayWeb.Endpoint.broadcast("user:" <> caller_id, "call:rejected", %{call_id: call_id})
+      rescue
+        error ->
+          Logger.error("first-party call:rejected broadcast failed: #{Exception.message(error)}")
+      end
+    end)
+
+    :ok
+  end
+
+  defp notify_caller_rejected(_caller_id, _call_id), do: :ok
 
   # Normalize each call to a stable string-keyed shape + the counterpart id, then batch-enrich names
   # (one profile lookup per UNIQUE counterpart, not per row).

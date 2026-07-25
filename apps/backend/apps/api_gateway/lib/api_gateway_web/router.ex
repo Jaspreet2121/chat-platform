@@ -196,6 +196,11 @@ defmodule ApiGatewayWeb.Router do
     # Call history for the authenticated user (both sides), newest first — Slice-5a.
     get "/", CallController, :index
     post "/token", CallController, :token
+
+    # First-party decline — the closed-app case: with incoming-call FCM live, the callee's handset rings while
+    # the app (its socket) is CLOSED, so tapping Decline has no socket to push `call:reject` over. This gives
+    # Decline a session-authed REST path (callee-only) so the call resolves as DECLINED, not a 35s ring-timeout.
+    post "/:id/reject", CallController, :reject
   end
 
   # Call links (L1) — reusable link → conversation-less "link" call. Registered users only (session-gated in
