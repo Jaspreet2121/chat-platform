@@ -16,6 +16,7 @@ defmodule ApiGatewayWeb.Router do
   # Public integrator API: authenticate (secret key OR end-user JWT) → app_id scope → per-app rate limit.
   pipeline :v1 do
     plug :accepts, ["json"]
+
     # FIRST: registers a before_send so it observes EVERY /v1 response — incl. 401/429 halts below.
     plug ApiGatewayWeb.Plugs.Observability
     plug ApiGatewayWeb.Plugs.V1Auth
@@ -52,13 +53,16 @@ defmodule ApiGatewayWeb.Router do
     post "/conversations", ConversationController, :create
     get "/conversations", ConversationController, :index
     get "/conversations/:id", ConversationController, :show
+
     # Presence snapshot (online/last-seen) for the caller's contacts — privacy-filtered, end-user token.
     get "/presence", PresenceController, :index
+
     # Rename a GROUP (owner/admin-gated in the conversation service; end-user token only). Broadcasts
     # conversation_updated so every participant's inbox shows the new title live.
     patch "/conversations/:id", ConversationController, :update
     post "/conversations/:id/messages", MessageController, :create
     get "/conversations/:id/messages", MessageController, :index
+
     # Edit + SOFT-delete (author-only; the row survives as a tombstone). Both broadcast the socket path's
     # exact events (message_updated / message_deleted) so connected clients update live.
     patch "/conversations/:id/messages/:message_id", MessageController, :update
@@ -68,7 +72,9 @@ defmodule ApiGatewayWeb.Router do
     # receipts. Both END-USER only (a server has no opinion to react with and doesn't read messages) and
     # both broadcast the socket path's exact events: reaction_updated / receipt_updated.
     put "/conversations/:id/messages/:message_id/reactions", MessageController, :set_reaction
+
     delete "/conversations/:id/messages/:message_id/reactions", MessageController, :remove_reaction
+
     post "/conversations/:id/messages/:message_id/receipts", MessageController, :receipt
 
     # Media: presigned upload → complete → presigned download. Same authz model as the first-party
@@ -83,6 +89,7 @@ defmodule ApiGatewayWeb.Router do
     # integrator's external_id in and out.
     post "/calls", CallController, :create
     post "/calls/:id/token", CallController, :token
+
     # Callee answers / declines a ringing direct call — notifies the caller, emits the call.* webhook.
     post "/calls/:id/accept", CallController, :accept
     post "/calls/:id/reject", CallController, :reject
@@ -116,6 +123,7 @@ defmodule ApiGatewayWeb.Router do
 
     get "/usage", UsageController, :index
     get "/webhooks/deliveries", WebhookEndpointController, :deliveries
+
     # First-party presence snapshot for the web app (session-authed; privacy-filtered, fail-closed).
     get "/presence", PresenceController, :index
   end
@@ -150,6 +158,7 @@ defmodule ApiGatewayWeb.Router do
     get "/:user_id/profile", UserController, :profile
     # Direct-peer contact info (phone) — server-verified shared-direct-conversation scope.
     get "/:user_id/peer-contact", UserController, :peer_contact
+
     # PUBLIC avatar proxy (stable URL → 302 to a fresh presign) — for web-push notification icons.
     get "/:user_id/avatar", UserController, :avatar
   end
@@ -162,12 +171,17 @@ defmodule ApiGatewayWeb.Router do
     post "/", InviteController, :create
   end
 
-  # Web-push subscription registration (session-gated; upsert/delete the caller's own browser).
+  # Push registration (session-gated; upsert/delete the caller's own device — browser or handset).
   scope "/api/v1/push", ApiGatewayWeb do
     pipe_through :api
 
     post "/subscriptions", PushController, :create
     delete "/subscriptions", PushController, :delete
+
+    # Android FCM device tokens (Phase 2) — same gate, upsert by token. DELETE is what the client
+    # calls on logout, so a signed-out handset stops receiving that account's pushes.
+    post "/fcm-tokens", PushController, :create_token
+    delete "/fcm-tokens", PushController, :delete_token
 
     # The ONLY unauthenticated avatar path — verified by a narrow HMAC capability token (not a session), so
     # a web-push notification icon can point at a stable URL. 302s to a presigned avatar; bad token → 404.
@@ -214,6 +228,7 @@ defmodule ApiGatewayWeb.Router do
     delete "/:conversation_id/participants/:user_id", ConversationController, :remove_participant
     # Group admin: promote/demote (owner-only) + only-admins-can-send toggle (owner/admin).
     put "/:conversation_id/participants/:user_id/role", ConversationController, :set_participant_role
+
     put "/:conversation_id/settings", ConversationController, :set_group_settings
   end
 
@@ -286,6 +301,7 @@ defmodule ApiGatewayWeb.Router do
 
     # Cross-tenant apps overview (Surface 3; apps.view — root/admin/support read-only).
     get "/apps", AdminAppsController, :index
+
     # Period meter for one app (billing Phase 1 — measurement only; same fn as the owner endpoint).
     get "/apps/:id/usage", AdminAppsController, :usage
 

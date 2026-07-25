@@ -43,6 +43,9 @@ defmodule SharedInfra.AuthClient do
   @callback get_user_phone(attrs()) :: result()
   @callback save_push_subscription(attrs()) :: result()
   @callback delete_push_subscription(attrs()) :: result()
+  # Phase-2 Android: the FCM device-token twin of the two above.
+  @callback save_fcm_token(attrs()) :: result()
+  @callback delete_fcm_token(attrs()) :: result()
 
   @callback create_api_key(attrs()) :: result()
   @callback list_api_keys(attrs()) :: result()
@@ -151,6 +154,8 @@ defmodule SharedInfra.AuthClient do
   def get_user_phone(attrs), do: adapter().get_user_phone(attrs)
   def save_push_subscription(attrs), do: adapter().save_push_subscription(attrs)
   def delete_push_subscription(attrs), do: adapter().delete_push_subscription(attrs)
+  def save_fcm_token(attrs), do: adapter().save_fcm_token(attrs)
+  def delete_fcm_token(attrs), do: adapter().delete_fcm_token(attrs)
 
   @doc "The configured Auth client adapter (default `AuthService.AuthClientInProcess`)."
   def adapter do

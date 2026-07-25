@@ -17,6 +17,7 @@ defmodule NotificationService.PushSender do
 
   require Logger
 
+  alias NotificationService.PushContext
   alias NotificationService.Repo
 
   @doc "Fire-and-forget push fan-out for an applied message_created event."
@@ -71,7 +72,7 @@ defmodule NotificationService.PushSender do
     context = message_context(attrs)
 
     for recipient <- recipients,
-        not muted?(attrs.conversation_id, recipient),
+        not PushContext.muted?(attrs.conversation_id, recipient),
         # Presence-aware suppression. MAIN gate: the recipient's app is open/foreground ANYWHERE (any
         # chat or the list) → skip the web-push, the in-app toast covers them. Plus the narrower
         # "viewing THIS conversation" marker (harmless overlap). Both are short-TTL Redis markers the
@@ -83,8 +84,8 @@ defmodule NotificationService.PushSender do
         build_payload(
           context,
           attrs,
-          unread_count(attrs.conversation_id, recipient),
-          total_unread_count(recipient)
+          PushContext.unread_count(attrs.conversation_id, recipient),
+          PushContext.total_unread_count(recipient)
         )
 
       for subscription <- subscriptions_for(recipient) do
@@ -95,16 +96,13 @@ defmodule NotificationService.PushSender do
     error -> Logger.warning("web-push deliver raised, ignored: #{inspect(error)}")
   end
 
+  # The shared half (sender name, preview, group name) comes from PushContext — the SAME module the
+  # FCM leg reads, which is what keeps a browser notification and an Android one saying the same
+  # thing. Only the icon is web-only, so only the icon is added here.
   defp message_context(attrs) do
-    %{body: body, message_type: message_type, content_type: content_type} =
-      message_preview_fields(attrs.message_id)
-
-    %{
-      sender: sender_name(attrs.sender_user_id),
-      preview: preview(body, message_type, content_type),
-      group_name: group_name(attrs.conversation_id),
-      icon: avatar_icon_url(attrs.sender_user_id)
-    }
+    attrs
+    |> PushContext.message_context()
+    |> Map.put(:icon, avatar_icon_url(attrs.sender_user_id))
   end
 
   # Sender's avatar as the notification icon. The gateway's avatar routes are AUTHENTICATED now, but a
@@ -159,88 +157,6 @@ defmodule NotificationService.PushSender do
     })
   end
 
-  # WEB-PUSH mute: skip a recipient whose participant row for this conversation is muted right now
-  # (muted_until > now(); 'infinity' = always). In-app notification rows are unaffected.
-  defp muted?(conversation_id, user_id) do
-    case Repo.query(
-           "SELECT 1 FROM conversation_participants " <>
-             "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid " <>
-             "AND muted_until IS NOT NULL AND muted_until > now()",
-           [conversation_id, user_id]
-         ) do
-      {:ok, %{num_rows: n}} -> n > 0
-      _ -> false
-    end
-  rescue
-    _ -> false
-  end
-
-  # The recipient's current unread count for this conversation (their read receipts + clear/auto-delete
-  # window respected) — used for the collapse label. Best-effort: on any error, 1 (show the single msg).
-  defp unread_count(conversation_id, user_id) do
-    case Repo.query(
-           "SELECT count(*) FROM messages m " <>
-             "JOIN conversation_participants cp " <>
-             "  ON cp.conversation_id = m.conversation_id AND cp.user_id = $2::text::uuid " <>
-             "WHERE m.conversation_id = $1::text::uuid AND m.deleted_at IS NULL " <>
-             "AND m.sender_user_id <> $2::text::uuid " <>
-             "AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before) " <>
-             "AND (cp.auto_delete_seconds IS NULL " <>
-             "     OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds)) " <>
-             "AND NOT EXISTS (SELECT 1 FROM message_receipts r " <>
-             "  WHERE r.conversation_id = m.conversation_id AND r.message_id = m.message_id " <>
-             "  AND r.user_id = $2::text::uuid AND (r.status = 'read' OR r.read_at IS NOT NULL))",
-           [conversation_id, user_id]
-         ) do
-      {:ok, %{rows: [[count]]}} when is_integer(count) and count > 0 -> count
-      _ -> 1
-    end
-  rescue
-    _ -> 1
-  end
-
-  # The recipient's TOTAL unread across ALL their active conversations (same per-conversation window
-  # rules, summed) — the SW sets this as the app-icon badge while the app is closed. Best-effort: on
-  # any error, 0 (the app reconciles the true total on next focus, so a miss self-corrects).
-  defp total_unread_count(user_id) do
-    case Repo.query(
-           "SELECT count(*) FROM messages m " <>
-             "JOIN conversation_participants cp " <>
-             "  ON cp.conversation_id = m.conversation_id AND cp.user_id = $1::text::uuid " <>
-             "     AND cp.left_at IS NULL " <>
-             "WHERE m.deleted_at IS NULL AND m.sender_user_id <> $1::text::uuid " <>
-             # Muted chats still count toward the badge (mute silences the alert, not the count) —
-             # matches the app-side reconciler which sums the chat-list unread without a mute filter.
-             "AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before) " <>
-             "AND (cp.auto_delete_seconds IS NULL " <>
-             "     OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds)) " <>
-             "AND NOT EXISTS (SELECT 1 FROM message_receipts r " <>
-             "  WHERE r.conversation_id = m.conversation_id AND r.message_id = m.message_id " <>
-             "  AND r.user_id = $1::text::uuid AND (r.status = 'read' OR r.read_at IS NOT NULL))",
-           [user_id]
-         ) do
-      {:ok, %{rows: [[count]]}} when is_integer(count) and count >= 0 -> count
-      _ -> 0
-    end
-  rescue
-    _ -> 0
-  end
-
-  # Group name for the "Sender in GroupName" title; nil for a DM (no group_profiles row).
-  defp group_name(conversation_id) do
-    case Repo.query(
-           "SELECT gp.name FROM conversations c " <>
-             "LEFT JOIN group_profiles gp ON gp.conversation_id = c.id " <>
-             "WHERE c.id = $1::text::uuid AND c.type = 'group'",
-           [conversation_id]
-         ) do
-      {:ok, %{rows: [[name]]}} when is_binary(name) and name != "" -> name
-      _ -> nil
-    end
-  rescue
-    _ -> nil
-  end
-
   defp send_one(%{id: id, endpoint: endpoint, p256dh: p256dh, auth: auth}, payload) do
     subscription = %{endpoint: endpoint, keys: %{p256dh: p256dh, auth: auth}}
 
@@ -282,56 +198,7 @@ defmodule NotificationService.PushSender do
     :ok
   end
 
-  defp message_preview_fields(message_id) do
-    case Repo.query(
-           "SELECT body, message_type, metadata->>'content_type' FROM messages WHERE message_id = $1",
-           [dump_uuid(message_id)]
-         ) do
-      {:ok, %{rows: [[body, message_type, content_type]]}} ->
-        %{body: body, message_type: message_type, content_type: content_type}
-
-      _ ->
-        %{body: nil, message_type: nil, content_type: nil}
-    end
-  end
-
-  defp sender_name(sender_user_id) do
-    case Repo.query(
-           "SELECT display_name FROM user_profiles WHERE user_id = $1",
-           [dump_uuid(sender_user_id)]
-         ) do
-      {:ok, %{rows: [[name]]}} when is_binary(name) and name != "" -> name
-      _ -> "New message"
-    end
-  end
-
-  # Same media labels the chat list/toasts use.
-  defp preview(body, "text", _content_type) when is_binary(body) and body != "", do: body
-
-  defp preview(_body, "location", _content_type), do: "📍 Location"
-
-  defp preview(_body, "live_location", _content_type), do: "📍 Live location"
-
-  defp preview(_body, "media", content_type) do
-    ct = to_string(content_type)
-
-    cond do
-      String.starts_with?(ct, "image/") -> "📷 Photo"
-      String.starts_with?(ct, "audio/") -> "🎤 Voice message"
-      String.starts_with?(ct, "video/") -> "🎬 Video"
-      true -> "📎 Attachment"
-    end
-  end
-
-  defp preview(body, _type, _content_type) when is_binary(body) and body != "", do: body
-  defp preview(_body, _type, _content_type), do: "New message"
-
-  defp dump_uuid(value) do
-    case Ecto.UUID.dump(value) do
-      {:ok, binary} -> binary
-      :error -> value
-    end
-  end
+  defp dump_uuid(value), do: PushContext.dump_uuid(value)
 
   defp vapid_configured? do
     details = Application.get_env(:web_push_encryption, :vapid_details, [])

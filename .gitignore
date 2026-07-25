@@ -8,6 +8,12 @@ Thumbs.db
 !.env.example
 !.env.prod.example
 
+# Secrets that may be dropped in-tree during local setup. The FCM service-account JSON contains a
+# private key — if it is ever mounted from the repo instead of a secret store, it must not be
+# committed. (Firebase's default download name is included; so is anything *-service-account.json.)
+*service-account*.json
+fcm-*.json
+
 # Node / Nx
 node_modules/
 dist/

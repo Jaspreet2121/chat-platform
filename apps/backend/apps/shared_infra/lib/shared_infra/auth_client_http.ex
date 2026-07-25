@@ -152,6 +152,12 @@ defmodule SharedInfra.AuthClientHttp do
   def delete_push_subscription(attrs), do: post("/internal/push/subscriptions/delete", attrs)
 
   @impl true
+  def save_fcm_token(attrs), do: post("/internal/push/fcm-tokens/save", attrs)
+
+  @impl true
+  def delete_fcm_token(attrs), do: post("/internal/push/fcm-tokens/delete", attrs)
+
+  @impl true
   def persistence_enabled? do
     # Bare boolean over the wire; on transport failure FAIL CLOSED (false = not trustworthy →
     # realtime socket rejects), never a truthy error tuple.

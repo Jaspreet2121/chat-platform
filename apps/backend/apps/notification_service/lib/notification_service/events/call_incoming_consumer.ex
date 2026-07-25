@@ -18,6 +18,7 @@ defmodule NotificationService.Events.CallIncomingConsumer do
   require Logger
   require Record
 
+  alias NotificationService.FcmSender
   alias NotificationService.PushSender
 
   Record.defrecordp(
@@ -40,6 +41,8 @@ defmodule NotificationService.Events.CallIncomingConsumer do
       {:ok, %{"type" => "call.incoming"} = event} ->
         SharedInfra.Correlation.put(event["correlation_id"])
         PushSender.push_incoming_call(event)
+        # Android leg, side by side — same suppression, its own token set.
+        FcmSender.push_incoming_call(event)
 
       {:ok, _other} ->
         # Unknown event type on the shared call topic — ignore (still committed by the caller).

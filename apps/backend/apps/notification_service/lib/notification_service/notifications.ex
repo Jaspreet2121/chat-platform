@@ -73,6 +73,10 @@ defmodule NotificationService.Notifications do
       case result do
         {:ok, {:applied, recipients}} ->
           NotificationService.PushSender.push_message_created(attrs, recipients)
+          # Android leg (Phase 2), fired side by side with web-push: a recipient may have browsers,
+          # handsets, or both. Each leg owns its own device table and its own suppression, so this
+          # changes nothing about fan-out or dedupe.
+          NotificationService.FcmSender.push_message_created(attrs, recipients)
           {:ok, :applied}
 
         other ->

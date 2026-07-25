@@ -212,6 +212,14 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.PushSubscriptions.delete_subscription(body(conn)))
   end
 
+  post "/internal/push/fcm-tokens/save" do
+    send_result(conn, AuthService.FcmTokens.upsert_token(body(conn)))
+  end
+
+  post "/internal/push/fcm-tokens/delete" do
+    send_result(conn, AuthService.FcmTokens.delete_token(body(conn)))
+  end
+
   post "/internal/users/phone" do
     send_result(conn, AuthService.AuthClientInProcess.get_user_phone(body(conn)))
   end

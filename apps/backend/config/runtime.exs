@@ -215,6 +215,42 @@ if config_env() == :prod do
       private_key: System.get_env("VAPID_PRIVATE_KEY")
   end
 
+  # FCM push (notification service's ANDROID sender leg, Phase 2). Same shape as VAPID above:
+  # absent credential = the leg is disabled cleanly (tokens still register; nothing sends).
+  #
+  #   FCM_PROJECT_ID              the Firebase project id (the <project_id> in the v1 send URL)
+  #   FCM_SERVICE_ACCOUNT_JSON    the service-account JSON *contents* — for a container secret, or
+  #   FCM_SERVICE_ACCOUNT_PATH    a path to the mounted JSON file
+  #
+  # The JSON contains a PRIVATE KEY. It is NEVER committed, never baked into an image and never
+  # exposed to any client build — Android needs only the public google-services.json, which is a
+  # different file. JSON wins over PATH when both are set.
+  fcm_credentials =
+    case {System.get_env("FCM_SERVICE_ACCOUNT_JSON"), System.get_env("FCM_SERVICE_ACCOUNT_PATH")} do
+      {json, _path} when is_binary(json) and json != "" ->
+        case Jason.decode(json) do
+          {:ok, decoded} -> decoded
+          _ -> nil
+        end
+
+      {_json, path} when is_binary(path) and path != "" ->
+        with {:ok, contents} <- File.read(path),
+             {:ok, decoded} <- Jason.decode(contents) do
+          decoded
+        else
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+
+  if System.get_env("FCM_PROJECT_ID") && fcm_credentials do
+    config :notification_service, :fcm,
+      project_id: System.get_env("FCM_PROJECT_ID"),
+      credentials: fcm_credentials
+  end
+
   if port = System.get_env("AUTH_HTTP_PORT") do
     config :auth_service, http_port: String.to_integer(port)
   end

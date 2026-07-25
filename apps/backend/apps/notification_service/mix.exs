@@ -31,7 +31,13 @@ defmodule NotificationService.MixProject do
       {:brod, "~> 4.0"},
       {:jason, "~> 1.4"},
       # VAPID web-push (RFC 8291 encryption + RFC 8292 signing) — the sender leg for message pushes.
-      {:web_push_encryption, "~> 0.3"}
+      {:web_push_encryption, "~> 0.3"},
+      # FCM leg (Phase 2, Android): :req for the HTTP v1 send + the OAuth token exchange, :jose to
+      # sign the service-account JWT assertion. Both were ALREADY in the lockfile (:req across the
+      # umbrella, :jose via web_push_encryption) — declared here because this app now uses them
+      # directly. Deliberately NOT `goth`: one signed assertion an hour needs no supervision tree.
+      {:req, "~> 0.5"},
+      {:jose, "~> 1.11"}
     ]
   end
 
