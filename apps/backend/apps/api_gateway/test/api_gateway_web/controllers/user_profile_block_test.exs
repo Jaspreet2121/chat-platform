@@ -25,8 +25,20 @@ defmodule ApiGatewayWeb.UserProfileBlockTest do
   end
 
   defmodule UserStub do
+    def start_link, do: Agent.start_link(fn -> "everyone" end, name: __MODULE__)
+    def set_photo(v), do: Agent.update(__MODULE__, fn _ -> v end)
+
     def get_public_profile(%{"user_id" => uid}),
       do: {:ok, %{user_id: uid, display_name: "Bob", avatar_media_id: "m1", app_id: "33333333-3333-4333-8333-333333333333"}}
+
+    def get_privacy(_attrs),
+      do:
+        {:ok,
+         %{
+           last_seen_visibility: "everyone",
+           profile_photo_visibility: Agent.get(__MODULE__, & &1),
+           read_receipts_enabled: true
+         }}
   end
 
   defmodule MediaStub do
@@ -35,13 +47,16 @@ defmodule ApiGatewayWeb.UserProfileBlockTest do
   end
 
   defmodule ConvStub do
-    def start_link, do: Agent.start_link(fn -> %{blocked: false} end, name: __MODULE__)
+    def start_link, do: Agent.start_link(fn -> %{blocked: false, shares: true} end, name: __MODULE__)
     def set_blocked(v), do: Agent.update(__MODULE__, &Map.put(&1, :blocked, v))
+    def set_shares(v), do: Agent.update(__MODULE__, &Map.put(&1, :shares, v))
     def either_blocked?(_attrs), do: {:ok, %{blocked: Agent.get(__MODULE__, & &1.blocked)}}
+    def shares_conversation?(_attrs), do: {:ok, %{shares: Agent.get(__MODULE__, & &1.shares)}}
   end
 
   setup do
     start_supervised!(%{id: ConvStub, start: {ConvStub, :start_link, []}})
+    start_supervised!(%{id: UserStub, start: {UserStub, :start_link, []}})
 
     prev = %{
       auth: Application.get_env(:shared_infra, :auth_client_adapter),
@@ -101,6 +116,39 @@ defmodule ApiGatewayWeb.UserProfileBlockTest do
     assert conn.status == 200
     body = Jason.decode!(conn.resp_body)
 
+    assert body["display_name"] == "Bob"
+    assert body["avatar_url"] == nil
+    refute Map.has_key?(body, "avatar_media_id")
+  end
+
+  # --- profile_photo_visibility three-way (not blocked in any of these) ---
+
+  defp avatar_url_for(target) do
+    ConvStub.set_blocked(false)
+    Jason.decode!(UserController.profile(authed(), %{"user_id" => target}).resp_body)["avatar_url"]
+  end
+
+  test "photo 'everyone' → avatar shown even WITHOUT a shared conversation" do
+    UserStub.set_photo("everyone")
+    ConvStub.set_shares(false)
+    assert avatar_url_for(@target) == "https://minio/bob.png"
+  end
+
+  test "photo 'contacts' → shown WITH a shared conversation, HIDDEN without" do
+    UserStub.set_photo("contacts")
+
+    ConvStub.set_shares(true)
+    assert avatar_url_for(@target) == "https://minio/bob.png"
+
+    ConvStub.set_shares(false)
+    assert avatar_url_for(@target) == nil
+  end
+
+  test "photo 'nobody' → avatar HIDDEN (indistinguishable from no-avatar), name still shown" do
+    UserStub.set_photo("nobody")
+    ConvStub.set_shares(true)
+
+    body = Jason.decode!(UserController.profile(authed(), %{"user_id" => @target}).resp_body)
     assert body["display_name"] == "Bob"
     assert body["avatar_url"] == nil
     refute Map.has_key?(body, "avatar_media_id")

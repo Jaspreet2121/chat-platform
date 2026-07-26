@@ -58,13 +58,21 @@ defmodule SharedInfra.PresenceAuthzTest do
     assert PresenceAuthz.can_see?(@viewer, @target)
   end
 
-  test "visibility 'everyone' STILL requires a shared conversation (per the product rule)" do
+  test "visibility 'everyone' → CAN see WITHOUT a shared conversation (now DISTINCT from 'contacts')" do
     UserStub.set(:visibility, "everyone")
     ConvStub.set(:shares, false)
-    refute PresenceAuthz.can_see?(@viewer, @target)
+    # The behavior change: "everyone" no longer collapses to "contacts".
+    assert PresenceAuthz.can_see?(@viewer, @target)
 
     ConvStub.set(:shares, true)
     assert PresenceAuthz.can_see?(@viewer, @target)
+  end
+
+  test "'everyone' is STILL gated by a block (visibility never overrides a block)" do
+    UserStub.set(:visibility, "everyone")
+    ConvStub.set(:shares, false)
+    ConvStub.set(:blocked, true)
+    refute PresenceAuthz.can_see?(@viewer, @target)
   end
 
   test "visibility 'nobody' → NEVER, even with a shared conversation" do

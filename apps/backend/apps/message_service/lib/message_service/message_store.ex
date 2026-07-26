@@ -931,9 +931,14 @@ defmodule MessageService.MessageStore.PostgresAdapter do
       |> Repo.all()
 
     message_ids = Enum.map(rows, & &1.message_id)
+    # read_by_count already EXCLUDES readers who disabled read receipts (the reader half — a JOIN inside
+    # receipt_counts, still ONE query). delivered_by_count is unaffected.
     counts = receipt_counts(conversation_id, message_ids)
     reactions = reaction_summaries(message_ids, viewer)
     starred = starred_set(message_ids, viewer)
+    # The viewer half (reciprocity): a viewer who disabled read receipts sees NO read_by_count at all. ONE
+    # lookup for the whole page (not per message), applied below.
+    show_read = viewer_sees_read_receipts?(viewer)
 
     messages =
       Enum.map(rows, fn message ->
@@ -944,6 +949,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         )
         |> Map.merge(Map.get(reactions, message.message_id, %{reactions: [], my_reaction: nil}))
         |> Map.put(:is_starred, MapSet.member?(starred, message.message_id))
+        |> hide_read_count(show_read)
       end)
 
     {:ok, %{conversation_id: conversation_id, messages: messages, next_cursor: next_cursor(rows, limit)}}
@@ -1232,14 +1238,48 @@ defmodule MessageService.MessageStore.PostgresAdapter do
 
   defp receipt_counts(conversation_id, message_ids) do
     MessageReceipt
+    # LEFT JOIN the reader's privacy so read_by_count counts ONLY readers who kept read receipts ON (the
+    # reader half of reciprocity). A missing row (ps.* NULL) is the default = enabled. Still ONE query for the
+    # whole page — no N+1. delivered_by_count is NOT filtered (the single tick is unaffected).
+    |> join(:left, [r], ps in "user_privacy_settings", on: ps.user_id == r.user_id)
     |> where([r], r.conversation_id == ^conversation_id and r.message_id in ^message_ids)
     |> group_by([r], r.message_id)
-    |> select([r], {r.message_id, count(r.read_at), count(r.delivered_at)})
+    |> select([r, ps], {
+      r.message_id,
+      filter(count(r.read_at), is_nil(ps.read_receipts_enabled) or ps.read_receipts_enabled),
+      count(r.delivered_at)
+    })
     |> Repo.all()
     |> Map.new(fn {message_id, read_by, delivered_by} ->
       {message_id, %{read_by_count: read_by, delivered_by_count: delivered_by}}
     end)
   end
+
+  # ONE lookup for the whole page: does this viewer still SEE read receipts? A viewer who turned them OFF sees
+  # none (the reciprocal rule's viewer half). No row / true / null → yes (default). Fail-OPEN — a privacy
+  # read glitch shows receipts rather than hiding everyone's.
+  defp viewer_sees_read_receipts?(viewer) when is_binary(viewer) and viewer != "" do
+    case Ecto.UUID.dump(viewer) do
+      {:ok, uid} ->
+        case Repo.query!(
+               "SELECT read_receipts_enabled FROM user_privacy_settings WHERE user_id = $1",
+               [uid]
+             ) do
+          %Postgrex.Result{rows: [[false]]} -> false
+          _ -> true
+        end
+
+      :error ->
+        true
+    end
+  rescue
+    _ -> true
+  end
+
+  defp viewer_sees_read_receipts?(_viewer), do: true
+
+  defp hide_read_count(message, true), do: message
+  defp hide_read_count(message, false), do: Map.put(message, :read_by_count, 0)
 
   @impl true
   def update_message(attrs) do

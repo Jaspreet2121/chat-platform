@@ -59,11 +59,14 @@ defmodule ApiGatewayWeb.UserController do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         # Same avatar visibility rule as the profile paths: a blocked or photo-hidden target → 404 (the push
+         # icon falls back to the app icon), never a distinguishable "hidden" response.
+         false <- avatar_hidden?(session.user_id, user_id),
          {:ok, url} <- presign_avatar(user_id, session_app(session)) do
       redirect_avatar(conn, url)
     else
       {:error, :session_invalid} -> session_invalid(conn)
-      # Cross-tenant / no avatar / any media error → 404 (SW falls back to the app icon).
+      # avatar_hidden? → true, or cross-tenant / no avatar / any media error → 404 (SW falls back to app icon).
       _ -> no_avatar(conn)
     end
   end
@@ -309,14 +312,14 @@ defmodule ApiGatewayWeb.UserController do
   # + `avatar_object_key`; presigning a download URL needs the object_key (a viewer can't reconstruct
   # another user's key), so the gateway resolves it via the media client and attaches `avatar_url`.
   # Best-effort: any missing field or media error just leaves the profile unchanged (no avatar_url).
-  # NOTE: not yet gated by `profile_photo_visibility` (the privacy module is a placeholder today) —
-  # avatar visibility gating is a tracked follow-up.
-  # Profile as the CALLER may see it. If there's a block in EITHER direction, the account still exists (name
-  # shown) but the avatar is hidden — identical to what a caller sees for a user with no avatar, so the block
-  # is never revealed (and never leaks "you are blocked"). Last-seen/online is a SEPARATE surface, hidden by
-  # SharedInfra.PresenceAuthz. Otherwise the normal presigned-avatar profile.
+  # Visibility gating (block + profile_photo_visibility) is applied UPSTREAM by present_profile/avatar_hidden?
+  # BEFORE this presign, so this helper only ever runs for an avatar the caller is permitted to see.
+  # Profile as the CALLER may see it. The avatar is HIDDEN when there's a block (either direction) OR the
+  # target's `profile_photo_visibility` doesn't permit this caller — in both cases the account still exists
+  # (name shown) and the result is byte-identical to a user with no avatar, so neither the block nor the
+  # visibility setting is ever revealed. Last-seen/online is a SEPARATE surface (SharedInfra.PresenceAuthz).
   defp present_profile(caller_id, target_id, profile) when is_map(profile) do
-    if either_blocked?(caller_id, target_id) do
+    if avatar_hidden?(caller_id, target_id) do
       # Skip the presign entirely and drop the raw avatar id (so the client can't resolve it itself) + the
       # internal app_id; avatar_url: nil is the same shape a genuinely-avatarless profile returns.
       profile
@@ -328,6 +331,52 @@ defmodule ApiGatewayWeb.UserController do
   end
 
   defp present_profile(_caller_id, _target_id, other), do: other
+
+  # The single "may this caller see the target's avatar?" rule, reused by every OTHER-user avatar path
+  # (profile, by-phone, the avatar redirect). Block hides it BOTH ways; otherwise the three-way
+  # profile_photo_visibility decides. Composes with the block slice's check — one place, no duplication.
+  defp avatar_hidden?(caller_id, target_id) do
+    either_blocked?(caller_id, target_id) or not photo_visible?(caller_id, target_id)
+  end
+
+  # profile_photo_visibility three-way. everyone → any caller; contacts → only a shared-conversation caller;
+  # nobody/unknown → hidden (fail-closed, like presence). The DEFAULT is "contacts", so a user with no
+  # settings row shows their photo to contacts only.
+  defp photo_visible?(caller_id, target_id) do
+    case profile_photo_visibility(target_id) do
+      "everyone" -> true
+      "contacts" -> shares_conversation?(caller_id, target_id)
+      _ -> false
+    end
+  end
+
+  defp profile_photo_visibility(target_id) when is_binary(target_id) do
+    case SharedInfra.UserClient.get_privacy(%{"user_id" => target_id}) do
+      {:ok, privacy} ->
+        Map.get(privacy, :profile_photo_visibility) || Map.get(privacy, "profile_photo_visibility")
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp profile_photo_visibility(_target_id), do: nil
+
+  defp shares_conversation?(caller_id, target_id) when is_binary(caller_id) and is_binary(target_id) do
+    case SharedInfra.ConversationClient.shares_conversation?(%{
+           "user_a" => caller_id,
+           "user_b" => target_id
+         }) do
+      {:ok, result} -> (Map.get(result, :shares) || Map.get(result, "shares")) == true
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp shares_conversation?(_caller_id, _target_id), do: false
 
   defp either_blocked?(caller_id, target_id)
        when is_binary(caller_id) and is_binary(target_id) do

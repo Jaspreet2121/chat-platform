@@ -189,6 +189,15 @@ defmodule ApiGatewayWeb.Router do
     post "/", ReportController, :create
   end
 
+  # Privacy settings (session-authed; the caller's own). Enforced server-wide: last_seen in PresenceAuthz,
+  # profile_photo in the avatar-serving paths, read_receipts in the receipt live-tick + read_by_count.
+  scope "/api/v1/privacy", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/", PrivacyController, :show
+    patch "/", PrivacyController, :update
+  end
+
   # Push registration (session-gated; upsert/delete the caller's own device — browser or handset).
   scope "/api/v1/push", ApiGatewayWeb do
     pipe_through :api

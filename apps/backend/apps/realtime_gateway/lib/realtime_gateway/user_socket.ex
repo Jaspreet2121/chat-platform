@@ -43,7 +43,8 @@ defmodule RealtimeGateway.UserSocket do
              session.user_id,
              session.device_id,
              Map.get(session, :app_id),
-             "live"
+             "live",
+             :first_party
            )}
 
         _ ->
@@ -51,7 +52,7 @@ defmodule RealtimeGateway.UserSocket do
                  "token" => strip_bearer(authorization)
                }) do
             {:ok, %{app_id: app_id, user_id: user_id} = res} ->
-              {:ok, assign_session(socket, user_id, "end_user", app_id, Map.get(res, :mode))}
+              {:ok, assign_session(socket, user_id, "end_user", app_id, Map.get(res, :mode), :v1)}
 
             _ ->
               :error
@@ -85,11 +86,13 @@ defmodule RealtimeGateway.UserSocket do
        Map.get(params, "user_id", "user_placeholder"),
        Map.get(params, "device_id", "device_placeholder"),
        nil,
-       "live"
+       "live",
+       # The placeholder socket (Docker-free / dev) behaves as a first-party client.
+       :first_party
      )}
   end
 
-  defp assign_session(socket, user_id, device_id, app_id, mode) do
+  defp assign_session(socket, user_id, device_id, app_id, mode, audience) do
     socket
     |> assign(:current_user_id, user_id)
     |> assign(:user_id, user_id)
@@ -99,6 +102,10 @@ defmodule RealtimeGateway.UserSocket do
     |> assign(:app_id, SharedInfra.Tenancy.app_id_or_default(app_id))
     # Surfaced for observability alongside app_id; not an isolation predicate.
     |> assign(:app_mode, mode_atom(mode))
+    # Presence AUDIENCE: :v1 clients speak EXTERNAL ids and must never see an internal uuid; :first_party
+    # clients (web/Android) have no external id and key off internal_id. This drives the audience-aware
+    # presence subscribe/broadcast/delivery in RealtimeGateway.UserPresence.
+    |> assign(:presence_audience, audience)
   end
 
   defp mode_atom("test"), do: :test

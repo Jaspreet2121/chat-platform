@@ -169,7 +169,9 @@ defmodule UserService.Profiles do
       avatar_object_key: nil,
       bio: nil,
       settings: UserService.Settings.placeholder_settings(),
-      privacy: UserService.Privacy.placeholder_privacy()
+      # REAL privacy now (was a placeholder) — same shape, so `me`'s contract is unchanged; a user with no
+      # settings row simply gets the column defaults.
+      privacy: UserService.Privacy.privacy_map(user_id)
     }
   end
 
@@ -182,7 +184,7 @@ defmodule UserService.Profiles do
       app_id: profile.app_id,
       bio: profile.bio,
       settings: UserService.Settings.placeholder_settings(),
-      privacy: UserService.Privacy.placeholder_privacy()
+      privacy: UserService.Privacy.privacy_map(user_id)
     }
   end
 

@@ -21,4 +21,10 @@ defmodule UserService.UserClientInProcess do
 
   @impl true
   def last_seen_visibility(attrs), do: UserService.Privacy.last_seen_visibility(attrs)
+
+  @impl true
+  def get_privacy(attrs), do: UserService.Privacy.get_privacy(attrs)
+
+  @impl true
+  def update_privacy(attrs), do: UserService.Privacy.update_privacy(attrs)
 end

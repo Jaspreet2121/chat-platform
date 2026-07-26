@@ -33,6 +33,11 @@ defmodule RealtimeGateway.ConversationChannel do
     # typing…" from someone they blocked. A mid-session block/unblock takes effect on the NEXT join — ephemeral
     # and low-stakes, not worth a per-keystroke recheck. Direct conversations only (false for groups/unknown).
     socket = assign(socket, :dm_blocked, resolve_dm_blocked(socket))
+    # Resolve ONCE at join whether this socket's user may EMIT live read receipts here: the reader must have
+    # read receipts ON, and for a DIRECT chat the PEER must too (the reciprocal rule — a reader who disabled
+    # doesn't receive them either). Cached like dm_blocked; a mid-session toggle takes effect on the next join,
+    # and the load-path read_by_count filter is always authoritative. Groups gate on the reader only.
+    socket = assign(socket, :emit_read_receipts, resolve_emit_read_receipts(socket))
 
     with {:ok, user_id} <- current_user_id(socket),
          {:ok, _ref} <-
@@ -143,6 +148,64 @@ defmodule RealtimeGateway.ConversationChannel do
     _ -> false
   end
 
+  # May this socket's user EMIT live read receipts here? Reader must have receipts ON (emit half); for a DIRECT
+  # chat the peer must too (delivery half — a reader who disabled doesn't RECEIVE them). Group/unknown →
+  # reader-only. R disabled / unresolved → false (never emit). An exception → true (fail-open; the load filter
+  # still hides a disabled reader on reload).
+  defp resolve_emit_read_receipts(socket) do
+    with {:ok, me} <- current_user_id(socket),
+         conversation_id when is_binary(conversation_id) <- Map.get(socket.assigns, :conversation_id),
+         true <- read_receipts_enabled?(me) do
+      case dm_peer(conversation_id, me) do
+        peer when is_binary(peer) -> read_receipts_enabled?(peer)
+        _ -> true
+      end
+    else
+      _ -> false
+    end
+  rescue
+    _ -> true
+  end
+
+  # The OTHER active participant of a DIRECT conversation (nil for a group / unknown), via the same
+  # get_conversation the peer-contact path uses. Resolved once at join, off the read-mark hot path.
+  defp dm_peer(conversation_id, me) do
+    case SharedInfra.ConversationClient.get_conversation(%{
+           "conversation_id" => conversation_id,
+           "user_id" => me
+         }) do
+      {:ok, conversation} ->
+        if (Map.get(conversation, :type) || Map.get(conversation, "type")) == "direct" do
+          (Map.get(conversation, :participants) || Map.get(conversation, "participants") || [])
+          |> Enum.map(&(Map.get(&1, :user_id) || Map.get(&1, "user_id")))
+          |> Enum.find(&(is_binary(&1) and &1 != me))
+        else
+          nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  # A user's read_receipts_enabled (default TRUE for no row / persistence off / a read glitch — fail-open).
+  defp read_receipts_enabled?(user_id) when is_binary(user_id) and user_id != "" do
+    case SharedInfra.UserClient.get_privacy(%{"user_id" => user_id}) do
+      {:ok, privacy} ->
+        # Map.get with a default (NOT `||`) so `false` reads as false, not "absent". Enabled unless explicit false.
+        Map.get(privacy, :read_receipts_enabled, Map.get(privacy, "read_receipts_enabled")) != false
+
+      _ ->
+        true
+    end
+  rescue
+    _ -> true
+  end
+
+  defp read_receipts_enabled?(_user_id), do: true
+
   # EPHEMERAL bucket (typing, receipts, live-location): over the limit → dropped SILENTLY ({:noreply}).
   # WRITE bucket (message create/update/delete, reactions): over the limit → an error reply carrying
   # retry_after, the socket STAYS alive (the SDK backs off). See RealtimeGateway.Limits.
@@ -187,10 +250,16 @@ defmodule RealtimeGateway.ConversationChannel do
       # identical inbox row on every frame. nil (unknown) simply means "don't skip".
       unread_before = reader_unread_before(socket)
 
-      # Persist FIRST so the receipt survives a reload, THEN broadcast for the live tick. One path:
-      # the socket mark is the durable mark (no separate REST call needed from the client).
+      # Persist FIRST so the receipt survives a reload (and drives the reader's OWN unread count), THEN maybe
+      # broadcast the live tick. The read is ALWAYS persisted; the live tick is emitted only if reciprocity
+      # permits (resolved at join). A suppressed live tick and the load-path read_by_count filter agree, so a
+      # reader who disabled receipts is invisible both live and on reload. Delivered ticks are never gated.
       persist_receipt(:read, payload, socket)
-      broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "read"))
+
+      if Map.get(socket.assigns, :emit_read_receipts, true) do
+        broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "read"))
+      end
+
       notify_inbox_read(socket, unread_before)
 
       {:reply, {:ok, reply}, socket}

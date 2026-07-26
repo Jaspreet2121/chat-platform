@@ -26,6 +26,12 @@ defmodule SharedInfra.UserClientHttp do
   @impl true
   def last_seen_visibility(attrs), do: post("/internal/privacy/last_seen_visibility", attrs)
 
+  @impl true
+  def get_privacy(attrs), do: post("/internal/privacy/get", attrs)
+
+  @impl true
+  def update_privacy(attrs), do: post("/internal/privacy/update", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs, unavailable: @unavailable)
   end

@@ -33,6 +33,14 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Privacy.last_seen_visibility(body(conn)))
   end
 
+  post "/internal/privacy/get" do
+    send_result(conn, UserService.Privacy.get_privacy(body(conn)))
+  end
+
+  post "/internal/privacy/update" do
+    send_result(conn, UserService.Privacy.update_privacy(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "user", status: "ok", deps: %{}}})
   end

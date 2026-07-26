@@ -3,18 +3,22 @@ defmodule SharedInfra.PresenceAuthz do
   THE single rule for "may VIEWER see TARGET's presence?" — enforced at BOTH subscribe-time and read-time so
   the two can never drift.
 
-  A viewer may see a target's online/last-seen iff:
-    1. the target's `last_seen_visibility` is NOT "nobody", AND
-    2. they SHARE an active conversation (the "contacts" relation).
+  A viewer may see a target's online/last-seen iff, in order:
+    1. there is NO block between them (either direction), AND
+    2. the target's `last_seen_visibility` permits THIS viewer:
+         * "everyone" → any authenticated viewer (still subject to the block above),
+         * "contacts" → only viewers who SHARE an active conversation, and
+         * "nobody"   → never.
 
-  Per the product decision, "everyone" and "contacts" behave identically — presence is only ever visible to
-  people you share a conversation with; visibility only decides whether even THAT is allowed (`nobody` = never).
-  So the rule collapses to `visibility != "nobody" AND shares_conversation?`.
+  NOTE — `everyone` is now DISTINCT from `contacts` (it was previously collapsed to "contacts" — a setting
+  named "everyone" that behaves like "contacts" is a lie to the user). Only users who explicitly chose
+  "everyone" are affected; the default is "contacts", and presence is still queried per-id (a viewer must
+  already know the target's id to ask), so this doesn't broadcast anyone to the world.
 
-  FAIL-CLOSED on both inputs: if the visibility read OR the shared-conversation check errors or is unknown, the
-  answer is NO. A false "cannot see" only hides a green dot; a false "can see" leaks presence against the
-  user's wishes — so uncertainty denies. (This is the opposite of the push-suppression marker, which fails
-  OPEN — the two are deliberately separate; see SharedInfra.Presence vs SharedInfra.PresenceMarker.)
+  FAIL-CLOSED on the visibility + shared-conversation inputs: an unknown/error value denies. A false "cannot
+  see" only hides a green dot; a false "can see" leaks presence against the user's wishes — so uncertainty
+  denies. (The opposite of the push-suppression marker, which fails OPEN — deliberately separate; see
+  SharedInfra.Presence vs SharedInfra.PresenceMarker.)
   """
 
   @doc "May `viewer_id` see `target_id`'s presence? Fail-closed."
@@ -27,28 +31,28 @@ defmodule SharedInfra.PresenceAuthz do
       # a blocked user is invisible even in a conversation you still share. Enforced at BOTH subscribe-time and
       # read-time (this is the single rule), so it can't drift between them.
       either_blocked?(viewer_id, target_id) -> false
-      not visible?(target_id) -> false
-      true -> shares_conversation?(viewer_id, target_id)
+      true -> visibility_allows?(viewer_id, target_id)
     end
   end
 
   def can_see?(_viewer_id, _target_id), do: false
 
-  # target's last_seen_visibility != "nobody". FAIL-CLOSED: unknown / error → treat as "nobody" (deny).
-  defp visible?(target_id) do
-    case SharedInfra.UserClient.last_seen_visibility(%{"user_id" => target_id}) do
-      {:ok, result} ->
-        case cget(result, :last_seen_visibility) do
-          "nobody" -> false
-          v when is_binary(v) and v != "" -> true
-          _ -> false
-        end
+  # The three-way last_seen_visibility rule. FAIL-CLOSED: unknown / error → deny (as if "nobody").
+  defp visibility_allows?(viewer_id, target_id) do
+    case last_seen_visibility(target_id) do
+      "everyone" -> true
+      "contacts" -> shares_conversation?(viewer_id, target_id)
+      _ -> false
+    end
+  end
 
-      _ ->
-        false
+  defp last_seen_visibility(target_id) do
+    case SharedInfra.UserClient.last_seen_visibility(%{"user_id" => target_id}) do
+      {:ok, result} -> cget(result, :last_seen_visibility)
+      _ -> nil
     end
   rescue
-    _ -> false
+    _ -> nil
   end
 
   # Either-direction block between viewer and target. Fail-OPEN (error → false = "no block"): a block-check

@@ -2,6 +2,36 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-07-26] Privacy settings enforcement + first-party presence broadcast fix
+
+- **Context:** privacy settings existed as a table + placeholder read, unexposed and unenforced; and
+  first-party (web/Android) users never got LIVE presence — `RealtimeGateway.UserPresence.broadcast_presence`
+  skipped any target with no integrator external id.
+- **Decision — real privacy** (`UserService.Privacy` reads the store + sparse validated update; `GET/PATCH
+  /api/v1/privacy`), enforced server-wide: `last_seen_visibility` in `SharedInfra.PresenceAuthz.can_see?`,
+  `profile_photo_visibility` folded into the avatar-serving paths' `avatar_hidden?`, `read_receipts_enabled`
+  at the live tick + `read_by_count`.
+- **Decision — `everyone` ≠ `contacts`** for last_seen (was collapsed): a setting named "everyone" that
+  behaves like "contacts" is a lie to the user. Default stays "contacts"; only users who explicitly chose
+  "everyone" are affected, and presence is still queried per-id.
+- **Decision — read-receipt reciprocity at BOTH surfaces:** live tick (`receipt_updated`, DM two-party gate /
+  group emit-only, resolved once at join) AND load `read_by_count` (a reader who disabled is excluded via a
+  JOIN; a viewer who disabled sees 0). The reader's own receipt is STILL persisted (it drives their unread
+  count); only its EXPOSURE is filtered.
+- **ACCEPTED, DOCUMENTED inconsistency (do not mistake for a bug):** in a GROUP, a member who disabled read
+  receipts still sees OTHER members' live receipt ticks until the next load, where the `read_by_count` filter
+  correctly removes them. The live per-recipient delivery-suppression is DM-only — under topic-wide
+  `broadcast_from`, per-recipient live suppression in a group is disproportionate, and WhatsApp itself exempts
+  groups from the reciprocal rule. The load-path filter makes it eventually consistent on refresh. Proportionate
+  and deliberate.
+- **Decision — presence audience** (`:presence_audience` on the socket): the internal-keyed `presence:<id>`
+  topic is shared by /v1 (external ids) and first-party (internal ids). `broadcast_presence` now ALWAYS
+  broadcasts a visible transition (frame carries both ids); subscribe + delivery are audience-aware — /v1
+  strips `internal_id`, first-party keeps it. No internal uuid ever reaches an integrator.
+- **Status:** Implemented + tested. Docker-free suites green across affected apps; the store CRUD +
+  read_by_count reciprocity are `@tag :postgres_integration`. No new compile warnings.
+
+
 ## [2026-07-26] User blocking + first-party reporting (Tier-2 safety)
 
 - **Context:** blocking didn't exist; reporting was half-built (the `user_reports` table + the admin read
