@@ -579,6 +579,14 @@ defmodule RealtimeGateway.CallSignaling do
   defp resolve_add_target(%{"user_id" => uid}) when is_binary(uid) and uid != "", do: {:ok, uid}
 
   defp resolve_add_target(%{"phone" => phone}) when is_binary(phone) and phone != "" do
+    # FOLLOW-UP (app-scoping): this is the last app-BLIND phone lookup. It resolves via
+    # AuthService.Accounts.lookup_active_by_phone/2 without an app_id, which falls back to the legacy
+    # Repo.get_by(UserAuth, phone_number: ...) (accounts.ex `get_by_phone_number/1`). Under migration
+    # 048's per-(app_id, phone_number) uniqueness the same number can exist in two tenants, so get_by can
+    # resolve ANOTHER tenant's user. The single by-phone lookup and contacts sync are already app-scoped;
+    # to fix this one, thread the caller's app_id (socket.assigns) into resolve_add_target and pass it as
+    # the 2nd arg here. Deferred because it means threading the socket through this call path — out of
+    # scope for the contacts slice, and it can't leak here (a cross-tenant add still fails downstream authz).
     case SharedInfra.AuthClient.lookup_user_by_phone(%{"phone_number" => phone}) do
       {:ok, %{user_id: uid}} when is_binary(uid) and uid != "" -> {:ok, uid}
       {:ok, %{"user_id" => uid}} when is_binary(uid) and uid != "" -> {:ok, uid}

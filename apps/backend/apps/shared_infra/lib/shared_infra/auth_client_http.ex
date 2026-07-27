@@ -24,6 +24,9 @@ defmodule SharedInfra.AuthClientHttp do
   def lookup_user_by_phone(attrs), do: post("/internal/users/by_phone", attrs)
 
   @impl true
+  def lookup_users_by_phones(attrs), do: post("/internal/users/by_phones", attrs)
+
+  @impl true
   def create_api_key(attrs), do: post("/internal/api_keys/create", attrs)
 
   @impl true

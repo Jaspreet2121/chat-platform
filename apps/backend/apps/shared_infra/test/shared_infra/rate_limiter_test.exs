@@ -122,6 +122,36 @@ defmodule SharedInfra.RateLimiterTest do
              })
   end
 
+  # Per-call override wins over the global default IN BOTH DIRECTIONS — this is what lets contacts sync
+  # fail CLOSED while reports/OTP keep the global fail-open, without touching the global setting.
+  test "a per-call fail_open: false forces CLOSED even when the global default is open" do
+    Application.put_env(:shared_infra, :rate_limiter_adapter, RateLimiter.RedisAdapter)
+    Application.put_env(:shared_infra, :rate_limiter_fail_open, true)
+    Application.put_env(:shared_infra, :redis, url: "redis://127.0.0.1:1/0")
+
+    assert {:error, :rate_limiter_unavailable, _reason} =
+             RateLimiter.check_rate(%{
+               "key" => "contacts_sync:u-1",
+               "limit" => 10,
+               "window_seconds" => 3600,
+               "fail_open" => false
+             })
+  end
+
+  test "a per-call fail_open: true forces OPEN even when the global default is closed" do
+    Application.put_env(:shared_infra, :rate_limiter_adapter, RateLimiter.RedisAdapter)
+    Application.put_env(:shared_infra, :rate_limiter_fail_open, false)
+    Application.put_env(:shared_infra, :redis, url: "redis://127.0.0.1:1/0")
+
+    assert :ok =
+             RateLimiter.check_rate(%{
+               "key" => "contacts_sync:u-1",
+               "limit" => 10,
+               "window_seconds" => 3600,
+               "fail_open" => true
+             })
+  end
+
   @tag :redis_integration
   test "redis adapter limits repeated calls against live Redis" do
     redis_url = System.get_env("RATE_LIMITER_REDIS_URL") || "redis://localhost:6379/0"

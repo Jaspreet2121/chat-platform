@@ -45,9 +45,22 @@ defmodule AuthService.HTTP.Router do
   # Phone → user_id resolution for WhatsApp-style direct chat. Active-only; the gateway gates this
   # behind a valid session before calling (the transport TokenPlug above is service-to-service auth).
   post "/internal/users/by_phone" do
+    b = body(conn)
+
     send_result(
       conn,
-      AuthService.Accounts.lookup_active_by_phone(Map.get(body(conn), "phone_number"))
+      AuthService.Accounts.lookup_active_by_phone(Map.get(b, "phone_number"), Map.get(b, "app_id"))
+    )
+  end
+
+  # Bulk phone → users for CONTACTS SYNC (one app-scoped query). Gateway-gated behind a valid session +
+  # per-user rate limit; the transport TokenPlug is service-to-service auth. Returns the ACTIVE matches only.
+  post "/internal/users/by_phones" do
+    b = body(conn)
+
+    send_result(
+      conn,
+      AuthService.Accounts.lookup_active_by_phones(Map.get(b, "phone_numbers") || [], Map.get(b, "app_id"))
     )
   end
 

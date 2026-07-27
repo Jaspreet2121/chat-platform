@@ -22,7 +22,11 @@ defmodule AuthService.AuthClientInProcess do
 
   @impl true
   def lookup_user_by_phone(attrs),
-    do: Accounts.lookup_active_by_phone(Map.get(attrs, "phone_number"))
+    do: Accounts.lookup_active_by_phone(Map.get(attrs, "phone_number"), Map.get(attrs, "app_id"))
+
+  @impl true
+  def lookup_users_by_phones(attrs),
+    do: Accounts.lookup_active_by_phones(Map.get(attrs, "phone_numbers") || [], Map.get(attrs, "app_id"))
 
   @impl true
   def create_api_key(attrs), do: ApiKeys.create_api_key(attrs)

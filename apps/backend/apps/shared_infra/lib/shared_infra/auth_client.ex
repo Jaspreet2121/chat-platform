@@ -22,6 +22,8 @@ defmodule SharedInfra.AuthClient do
   @callback current_session(attrs()) :: result()
   @callback persistence_enabled?() :: boolean()
   @callback lookup_user_by_phone(attrs()) :: result()
+  # Bulk phone → users for CONTACTS SYNC (one app-scoped query); result is `{:ok, [%{user_id, phone_number}]}`.
+  @callback lookup_users_by_phones(attrs()) :: result()
   @callback request_otp(attrs()) :: result()
   @callback verify_otp(attrs()) :: result()
   @callback refresh(attrs()) :: result()
@@ -78,6 +80,7 @@ defmodule SharedInfra.AuthClient do
   @optional_callbacks set_user_role: 1,
                       delete_user: 1,
                       lookup_user_by_phone: 1,
+                      lookup_users_by_phones: 1,
                       create_api_key: 1,
                       list_api_keys: 1,
                       revoke_api_key: 1,
@@ -105,6 +108,7 @@ defmodule SharedInfra.AuthClient do
   def current_session(attrs), do: adapter().current_session(attrs)
   def persistence_enabled?, do: adapter().persistence_enabled?()
   def lookup_user_by_phone(attrs), do: adapter().lookup_user_by_phone(attrs)
+  def lookup_users_by_phones(attrs), do: adapter().lookup_users_by_phones(attrs)
   def create_api_key(attrs), do: adapter().create_api_key(attrs)
   def list_api_keys(attrs), do: adapter().list_api_keys(attrs)
   def revoke_api_key(attrs), do: adapter().revoke_api_key(attrs)

@@ -171,6 +171,15 @@ defmodule ApiGatewayWeb.Router do
     post "/", InviteController, :create
   end
 
+  # Contacts sync: bulk phone → platform-user matching for contact discovery (session-authed). Stateless
+  # (nothing stored), one app-scoped match query, redaction via the SAME presenter as single by-phone,
+  # and rate-limited as a security control (the API's best enumeration oracle).
+  scope "/api/v1/contacts", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/sync", ContactController, :sync
+  end
+
   # User blocking (safety; session-authed — the blocker is always the session user). Enforcement is
   # server-wide (messages, calls, presence, profile, typing); this is just the block-list management.
   scope "/api/v1/blocks", ApiGatewayWeb do

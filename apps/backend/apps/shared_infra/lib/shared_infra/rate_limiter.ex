@@ -23,7 +23,11 @@ defmodule SharedInfra.RateLimiter do
         "key" => key,
         "limit" => limit,
         "window_seconds" => window_seconds,
-        "now_seconds" => now_seconds(attrs)
+        "now_seconds" => now_seconds(attrs),
+        # Optional per-call override of the global fail-open policy. Endpoints where the limit is a
+        # SECURITY control (e.g. contacts sync, the enumeration oracle) pass `false` so a limiter outage
+        # rejects rather than silently opening the gate; omitting it keeps the global default.
+        "fail_open" => fail_open_override(attrs)
       })
     end
   end
@@ -64,6 +68,16 @@ defmodule SharedInfra.RateLimiter do
     case get_attr(attrs, "now_seconds") do
       value when is_integer(value) -> value
       _ -> System.system_time(:second)
+    end
+  end
+
+  # nil when not specified → the adapter uses the global default; a boolean overrides it for this call.
+  # NOTE: not `get_attr/2` — that does `Map.get(...) || Map.get(...)`, and `false || x` drops a literal
+  # `false`, which is the exact value that matters here (fail CLOSED). Read both key forms with a default.
+  defp fail_open_override(attrs) do
+    case Map.get(attrs, "fail_open", Map.get(attrs, :fail_open)) do
+      value when is_boolean(value) -> value
+      _ -> nil
     end
   end
 
@@ -163,19 +177,20 @@ defmodule SharedInfra.RateLimiter.RedisAdapter do
     key = redis_key(attrs)
     limit = Map.fetch!(attrs, "limit")
     window_seconds = Map.fetch!(attrs, "window_seconds")
+    fail_open = fail_open?(attrs)
 
-    with_connection(fn conn ->
-      check_rate_with_connection(conn, key, limit, window_seconds)
+    with_connection(fail_open, fn conn ->
+      check_rate_with_connection(conn, key, limit, window_seconds, fail_open)
     end)
   end
 
-  defp check_rate_with_connection(conn, key, limit, window_seconds) do
+  defp check_rate_with_connection(conn, key, limit, window_seconds, fail_open) do
     with {:ok, count} <- redis_command(conn, ["INCR", key]),
          :ok <- maybe_expire(conn, key, count, window_seconds) do
       rate_result(conn, key, count, limit, window_seconds)
     else
       {:error, reason} ->
-        handle_unavailable(reason)
+        handle_unavailable(reason, fail_open)
     end
   end
 
@@ -200,7 +215,7 @@ defmodule SharedInfra.RateLimiter.RedisAdapter do
     {:error, :rate_limited, retry_after_seconds}
   end
 
-  defp with_connection(fun) do
+  defp with_connection(fail_open, fun) do
     redis_url()
     |> connect()
     |> case do
@@ -210,7 +225,7 @@ defmodule SharedInfra.RateLimiter.RedisAdapter do
         result
 
       {:error, reason} ->
-        handle_unavailable(reason)
+        handle_unavailable(reason, fail_open)
     end
   end
 
@@ -294,8 +309,8 @@ defmodule SharedInfra.RateLimiter.RedisAdapter do
     end
   end
 
-  defp handle_unavailable(reason) do
-    if fail_open?() do
+  defp handle_unavailable(reason, fail_open) do
+    if fail_open do
       :ok
     else
       {:error, :rate_limiter_unavailable, reason}
@@ -316,8 +331,12 @@ defmodule SharedInfra.RateLimiter.RedisAdapter do
     |> Keyword.get(:timeout, 1_000)
   end
 
-  defp fail_open? do
-    Application.get_env(:shared_infra, :rate_limiter_fail_open, true)
+  # Per-call override (a boolean in attrs) wins; otherwise the global default (true unless configured).
+  defp fail_open?(attrs) do
+    case Map.get(attrs, "fail_open") do
+      value when is_boolean(value) -> value
+      _ -> Application.get_env(:shared_infra, :rate_limiter_fail_open, true)
+    end
   end
 end
 

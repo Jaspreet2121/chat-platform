@@ -3,6 +3,8 @@ defmodule AuthService.Accounts do
   Data-access boundary for auth identities in `users_auth`.
   """
 
+  import Ecto.Query, only: [from: 2]
+
   alias AuthService.Repo
   alias AuthService.Schemas.UserAuth
 
@@ -30,15 +32,81 @@ defmodule AuthService.Accounts do
   can't distinguish "no such number" from "suspended". The match is exact: the stored phone is the
   same E.164 the client emits at login (`normalize_destination/1` only trims), so an E.164 lookup
   matches with no fuzzy logic. Email-registered users (phone_number nil) are simply never found.
+
+  APP-SCOPED when `app_id` is given (the gateway always supplies the caller's tenant): the match is
+  `WHERE app_id = $1 AND phone_number = $2 AND status = 'active'`. This is the correct multi-tenant
+  lookup — under migration 048's per-(app_id, phone_number) uniqueness the same number can exist in
+  two tenants, so an app-blind match could resolve ANOTHER tenant's user. Without `app_id` it falls
+  back to the LEGACY app-blind path (only `RealtimeGateway.CallSignaling` still lands there — see the
+  follow-up note there) so no caller regresses.
   """
-  def lookup_active_by_phone(phone_number) when is_binary(phone_number) do
+  def lookup_active_by_phone(phone_number, app_id \\ nil)
+
+  def lookup_active_by_phone(phone_number, app_id)
+      when is_binary(phone_number) and is_binary(app_id) and app_id != "" do
+    case active_by_phone(String.trim(phone_number), app_id) do
+      %UserAuth{id: id} -> {:ok, %{user_id: id}}
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def lookup_active_by_phone(phone_number, _app_id) when is_binary(phone_number) do
+    # LEGACY app-blind path (no tenant scope). Kept only so callers that don't yet pass app_id keep
+    # working unchanged; the app-scoped clause above is the correct one.
     case get_by_phone_number(String.trim(phone_number)) do
       %UserAuth{id: id, status: "active"} -> {:ok, %{user_id: id}}
       _ -> {:error, :not_found}
     end
   end
 
-  def lookup_active_by_phone(_phone_number), do: {:error, :not_found}
+  def lookup_active_by_phone(_phone_number, _app_id), do: {:error, :not_found}
+
+  @doc """
+  Bulk phone → user_id resolution for CONTACTS SYNC, scoped to `app_id` (the caller's tenant).
+
+  ONE query regardless of list size — `WHERE app_id = $1 AND status = 'active' AND phone_number =
+  ANY($2)` — which is the whole point: this is the API's best enumeration oracle, so its cost must
+  not scale with the batch. Returns `{:ok, [%{user_id, phone_number}]}` for the ACTIVE matches only
+  (unknown/suspended numbers are simply absent — never a "not found" row). The list is trimmed +
+  de-duped defensively here; E.164 shape-validation + the batch-size cap live at the gateway. The
+  echoed `phone_number` is the stored value, which (exact match) equals the caller's input so the
+  client can join results back to its address book.
+  """
+  def lookup_active_by_phones(phone_numbers, app_id)
+      when is_list(phone_numbers) and is_binary(app_id) and app_id != "" do
+    normalized =
+      phone_numbers
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.uniq()
+
+    {:ok, active_by_phones(normalized, app_id)}
+  end
+
+  def lookup_active_by_phones(_phone_numbers, _app_id), do: {:ok, []}
+
+  # Single app-scoped row (or nil). The (app_id, phone_number) partial unique index makes this at most
+  # one row; `limit: 1` is belt-and-suspenders.
+  defp active_by_phone(phone, app_id) do
+    Repo.one(
+      from(u in UserAuth,
+        where: u.app_id == ^app_id and u.status == "active" and u.phone_number == ^phone,
+        limit: 1
+      )
+    )
+  end
+
+  defp active_by_phones([], _app_id), do: []
+
+  defp active_by_phones(phones, app_id) do
+    Repo.all(
+      from(u in UserAuth,
+        where: u.app_id == ^app_id and u.status == "active" and u.phone_number in ^phones,
+        select: %{user_id: u.id, phone_number: u.phone_number}
+      )
+    )
+  end
 
   @doc """
   Resolve an integrator's opaque end-user id to a stable user row WITHIN an app, creating it on first
