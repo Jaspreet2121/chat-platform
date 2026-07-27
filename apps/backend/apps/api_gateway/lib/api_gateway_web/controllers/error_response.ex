@@ -22,6 +22,16 @@ defmodule ApiGatewayWeb.ErrorResponse do
     })
   end
 
+  @doc "A 400 with a specific code/message plus extra top-level error fields (e.g. `%{limit: 3}`)."
+  def invalid_request_with(conn, code, message, extra) when is_map(extra) do
+    conn
+    |> put_status(:bad_request)
+    |> json(%{
+      error:
+        Map.merge(%{code: code, message: message, correlation_id: correlation_id(conn)}, extra)
+    })
+  end
+
   def unauthorized(conn, code, message) do
     conn
     |> put_status(:unauthorized)

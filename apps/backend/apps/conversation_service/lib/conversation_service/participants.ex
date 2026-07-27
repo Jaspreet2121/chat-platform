@@ -306,6 +306,81 @@ defmodule ConversationService.Participants do
     end
   end
 
+  # Per-user ARCHIVE — a soft-hide of list PLACEMENT only (the chat leaves the default inbox, fetched via
+  # ?archived=true). Independent of muted_until. A `false` unarchives. Same active-participant gate as mute.
+  def set_archive(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, user_id} <- required_attr(attrs, "user_id"),
+         {:ok, archived} <- required_boolean(attrs, "archived") do
+      if conversation_persistence_enabled?() do
+        set_clause = if archived, do: "archived_at = now()", else: "archived_at = NULL"
+
+        update_own_participant(set_clause, conversation_id, user_id, fn ->
+          %{conversation_id: conversation_id, archived: archived}
+        end)
+      else
+        {:ok, %{conversation_id: conversation_id, archived: archived}}
+      end
+    end
+  end
+
+  # Maximum pins per user (WhatsApp caps at 3). The count below enforces it server-side.
+  @pin_limit 3
+
+  @doc "The server-enforced pin cap (exposed so the gateway's error can report the same number)."
+  def pin_limit, do: @pin_limit
+
+  # Per-user PIN — sorts the chat above the rest. Capped at #{@pin_limit}: at the cap and not already pinned →
+  # {:error, :pin_limit} (never drop the oldest pin). A `false` unpins. Independent of archived.
+  def set_pin(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, user_id} <- required_attr(attrs, "user_id"),
+         {:ok, pinned} <- required_boolean(attrs, "pinned") do
+      cond do
+        not conversation_persistence_enabled?() ->
+          {:ok, %{conversation_id: conversation_id, pinned: pinned}}
+
+        not pinned ->
+          update_own_participant("pinned_at = NULL", conversation_id, user_id, fn ->
+            %{conversation_id: conversation_id, pinned: false}
+          end)
+
+        at_pin_limit?(conversation_id, user_id) ->
+          {:error, :pin_limit}
+
+        true ->
+          update_own_participant("pinned_at = now()", conversation_id, user_id, fn ->
+            %{conversation_id: conversation_id, pinned: true}
+          end)
+      end
+    end
+  end
+
+  # The user's pin count EXCLUDING this conversation — so re-pinning an already-pinned chat is idempotent, and
+  # pinning a 3rd still succeeds. `left_at IS NULL`: a chat the user left doesn't consume a pin slot. Fail-OPEN
+  # on a count glitch (don't wrongly block a legitimate pin).
+  defp at_pin_limit?(conversation_id, user_id) do
+    case ConversationService.Repo.query(
+           "SELECT count(*) FROM conversation_participants " <>
+             "WHERE user_id = $1::text::uuid AND pinned_at IS NOT NULL AND left_at IS NULL " <>
+             "AND conversation_id <> $2::text::uuid",
+           [user_id, conversation_id]
+         ) do
+      {:ok, %{rows: [[count]]}} -> count >= @pin_limit
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp required_boolean(attrs, key) do
+    case Map.get(attrs, key) do
+      v when v in [true, "true", "1", "yes"] -> {:ok, true}
+      v when v in [false, "false", "0", "no"] -> {:ok, false}
+      _ -> {:error, :invalid_request}
+    end
+  end
+
   defp mute_clause(attrs) do
     case Map.fetch(@mute_clauses, to_string(attrs["mode"])) do
       {:ok, clause} -> {:ok, clause}

@@ -124,6 +124,12 @@ defmodule SharedInfra.ConversationClientHttp do
   def set_mute(attrs), do: post("/internal/participants/set_mute", attrs)
 
   @impl true
+  def set_archive(attrs), do: post("/internal/participants/set_archive", attrs)
+
+  @impl true
+  def set_pin(attrs), do: post("/internal/participants/set_pin", attrs)
+
+  @impl true
   def set_group_profile(attrs), do: post("/internal/conversations/set_group_profile", attrs)
 
   @impl true

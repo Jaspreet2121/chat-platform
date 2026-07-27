@@ -27,6 +27,9 @@ defmodule SharedInfra.ConversationClient do
   @callback clear_history(attrs()) :: result()
   @callback set_auto_delete(attrs()) :: result()
   @callback set_mute(attrs()) :: result()
+  # Per-user inbox prefs (archive/pin) — same shape as set_mute; set_pin may return {:error, :pin_limit}.
+  @callback set_archive(attrs()) :: result()
+  @callback set_pin(attrs()) :: result()
   @callback set_group_profile(attrs()) :: result()
   @callback set_participant_role(attrs()) :: result()
   @callback set_group_settings(attrs()) :: result()
@@ -103,7 +106,9 @@ defmodule SharedInfra.ConversationClient do
                       unblock_user: 1,
                       list_blocks: 1,
                       either_blocked?: 1,
-                      direct_peer_blocked?: 1
+                      direct_peer_blocked?: 1,
+                      set_archive: 1,
+                      set_pin: 1
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
@@ -126,6 +131,8 @@ defmodule SharedInfra.ConversationClient do
   def clear_history(attrs), do: adapter().clear_history(attrs)
   def set_auto_delete(attrs), do: adapter().set_auto_delete(attrs)
   def set_mute(attrs), do: adapter().set_mute(attrs)
+  def set_archive(attrs), do: adapter().set_archive(attrs)
+  def set_pin(attrs), do: adapter().set_pin(attrs)
   def set_group_profile(attrs), do: adapter().set_group_profile(attrs)
   def set_participant_role(attrs), do: adapter().set_participant_role(attrs)
   def set_group_settings(attrs), do: adapter().set_group_settings(attrs)

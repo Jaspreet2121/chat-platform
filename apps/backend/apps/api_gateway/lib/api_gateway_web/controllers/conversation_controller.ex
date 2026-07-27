@@ -190,6 +190,69 @@ defmodule ApiGatewayWeb.ConversationController do
     end)
   end
 
+  # ARCHIVE for the caller — a soft list-placement hide: the chat leaves the default inbox (fetched via
+  # GET /conversations?archived=true) but is never muted or deleted. {"archived": false} unarchives.
+  def archive(conn, %{"conversation_id" => conversation_id} = params) do
+    pref_mutation(conn, conversation_id, fn user_id ->
+      SharedInfra.ConversationClient.set_archive(%{
+        "conversation_id" => conversation_id,
+        "user_id" => user_id,
+        "archived" => params["archived"]
+      })
+    end)
+  end
+
+  # PIN for the caller — sorts the chat above the rest. Over the server cap → 400 conversations.pin_limit
+  # {limit}. {"pinned": false} unpins.
+  def pin(conn, %{"conversation_id" => conversation_id} = params) do
+    pref_mutation(conn, conversation_id, fn user_id ->
+      SharedInfra.ConversationClient.set_pin(%{
+        "conversation_id" => conversation_id,
+        "user_id" => user_id,
+        "pinned" => params["pinned"]
+      })
+    end)
+  end
+
+  # Like with_own_participant, but ALSO broadcasts conversation_updated (:pref) to the caller's OTHER devices —
+  # archive/pin change the inbox row's placement/order, so open clients must update live. `only: [me]` because a
+  # per-user pref is invisible to everyone else. (mute/clear/auto-delete don't broadcast today — a pre-existing
+  # gap, left out of scope.)
+  defp pref_mutation(conn, conversation_id, operation) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, response} <- operation.(session.user_id) do
+      ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+        conversation_id,
+        session.user_id,
+        :pref,
+        only: [session.user_id]
+      )
+
+      json(conn, response)
+    else
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :not_participant} -> forbidden_membership(conn)
+      {:error, :pin_limit} -> pin_limit(conn)
+      _ -> invalid_request(conn)
+    end
+  end
+
+  # WhatsApp caps pins at 3 — keep in sync with ConversationService.Participants.pin_limit/0.
+  @pin_limit 3
+
+  defp pin_limit(conn) do
+    ApiGatewayWeb.ErrorResponse.invalid_request_with(
+      conn,
+      "conversations.pin_limit",
+      "Too many pinned conversations",
+      %{limit: @pin_limit}
+    )
+  end
+
   # Group name/photo update — OWNER-gated by the conversation service (the caller must be an active
   # owner/admin). Empty-string avatar fields clear the photo. Returns the fresh group_avatar_url.
   def group_profile(conn, %{"conversation_id" => conversation_id} = params) do

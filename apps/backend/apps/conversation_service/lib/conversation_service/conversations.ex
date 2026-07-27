@@ -393,10 +393,16 @@ defmodule ConversationService.Conversations do
 
   defp list_conversations_from_db(attrs) do
     with {:ok, user_id} <- required_attr(attrs, "user_id") do
-      {:ok, %{conversations: list_rows_with_activity(user_id)}}
+      # ?archived=true → the archived list; otherwise the default list EXCLUDES archived chats entirely.
+      scope = if archived_filter?(attrs), do: "archived", else: "active"
+      {:ok, %{conversations: list_rows_with_activity(user_id, scope)}}
     end
   rescue
     Ecto.Query.CastError -> {:error, :conversation_invalid}
+  end
+
+  defp archived_filter?(attrs) do
+    get_attr(attrs, "archived") in [true, "true", "1", "yes"]
   end
 
   @doc """
@@ -422,7 +428,9 @@ defmodule ConversationService.Conversations do
       if conversation_persistence_enabled?() do
         with {:ok, conversation_uuid} <- dump_uuid(conversation_id),
              {:ok, user_uuids} <- dump_uuids(user_ids) do
-          {:ok, %{rows: query_inbox_rows(user_uuids, conversation_uuid)}}
+          # 'any': the broadcast frame must carry a conversation's row even when it's ARCHIVED, so the client
+          # updates its archived/pinned flags live (the list-vs-archived split is a read-time concern).
+          {:ok, %{rows: query_inbox_rows(user_uuids, conversation_uuid, "any")}}
         end
       else
         {:ok, %{rows: []}}
@@ -497,7 +505,9 @@ defmodule ConversationService.Conversations do
          to_char(COALESCE(lm.created_at, c.updated_at) AT TIME ZONE 'UTC',
                  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
          COALESCE(un.unread, 0)::int,
-         gp.avatar_media_id::text
+         gp.avatar_media_id::text,
+         (cp.pinned_at IS NOT NULL),
+         (cp.archived_at IS NOT NULL)
   FROM conversations c
   JOIN conversation_participants cp
     ON cp.conversation_id = c.id AND cp.user_id = ANY($1::uuid[]) AND cp.left_at IS NULL
@@ -530,7 +540,15 @@ defmodule ConversationService.Conversations do
   ) un ON true
   WHERE c.status = 'active'
     AND ($2::uuid IS NULL OR c.id = $2::uuid)
-  ORDER BY COALESCE(lm.created_at, c.updated_at) DESC
+    -- ARCHIVE SCOPE ($3): 'active' hides archived (the default list), 'archived' shows only archived (the
+    -- ?archived=true list), 'any' ignores it (the single-conversation broadcast / unread_before, so an
+    -- archived row still flows to update the client's flags). ARCHIVED rows are EXCLUDED, not sorted last.
+    AND ($3 = 'any'
+         OR ($3 = 'active' AND cp.archived_at IS NULL)
+         OR ($3 = 'archived' AND cp.archived_at IS NOT NULL))
+  -- PINNED first (newest-activity within each group), then everyone else by activity. One ORDER BY for both
+  -- the list and the conversation_updated frame, so pin order can never drift between them.
+  ORDER BY (cp.pinned_at IS NOT NULL) DESC, COALESCE(lm.created_at, c.updated_at) DESC
   """
 
   # WhatsApp-style list rows straight from the shared store (one query, lateral joins):
@@ -540,19 +558,19 @@ defmodule ConversationService.Conversations do
   #   * ordered by last activity (last message, else conversation update) DESC.
   # The messages/receipts tables live in the same Postgres (same precedent as the message service
   # reading conversation_participants). READ-only.
-  defp list_rows_with_activity(user_id) do
+  defp list_rows_with_activity(user_id, scope) do
     {:ok, user_uuid} = Ecto.UUID.dump(user_id)
 
-    # One user, every conversation → the conversation filter ($2) is NULL.
+    # One user, every conversation → the conversation filter ($2) is NULL; scope ($3) is 'active'|'archived'.
     user_uuid
     |> List.wrap()
-    |> query_inbox_rows(nil)
+    |> query_inbox_rows(nil, scope)
     |> Enum.map(&Map.delete(&1, :user_id))
   end
 
-  defp query_inbox_rows(user_uuids, conversation_uuid) do
+  defp query_inbox_rows(user_uuids, conversation_uuid, scope) do
     %Postgrex.Result{rows: rows} =
-      ConversationService.Repo.query!(@inbox_sql, [user_uuids, conversation_uuid])
+      ConversationService.Repo.query!(@inbox_sql, [user_uuids, conversation_uuid, scope])
 
     Enum.map(rows, fn [
                         user_id,
@@ -564,7 +582,9 @@ defmodule ConversationService.Conversations do
                         content_type,
                         activity_at,
                         unread,
-                        avatar_media_id
+                        avatar_media_id,
+                        pinned,
+                        archived
                       ] ->
       %{
         user_id: user_id,
@@ -579,7 +599,11 @@ defmodule ConversationService.Conversations do
         # media_id. The raw object_key is NOT emitted: it has no consumer and must never reach a client
         # (Android §8.6). This row also feeds the conversation_updated broadcast frame, which had been leaking
         # the key on the wire (see SharedInfra.ConversationBroadcast.updated_row/1's guard).
-        group_avatar_media_id: avatar_media_id
+        group_avatar_media_id: avatar_media_id,
+        # Per-user inbox prefs — DERIVED booleans, not the raw timestamps (the client sorts by the server's
+        # ORDER BY and renders the pin/archive state from these; it never needs the times).
+        pinned: pinned,
+        archived: archived
       }
     end)
   end

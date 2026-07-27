@@ -9,7 +9,8 @@ defmodule SharedInfra.ConversationBroadcast do
   parameter (`endpoint.broadcast/3`; any Phoenix endpoint, no Phoenix dependency here).
   `ApiGatewayWeb.ConversationBroadcast` is a thin delegate that supplies `ApiGatewayWeb.Endpoint`.
 
-  FOUR triggers feed it: `:message`, `:receipt`, `:title`, `:participant`. The trigger is carried purely so a
+  FIVE triggers feed it: `:message`, `:receipt`, `:title`, `:participant`, `:pref` (a per-user archive/pin
+  change — sent `only: [the acting user]`, since it's invisible to everyone else). The trigger is carried so a
   FAILURE names which of the four paths went dark — the success path is silent.
 
   PER-USER, not one shared row: unread_count, the preview and updated_at are ALL per-participant (a user who

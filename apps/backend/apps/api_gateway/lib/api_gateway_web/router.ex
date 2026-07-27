@@ -255,6 +255,10 @@ defmodule ApiGatewayWeb.Router do
     get "/:conversation_id/media", MessageController, :media
     put "/:conversation_id/auto-delete", ConversationController, :auto_delete
     put "/:conversation_id/mute", ConversationController, :mute
+    # Per-user inbox prefs: archive (excluded from the default list; GET /conversations?archived=true fetches
+    # them) + pin (sorts above; server-capped at 3 → 400 conversations.pin_limit). Broadcast :pref to the caller.
+    put "/:conversation_id/archive", ConversationController, :archive
+    put "/:conversation_id/pin", ConversationController, :pin
     # Group name/photo (owner-gated in the conversation service).
     put "/:conversation_id/group-profile", ConversationController, :group_profile
     delete "/:conversation_id/participants/:user_id", ConversationController, :remove_participant

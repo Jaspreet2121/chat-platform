@@ -70,6 +70,14 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Participants.set_mute(body(conn)))
   end
 
+  post "/internal/participants/set_archive" do
+    send_result(conn, ConversationService.Participants.set_archive(body(conn)))
+  end
+
+  post "/internal/participants/set_pin" do
+    send_result(conn, ConversationService.Participants.set_pin(body(conn)))
+  end
+
   post "/internal/conversations/set_group_profile" do
     send_result(conn, ConversationService.Conversations.set_group_profile(body(conn)))
   end

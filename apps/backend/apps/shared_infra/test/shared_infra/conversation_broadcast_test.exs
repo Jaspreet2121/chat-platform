@@ -49,7 +49,10 @@ defmodule SharedInfra.ConversationBroadcastTest do
             # the raw object_key must NEVER reach the wire frame (Android §8.6). Real rows no longer emit it, but
             # the frame builder must strip it regardless — this row includes it to prove the guard.
             group_avatar_media_id: "gm-1",
-            group_avatar_object_key: "groups/secret/avatar.jpg"
+            group_avatar_object_key: "groups/secret/avatar.jpg",
+            # Per-user inbox prefs ride the same row → the :pref (archive/pin) frame carries them to the client.
+            pinned: true,
+            archived: false
           }
         end)
 
@@ -98,6 +101,14 @@ defmodule SharedInfra.ConversationBroadcastTest do
     refute Map.has_key?(payload, :user_id)
     assert payload["title"] == "Launch"
     assert payload["conversation_id"] == @conversation
+  end
+
+  test "the wire frame carries the per-user pinned/archived prefs (the :pref frame updates the client live)" do
+    ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :pref, only: [@alice])
+
+    assert_receive {:broadcast, "user:" <> _, "conversation_updated", payload}, 500
+    assert payload["pinned"] == true
+    assert payload["archived"] == false
   end
 
   test "the wire frame NEVER carries the raw group-avatar object key (Android §8.6 — clients see the url)" do
