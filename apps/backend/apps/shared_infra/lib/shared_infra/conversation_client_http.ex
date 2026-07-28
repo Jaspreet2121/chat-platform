@@ -103,6 +103,21 @@ defmodule SharedInfra.ConversationClientHttp do
   def join_call_link(attrs), do: post("/internal/call-links/join", attrs)
 
   @impl true
+  def create_group_invite_link(attrs), do: post("/internal/invite-links/create", attrs)
+
+  @impl true
+  def revoke_group_invite_link(attrs), do: post("/internal/invite-links/revoke", attrs)
+
+  @impl true
+  def reset_group_invite_link(attrs), do: post("/internal/invite-links/reset", attrs)
+
+  @impl true
+  def preview_group_invite_link(attrs), do: post("/internal/invite-links/preview", attrs)
+
+  @impl true
+  def join_group_invite_link(attrs), do: post("/internal/invite-links/join", attrs)
+
+  @impl true
   def approve_link_participant(attrs), do: post("/internal/call-links/approve", attrs)
 
   @impl true

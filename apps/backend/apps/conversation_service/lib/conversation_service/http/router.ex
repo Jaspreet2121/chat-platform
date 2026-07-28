@@ -189,6 +189,27 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.CallStore.deny_link_participant(body(conn)))
   end
 
+  # Group invite links (077) — shareable "join a group via link".
+  post "/internal/invite-links/create" do
+    send_result(conn, ConversationService.InviteLinks.create_link(body(conn)))
+  end
+
+  post "/internal/invite-links/revoke" do
+    send_result(conn, ConversationService.InviteLinks.revoke_link(body(conn)))
+  end
+
+  post "/internal/invite-links/reset" do
+    send_result(conn, ConversationService.InviteLinks.reset_link(body(conn)))
+  end
+
+  post "/internal/invite-links/preview" do
+    send_result(conn, ConversationService.InviteLinks.preview_link(body(conn)))
+  end
+
+  post "/internal/invite-links/join" do
+    send_result(conn, ConversationService.InviteLinks.join_link(body(conn)))
+  end
+
   post "/internal/blocks/create" do
     send_result(conn, ConversationService.Blocks.block(body(conn)))
   end

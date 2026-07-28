@@ -62,6 +62,13 @@ defmodule SharedInfra.ConversationClient do
   @callback create_call_link(attrs()) :: result()
   @callback get_call_link(attrs()) :: result()
   @callback join_call_link(attrs()) :: result()
+
+  # Group invite links (077) — shareable "join a group via link".
+  @callback create_group_invite_link(attrs()) :: result()
+  @callback revoke_group_invite_link(attrs()) :: result()
+  @callback reset_group_invite_link(attrs()) :: result()
+  @callback preview_group_invite_link(attrs()) :: result()
+  @callback join_group_invite_link(attrs()) :: result()
   # Call links (L3a) — host approve/deny a pending joiner.
   @callback approve_link_participant(attrs()) :: result()
   @callback deny_link_participant(attrs()) :: result()
@@ -100,6 +107,11 @@ defmodule SharedInfra.ConversationClient do
                       create_call_link: 1,
                       get_call_link: 1,
                       join_call_link: 1,
+                      create_group_invite_link: 1,
+                      revoke_group_invite_link: 1,
+                      reset_group_invite_link: 1,
+                      preview_group_invite_link: 1,
+                      join_group_invite_link: 1,
                       approve_link_participant: 1,
                       deny_link_participant: 1,
                       block_user: 1,
@@ -170,6 +182,12 @@ defmodule SharedInfra.ConversationClient do
   def create_call_link(attrs), do: adapter().create_call_link(attrs)
   def get_call_link(attrs), do: adapter().get_call_link(attrs)
   def join_call_link(attrs), do: adapter().join_call_link(attrs)
+
+  def create_group_invite_link(attrs), do: adapter().create_group_invite_link(attrs)
+  def revoke_group_invite_link(attrs), do: adapter().revoke_group_invite_link(attrs)
+  def reset_group_invite_link(attrs), do: adapter().reset_group_invite_link(attrs)
+  def preview_group_invite_link(attrs), do: adapter().preview_group_invite_link(attrs)
+  def join_group_invite_link(attrs), do: adapter().join_group_invite_link(attrs)
   def approve_link_participant(attrs), do: adapter().approve_link_participant(attrs)
   def deny_link_participant(attrs), do: adapter().deny_link_participant(attrs)
 

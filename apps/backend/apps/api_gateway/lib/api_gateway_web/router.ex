@@ -249,6 +249,15 @@ defmodule ApiGatewayWeb.Router do
     post "/:id/join", CallLinkController, :join
   end
 
+  # Group invite links (077) — code-scoped preview + join (session-gated). Mint/revoke/reset are
+  # conversation-scoped, under /api/v1/conversations/:id/invite-link.
+  scope "/api/v1/invite-links", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/:code", InviteLinkController, :preview
+    post "/:code/join", InviteLinkController, :join
+  end
+
   scope "/api/v1/conversations", ApiGatewayWeb do
     pipe_through :api
 
@@ -275,6 +284,12 @@ defmodule ApiGatewayWeb.Router do
     put "/:conversation_id/participants/:user_id/role", ConversationController, :set_participant_role
 
     put "/:conversation_id/settings", ConversationController, :set_group_settings
+
+    # Group invite link (077) — shareable "join via link". Owner-only mint/revoke/reset. The code-scoped
+    # preview + join live under /api/v1/invite-links below.
+    post "/:conversation_id/invite-link", InviteLinkController, :create_link
+    delete "/:conversation_id/invite-link", InviteLinkController, :revoke_link
+    post "/:conversation_id/invite-link/reset", InviteLinkController, :reset_link
   end
 
   scope "/api/v1/conversations/:conversation_id/messages", ApiGatewayWeb do

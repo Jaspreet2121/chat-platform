@@ -151,6 +151,21 @@ defmodule ConversationService.ConversationClientInProcess do
   def join_call_link(attrs), do: ConversationService.CallStore.join_call_link(attrs)
 
   @impl true
+  def create_group_invite_link(attrs), do: ConversationService.InviteLinks.create_link(attrs)
+
+  @impl true
+  def revoke_group_invite_link(attrs), do: ConversationService.InviteLinks.revoke_link(attrs)
+
+  @impl true
+  def reset_group_invite_link(attrs), do: ConversationService.InviteLinks.reset_link(attrs)
+
+  @impl true
+  def preview_group_invite_link(attrs), do: ConversationService.InviteLinks.preview_link(attrs)
+
+  @impl true
+  def join_group_invite_link(attrs), do: ConversationService.InviteLinks.join_link(attrs)
+
+  @impl true
   def approve_link_participant(attrs),
     do: ConversationService.CallStore.approve_link_participant(attrs)
 
