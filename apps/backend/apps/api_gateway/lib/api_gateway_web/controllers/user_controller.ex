@@ -7,7 +7,7 @@ defmodule ApiGatewayWeb.UserController do
   # avatar_object_key is NO LONGER accepted — the server resolves object_key from the media_assets row
   # (bee9562). It is tolerated in the body but stripped + ignored (never persisted). avatar_media_id is
   # accepted but VALIDATED for ownership before it is stored (see validate_avatar_media_id/2).
-  @allowed_update_fields ["display_name", "bio", "avatar_media_id"]
+  @allowed_update_fields ["display_name", "bio", "avatar_media_id", "username"]
   @ignored_update_fields ["avatar_object_key"]
 
   def me(conn, params) do
@@ -229,6 +229,105 @@ defmodule ApiGatewayWeb.UserController do
 
   def by_phone(conn, _params), do: invalid_request(conn)
 
+  @doc """
+  Resolve an @handle → the SAME redacted profile card by-phone returns (ProfilePresenter — block +
+  photo-visibility redaction cannot drift). Session-gated + app-scoped (the handle namespace is
+  per-tenant; there is NO app-blind variant). Unknown handle, cross-tenant handle, non-ACTIVE account
+  (by-phone status parity), and hidden profile are all the SAME 404. Deliberately NOT gated by the
+  deferred phone-discoverability setting: a handle is opt-in and exists to be found — setting one IS
+  the discovery consent, removing it is the revocation (see the plan note in ContactController).
+  """
+  def by_username(conn, %{"username" => username}) when is_binary(username) and username != "" do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, result} <-
+           SharedInfra.UserClient.lookup_by_username(%{
+             "username" => username,
+             "app_id" => session_app(session)
+           }),
+         user_id = Map.get(result, :user_id) || Map.get(result, "user_id"),
+         :ok <- reject_self(session.user_id, user_id),
+         {:ok, response} <-
+           SharedInfra.UserClient.get_public_profile(%{
+             "user_id" => user_id,
+             "app_id" => session_app(session)
+           }) do
+      json(conn, ProfilePresenter.present(session.user_id, user_id, response))
+    else
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :user_unavailable} -> service_unavailable(conn)
+      {:error, :self_lookup} -> self_lookup(conn)
+      # not_found / cross-tenant / profile gone → one indistinguishable 404.
+      _ -> username_not_found(conn)
+    end
+  end
+
+  def by_username(conn, _params), do: invalid_request(conn)
+
+  # Availability probe for the pick-a-name UI. SESSION-authed (no anonymous namespace probing) +
+  # rate-limited so it can't enumerate the tenant's namespace; advisory only — the PATCH re-validates
+  # atomically (the unique index is the truth). Invalid/reserved handles return available:false with
+  # the exact validation code so the client renders the reason.
+  @availability_limit 30
+  @availability_window_seconds 3600
+
+  def username_availability(conn, %{"username" => username})
+      when is_binary(username) and username != "" do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- availability_rate_limit(session.user_id),
+         {:ok, result} <-
+           SharedInfra.UserClient.check_username(%{
+             "username" => username,
+             "app_id" => session_app(session),
+             "user_id" => session.user_id
+           }) do
+      json(conn, %{
+        available: Map.get(result, :available) == true,
+        code: Map.get(result, :code)
+      })
+    else
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :rate_limited, retry_after_seconds} ->
+        conn
+        |> put_resp_header("retry-after", Integer.to_string(retry_after_seconds))
+        |> ErrorResponse.rate_limited("usernames.rate_limited")
+
+      {:error, :user_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      _ ->
+        invalid_request(conn)
+    end
+  end
+
+  def username_availability(conn, _params), do: invalid_request(conn)
+
+  # 30/hour: generous for a human picking a handle, useless for enumerating the namespace. Limiter
+  # outage fails OPEN (availability is advisory UX, not a security gate — unlike contacts sync).
+  defp availability_rate_limit(user_id) do
+    case SharedInfra.RateLimiter.check_rate(%{
+           "key" => "username_check:" <> user_id,
+           "limit" => @availability_limit,
+           "window_seconds" => @availability_window_seconds
+         }) do
+      :ok -> :ok
+      {:error, :rate_limited, _retry} = limited -> limited
+      _ -> :ok
+    end
+  end
+
+  defp username_not_found(conn),
+    do: ErrorResponse.not_found(conn, "user.username_not_found", "No account uses this username")
+
   defp reject_self(caller_user_id, found_user_id) do
     if caller_user_id == found_user_id, do: {:error, :self_lookup}, else: :ok
   end
@@ -284,6 +383,15 @@ defmodule ApiGatewayWeb.UserController do
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :user_unavailable} -> service_unavailable(conn)
       {:error, :invalid_avatar} -> invalid_avatar(conn)
+      # Username failures carry their exact code (usernames.too_short / too_long / invalid_format /
+      # reserved / taken / held / change_limit) — the atom names the failure.
+      {:error, username_error} when username_error in [:username_too_short, :username_too_long,
+                                                       :username_invalid_format, :username_reserved,
+                                                       :username_taken, :username_held,
+                                                       :username_change_limit] ->
+        "username_" <> failure = Atom.to_string(username_error)
+        ErrorResponse.invalid_request(conn, "usernames." <> failure)
+
       {:error, :profile_invalid} -> invalid_request(conn)
       _ -> invalid_request(conn)
     end

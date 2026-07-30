@@ -26,6 +26,9 @@ defmodule ApiGatewayWeb.ContactController do
     3. enforce in BOTH `by_phone` (single) and here (bulk) — a non-discoverable target is simply absent,
        identical to a non-match (no existence reveal);
     4. tests for both paths + the default.
+  NOTE (usernames, 080): by-username lookup is DELIBERATELY outside this setting's scope — a handle is
+  opt-in and self-chosen (setting one IS the discovery consent; removing it is the revocation), so
+  discoverable_by_phone stays phone-only. Do not wire it into by-username when picking this up.
   The seam is marked below (drop non-discoverable user_ids from the match set — one `Enum.reject`).
   """
   use ApiGatewayWeb, :controller

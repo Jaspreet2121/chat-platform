@@ -24,6 +24,12 @@ defmodule SharedInfra.UserClientHttp do
   def update_current_profile(attrs), do: post("/internal/profiles/update", attrs)
 
   @impl true
+  def lookup_by_username(attrs), do: post("/internal/usernames/lookup", attrs)
+
+  @impl true
+  def check_username(attrs), do: post("/internal/usernames/check", attrs)
+
+  @impl true
   def last_seen_visibility(attrs), do: post("/internal/privacy/last_seen_visibility", attrs)
 
   @impl true

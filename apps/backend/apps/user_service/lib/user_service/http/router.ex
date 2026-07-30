@@ -37,6 +37,15 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Privacy.get_privacy(body(conn)))
   end
 
+  # Usernames (080) — app-scoped resolution + availability (session + rate limit live in the gateway).
+  post "/internal/usernames/lookup" do
+    send_result(conn, UserService.Usernames.lookup(body(conn)))
+  end
+
+  post "/internal/usernames/check" do
+    send_result(conn, UserService.Usernames.check_availability(body(conn)))
+  end
+
   post "/internal/privacy/update" do
     send_result(conn, UserService.Privacy.update_privacy(body(conn)))
   end

@@ -57,11 +57,29 @@ defmodule UserService.Profiles do
 
   defp update_current_profile_in_db(attrs) do
     with {:ok, user_id} <- required_user_id(attrs),
-         {:ok, profile} <- upsert_profile(user_id, attrs) do
+         {:ok, profile} <- upsert_profile(user_id, attrs),
+         {:ok, profile} <- maybe_set_username(user_id, profile, attrs) do
       {:ok, updated_profile_response(user_id, profile)}
     end
   rescue
     Ecto.Query.CastError -> {:error, :profile_invalid}
+  end
+
+  # The username rides the SAME PATCH /me the other profile fields use, but through its own write path
+  # (UserService.Usernames: validation codes, per-tenant uniqueness, case-only-free, holds + change
+  # budget) — the generic changeset can't touch it. Runs AFTER the field upsert so a fresh user can set
+  # display_name + username in one call (the row must exist to carry the tenant scope). "" removes.
+  defp maybe_set_username(user_id, profile, attrs) do
+    case Map.get(attrs, "username") do
+      nil ->
+        {:ok, profile}
+
+      username ->
+        with {:ok, _result} <-
+               UserService.Usernames.set_username(%{"user_id" => user_id, "username" => username}) do
+          {:ok, ProfileStore.get_profile(user_id)}
+        end
+    end
   end
 
   defp upsert_profile(user_id, attrs) do
@@ -104,6 +122,7 @@ defmodule UserService.Profiles do
       avatar_object_key: profile.avatar_object_key,
       app_id: profile.app_id,
       bio: profile.bio,
+      username: profile.username,
       updated_at: DateTime.to_iso8601(profile.updated_at || DateTime.utc_now())
     }
   end
@@ -138,6 +157,8 @@ defmodule UserService.Profiles do
     %{
       user_id: user_id,
       display_name: profile.display_name,
+      # Visible to anyone who can see the profile at all — a handle exists to be shared (nil when unset).
+      username: profile.username,
       avatar_media_id: profile.avatar_media_id,
       avatar_object_key: profile.avatar_object_key,
       # The profile's tenant — the gateway presigns the avatar scoped to this app (the /avatar route has
@@ -168,6 +189,7 @@ defmodule UserService.Profiles do
       avatar_media_id: nil,
       avatar_object_key: nil,
       bio: nil,
+      username: nil,
       settings: UserService.Settings.placeholder_settings(),
       # REAL privacy now (was a placeholder) — same shape, so `me`'s contract is unchanged; a user with no
       # settings row simply gets the column defaults.
@@ -183,6 +205,8 @@ defmodule UserService.Profiles do
       avatar_object_key: profile.avatar_object_key,
       app_id: profile.app_id,
       bio: profile.bio,
+      # The caller's own handle (nil when unset — clients render it only when non-null).
+      username: profile.username,
       settings: UserService.Settings.placeholder_settings(),
       privacy: UserService.Privacy.privacy_map(user_id)
     }

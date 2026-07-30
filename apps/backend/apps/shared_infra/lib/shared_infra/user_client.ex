@@ -21,9 +21,12 @@ defmodule SharedInfra.UserClient do
   # Full privacy settings read + sparse update (the first-party GET/PATCH /api/v1/privacy surface + enforcement).
   @callback get_privacy(attrs()) :: result()
   @callback update_privacy(attrs()) :: result()
+  # Usernames (080): app-scoped handle → user_id resolution + the availability probe.
+  @callback lookup_by_username(attrs()) :: result()
+  @callback check_username(attrs()) :: result()
 
   # Optional so a partial test stub of this behaviour doesn't need to implement everything; the real adapters do.
-  @optional_callbacks get_privacy: 1, update_privacy: 1
+  @optional_callbacks get_privacy: 1, update_privacy: 1, lookup_by_username: 1, check_username: 1
 
   def get_current_profile(attrs), do: adapter().get_current_profile(attrs)
   def get_public_profile(attrs), do: adapter().get_public_profile(attrs)
@@ -37,6 +40,8 @@ defmodule SharedInfra.UserClient do
 
   @doc "Sparse update of a user's privacy settings; returns the full updated map or a validation error."
   def update_privacy(attrs), do: adapter().update_privacy(attrs)
+  def lookup_by_username(attrs), do: adapter().lookup_by_username(attrs)
+  def check_username(attrs), do: adapter().check_username(attrs)
 
   @doc "The configured User client adapter (default `UserService.UserClientInProcess`)."
   def adapter do

@@ -304,6 +304,19 @@ defmodule AuthService.Moderation do
         Repo.query!("UPDATE media_assets SET owner_user_id = $1 WHERE owner_user_id = $2", [actor_bin, target_bin])
         Repo.query!("UPDATE call_sessions SET started_by = $1 WHERE started_by = $2", [actor_bin, target_bin])
 
+        # USERNAME HOLD (080): the profile row cascade-deletes below, which would FREE the handle
+        # instantly — the exact claim-a-name-someone-just-vacated impersonation vector the rename hold
+        # closes. Write the same 30-day hold a rename writes (upsert; the deleted user can never
+        # reclaim — the account is gone — so after 30 days it frees like any other hold).
+        Repo.query!(
+          "INSERT INTO username_holds (app_id, username_key, user_id, held_until) " <>
+            "SELECT p.app_id, p.username_key, p.user_id, now() + interval '30 days' " <>
+            "FROM user_profiles p WHERE p.user_id = $1 AND p.username_key IS NOT NULL " <>
+            "ON CONFLICT (app_id, username_key) DO UPDATE " <>
+            "SET user_id = EXCLUDED.user_id, held_until = EXCLUDED.held_until, created_at = now()",
+          [target_bin]
+        )
+
         # Hard-delete the identity; CASCADE cleans the FK-linked rows. Messages/reactions/receipts/stars/
         # notifications are intentionally NOT touched (anonymized via the profile deletion above).
         Repo.query!("DELETE FROM users_auth WHERE id = $1", [target_bin])

@@ -155,12 +155,21 @@ defmodule ApiGatewayWeb.Router do
     # Phone → profile lookup for direct chat (session-gated in the controller). A literal one-segment
     # path, so it never collides with the two-segment "/:user_id/profile" below.
     get "/by-phone", UserController, :by_phone
+    # Handle → profile card (080): same card + redaction as by-phone; per-tenant namespace, active-only.
+    get "/by-username/:username", UserController, :by_username
     get "/:user_id/profile", UserController, :profile
     # Direct-peer contact info (phone) — server-verified shared-direct-conversation scope.
     get "/:user_id/peer-contact", UserController, :peer_contact
 
     # PUBLIC avatar proxy (stable URL → 302 to a fresh presign) — for web-push notification icons.
     get "/:user_id/avatar", UserController, :avatar
+  end
+
+  # Username availability (080) — session-authed + rate-limited (no anonymous namespace probing).
+  scope "/api/v1/usernames", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/:username/availability", UserController, :username_availability
   end
 
   # Linked devices — list the caller's signed-in devices / sign one (or all others) out. Session-authed.

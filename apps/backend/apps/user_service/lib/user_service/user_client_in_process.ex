@@ -26,5 +26,11 @@ defmodule UserService.UserClientInProcess do
   def get_privacy(attrs), do: UserService.Privacy.get_privacy(attrs)
 
   @impl true
+  def lookup_by_username(attrs), do: UserService.Usernames.lookup(attrs)
+
+  @impl true
+  def check_username(attrs), do: UserService.Usernames.check_availability(attrs)
+
+  @impl true
   def update_privacy(attrs), do: UserService.Privacy.update_privacy(attrs)
 end
