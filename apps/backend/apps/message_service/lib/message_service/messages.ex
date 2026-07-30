@@ -52,6 +52,25 @@ defmodule MessageService.Messages do
     end
   end
 
+  @doc """
+  Message info — per-user delivery/read state, SENDER-only (the store enforces sender + tombstone; the
+  gateway enforces session + membership). Placeholder path: empty lists (nothing persisted to report).
+  """
+  def message_info(attrs) do
+    if message_persistence_enabled?() do
+      MessageService.MessageStore.message_info(attrs)
+    else
+      {:ok,
+       %{
+         conversation_id: Map.get(attrs, "conversation_id"),
+         message_id: Map.get(attrs, "message_id"),
+         read: [],
+         delivered: [],
+         read_hidden: false
+       }}
+    end
+  end
+
   def send_message(attrs) do
     create_message(attrs)
   end

@@ -305,6 +305,8 @@ defmodule ApiGatewayWeb.Router do
     delete "/:message_id", MessageController, :delete
     post "/:message_id/read", MessageController, :read
     post "/:message_id/delivered", MessageController, :delivered
+    # Message info (sender-only): per-user delivered/read state, privacy-filtered like read_by_count.
+    get "/:message_id/info", MessageController, :info
     post "/:message_id/reactions", MessageController, :react
     delete "/:message_id/reactions", MessageController, :unreact
     post "/:message_id/star", MessageController, :star

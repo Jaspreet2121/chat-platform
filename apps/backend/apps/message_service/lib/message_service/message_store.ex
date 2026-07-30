@@ -27,7 +27,9 @@ defmodule MessageService.MessageStore do
   @callback search_messages(message_attrs()) :: timeline_result()
   @callback list_media(message_attrs()) :: timeline_result()
   @callback get_by_media_id(message_attrs()) :: message_result()
-  @optional_callbacks list_media: 1, get_by_media_id: 1
+  # Message info (per-user delivery/read state; sender-only) — optional, Postgres + InMemory implement it.
+  @callback message_info(message_attrs()) :: message_result()
+  @optional_callbacks list_media: 1, get_by_media_id: 1, message_info: 1
 
   def put_message(attrs), do: adapter().put_message(attrs)
   def get_message(attrs), do: adapter().get_message(attrs)
@@ -51,6 +53,17 @@ defmodule MessageService.MessageStore do
 
     if function_exported?(store, :get_by_media_id, 1) do
       store.get_by_media_id(attrs)
+    else
+      {:error, :message_unavailable}
+    end
+  end
+
+  # Message info — WHO has received/read a message, per user (optional callback; Postgres + InMemory).
+  def message_info(attrs) do
+    store = adapter()
+
+    if function_exported?(store, :message_info, 1) do
+      store.message_info(attrs)
     else
       {:error, :message_unavailable}
     end
@@ -465,6 +478,65 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
     ensure_started()
     receipt = upsert_receipt(attrs, "read", attrs["updated_at"])
     {:ok, receipt}
+  end
+
+  # In-memory twin of the Postgres message_info: same gates (tombstone → not_found, sender-only) and the
+  # same read/delivered split (received = delivered_at OR read_at). NO privacy filtering — this adapter
+  # has no user_privacy_settings, matching its receipt_counts (which doesn't filter either).
+  @impl true
+  def message_info(attrs) do
+    ensure_started()
+    conversation_id = attrs["conversation_id"]
+    message_id = attrs["message_id"]
+    viewer = attrs["viewer_user_id"]
+
+    Agent.get(@name, fn state ->
+      message =
+        Enum.find(
+          state.messages,
+          &(&1.conversation_id == conversation_id and &1.message_id == message_id)
+        )
+
+      cond do
+        is_nil(message) or not is_nil(message[:deleted_at]) ->
+          {:error, :message_not_found}
+
+        message.sender_user_id != viewer ->
+          {:error, :not_sender}
+
+        true ->
+          rows =
+            Enum.filter(
+              state.receipts,
+              &(&1.conversation_id == conversation_id and &1.message_id == message_id and
+                  &1.user_id != viewer)
+            )
+
+          read =
+            rows
+            |> Enum.filter(& &1[:read_at])
+            |> Enum.map(&%{user_id: &1.user_id, read_at: &1[:read_at]})
+
+          read_ids = MapSet.new(read, & &1.user_id)
+
+          delivered =
+            rows
+            |> Enum.filter(
+              &((&1[:delivered_at] || &1[:read_at]) and not MapSet.member?(read_ids, &1.user_id))
+            )
+            |> Enum.map(&%{user_id: &1.user_id, delivered_at: &1[:delivered_at] || &1[:read_at]})
+
+          {:ok,
+           %{
+             conversation_id: conversation_id,
+             message_id: message_id,
+             sender_user_id: viewer,
+             read: read,
+             delivered: delivered,
+             read_hidden: false
+           }}
+      end
+    end)
   end
 
   @impl true
@@ -1234,19 +1306,119 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   # Batched read/delivered aggregate for the listed messages in ONE query (no N+1). COUNT(column)
   # ignores NULLs, and each (conversation, message, user) receipt row is a distinct user, so the count
   # is the number of other users who have read / received each message.
+  # THE reader half of read-receipt reciprocity (46e4e7f), defined ONCE: a reader counts/appears iff they
+  # kept read receipts ON (no privacy row → NULL → default enabled). Expanded inside Ecto query macros by
+  # BOTH receipt_counts (the aggregate) and message_info (the per-user list), so the count and the list are
+  # provably the same predicate and cannot drift.
+  defmacrop read_receipts_on(ps) do
+    quote do
+      is_nil(unquote(ps).read_receipts_enabled) or unquote(ps).read_receipts_enabled
+    end
+  end
+
+  @doc """
+  Message info — per-user delivery/read state for ONE message, SENDER-only (WhatsApp's Info screen).
+
+  Gates (in order): unknown message / wrong conversation / TOMBSTONED (deleted_at set — a deleted message
+  has no info screen) → :message_not_found; a non-sender viewer → :not_sender (the gateway maps 403).
+
+  ONE receipts query regardless of member count (PK-prefix (conversation_id, message_id), ≤ member-count
+  rows) with the SAME privacy join as receipt_counts. Split:
+    * read      — read_at set AND the reader kept receipts on (`read_receipts_on`, the reader half) AND
+                  the viewer still sees read state (`viewer_sees_read_receipts?`, the viewer half; when
+                  off, read: [] + read_hidden: true — the flag means "YOUR setting hides this", not
+                  "nobody read it").
+    * delivered — received but not in the read list. "Received" is delivered_at OR read_at (mark_read
+                  writes only read_at, so a read row without a prior delivered receipt still PROVES
+                  receipt; its timestamp degrades to read_at = "received by then" — this is also where a
+                  receipts-off reader lands, WhatsApp's 'stuck on Delivered').
+  DEPARTED (left/removed) members' rows are kept — they genuinely received/read it while a member;
+  receipts are history, not membership.
+  """
+  @impl true
+  def message_info(attrs) do
+    conversation_id = attr(attrs, "conversation_id")
+    viewer = attr(attrs, "viewer_user_id")
+
+    case fetch(attrs) do
+      nil ->
+        {:error, :message_not_found}
+
+      %Message{} = message ->
+        cond do
+          message.conversation_id != conversation_id -> {:error, :message_not_found}
+          not is_nil(message.deleted_at) -> {:error, :message_not_found}
+          message.sender_user_id != viewer -> {:error, :not_sender}
+          true -> {:ok, build_message_info(message, viewer)}
+        end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :message_not_found}
+  end
+
+  defp build_message_info(message, viewer) do
+    rows =
+      MessageReceipt
+      |> join(:left, [r], ps in "user_privacy_settings", on: ps.user_id == r.user_id)
+      |> where(
+        [r],
+        r.conversation_id == ^message.conversation_id and r.message_id == ^message.message_id and
+          r.user_id != ^viewer
+      )
+      |> select([r, ps], %{
+        user_id: r.user_id,
+        delivered_at: r.delivered_at,
+        read_at: r.read_at,
+        read_visible: read_receipts_on(ps)
+      })
+      |> Repo.all()
+
+    show_read = viewer_sees_read_receipts?(viewer)
+
+    read =
+      if show_read do
+        rows
+        |> Enum.filter(&(&1.read_at && &1.read_visible))
+        |> Enum.sort_by(& &1.read_at, {:desc, DateTime})
+        |> Enum.map(&%{user_id: &1.user_id, read_at: &1.read_at})
+      else
+        []
+      end
+
+    read_ids = MapSet.new(read, & &1.user_id)
+
+    delivered =
+      rows
+      |> Enum.filter(fn row ->
+        (row.delivered_at || row.read_at) && not MapSet.member?(read_ids, row.user_id)
+      end)
+      |> Enum.map(&%{user_id: &1.user_id, delivered_at: &1.delivered_at || &1.read_at})
+      |> Enum.sort_by(& &1.delivered_at, {:desc, DateTime})
+
+    %{
+      conversation_id: message.conversation_id,
+      message_id: message.message_id,
+      sender_user_id: message.sender_user_id,
+      read: read,
+      delivered: delivered,
+      read_hidden: not show_read
+    }
+  end
+
   defp receipt_counts(_conversation_id, []), do: %{}
 
   defp receipt_counts(conversation_id, message_ids) do
     MessageReceipt
     # LEFT JOIN the reader's privacy so read_by_count counts ONLY readers who kept read receipts ON (the
-    # reader half of reciprocity). A missing row (ps.* NULL) is the default = enabled. Still ONE query for the
-    # whole page — no N+1. delivered_by_count is NOT filtered (the single tick is unaffected).
+    # reader half of reciprocity, via the SHARED read_receipts_on predicate). A missing row (ps.* NULL) is
+    # the default = enabled. Still ONE query for the whole page — no N+1. delivered_by_count is NOT
+    # filtered (the single tick is unaffected).
     |> join(:left, [r], ps in "user_privacy_settings", on: ps.user_id == r.user_id)
     |> where([r], r.conversation_id == ^conversation_id and r.message_id in ^message_ids)
     |> group_by([r], r.message_id)
     |> select([r, ps], {
       r.message_id,
-      filter(count(r.read_at), is_nil(ps.read_receipts_enabled) or ps.read_receipts_enabled),
+      filter(count(r.read_at), read_receipts_on(ps)),
       count(r.delivered_at)
     })
     |> Repo.all()

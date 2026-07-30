@@ -236,6 +236,102 @@ defmodule ApiGatewayWeb.MessageController do
     end
   end
 
+  @doc """
+  Message info — WhatsApp's Info screen: WHO has received / read this message, per user, SENDER-only.
+
+  Gates: session → membership (non-member / unknown conversation → 404, existence-hiding) → the store
+  re-verifies the message (unknown / wrong conversation / TOMBSTONED → 404) and the sender
+  (non-sender member → 403 messages.not_sender — they already know the message exists).
+
+  Privacy IS the read_by_count rule (the shared read_receipts_on predicate + viewer_sees_read_receipts?):
+  a receipts-off reader appears under delivered, never read; `read_hidden: true` means the SENDER'S OWN
+  setting hides read state ("You have read receipts turned off") — NOT that nobody read it. DEPARTED
+  members' receipts are kept (history, not membership); their names still resolve (profiles aren't
+  membership-scoped), though contacts-gated photos may redact to nil. Entries are enriched through
+  ProfilePresenter (block + photo redaction, exactly as everywhere else); an unresolvable profile
+  degrades to {user_id, display_name: nil, avatar_url: nil} — present but nameless, never a crash.
+  """
+  def info(conn, %{"conversation_id" => conversation_id, "message_id" => message_id}) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- authorize_membership(conversation_id, session.user_id),
+         {:ok, info} <-
+           SharedInfra.MessageClient.message_info(%{
+             "conversation_id" => conversation_id,
+             "message_id" => message_id,
+             "viewer_user_id" => session.user_id
+           }) do
+      json(conn, %{
+        conversation_id: conversation_id,
+        message_id: message_id,
+        read: enrich_info_entries(cget(info, :read), session, :read_at),
+        delivered: enrich_info_entries(cget(info, :delivered), session, :delivered_at),
+        read_hidden: cget(info, :read_hidden) == true
+      })
+    else
+      {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      # Membership failure → 404 here (not the usual 403): info must not reveal message existence to
+      # outsiders, matching the "unknown message → 404" posture.
+      {:error, :conversation_membership_forbidden} -> not_found(conn)
+      {:error, :message_not_found} -> not_found(conn)
+      {:error, :not_sender} -> not_sender(conn)
+      _ -> invalid_request(conn)
+    end
+  end
+
+  # Enrich each {user_id, timestamp} receipt entry with display_name + avatar_url through the SAME
+  # ProfilePresenter path as every other profile surface (block + photo-visibility redaction). O(entries)
+  # PK lookups by design — the deliberate cost of per-viewer redaction (bulk-restating it is the drift
+  # the privacy slice forbids). A departed/deleted profile degrades to a nameless entry, never a crash.
+  defp enrich_info_entries(entries, session, timestamp_key) when is_list(entries) do
+    Enum.map(entries, fn entry ->
+      user_id = cget(entry, :user_id)
+
+      base =
+        %{user_id: user_id, display_name: nil, avatar_url: nil}
+        |> Map.put(timestamp_key, cget(entry, timestamp_key))
+
+      with {:ok, profile} <-
+             SharedInfra.UserClient.get_public_profile(%{
+               "user_id" => user_id,
+               "app_id" => Map.get(session, :app_id)
+             }),
+           presented when is_map(presented) <-
+             ApiGatewayWeb.ProfilePresenter.present(session.user_id, user_id, profile) do
+        %{
+          base
+          | display_name: cget(presented, :display_name),
+            avatar_url: cget(presented, :avatar_url)
+        }
+      else
+        _ -> base
+      end
+    end)
+  rescue
+    _ ->
+      Enum.map(entries, fn entry ->
+        %{user_id: cget(entry, :user_id), display_name: nil, avatar_url: nil}
+        |> Map.put(timestamp_key, cget(entry, timestamp_key))
+      end)
+  end
+
+  defp enrich_info_entries(_entries, _session, _timestamp_key), do: []
+
+  defp not_sender(conn),
+    do:
+      ErrorResponse.forbidden(
+        conn,
+        "messages.not_sender",
+        "Only the sender can see this message's info"
+      )
+
+  defp cget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
+  defp cget(_map, _key), do: nil
+
   def update(conn, %{"conversation_id" => conversation_id, "message_id" => message_id} = params) do
     if message_persistence_enabled?() do
       update_message_in_store(conn, conversation_id, message_id, params)

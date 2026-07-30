@@ -41,6 +41,9 @@ defmodule MessageService.MessageClientInProcess do
   def mark_read(attrs), do: Receipts.mark_read(attrs)
 
   @impl true
+  def message_info(attrs), do: MessageService.Messages.message_info(attrs)
+
+  @impl true
   def mark_delivered(attrs), do: Receipts.mark_delivered(attrs)
 
   @impl true

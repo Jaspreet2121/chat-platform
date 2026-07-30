@@ -92,6 +92,11 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Receipts.mark_delivered(body(conn)))
   end
 
+  # Message info — per-user delivery/read state (sender-only, enforced in the store).
+  post "/internal/receipts/info" do
+    send_result(conn, MessageService.Messages.message_info(body(conn)))
+  end
+
   # Read-only admin analytics (gated upstream by the gateway's RequireAdmin + the internal TokenPlug).
   post "/internal/analytics/overview" do
     send_result(conn, {:ok, MessageService.Analytics.overview(Map.get(body(conn), "app_id"))})

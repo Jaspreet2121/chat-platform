@@ -43,6 +43,9 @@ defmodule SharedInfra.MessageClientHttp do
   def mark_read(attrs), do: post("/internal/receipts/mark_read", attrs)
 
   @impl true
+  def message_info(attrs), do: post("/internal/receipts/info", attrs)
+
+  @impl true
   def mark_delivered(attrs), do: post("/internal/receipts/mark_delivered", attrs)
 
   @impl true

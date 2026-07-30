@@ -38,6 +38,9 @@ defmodule SharedInfra.MessageClient do
   @callback search_messages(attrs()) :: result()
   @callback list_media(attrs()) :: result()
   @callback get_by_media_id(attrs()) :: result()
+  # Message info (per-user delivery/read state; sender-only). Optional so existing stubs don't all need it.
+  @callback message_info(attrs()) :: result()
+  @optional_callbacks message_info: 1
 
   def create_message(attrs), do: adapter().create_message(attrs)
   def send_message(attrs), do: adapter().send_message(attrs)
@@ -47,6 +50,7 @@ defmodule SharedInfra.MessageClient do
   def edit_message(attrs), do: adapter().edit_message(attrs)
   def delete_message(attrs), do: adapter().delete_message(attrs)
   def mark_read(attrs), do: adapter().mark_read(attrs)
+  def message_info(attrs), do: adapter().message_info(attrs)
   def mark_delivered(attrs), do: adapter().mark_delivered(attrs)
   def analytics_overview(attrs), do: adapter().analytics_overview(attrs)
   def analytics_timeseries(attrs), do: adapter().analytics_timeseries(attrs)
