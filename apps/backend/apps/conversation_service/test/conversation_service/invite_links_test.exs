@@ -53,12 +53,15 @@ defmodule ConversationService.InviteLinksTest do
     )
   end
 
-  # A row that was REMOVED (left_at set) — the only way left_at is ever set in this codebase.
-  defp removed_participant!(conversation_id, user_id) do
+  # A row REMOVED by moderation (left_reason='removed', 078) — refused by a live link.
+  defp removed_participant!(conversation_id, user_id), do: left_participant!(conversation_id, user_id, "removed")
+
+  # A row that LEFT voluntarily (left_reason='left', 078) — a live link reactivates it.
+  defp left_participant!(conversation_id, user_id, reason) do
     Repo.query!(
-      "INSERT INTO conversation_participants (conversation_id, user_id, role, joined_at, left_at, app_id) " <>
-        "VALUES ($1::text::uuid, $2::text::uuid, 'member', now(), now(), $3::text::uuid)",
-      [conversation_id, user_id, @app_id]
+      "INSERT INTO conversation_participants (conversation_id, user_id, role, joined_at, left_at, left_reason, app_id) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, 'member', now(), now(), $3, $4::text::uuid)",
+      [conversation_id, user_id, reason, @app_id]
     )
   end
 
@@ -148,9 +151,36 @@ defmodule ConversationService.InviteLinksTest do
     # The owner joining their own link → already a member (as owner).
     assert {:ok, %{status: "already_member", role: "owner"}} = join(code, owner)
 
-    # A REMOVED user cannot walk back in via the live link (§4 option b).
+    # A REMOVED user cannot walk back in via the live link (§4 option b — left_reason='removed').
     assert {:error, :removed} = join(code, removed)
     refute active_participant(g, removed)
+  end
+
+  @tag :postgres_integration
+  test "a VOLUNTARY leaver (left_reason='left') rejoins via a live link — reactivated as a fresh member" do
+    owner = user!("owner")
+    leaver = user!("leaver")
+    g = group!(owner)
+    # An ex-ADMIN who left voluntarily: reactivation must demote to member (roles aren't retained).
+    left_participant!(g, leaver, "left")
+    Repo.query!(
+      "UPDATE conversation_participants SET role = 'admin' WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+      [g, leaver]
+    )
+
+    assert {:ok, %{code: code}} = InviteLinks.create_link(%{"conversation_id" => g, "actor_user_id" => owner})
+
+    assert {:ok, %{status: "joined", conversation_id: ^g, role: "member"}} = join(code, leaver)
+    # One row, active again, as MEMBER (role + left markers reset).
+    assert active_participant(g, leaver) == "member"
+
+    %{rows: [[count]]} =
+      Repo.query!(
+        "SELECT count(*)::int FROM conversation_participants WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+        [g, leaver]
+      )
+
+    assert count == 1
   end
 
   @tag :postgres_integration

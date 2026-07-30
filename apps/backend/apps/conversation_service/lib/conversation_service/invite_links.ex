@@ -9,12 +9,12 @@ defmodule ConversationService.InviteLinks do
 
   JOIN goes through the SAME participant insert + `participant_added` event an owner add fires, so the inbox
   row, unread, and `conversation_updated` fan-out are identical (the gateway fires the `:participant` frame
-  after this returns). Cases:
+  after this returns). Cases (left rows keyed by `left_reason`, 078):
     * already an active member → idempotent, no duplicate row, no broadcast;
-    * a `left_at` row → REMOVED (the owner remove path is the ONLY writer of left_at — there is no
-      voluntary leave), so the link REFUSES them (`:removed`); the owner's removal stands. Re-admitting a
-      removed user isn't possible via any current path (`add_participant` also rejects left rows) — a
-      pre-existing gap, deliberately not widened into a ban-list here;
+    * `left_reason='removed'` → the link REFUSES them (`:removed`); the owner's removal stands (an owner
+      re-ADD does readmit them — that's the owner deliberately overriding their own removal);
+    * `left_reason='left'` (voluntary leave) → REACTIVATED as a fresh member (role member, joined_at
+      reset — roles aren't retained across membership), same event as a fresh join;
     * no row → fresh join (role member).
 
   App-scoped: a code only resolves within its conversation's tenant (a cross-tenant code → not found).
@@ -122,17 +122,43 @@ defmodule ConversationService.InviteLinks do
     Ecto.Query.CastError -> {:error, :link_not_found}
   end
 
-  # Seat the joiner against their existing participant row (if any).
+  # Seat the joiner against their existing participant row (if any). Left rows split on left_reason
+  # (078): 'removed' → refused (the owner's removal stands); 'left' → reactivated as a fresh member.
   defp seat_joiner(conversation_id, user_id) do
     case ParticipantStore.get_participant(conversation_id, user_id) do
       %{left_at: nil, role: role} ->
         {:ok, %{status: "already_member", conversation_id: conversation_id, role: role}}
+
+      %{left_at: left_at, left_reason: "left"} = participant when not is_nil(left_at) ->
+        rejoin_member(conversation_id, user_id, participant)
 
       %{left_at: left_at} when not is_nil(left_at) ->
         {:error, :removed}
 
       nil ->
         add_member(conversation_id, user_id)
+    end
+  end
+
+  # A voluntary leaver rejoining via a live link: reactivate their row as a fresh MEMBER (role/joined_at
+  # reset — roles aren't retained across membership) + the same participant_added event a fresh join fires.
+  defp rejoin_member(conversation_id, user_id, participant) do
+    case ParticipantStore.reactivate_participant(participant, %{
+           "role" => "member",
+           "joined_at" => now()
+         }) do
+      {:ok, _reactivated} ->
+        ParticipantEvents.publish_participant_added(%{
+          conversation_id: conversation_id,
+          user_id: user_id,
+          role: "member",
+          added_by: user_id
+        })
+
+        {:ok, %{status: "joined", conversation_id: conversation_id, role: "member"}}
+
+      {:error, _changeset} ->
+        {:error, :join_failed}
     end
   end
 

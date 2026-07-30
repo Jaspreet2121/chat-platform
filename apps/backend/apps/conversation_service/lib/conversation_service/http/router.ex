@@ -98,6 +98,11 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Participants.remove_participant(body(conn)))
   end
 
+  # Voluntary leave (078) — self-removal, distinct from the moderation remove path above.
+  post "/internal/participants/leave" do
+    send_result(conn, ConversationService.Participants.leave_conversation(body(conn)))
+  end
+
   # Phase-1 calling — call lifecycle + history (CallStore).
   post "/internal/calls/create" do
     send_result(conn, ConversationService.CallStore.create_call(body(conn)))

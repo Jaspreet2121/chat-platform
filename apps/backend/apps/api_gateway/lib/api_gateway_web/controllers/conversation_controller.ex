@@ -479,6 +479,49 @@ defmodule ApiGatewayWeb.ConversationController do
     end
   end
 
+  @doc """
+  VOLUNTARY leave (078) — POST /:conversation_id/leave. Self-removal, distinct from the moderation
+  removal above (owner/admin invariants untouched): the row is marked left_reason='left', so a live
+  invite link may readmit the leaver. The owner leaving transfers ownership (oldest admin, else oldest
+  member — `new_owner_user_id` in the response); the last participant leaving archives the conversation.
+
+  NOTE the frame limitation: the `:participant` broadcast refreshes every member's inbox ROW, but rows
+  don't carry `role` — a promoted new owner must re-fetch the conversation detail to learn they now own
+  it. COMPATIBILITY SHIM: shipped Android calls DELETE /:id/participants/{own_id} to leave — the
+  remove_participant action above detects the self-target and routes HERE. /leave is the canonical
+  route; the shim is deliberate, not accidental duplication — do not remove it while pre-078 Android
+  builds are live.
+  """
+  def leave(conn, %{"conversation_id" => conversation_id}) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, response} <-
+           SharedInfra.ConversationClient.leave_conversation(%{
+             "conversation_id" => conversation_id,
+             "user_id" => session.user_id
+           }) do
+      # Same fan-out as a removal: remaining members get refreshed rows; the LEAVER gets the final
+      # `removed: true` frame that clears their inbox entry.
+      ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+        conversation_id,
+        session.user_id,
+        :participant,
+        removed_user_id: session.user_id
+      )
+
+      json(conn, response)
+    else
+      {:error, :session_invalid} -> session_invalid(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :not_a_group} -> ErrorResponse.invalid_request(conn, "conversation.not_a_group")
+      {:error, :participant_not_found} -> ErrorResponse.not_found(conn, "conversation.not_found", "Not found")
+      {:error, :conversation_not_found} -> ErrorResponse.not_found(conn, "conversation.not_found", "Not found")
+      _ -> invalid_request(conn)
+    end
+  end
+
   defp placeholder_remove_participant(conn, conversation_id, user_id) do
     with {:ok, response} <-
            SharedInfra.ConversationClient.remove_participant(%{
@@ -490,10 +533,24 @@ defmodule ApiGatewayWeb.ConversationController do
   end
 
   defp remove_participant_from_db(conn, conversation_id, user_id) do
-    with {:ok, authorization} <- authorization_header(conn),
-         {:ok, session} <-
-           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
-         {:ok, response} <-
+    case session_from(conn) do
+      {:ok, session} when session.user_id == user_id ->
+        # COMPATIBILITY SHIM: a SELF-target has always been a "leave" (shipped Android calls
+        # DELETE /:id/participants/{own_id} for Leave group — it could only 403 against the moderation
+        # gates). Route it to the canonical leave path (POST /:id/leave); the moderation invariants
+        # below stay untouched. Deliberate, not accidental duplication — keep while pre-078 builds live.
+        leave(conn, %{"conversation_id" => conversation_id})
+
+      {:ok, session} ->
+        moderation_remove(conn, conversation_id, user_id, session)
+
+      {:error, _reason} ->
+        session_invalid(conn)
+    end
+  end
+
+  defp moderation_remove(conn, conversation_id, user_id, session) do
+    with {:ok, response} <-
            SharedInfra.ConversationClient.remove_participant(%{
              "conversation_id" => conversation_id,
              "user_id" => user_id,
@@ -515,6 +572,12 @@ defmodule ApiGatewayWeb.ConversationController do
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :conversation_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
+    end
+  end
+
+  defp session_from(conn) do
+    with {:ok, authorization} <- authorization_header(conn) do
+      SharedInfra.AuthClient.current_session(%{"authorization" => authorization})
     end
   end
 

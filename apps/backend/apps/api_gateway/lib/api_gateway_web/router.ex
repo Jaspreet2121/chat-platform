@@ -285,6 +285,10 @@ defmodule ApiGatewayWeb.Router do
 
     put "/:conversation_id/settings", ConversationController, :set_group_settings
 
+    # Voluntary leave (078) — self-removal; the moderation DELETE /:id/participants/:user_id keeps its
+    # owner/admin gates (a SELF-target there is a compatibility shim routing here — /leave is canonical).
+    post "/:conversation_id/leave", ConversationController, :leave
+
     # Group invite link (077) — shareable "join via link". Owner-only mint/revoke/reset. The code-scoped
     # preview + join live under /api/v1/invite-links below.
     post "/:conversation_id/invite-link", InviteLinkController, :create_link

@@ -23,6 +23,8 @@ defmodule SharedInfra.ConversationClient do
   @callback get_conversation(attrs()) :: result()
   @callback add_participant(attrs()) :: result()
   @callback remove_participant(attrs()) :: result()
+  # Voluntary leave (078) — self-removal, distinct from the moderation remove path.
+  @callback leave_conversation(attrs()) :: result()
   @callback get_conversation_app(attrs()) :: result()
   @callback clear_history(attrs()) :: result()
   @callback set_auto_delete(attrs()) :: result()
@@ -120,7 +122,8 @@ defmodule SharedInfra.ConversationClient do
                       either_blocked?: 1,
                       direct_peer_blocked?: 1,
                       set_archive: 1,
-                      set_pin: 1
+                      set_pin: 1,
+                      leave_conversation: 1
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
@@ -139,6 +142,7 @@ defmodule SharedInfra.ConversationClient do
   def get_conversation(attrs), do: adapter().get_conversation(attrs)
   def add_participant(attrs), do: adapter().add_participant(attrs)
   def remove_participant(attrs), do: adapter().remove_participant(attrs)
+  def leave_conversation(attrs), do: adapter().leave_conversation(attrs)
   def get_conversation_app(attrs), do: adapter().get_conversation_app(attrs)
   def clear_history(attrs), do: adapter().clear_history(attrs)
   def set_auto_delete(attrs), do: adapter().set_auto_delete(attrs)

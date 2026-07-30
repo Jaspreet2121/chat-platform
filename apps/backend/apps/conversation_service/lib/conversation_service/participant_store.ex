@@ -41,4 +41,11 @@ defmodule ConversationService.ParticipantStore do
     |> participant_remove_changeset(attrs)
     |> Repo.update()
   end
+
+  # Reactivate a LEFT row (rejoin): clears left_at/left_reason, resets role + joined_at.
+  def reactivate_participant(%ConversationParticipant{} = participant, attrs) do
+    participant
+    |> ConversationParticipant.reactivate_changeset(attrs)
+    |> Repo.update()
+  end
 end

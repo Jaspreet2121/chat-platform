@@ -48,10 +48,27 @@ defmodule ConversationService.PersistenceBoundariesTest do
         user_id: @user_id,
         role: "member"
       }
-      |> ConversationService.ParticipantStore.participant_remove_changeset(%{"left_at" => @now})
+      |> ConversationService.ParticipantStore.participant_remove_changeset(%{
+        "left_at" => @now,
+        # 078: every left row must say WHY ('removed' = moderation, 'left' = voluntary leave) — the
+        # invite-link rejoin rule keys off it, so a reason-less left row would be unclassifiable.
+        "left_reason" => "removed"
+      })
 
     assert remove_changeset.valid?
     assert Ecto.Changeset.get_field(remove_changeset, :left_at) == @now
+    assert Ecto.Changeset.get_field(remove_changeset, :left_reason) == "removed"
+
+    # A reason-less removal is now INVALID by contract.
+    reasonless =
+      %ConversationService.Schemas.ConversationParticipant{
+        conversation_id: @conversation_id,
+        user_id: @user_id,
+        role: "member"
+      }
+      |> ConversationService.ParticipantStore.participant_remove_changeset(%{"left_at" => @now})
+
+    refute reasonless.valid?
   end
 
   test "ConversationSettingsStore builds create and update changesets" do

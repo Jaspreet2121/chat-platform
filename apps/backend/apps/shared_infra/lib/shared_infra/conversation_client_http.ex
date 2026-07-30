@@ -130,6 +130,9 @@ defmodule SharedInfra.ConversationClientHttp do
   def remove_participant(attrs), do: post("/internal/participants/remove", attrs)
 
   @impl true
+  def leave_conversation(attrs), do: post("/internal/participants/leave", attrs)
+
+  @impl true
   def clear_history(attrs), do: post("/internal/participants/clear_history", attrs)
 
   @impl true

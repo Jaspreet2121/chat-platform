@@ -31,6 +31,37 @@ defmodule ConversationService.Participants do
     end
   end
 
+  @doc """
+  VOLUNTARY leave (078) — first-party `POST /:conversation_id/leave`. Self-removal, distinct from the
+  moderation `remove_participant` path (whose owner/admin invariants stay untouched): the row gets
+  `left_reason='left'`, so a live invite link may readmit the leaver (a REMOVED user stays refused).
+
+  GROUPS ONLY (leaving a direct chat → `:not_a_group`; archive is the declutter tool there, and a
+  half-left direct corrupts direct_key semantics). Runs in ONE transaction so a group is never left
+  ownerless:
+    * the OWNER leaving first transfers ownership to the oldest ADMIN (joined_at), else the oldest
+      MEMBER — deterministic, keeps the group alive;
+    * the LAST participant leaving archives the conversation (status='archived') — an empty-but-active
+      group with a live invite link would walk the next joiner into an ownerless group.
+
+  Emits the SAME `participant_removed` event as a removal (removed_by = self — the mirror of
+  link-join's added_by = self); the gateway then fires the same `:participant` broadcast with the
+  leaver's final `removed: true` frame. Returns {:ok, %{conversation_id, left: true,
+  new_owner_user_id (when a transfer happened), conversation_archived: bool}}.
+  """
+  def leave_conversation(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, user_id} <- required_attr(attrs, "user_id") do
+      if conversation_persistence_enabled?() do
+        leave_conversation_in_db(conversation_id, user_id)
+      else
+        {:ok, %{conversation_id: conversation_id, left: true, conversation_archived: false}}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :participant_invalid}
+  end
+
   # --- Group admin (roles / only-admins-send) -----------------------------------------------------
 
   @doc """
@@ -455,14 +486,7 @@ defmodule ConversationService.Participants do
          {:ok, role} <- participant_role(attrs),
          {:ok, _conversation} <- fetch_active_conversation(conversation_id),
          {:ok, _actor_participant} <- require_owner(conversation_id, actor_user_id),
-         :ok <- ensure_not_active_participant(conversation_id, target_user_id),
-         {:ok, participant} <-
-           ParticipantStore.add_participant(%{
-             "conversation_id" => conversation_id,
-             "user_id" => target_user_id,
-             "role" => role,
-             "joined_at" => now()
-           }) do
+         {:ok, participant} <- insert_or_reactivate(conversation_id, target_user_id, role) do
       # After a successful persist, emit participant_added (fire-and-forget).
       ParticipantEvents.publish_participant_added(%{
         conversation_id: conversation_id,
@@ -479,6 +503,31 @@ defmodule ConversationService.Participants do
     Ecto.Query.CastError -> {:error, :participant_invalid}
   end
 
+  # An owner add: a fresh user gets a new row; a LEFT row (either reason — 078) is REACTIVATED, because
+  # the owner explicitly re-adding someone they removed IS the owner overriding their own removal
+  # (deliberate, unlike a link walk-in, which readmits only voluntary leavers). An ACTIVE row is still
+  # a conflict.
+  defp insert_or_reactivate(conversation_id, target_user_id, role) do
+    case ParticipantStore.get_participant(conversation_id, target_user_id) do
+      nil ->
+        ParticipantStore.add_participant(%{
+          "conversation_id" => conversation_id,
+          "user_id" => target_user_id,
+          "role" => role,
+          "joined_at" => now()
+        })
+
+      %{left_at: nil} ->
+        {:error, :participant_already_exists}
+
+      left_participant ->
+        ParticipantStore.reactivate_participant(left_participant, %{
+          "role" => role,
+          "joined_at" => now()
+        })
+    end
+  end
+
   defp remove_participant_in_db(attrs) do
     with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
          {:ok, target_user_id} <- required_attr(attrs, "user_id"),
@@ -492,7 +541,10 @@ defmodule ConversationService.Participants do
          :ok <- ensure_can_remove(actor_participant, target_participant),
          {:ok, removed_participant} <-
            ParticipantStore.remove_participant(target_participant, %{
-             "left_at" => now()
+             "left_at" => now(),
+             # 078: a moderation removal is 'removed' — a live invite link refuses these rows (a
+             # voluntary 'left' row may rejoin). The leave path is leave_conversation/1.
+             "left_reason" => "removed"
            }) do
       # After a successful persist, emit participant_removed (fire-and-forget).
       ParticipantEvents.publish_participant_removed(%{
@@ -513,6 +565,90 @@ defmodule ConversationService.Participants do
     end
   rescue
     Ecto.Query.CastError -> {:error, :participant_invalid}
+  end
+
+  # Leave (078). ONE transaction: transfer-if-owner → mark left ('left') → archive-if-empty, so no
+  # concurrent join/leave can observe an ownerless group. The event fires AFTER commit (never for a
+  # rolled-back leave).
+  defp leave_conversation_in_db(conversation_id, user_id) do
+    Repo.transaction(fn ->
+      with {:ok, conversation} <- fetch_active_conversation(conversation_id),
+           :ok <- ensure_group(conversation),
+           {:ok, participant} <- fetch_active_participant(conversation_id, user_id),
+           {:ok, new_owner_user_id} <- maybe_transfer_ownership(conversation_id, participant),
+           {:ok, _left} <-
+             ParticipantStore.remove_participant(participant, %{
+               "left_at" => now(),
+               "left_reason" => "left"
+             }),
+           {:ok, archived?} <- maybe_archive_empty(conversation, conversation_id) do
+        %{new_owner: new_owner_user_id, archived: archived?}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+        _ -> Repo.rollback(:participant_invalid)
+      end
+    end)
+    |> case do
+      {:ok, %{new_owner: new_owner, archived: archived?}} ->
+        # Same event a removal fires, removed_by = SELF (the mirror of link-join's added_by = self).
+        ParticipantEvents.publish_participant_removed(%{
+          conversation_id: conversation_id,
+          user_id: user_id,
+          removed_by: user_id
+        })
+
+        base = %{conversation_id: conversation_id, left: true, conversation_archived: archived?}
+        {:ok, if(new_owner, do: Map.put(base, :new_owner_user_id, new_owner), else: base)}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp ensure_group(%{type: "group"}), do: :ok
+  defp ensure_group(_conversation), do: {:error, :not_a_group}
+
+  # The OWNER leaving first hands ownership to the oldest ADMIN (joined_at ASC), else the oldest MEMBER —
+  # deterministic, never strands the group. Sole-participant owner → nothing to transfer (nil; the
+  # archive step retires the conversation). Non-owner leavers transfer nothing.
+  defp maybe_transfer_ownership(conversation_id, %{role: "owner", user_id: leaver_id}) do
+    successors =
+      conversation_id
+      |> ParticipantStore.list_active_participants()
+      |> Enum.reject(&(&1.user_id == leaver_id))
+
+    case Enum.find(successors, &(&1.role == "admin")) || List.first(successors) do
+      nil ->
+        {:ok, nil}
+
+      successor ->
+        case Repo.query!(
+               "UPDATE conversation_participants SET role = 'owner' " <>
+                 "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid AND left_at IS NULL",
+               [conversation_id, successor.user_id]
+             ) do
+          %Postgrex.Result{num_rows: 1} -> {:ok, successor.user_id}
+          _ -> {:error, :participant_invalid}
+        end
+    end
+  end
+
+  defp maybe_transfer_ownership(_conversation_id, _participant), do: {:ok, nil}
+
+  # The LAST participant leaving retires the conversation (status='archived' — conversation-level, not
+  # the 076 per-user pref): an empty-but-ACTIVE group with a live invite link would walk the next joiner
+  # into an ownerless group. Archived ⇒ fetch_active_group refuses it ⇒ the link 404s. Nothing deleted.
+  defp maybe_archive_empty(conversation, conversation_id) do
+    case ParticipantStore.list_active_participants(conversation_id) do
+      [] ->
+        case ConversationStore.update_conversation(conversation, %{"status" => "archived"}) do
+          {:ok, _updated} -> {:ok, true}
+          {:error, _changeset} -> {:error, :participant_invalid}
+        end
+
+      _remaining ->
+        {:ok, false}
+    end
   end
 
   defp fetch_active_conversation(conversation_id) do
@@ -553,14 +689,6 @@ defmodule ConversationService.Participants do
       nil -> {:error, :participant_not_found}
       %{left_at: nil} = participant -> {:ok, participant}
       _participant -> {:error, :participant_not_found}
-    end
-  end
-
-  defp ensure_not_active_participant(conversation_id, user_id) do
-    case ParticipantStore.get_participant(conversation_id, user_id) do
-      nil -> :ok
-      %{left_at: nil} -> {:error, :participant_already_exists}
-      _left_participant -> {:error, :participant_already_exists}
     end
   end
 
