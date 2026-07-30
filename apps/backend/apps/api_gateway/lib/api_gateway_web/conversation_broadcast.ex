@@ -95,6 +95,7 @@ defmodule ApiGatewayWeb.ConversationBroadcast do
 
   # The create response may cross the ConversationClient boundary atom-keyed (in-process) or string-keyed
   # (HTTP) — read either.
-  defp cget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
+  # Presence-based (SharedInfra.Attrs): reads :created (a boolean) — `||` drops a stored false.
+  defp cget(map, key) when is_map(map), do: SharedInfra.Attrs.get(map, key)
   defp cget(_map, _key), do: nil
 end

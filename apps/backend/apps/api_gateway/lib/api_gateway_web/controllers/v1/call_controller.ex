@@ -541,6 +541,7 @@ defmodule ApiGatewayWeb.V1.CallController do
 
   # Maps arrive atom-keyed (in-process) or string-keyed (HTTP adapter) — read either. Nil-safe.
   defp cget(nil, _key), do: nil
-  defp cget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
+  # Presence-based (SharedInfra.Attrs): reads require_approval (a boolean) — `||` dropped a stored false.
+  defp cget(map, key) when is_map(map), do: SharedInfra.Attrs.get(map, key)
   defp cget(_map, _key), do: nil
 end

@@ -72,6 +72,26 @@ defmodule RealtimeGateway.CallSignalingMockClient do
     end
   end
 
+  # group_add: seat the (already-resolved) user on the live group call. Logged so tests can assert WHO
+  # was added after the phone → user_id resolution.
+  def add_call_participant(attrs) do
+    Agent.update(__MODULE__, fn s -> %{s | log: [{:add_call_participant, attrs} | s.log]} end)
+
+    case Agent.get(__MODULE__, & &1.group) do
+      %{call: call} ->
+        {:ok,
+         %{
+           added_user_id: attrs["user_id"],
+           room: call.room_name,
+           conversation_id: call.conversation_id,
+           type: call.type
+         }}
+
+      _ ->
+        {:error, :call_not_found}
+    end
+  end
+
   def create_call(attrs) do
     call = %{
       id: "call_1",
@@ -636,6 +656,72 @@ defmodule RealtimeGateway.CallSignalingTest do
     assert Enum.sort([a, b]) == Enum.sort([@owner, @m2])
     assert jp.user_id == @m1
     refute_receive {:broadcast, "user:" <> @m1, "call:participant_joined", _}
+  end
+
+  # APP-SCOPED phone add (the last app-blind lookup, fixed): the stub resolves a number ONLY when the
+  # caller's app_id was threaded into the lookup attrs — before the fix the attrs carried no "app_id",
+  # so the same-tenant number would NOT resolve here. The tenant-partitioned SQL itself is proven in
+  # AuthService.AccountsPhoneLookupTest; this proves CallSignaling passes the socket's tenant through.
+  defmodule PhoneAuthStub do
+    @app "44444444-4444-4444-8444-444444444444"
+
+    # +1555000-1111 exists in the CALLER'S tenant…
+    def lookup_user_by_phone(%{"phone_number" => "+15550001111", "app_id" => @app}),
+      do: {:ok, %{user_id: "u-phone"}}
+
+    # …+1555999-8888 exists ONLY in another tenant → not found within the caller's app.
+    def lookup_user_by_phone(_attrs), do: {:error, :not_found}
+  end
+
+  describe "call:group_add by phone — app-scoped lookup" do
+    setup do
+      prev_auth = Application.get_env(:shared_infra, :auth_client_adapter)
+      Application.put_env(:shared_infra, :auth_client_adapter, PhoneAuthStub)
+
+      on_exit(fn ->
+        if prev_auth,
+          do: Application.put_env(:shared_infra, :auth_client_adapter, prev_auth),
+          else: Application.delete_env(:shared_infra, :auth_client_adapter)
+      end)
+
+      seed_group_members([@owner, @m1])
+
+      {:reply, {:ok, %{call_id: call_id}}, _} =
+        CallSignaling.handle_event(
+          "call:group_invite",
+          %{"conversation_id" => @conv, "type" => "voice"},
+          socket(@owner)
+        )
+
+      flush_broadcasts()
+      {:ok, call_id: call_id}
+    end
+
+    test "a phone in the CALLER'S tenant resolves (app_id threaded) and the added user is rung", %{
+      call_id: call_id
+    } do
+      assert {:reply, {:ok, %{added_user_id: "u-phone"}}, _} =
+               CallSignaling.handle_event(
+                 "call:group_add",
+                 %{"call_id" => call_id, "phone" => "+15550001111"},
+                 socket(@owner)
+               )
+
+      # The resolved user (not the raw phone) was seated + rung.
+      assert Enum.any?(Mock.log(), &match?({:add_call_participant, %{"user_id" => "u-phone"}}, &1))
+      assert_receive {:broadcast, "user:u-phone", "call:group_incoming", _}
+    end
+
+    test "a phone that exists ONLY in another tenant is not found", %{call_id: call_id} do
+      assert {:reply, {:error, %{code: "call.user_not_found"}}, _} =
+               CallSignaling.handle_event(
+                 "call:group_add",
+                 %{"call_id" => call_id, "phone" => "+15559998888"},
+                 socket(@owner)
+               )
+
+      refute Enum.any?(Mock.log(), &match?({:add_call_participant, _}, &1))
+    end
   end
 
   test "starting a group call in a conversation you're not a member of → call.forbidden" do

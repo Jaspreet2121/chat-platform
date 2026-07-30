@@ -257,6 +257,36 @@ defmodule ConversationService.InboxRowsTest do
   end
 
   @tag :postgres_integration
+  test "the broadcast row AFTER clear-history reflects the POST-clear state (preview gone, unread 0)" do
+    a = user!("alice")
+    b = user!("bob")
+    conv = conversation!("group", "Shared", a)
+    participant!(conv, a, role: "owner")
+    participant!(conv, b)
+    message!(conv, a, "hello")
+    message!(conv, a, "again")
+
+    # Pre-clear sanity: bob's row shows the preview + 2 unread.
+    {:ok, %{rows: [before]}} = Conversations.inbox_rows(%{"conversation_id" => conv, "user_ids" => [b]})
+    assert before.unread_count == 2
+    assert before.last_message_preview == "again"
+
+    # Bob clears. The :pref frame is built from inbox_rows AFTER this commits (pref_mutation broadcasts
+    # after the operation) — cleared_before applies to BOTH the preview lateral and the unread lateral,
+    # so the frame carries the post-clear row, never a stale one.
+    {:ok, _} =
+      ConversationService.Participants.clear_history(%{"conversation_id" => conv, "user_id" => b})
+
+    {:ok, %{rows: [cleared]}} = Conversations.inbox_rows(%{"conversation_id" => conv, "user_ids" => [b]})
+    assert cleared.unread_count == 0
+    assert cleared.last_message_preview == nil
+
+    # Alice's own view is untouched (clear is per-user).
+    {:ok, %{rows: [alice_row]}} = Conversations.inbox_rows(%{"conversation_id" => conv, "user_ids" => [a]})
+    assert alice_row.last_message_preview == "again"
+  end
+
+  @tag :postgres_integration
   test "invalid input is rejected, not crashed" do
     assert {:error, :conversation_invalid} =
              Conversations.inbox_rows(%{"conversation_id" => Ecto.UUID.generate(), "user_ids" => []})

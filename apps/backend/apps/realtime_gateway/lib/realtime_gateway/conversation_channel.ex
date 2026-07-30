@@ -140,7 +140,7 @@ defmodule RealtimeGateway.ConversationChannel do
              "conversation_id" => conversation_id,
              "user_id" => user_id
            }) do
-      (Map.get(result, :blocked) || Map.get(result, "blocked")) == true
+      SharedInfra.Attrs.get(result, :blocked) == true
     else
       _ -> false
     end
@@ -195,7 +195,7 @@ defmodule RealtimeGateway.ConversationChannel do
     case SharedInfra.UserClient.get_privacy(%{"user_id" => user_id}) do
       {:ok, privacy} ->
         # Map.get with a default (NOT `||`) so `false` reads as false, not "absent". Enabled unless explicit false.
-        Map.get(privacy, :read_receipts_enabled, Map.get(privacy, "read_receipts_enabled")) != false
+        SharedInfra.Attrs.get(privacy, :read_receipts_enabled) != false
 
       _ ->
         true

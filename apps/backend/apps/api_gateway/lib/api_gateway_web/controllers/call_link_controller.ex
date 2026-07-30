@@ -105,5 +105,7 @@ defmodule ApiGatewayWeb.CallLinkController do
   defp session_invalid(conn),
     do: ErrorResponse.unauthorized(conn, "auth.unauthorized", "Invalid or missing session")
 
-  defp cget(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
+  # Presence-based (SharedInfra.Attrs): this map carries BOOLEANS (require_approval / active / is_host),
+  # and the `||` idiom serialized a stored false as null.
+  defp cget(map, key), do: SharedInfra.Attrs.get(map, key)
 end

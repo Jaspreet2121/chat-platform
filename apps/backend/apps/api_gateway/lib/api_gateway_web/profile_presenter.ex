@@ -103,7 +103,7 @@ defmodule ApiGatewayWeb.ProfilePresenter do
            "user_a" => caller_id,
            "user_b" => target_id
          }) do
-      {:ok, result} -> (Map.get(result, :shares) || Map.get(result, "shares")) == true
+      {:ok, result} -> SharedInfra.Attrs.get(result, :shares) == true
       _ -> false
     end
   rescue

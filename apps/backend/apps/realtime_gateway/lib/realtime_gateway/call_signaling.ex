@@ -388,7 +388,7 @@ defmodule RealtimeGateway.CallSignaling do
        when is_binary(call_id) and call_id != "" do
     actor = current_user(socket)
 
-    with {:ok, user_id} <- resolve_add_target(payload),
+    with {:ok, user_id} <- resolve_add_target(payload, app_id(socket)),
          {:ok, result} <-
            ConversationClient.add_call_participant(%{
              "call_id" => call_id,
@@ -433,7 +433,7 @@ defmodule RealtimeGateway.CallSignaling do
        when is_binary(call_id) and call_id != "" do
     actor = current_user(socket)
 
-    with {:ok, user_id} <- resolve_add_target(payload),
+    with {:ok, user_id} <- resolve_add_target(payload, app_id(socket)),
          {:ok, result} <-
            ConversationClient.promote_direct_to_group(%{
              "call_id" => call_id,
@@ -576,18 +576,16 @@ defmodule RealtimeGateway.CallSignaling do
 
   # Resolve the add target → user_id: an explicit "user_id" (existing member), or a "phone" looked up via
   # auth (v1: the phone must belong to an existing ACTIVE app user — a true SMS invite is out of scope).
-  defp resolve_add_target(%{"user_id" => uid}) when is_binary(uid) and uid != "", do: {:ok, uid}
+  # APP-SCOPED: the caller's app_id (socket assigns) rides into the lookup, so under 048's
+  # per-(app_id, phone_number) uniqueness the number resolves within the CALLER'S tenant only — this was
+  # the last app-BLIND phone lookup (the legacy Repo.get_by could resolve ANOTHER tenant's user; it
+  # couldn't leak — downstream authz still failed — but it made a same-tenant number unresolvable
+  # whenever another tenant held the arbitrary first row).
+  defp resolve_add_target(%{"user_id" => uid}, _app_id) when is_binary(uid) and uid != "",
+    do: {:ok, uid}
 
-  defp resolve_add_target(%{"phone" => phone}) when is_binary(phone) and phone != "" do
-    # FOLLOW-UP (app-scoping): this is the last app-BLIND phone lookup. It resolves via
-    # AuthService.Accounts.lookup_active_by_phone/2 without an app_id, which falls back to the legacy
-    # Repo.get_by(UserAuth, phone_number: ...) (accounts.ex `get_by_phone_number/1`). Under migration
-    # 048's per-(app_id, phone_number) uniqueness the same number can exist in two tenants, so get_by can
-    # resolve ANOTHER tenant's user. The single by-phone lookup and contacts sync are already app-scoped;
-    # to fix this one, thread the caller's app_id (socket.assigns) into resolve_add_target and pass it as
-    # the 2nd arg here. Deferred because it means threading the socket through this call path — out of
-    # scope for the contacts slice, and it can't leak here (a cross-tenant add still fails downstream authz).
-    case SharedInfra.AuthClient.lookup_user_by_phone(%{"phone_number" => phone}) do
+  defp resolve_add_target(%{"phone" => phone}, app_id) when is_binary(phone) and phone != "" do
+    case SharedInfra.AuthClient.lookup_user_by_phone(%{"phone_number" => phone, "app_id" => app_id}) do
       {:ok, %{user_id: uid}} when is_binary(uid) and uid != "" -> {:ok, uid}
       {:ok, %{"user_id" => uid}} when is_binary(uid) and uid != "" -> {:ok, uid}
       _ -> {:error, :user_not_found}
@@ -596,7 +594,7 @@ defmodule RealtimeGateway.CallSignaling do
     _ -> {:error, :user_not_found}
   end
 
-  defp resolve_add_target(_payload), do: {:error, :invalid_request}
+  defp resolve_add_target(_payload, _app_id), do: {:error, :invalid_request}
 
   # Live participant list for a call (best-effort) — used to seed the added user's ring payload.
   defp current_participants(call_id) do

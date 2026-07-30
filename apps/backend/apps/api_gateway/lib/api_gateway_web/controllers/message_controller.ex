@@ -329,7 +329,8 @@ defmodule ApiGatewayWeb.MessageController do
         "Only the sender can see this message's info"
       )
 
-  defp cget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
+  # Presence-based (SharedInfra.Attrs): reads :read_hidden (a boolean) — `||` drops a stored false.
+  defp cget(map, key) when is_map(map), do: SharedInfra.Attrs.get(map, key)
   defp cget(_map, _key), do: nil
 
   def update(conn, %{"conversation_id" => conversation_id, "message_id" => message_id} = params) do

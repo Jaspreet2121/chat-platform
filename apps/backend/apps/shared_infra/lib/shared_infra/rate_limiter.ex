@@ -72,10 +72,10 @@ defmodule SharedInfra.RateLimiter do
   end
 
   # nil when not specified → the adapter uses the global default; a boolean overrides it for this call.
-  # NOTE: not `get_attr/2` — that does `Map.get(...) || Map.get(...)`, and `false || x` drops a literal
-  # `false`, which is the exact value that matters here (fail CLOSED). Read both key forms with a default.
+  # NOT `get_attr/2` (`false || x` drops the literal `false` that matters here — fail CLOSED); the
+  # presence-based SharedInfra.Attrs.get keeps it.
   defp fail_open_override(attrs) do
-    case Map.get(attrs, "fail_open", Map.get(attrs, :fail_open)) do
+    case SharedInfra.Attrs.get(attrs, :fail_open) do
       value when is_boolean(value) -> value
       _ -> nil
     end

@@ -158,7 +158,11 @@ defmodule ApiGatewayWeb.ConversationController do
   # USER-SCOPED soft-hides (nothing is deleted; only the caller's own participant row is written).
   # "Clear chat for me": stamps cleared_before = now() on the caller's membership row.
   def clear(conn, %{"conversation_id" => conversation_id}) do
-    with_own_participant(conn, fn user_id ->
+    # pref_mutation (not with_own_participant): the caller's OTHER devices must see the cleared state
+    # live. The :pref frame's row is recomputed AFTER the clear commits — the inbox SQL applies
+    # cleared_before to BOTH the preview lateral and the unread lateral, so the frame carries the
+    # post-clear preview/unread (verified by test), never a stale row.
+    pref_mutation(conn, conversation_id, fn user_id ->
       SharedInfra.ConversationClient.clear_history(%{
         "conversation_id" => conversation_id,
         "user_id" => user_id
@@ -169,7 +173,7 @@ defmodule ApiGatewayWeb.ConversationController do
   # "Disappearing messages" (off / after_viewing / 8h / 24h / 7d): sets the rolling view window (or
   # after-viewing flag). scope "mine" narrows only the caller's view; "both" narrows every participant's.
   def auto_delete(conn, %{"conversation_id" => conversation_id} = params) do
-    with_own_participant(conn, fn user_id ->
+    pref_mutation(conn, conversation_id, fn user_id ->
       SharedInfra.ConversationClient.set_auto_delete(%{
         "conversation_id" => conversation_id,
         "user_id" => user_id,
@@ -181,7 +185,7 @@ defmodule ApiGatewayWeb.ConversationController do
 
   # "Mute notifications" (off / 8h / 1w / always): suppresses WEB-PUSH for the caller in this chat.
   def mute(conn, %{"conversation_id" => conversation_id} = params) do
-    with_own_participant(conn, fn user_id ->
+    pref_mutation(conn, conversation_id, fn user_id ->
       SharedInfra.ConversationClient.set_mute(%{
         "conversation_id" => conversation_id,
         "user_id" => user_id,
@@ -215,9 +219,9 @@ defmodule ApiGatewayWeb.ConversationController do
   end
 
   # Like with_own_participant, but ALSO broadcasts conversation_updated (:pref) to the caller's OTHER devices —
-  # archive/pin change the inbox row's placement/order, so open clients must update live. `only: [me]` because a
-  # per-user pref is invisible to everyone else. (mute/clear/auto-delete don't broadcast today — a pre-existing
-  # gap, left out of scope.)
+  # a per-user pref changes what THEIR open clients must show, so they update live. `only: [me]` because a
+  # per-user pref is invisible to everyone else. ALL FIVE per-user prefs route through here: archive, pin,
+  # mute, clear-history, auto-delete (the last three previously broadcast nothing — devices went stale).
   defp pref_mutation(conn, conversation_id, operation) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
@@ -405,21 +409,6 @@ defmodule ApiGatewayWeb.ConversationController do
 
   # Shared session gate for the self-scoped ops above. Membership is enforced by the service (the
   # UPDATE only matches the caller's own ACTIVE participant row → non-members get 403).
-  defp with_own_participant(conn, operation) do
-    with {:ok, authorization} <- authorization_header(conn),
-         {:ok, session} <-
-           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
-         {:ok, response} <- operation.(session.user_id) do
-      json(conn, response)
-    else
-      {:error, :session_invalid} -> session_invalid(conn)
-      {:error, :auth_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_unavailable} -> service_unavailable(conn)
-      {:error, :not_participant} -> forbidden_membership(conn)
-      _ -> invalid_request(conn)
-    end
-  end
-
   defp forbidden_membership(conn),
     do: ErrorResponse.forbidden(conn, "conversation.not_participant", "Not a participant")
 
