@@ -152,6 +152,15 @@ defmodule SharedInfra.AuthClientHttp do
   def get_user_phone(attrs), do: post("/internal/users/phone", attrs)
 
   @impl true
+  def list_devices(attrs), do: post("/internal/devices/list", attrs)
+
+  @impl true
+  def revoke_device(attrs), do: post("/internal/devices/revoke", attrs)
+
+  @impl true
+  def revoke_other_devices(attrs), do: post("/internal/devices/revoke_others", attrs)
+
+  @impl true
   def save_push_subscription(attrs), do: post("/internal/push/subscriptions/save", attrs)
 
   @impl true

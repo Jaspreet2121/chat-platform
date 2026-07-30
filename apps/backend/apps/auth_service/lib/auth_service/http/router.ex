@@ -241,6 +241,19 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.AuthClientInProcess.get_user_phone(body(conn)))
   end
 
+  # Linked devices — list / revoke-one / revoke-others (session + self-target gates live in the gateway).
+  post "/internal/devices/list" do
+    send_result(conn, AuthService.Devices.list_devices(body(conn)))
+  end
+
+  post "/internal/devices/revoke" do
+    send_result(conn, AuthService.Devices.revoke_device(body(conn)))
+  end
+
+  post "/internal/devices/revoke_others" do
+    send_result(conn, AuthService.Devices.revoke_other_devices(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "auth", status: "ok", deps: %{}}})
   end

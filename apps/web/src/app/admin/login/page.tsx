@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, Loader2, RotateCcw, ShieldCheck } from "lucide-react";
 import { getCurrentSession, requestOtp, verifyOtp } from "@/lib/api";
 import { clearSessionTokens, hasAccessToken, setSessionTokens } from "@/lib/session";
+import { getOrCreateDeviceId } from "@/lib/device";
 import { AuthLayout, Button, Card, Input, LoginIdentityFields } from "@/components";
 
 type Step = "phone" | "code";
@@ -45,7 +46,8 @@ function AdminLoginForm() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [isChecking, setIsChecking] = useState(true);
 
-  const deviceId = useMemo(() => "web-browser", []);
+  // Per-browser persistent id (localStorage) — each browser is its own revocable linked device.
+  const deviceId = useMemo(() => getOrCreateDeviceId(), []);
   const codeInputRef = useRef<HTMLInputElement | null>(null);
   const redirectedRef = useRef(false);
 

@@ -45,6 +45,10 @@ defmodule SharedInfra.AuthClient do
 
   @callback create_invite(attrs()) :: result()
   @callback get_user_phone(attrs()) :: result()
+  # Linked devices — list the caller's signed-in devices / sign one (or all others) out.
+  @callback list_devices(attrs()) :: result()
+  @callback revoke_device(attrs()) :: result()
+  @callback revoke_other_devices(attrs()) :: result()
   @callback save_push_subscription(attrs()) :: result()
   @callback delete_push_subscription(attrs()) :: result()
   # Phase-2 Android: the FCM device-token twin of the two above.
@@ -103,7 +107,10 @@ defmodule SharedInfra.AuthClient do
                       list_apps: 1,
                       admin_list_apps: 1,
                       owns_app: 1,
-                      create_report: 1
+                      create_report: 1,
+                      list_devices: 1,
+                      revoke_device: 1,
+                      revoke_other_devices: 1
 
   def current_session(attrs), do: adapter().current_session(attrs)
   def persistence_enabled?, do: adapter().persistence_enabled?()
@@ -160,6 +167,9 @@ defmodule SharedInfra.AuthClient do
 
   def create_invite(attrs), do: adapter().create_invite(attrs)
   def get_user_phone(attrs), do: adapter().get_user_phone(attrs)
+  def list_devices(attrs), do: adapter().list_devices(attrs)
+  def revoke_device(attrs), do: adapter().revoke_device(attrs)
+  def revoke_other_devices(attrs), do: adapter().revoke_other_devices(attrs)
   def save_push_subscription(attrs), do: adapter().save_push_subscription(attrs)
   def delete_push_subscription(attrs), do: adapter().delete_push_subscription(attrs)
   def save_fcm_token(attrs), do: adapter().save_fcm_token(attrs)

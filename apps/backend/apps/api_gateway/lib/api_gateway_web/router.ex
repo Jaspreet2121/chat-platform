@@ -163,6 +163,16 @@ defmodule ApiGatewayWeb.Router do
     get "/:user_id/avatar", UserController, :avatar
   end
 
+  # Linked devices — list the caller's signed-in devices / sign one (or all others) out. Session-authed.
+  # Revoking the CURRENT device is refused (logout owns that gesture).
+  scope "/api/v1/devices", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/", DeviceController, :index
+    post "/revoke-others", DeviceController, :revoke_others
+    delete "/:device_id", DeviceController, :delete
+  end
+
   # WhatsApp-style invites: mint an invite code for a non-platform phone number (session-authed).
   # Sending happens on the user's device (wa.me / sms: URL schemes) — no send API here.
   scope "/api/v1/invites", ApiGatewayWeb do

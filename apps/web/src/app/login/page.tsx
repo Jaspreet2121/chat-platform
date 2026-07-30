@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, MessagesSquare, RotateCcw, ShieldCheck } from "lucide-react";
 import { getMe, requestOtp, verifyOtp } from "@/lib/api";
 import { hasAccessToken, setSessionTokens } from "@/lib/session";
+import { getOrCreateDeviceId } from "@/lib/device";
 import { AuthLayout, Button, Card, Input, LoginIdentityFields } from "@/components";
 import { OnboardingStep } from "./OnboardingStep";
 
@@ -52,7 +53,8 @@ function LoginForm() {
   const [isRequesting, setIsRequesting] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
 
-  const deviceId = useMemo(() => "web-browser", []);
+  // Per-browser persistent id (localStorage) — each browser is its own revocable linked device.
+  const deviceId = useMemo(() => getOrCreateDeviceId(), []);
   const codeInputRef = useRef<HTMLInputElement | null>(null);
   // One-shot guard: redirect at most once per mount (defense in depth against any cycle).
   const hasRedirectedRef = useRef(false);

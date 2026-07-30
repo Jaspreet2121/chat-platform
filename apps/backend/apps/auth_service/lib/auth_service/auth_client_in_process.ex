@@ -169,6 +169,15 @@ defmodule AuthService.AuthClientInProcess do
   # (caller must share a direct conversation with this user) before calling; this just resolves the
   # number for an active account.
   @impl true
+  def list_devices(attrs), do: AuthService.Devices.list_devices(attrs)
+
+  @impl true
+  def revoke_device(attrs), do: AuthService.Devices.revoke_device(attrs)
+
+  @impl true
+  def revoke_other_devices(attrs), do: AuthService.Devices.revoke_other_devices(attrs)
+
+  @impl true
   def get_user_phone(attrs) do
     with user_id when is_binary(user_id) and user_id != "" <- attrs["user_id"] || :error,
          %{status: "active"} = user <- AuthService.Accounts.get_user(user_id) || :error do

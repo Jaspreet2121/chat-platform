@@ -1,4 +1,5 @@
 import { getAccessToken } from "./session";
+import { deviceDisplayName, getOrCreateDeviceId } from "./device";
 
 const defaultApiBaseUrl = "http://localhost:4000";
 
@@ -15,6 +16,11 @@ export type OtpVerifyInput = {
   otpRequestId: string;
   otpCode: string;
   deviceId: string;
+  // Linked-devices identity: VERIFY is what mints the device_session row, so the name/platform must ride
+  // this payload (the request-OTP `device{}` block never reaches session creation). Defaults are composed
+  // client-side ("Chrome on macOS") — without them the row lands as null/"web".
+  platform?: string;
+  deviceName?: string;
   // "Remember me" → a 7-day session; otherwise the default (~3h) session. Sent to the verify endpoint,
   // which sets the issued access token's lifetime accordingly.
   rememberMe?: boolean;
@@ -322,9 +328,9 @@ export function requestOtp(input: OtpRequestInput) {
       ...destinationPayload(input.destination),
       purpose: input.purpose ?? "login",
       device: {
-        device_id: input.deviceId ?? "web-browser",
+        device_id: input.deviceId ?? getOrCreateDeviceId(),
         platform: input.platform ?? "web",
-        device_name: input.deviceName ?? "Web Browser"
+        device_name: input.deviceName ?? deviceDisplayName()
       }
     })
   });
@@ -345,6 +351,8 @@ export function verifyOtp(input: OtpVerifyInput) {
       otp_request_id: input.otpRequestId,
       otp_code: input.otpCode,
       device_id: input.deviceId,
+      platform: input.platform ?? "web",
+      device_name: input.deviceName ?? deviceDisplayName(),
       remember_me: input.rememberMe ?? false
     })
   });
