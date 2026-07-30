@@ -40,7 +40,10 @@ defmodule SharedInfra.MessageClient do
   @callback get_by_media_id(attrs()) :: result()
   # Message info (per-user delivery/read state; sender-only). Optional so existing stubs don't all need it.
   @callback message_info(attrs()) :: result()
-  @optional_callbacks message_info: 1
+  # Polls: replace-the-set vote + the uncapped voter lists.
+  @callback vote_poll(attrs()) :: result()
+  @callback list_poll_votes(attrs()) :: result()
+  @optional_callbacks message_info: 1, vote_poll: 1, list_poll_votes: 1
 
   def create_message(attrs), do: adapter().create_message(attrs)
   def send_message(attrs), do: adapter().send_message(attrs)
@@ -51,6 +54,8 @@ defmodule SharedInfra.MessageClient do
   def delete_message(attrs), do: adapter().delete_message(attrs)
   def mark_read(attrs), do: adapter().mark_read(attrs)
   def message_info(attrs), do: adapter().message_info(attrs)
+  def vote_poll(attrs), do: adapter().vote_poll(attrs)
+  def list_poll_votes(attrs), do: adapter().list_poll_votes(attrs)
   def mark_delivered(attrs), do: adapter().mark_delivered(attrs)
   def analytics_overview(attrs), do: adapter().analytics_overview(attrs)
   def analytics_timeseries(attrs), do: adapter().analytics_timeseries(attrs)

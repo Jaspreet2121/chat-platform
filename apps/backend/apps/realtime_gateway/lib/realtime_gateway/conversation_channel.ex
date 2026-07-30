@@ -414,6 +414,13 @@ defmodule RealtimeGateway.ConversationChannel do
       {:error, :message_unavailable} ->
         unavailable_reply(socket)
 
+      # Malformed polls carry their SPECIFIC code to the socket sender too (mirror of the REST mapping).
+      {:error, poll_error} when poll_error in [:poll_invalid_question, :poll_too_few_options,
+                                               :poll_too_many_options, :poll_invalid_option,
+                                               :poll_duplicate_option] ->
+        "poll_" <> failure = Atom.to_string(poll_error)
+        {:reply, {:error, %{code: "polls." <> failure, message: "Poll is invalid"}}, socket}
+
       _ ->
         {:reply,
          {:error, %{code: "realtime.invalid_event", message: "Message event payload is invalid"}},

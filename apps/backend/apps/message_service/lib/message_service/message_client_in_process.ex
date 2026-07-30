@@ -44,6 +44,12 @@ defmodule MessageService.MessageClientInProcess do
   def message_info(attrs), do: MessageService.Messages.message_info(attrs)
 
   @impl true
+  def vote_poll(attrs), do: MessageService.Polls.vote(attrs)
+
+  @impl true
+  def list_poll_votes(attrs), do: MessageService.Polls.list_votes(attrs)
+
+  @impl true
   def mark_delivered(attrs), do: Receipts.mark_delivered(attrs)
 
   @impl true

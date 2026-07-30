@@ -97,6 +97,15 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Messages.message_info(body(conn)))
   end
 
+  # Polls — vote (replace-the-set) + the uncapped voter lists (membership gated in the gateway).
+  post "/internal/polls/vote" do
+    send_result(conn, MessageService.Polls.vote(body(conn)))
+  end
+
+  post "/internal/polls/votes" do
+    send_result(conn, MessageService.Polls.list_votes(body(conn)))
+  end
+
   # Read-only admin analytics (gated upstream by the gateway's RequireAdmin + the internal TokenPlug).
   post "/internal/analytics/overview" do
     send_result(conn, {:ok, MessageService.Analytics.overview(Map.get(body(conn), "app_id"))})

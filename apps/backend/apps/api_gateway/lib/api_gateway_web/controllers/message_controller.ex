@@ -69,8 +69,20 @@ defmodule ApiGatewayWeb.MessageController do
       {:error, :only_admins_can_send} ->
         ErrorResponse.forbidden(conn, "group.only_admins_can_send", "Only admins can send messages")
 
+      # Malformed polls are rejected with SPECIFIC codes — never stored broken.
+      {:error, poll_error} when poll_error in [:poll_invalid_question, :poll_too_few_options,
+                                               :poll_too_many_options, :poll_invalid_option,
+                                               :poll_duplicate_option] ->
+        poll_invalid(conn, poll_error)
+
       _ -> invalid_request(conn)
     end
+  end
+
+  # "poll_invalid_question" → "polls.invalid_question" etc. — the atom names the failure exactly.
+  defp poll_invalid(conn, poll_error) do
+    "poll_" <> failure = Atom.to_string(poll_error)
+    ErrorResponse.invalid_request(conn, "polls." <> failure)
   end
 
   def index(conn, %{"conversation_id" => conversation_id} = params) do
@@ -232,6 +244,79 @@ defmodule ApiGatewayWeb.MessageController do
       {:error, :message_unavailable} -> service_unavailable(conn)
       {:error, :conversation_unavailable} -> service_unavailable(conn)
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
+      _ -> invalid_request(conn)
+    end
+  end
+
+  @doc """
+  Vote on a poll — the submitted option_ids set REPLACES the caller's whole vote set (first vote /
+  change / un-vote([]) / multi-toggle are all this one idempotent verb). Membership-gated like sends —
+  late joiners can vote; leavers can't (their prior votes remain counted). Returns the fresh aggregate
+  AND broadcasts `poll_updated` {conversation_id, message_id, poll} to the conversation topic — the
+  same transport reaction_updated uses (the socket is mounted on THIS endpoint). The broadcast is an
+  optimization: history fetches recompute the aggregate from poll_votes, so a client that misses the
+  event converges on refetch.
+  """
+  def vote(conn, %{"conversation_id" => conversation_id, "message_id" => message_id} = params) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- authorize_membership(conversation_id, session.user_id),
+         {:ok, response} <-
+           SharedInfra.MessageClient.vote_poll(%{
+             "conversation_id" => conversation_id,
+             "message_id" => message_id,
+             "user_id" => session.user_id,
+             "option_ids" => params["option_ids"]
+           }) do
+      poll = cget(response, :poll)
+
+      # Live results for everyone with the conversation open. Viewer-INDEPENDENT payload (voter_ids are
+      # public), so broadcasting the whole aggregate is safe — clients apply it wholesale.
+      ApiGatewayWeb.Endpoint.broadcast("conversation:" <> conversation_id, "poll_updated", %{
+        conversation_id: conversation_id,
+        message_id: message_id,
+        poll: poll
+      })
+
+      json(conn, %{message_id: message_id, poll: poll})
+    else
+      {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_membership_forbidden} -> forbidden(conn)
+      {:error, :message_not_found} -> not_found(conn)
+      {:error, :poll_invalid_option} -> ErrorResponse.invalid_request(conn, "polls.invalid_option")
+      {:error, :poll_single_choice} -> ErrorResponse.invalid_request(conn, "polls.single_choice")
+      _ -> invalid_request(conn)
+    end
+  end
+
+  @doc """
+  The UNCAPPED per-option voter lists (the "view votes" screen — the aggregate's voter_ids are capped
+  at 20 per option; MessageService.Polls.voter_ids_cap/0 is the source of truth). Membership-gated;
+  voters are public to participants (explicitly NOT read receipts — no privacy setting composes with
+  poll votes).
+  """
+  def poll_votes(conn, %{"conversation_id" => conversation_id, "message_id" => message_id}) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- authorize_membership(conversation_id, session.user_id),
+         {:ok, response} <-
+           SharedInfra.MessageClient.list_poll_votes(%{
+             "conversation_id" => conversation_id,
+             "message_id" => message_id
+           }) do
+      json(conn, %{message_id: message_id, poll: cget(response, :poll)})
+    else
+      {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :auth_unavailable} -> service_unavailable(conn)
+      {:error, :message_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_unavailable} -> service_unavailable(conn)
+      {:error, :conversation_membership_forbidden} -> forbidden(conn)
+      {:error, :message_not_found} -> not_found(conn)
       _ -> invalid_request(conn)
     end
   end

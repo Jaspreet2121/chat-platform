@@ -46,6 +46,12 @@ defmodule SharedInfra.MessageClientHttp do
   def message_info(attrs), do: post("/internal/receipts/info", attrs)
 
   @impl true
+  def vote_poll(attrs), do: post("/internal/polls/vote", attrs)
+
+  @impl true
+  def list_poll_votes(attrs), do: post("/internal/polls/votes", attrs)
+
+  @impl true
   def mark_delivered(attrs), do: post("/internal/receipts/mark_delivered", attrs)
 
   @impl true

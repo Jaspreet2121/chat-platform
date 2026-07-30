@@ -29,7 +29,14 @@ defmodule MessageService.MessageStore do
   @callback get_by_media_id(message_attrs()) :: message_result()
   # Message info (per-user delivery/read state; sender-only) — optional, Postgres + InMemory implement it.
   @callback message_info(message_attrs()) :: message_result()
-  @optional_callbacks list_media: 1, get_by_media_id: 1, message_info: 1
+  # Polls — replace-the-set vote + the uncapped voter lists (optional; Postgres + InMemory).
+  @callback poll_vote(message_attrs()) :: message_result()
+  @callback list_poll_votes(message_attrs()) :: message_result()
+  @optional_callbacks list_media: 1,
+                      get_by_media_id: 1,
+                      message_info: 1,
+                      poll_vote: 1,
+                      list_poll_votes: 1
 
   def put_message(attrs), do: adapter().put_message(attrs)
   def get_message(attrs), do: adapter().get_message(attrs)
@@ -64,6 +71,27 @@ defmodule MessageService.MessageStore do
 
     if function_exported?(store, :message_info, 1) do
       store.message_info(attrs)
+    else
+      {:error, :message_unavailable}
+    end
+  end
+
+  # Polls (optional callbacks; Postgres + InMemory).
+  def poll_vote(attrs) do
+    store = adapter()
+
+    if function_exported?(store, :poll_vote, 1) do
+      store.poll_vote(attrs)
+    else
+      {:error, :message_unavailable}
+    end
+  end
+
+  def list_poll_votes(attrs) do
+    store = adapter()
+
+    if function_exported?(store, :list_poll_votes, 1) do
+      store.list_poll_votes(attrs)
     else
       {:error, :message_unavailable}
     end
@@ -480,6 +508,77 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
     {:ok, receipt}
   end
 
+  # In-memory twins of the Postgres poll ops: same gates, same replace-the-set semantics, the SAME
+  # shared MessageService.Polls.build_aggregate — so the aggregate shape cannot drift between adapters.
+  @impl true
+  def poll_vote(attrs) do
+    ensure_started()
+    conversation_id = attrs["conversation_id"]
+    message_id = attrs["message_id"]
+    user_id = attrs["user_id"]
+    option_ids = attrs["option_ids"] || []
+
+    Agent.get_and_update(@name, fn state ->
+      message =
+        Enum.find(
+          state.messages,
+          &(&1.message_id == message_id and &1.conversation_id == conversation_id and
+              &1.message_type == "poll" and is_nil(&1[:deleted_at]))
+        )
+
+      definition = message && message.metadata["poll"]
+      known = definition && MapSet.new(definition["options"] || [], & &1["id"])
+
+      cond do
+        is_nil(definition) ->
+          {{:error, :message_not_found}, state}
+
+        not Enum.all?(option_ids, &MapSet.member?(known, &1)) ->
+          {{:error, :poll_invalid_option}, state}
+
+        length(option_ids) > 1 and definition["allows_multiple"] != true ->
+          {{:error, :poll_single_choice}, state}
+
+        true ->
+          kept = Enum.reject(state.poll_votes, &(&1.message_id == message_id and &1.user_id == user_id))
+          added = Enum.map(option_ids, &%{message_id: message_id, user_id: user_id, option_id: &1})
+          votes = kept ++ added
+          pairs = for v <- votes, v.message_id == message_id, do: {v.option_id, v.user_id}
+
+          {{:ok,
+            %{
+              message_id: message_id,
+              poll: MessageService.Polls.build_aggregate(definition, pairs)
+            }}, %{state | poll_votes: votes}}
+      end
+    end)
+  end
+
+  @impl true
+  def list_poll_votes(attrs) do
+    ensure_started()
+    conversation_id = attrs["conversation_id"]
+    message_id = attrs["message_id"]
+
+    Agent.get(@name, fn state ->
+      message =
+        Enum.find(
+          state.messages,
+          &(&1.message_id == message_id and &1.conversation_id == conversation_id and
+              &1.message_type == "poll" and is_nil(&1[:deleted_at]))
+        )
+
+      case message && message.metadata["poll"] do
+        nil ->
+          {:error, :message_not_found}
+
+        definition ->
+          pairs = for v <- state.poll_votes, v.message_id == message_id, do: {v.option_id, v.user_id}
+          {:ok, %{message_id: message_id, poll: MessageService.Polls.build_aggregate(definition, pairs, nil)}}
+      end
+    end)
+  end
+
   # In-memory twin of the Postgres message_info: same gates (tombstone → not_found, sender-only) and the
   # same read/delivered split (received = delivered_at OR read_at). NO privacy filtering — this adapter
   # has no user_privacy_settings, matching its receipt_counts (which doesn't filter either).
@@ -827,7 +926,7 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
   end
 
   defp initial_state,
-    do: %{messages: [], receipts: [], reactions: [], stars: [], participants: []}
+    do: %{messages: [], receipts: [], reactions: [], stars: [], participants: [], poll_votes: []}
 
   defp ensure_started do
     case Process.whereis(@name) do
@@ -861,6 +960,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   alias MessageService.Schemas.Message
   alias MessageService.Schemas.MessageReaction
   alias MessageService.Schemas.MessageReceipt
+  alias MessageService.Schemas.PollVote
   alias MessageService.Schemas.StarredMessage
 
   @impl true
@@ -1008,6 +1108,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     counts = receipt_counts(conversation_id, message_ids)
     reactions = reaction_summaries(message_ids, viewer)
     starred = starred_set(message_ids, viewer)
+    polls = poll_summaries(rows)
     # The viewer half (reciprocity): a viewer who disabled read receipts sees NO read_by_count at all. ONE
     # lookup for the whole page (not per message), applied below.
     show_read = viewer_sees_read_receipts?(viewer)
@@ -1021,6 +1122,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         )
         |> Map.merge(Map.get(reactions, message.message_id, %{reactions: [], my_reaction: nil}))
         |> Map.put(:is_starred, MapSet.member?(starred, message.message_id))
+        |> merge_poll(Map.get(polls, message.message_id))
         |> hide_read_count(show_read)
       end)
 
@@ -1315,6 +1417,129 @@ defmodule MessageService.MessageStore.PostgresAdapter do
       is_nil(unquote(ps).read_receipts_enabled) or unquote(ps).read_receipts_enabled
     end
   end
+
+  # --- Polls (079) ------------------------------------------------------------------------------
+
+  @doc """
+  Replace the caller's vote set for a poll message (ONE idempotent verb: first vote / change /
+  un-vote([]) / multi-toggle). Gates: unknown / tombstoned / non-poll / wrong-conversation message →
+  :message_not_found; ids outside the definition → :poll_invalid_option; >1 id on single-choice →
+  :poll_single_choice. Returns the fresh aggregate — computed from poll_votes, the same source a
+  history fetch reads (the broadcast is never the source of truth).
+  """
+  @impl true
+  def poll_vote(attrs) do
+    conversation_id = attr(attrs, "conversation_id")
+    user_id = attr(attrs, "user_id")
+    option_ids = attrs["option_ids"] || []
+
+    with {:ok, message, definition} <- fetch_poll(attrs, conversation_id),
+         :ok <- valid_vote_set(definition, option_ids) do
+      {:ok, _} =
+        Repo.transaction(fn ->
+          Repo.query!(
+            "DELETE FROM poll_votes WHERE message_id = $1::text::uuid AND user_id = $2::text::uuid",
+            [message.message_id, user_id]
+          )
+
+          if option_ids != [] do
+            Repo.query!(
+              "INSERT INTO poll_votes (conversation_id, message_id, user_id, option_id) " <>
+                "SELECT $1::text::uuid, $2::text::uuid, $3::text::uuid, unnest($4::text[])",
+              [message.conversation_id, message.message_id, user_id, option_ids]
+            )
+          end
+        end)
+
+      {:ok, %{message_id: message.message_id, poll: poll_aggregate(message, definition)}}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :message_not_found}
+  end
+
+  @doc "The UNCAPPED per-option voter lists for one poll (the view-votes screen)."
+  @impl true
+  def list_poll_votes(attrs) do
+    conversation_id = attr(attrs, "conversation_id")
+
+    with {:ok, message, definition} <- fetch_poll(attrs, conversation_id) do
+      {:ok,
+       %{
+         message_id: message.message_id,
+         poll: MessageService.Polls.build_aggregate(definition, poll_votes_of(message.message_id), nil)
+       }}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :message_not_found}
+  end
+
+  # A live poll message in THIS conversation, with its definition. Everything else → :message_not_found
+  # (a voter learns nothing about other conversations' messages).
+  defp fetch_poll(attrs, conversation_id) do
+    case fetch(attrs) do
+      %Message{message_type: "poll", deleted_at: nil, conversation_id: ^conversation_id} = message ->
+        case message.metadata do
+          %{"poll" => %{} = definition} -> {:ok, message, definition}
+          _ -> {:error, :message_not_found}
+        end
+
+      _ ->
+        {:error, :message_not_found}
+    end
+  end
+
+  defp valid_vote_set(definition, option_ids) do
+    known = MapSet.new(definition["options"] || [], & &1["id"])
+
+    cond do
+      not Enum.all?(option_ids, &MapSet.member?(known, &1)) -> {:error, :poll_invalid_option}
+      length(option_ids) > 1 and definition["allows_multiple"] != true -> {:error, :poll_single_choice}
+      true -> :ok
+    end
+  end
+
+  defp poll_votes_of(message_id) do
+    PollVote
+    |> where([v], v.message_id == ^message_id)
+    |> order_by([v], asc: v.created_at)
+    |> select([v], {v.option_id, v.user_id})
+    |> Repo.all()
+  end
+
+  defp poll_aggregate(message, definition),
+    do: MessageService.Polls.build_aggregate(definition, poll_votes_of(message.message_id))
+
+  # Batched poll aggregates for a history page (the reaction_summaries twin): ONE votes query for all
+  # the page's poll messages, built against each message's own stored definition. Cold loads are
+  # correct by construction — this reads the same rows a vote write just committed.
+  defp poll_summaries(rows) do
+    poll_rows =
+      Enum.filter(rows, fn m ->
+        m.message_type == "poll" and is_map(m.metadata) and is_map(m.metadata["poll"])
+      end)
+
+    if poll_rows == [] do
+      %{}
+    else
+      ids = Enum.map(poll_rows, & &1.message_id)
+
+      votes =
+        PollVote
+        |> where([v], v.message_id in ^ids)
+        |> order_by([v], asc: v.created_at)
+        |> select([v], {v.message_id, v.option_id, v.user_id})
+        |> Repo.all()
+        |> Enum.group_by(fn {mid, _o, _u} -> mid end, fn {_m, o, u} -> {o, u} end)
+
+      Map.new(poll_rows, fn m ->
+        {m.message_id,
+         MessageService.Polls.build_aggregate(m.metadata["poll"], Map.get(votes, m.message_id, []))}
+      end)
+    end
+  end
+
+  defp merge_poll(response, nil), do: response
+  defp merge_poll(response, aggregate), do: Map.put(response, :poll, aggregate)
 
   @doc """
   Message info — per-user delivery/read state for ONE message, SENDER-only (WhatsApp's Info screen).

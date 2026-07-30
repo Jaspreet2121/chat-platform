@@ -317,6 +317,9 @@ defmodule ApiGatewayWeb.Router do
     post "/:message_id/delivered", MessageController, :delivered
     # Message info (sender-only): per-user delivered/read state, privacy-filtered like read_by_count.
     get "/:message_id/info", MessageController, :info
+    # Polls: replace-the-set vote (broadcasts poll_updated) + the uncapped voter lists.
+    post "/:message_id/vote", MessageController, :vote
+    get "/:message_id/poll-votes", MessageController, :poll_votes
     post "/:message_id/reactions", MessageController, :react
     delete "/:message_id/reactions", MessageController, :unreact
     post "/:message_id/star", MessageController, :star

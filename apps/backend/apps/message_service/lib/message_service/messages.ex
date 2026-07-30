@@ -181,7 +181,7 @@ defmodule MessageService.Messages do
 
       case MessageStore.put_message(message_attrs) do
         {:ok, message} ->
-          response = message_response(message)
+          response = message_response(message) |> with_fresh_poll(message_type, metadata)
           publish_message_created(response)
           {:ok, response}
 
@@ -512,9 +512,19 @@ defmodule MessageService.Messages do
       reactions: Map.get(message, :reactions, []),
       my_reaction: Map.get(message, :my_reaction),
       # Whether the calling viewer has starred this message (drives the filled star on load).
-      is_starred: Map.get(message, :is_starred, false)
+      is_starred: Map.get(message, :is_starred, false),
+      # Poll aggregate (question/options with counts + capped voter_ids/total_voters) — merged by the
+      # list path for poll messages, nil otherwise. Computed from poll_votes at fetch time, ALWAYS.
+      poll: Map.get(message, :poll)
     }
   end
+
+  # A fresh poll's ack carries the ZERO aggregate (no votes yet — no query needed), so the sender's
+  # outbox row renders the poll immediately.
+  defp with_fresh_poll(response, "poll", %{"poll" => definition}),
+    do: Map.put(response, :poll, MessageService.Polls.zero_aggregate(definition))
+
+  defp with_fresh_poll(response, _message_type, _metadata), do: response
 
   defp edited_message_response(message) do
     %{
@@ -547,6 +557,14 @@ defmodule MessageService.Messages do
     {:ok, get_attr(attrs, "body") || caption}
   end
 
+  # A poll's body IS the question (validated) — any client that doesn't understand message_type "poll"
+  # (older builds, /v1 SDK consumers) degrades to showing the question as plain text.
+  defp message_body(attrs, "poll", _caption) do
+    with {:ok, definition} <- poll_definition(attrs) do
+      {:ok, definition["question"]}
+    end
+  end
+
   defp message_body(attrs, _message_type, _caption), do: {:ok, get_attr(attrs, "body")}
 
   defp media_id(attrs, "media"), do: required_attr(attrs, "media_id")
@@ -574,7 +592,29 @@ defmodule MessageService.Messages do
     end
   end
 
+  # Poll metadata is SERVER-REBUILT: exactly {"poll" => {question, allows_multiple, options[{id,text}]}}
+  # with server-generated stable option ids — client extras are discarded, malformed polls are rejected
+  # with a specific code (never stored broken). Votes live in poll_votes; this is the immutable definition.
+  defp metadata(attrs, "poll", _media_id, _caption) do
+    with {:ok, definition} <- poll_definition(attrs) do
+      {:ok, %{"poll" => definition}}
+    end
+  end
+
   defp metadata(attrs, _message_type, _media_id, _caption), do: metadata(attrs)
+
+  # The client-supplied poll definition (metadata.poll), validated + normalized by MessageService.Polls.
+  defp poll_definition(attrs) do
+    case get_attr(attrs, "metadata") do
+      %{} = metadata ->
+        MessageService.Polls.normalize_definition(
+          Map.get(metadata, "poll") || Map.get(metadata, :poll) || %{}
+        )
+
+      _ ->
+        {:error, :poll_invalid_question}
+    end
+  end
 
   defp metadata(attrs) do
     case get_attr(attrs, "metadata") do
