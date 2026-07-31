@@ -25,6 +25,20 @@ defmodule AuthService.InvitesTest do
   end
 
   test "codes are unique per call (stateless path)" do
+    # PIN the mode this test is NAMED for. persistence_enabled? is global app env, so this test used
+    # to inherit whatever the previously-run suite left behind — and with persistence ON,
+    # create_invite DELIBERATELY reuses the pending invite for the same (inviter, phone) pair, making
+    # all 20 codes identical. That is correct product behaviour and a broken test: it flaked purely on
+    # suite ordering (the participant_events class of bug).
+    prev = Application.get_env(:auth_service, :session_persistence)
+    Application.put_env(:auth_service, :session_persistence, false)
+
+    on_exit(fn ->
+      if prev == nil,
+        do: Application.delete_env(:auth_service, :session_persistence),
+        else: Application.put_env(:auth_service, :session_persistence, prev)
+    end)
+
     codes =
       for _ <- 1..20 do
         {:ok, %{invite_code: code}} =
