@@ -103,7 +103,11 @@ defmodule ApiGatewayWeb.V1.MediaControllerTest do
 
   defmodule MsgStub do
     @moduledoc false
-    # get_by_media_id: which conversation an asset was sent to (nil → unattached → owner-only download).
+    # OWNER-ANCHORED download rule: in these fixtures @ready_msg's OWNER is @user (the participant), so
+    # their 200 rides MediaAuthz's owner fast-path and never reaches this stub; every non-owner probe
+    # (@outsider) is denied here. get_by_media_id kept only for legacy callers.
+    def media_download_allowed(_attrs), do: {:ok, %{allowed: false}}
+
     def get_by_media_id(%{"media_id" => id}) do
       case Application.get_env(:api_gateway, :test_media_conv, %{})[id] do
         nil -> {:error, :not_found}

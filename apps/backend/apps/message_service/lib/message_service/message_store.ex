@@ -32,11 +32,14 @@ defmodule MessageService.MessageStore do
   # Polls — replace-the-set vote + the uncapped voter lists (optional; Postgres + InMemory).
   @callback poll_vote(message_attrs()) :: message_result()
   @callback list_poll_votes(message_attrs()) :: message_result()
+  # Owner-anchored media-download authorization (optional; Postgres only).
+  @callback media_download_allowed(message_attrs()) :: message_result()
   @optional_callbacks list_media: 1,
                       get_by_media_id: 1,
                       message_info: 1,
                       poll_vote: 1,
-                      list_poll_votes: 1
+                      list_poll_votes: 1,
+                      media_download_allowed: 1
 
   def put_message(attrs), do: adapter().put_message(attrs)
   def get_message(attrs), do: adapter().get_message(attrs)
@@ -60,6 +63,18 @@ defmodule MessageService.MessageStore do
 
     if function_exported?(store, :get_by_media_id, 1) do
       store.get_by_media_id(attrs)
+    else
+      {:error, :message_unavailable}
+    end
+  end
+
+  # The OWNER-ANCHORED download rule (optional callback — Postgres only): is the viewer an active member
+  # of ANY conversation containing a message referencing this media_id whose SENDER is the asset's owner?
+  def media_download_allowed(attrs) do
+    store = adapter()
+
+    if function_exported?(store, :media_download_allowed, 1) do
+      store.media_download_allowed(attrs)
     else
       {:error, :message_unavailable}
     end
@@ -1244,6 +1259,44 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     end
   rescue
     Ecto.Query.CastError -> {:error, :not_found}
+  end
+
+  @doc """
+  THE OWNER-ANCHORED DOWNLOAD RULE, one indexed EXISTS: the viewer may download iff some conversation
+  they are an ACTIVE member of contains a message referencing this media_id SENT BY THE ASSET'S OWNER.
+  The sender=owner anchor is what makes the widening safe — message-create does NOT validate media
+  ownership, so B CAN plant a reference to A's media in B↔C; that message fails the anchor and grants
+  nobody anything. The owner's own sends (broadcast fan-outs, forwards) all qualify.
+
+  DELIBERATELY no deleted_at/liveness filter — preserving get_by_media_id's reasoning ("authorization
+  is by membership, not message liveness"): a recipient doesn't lose access to bytes they legitimately
+  received because the sender later deleted-for-everyone; revocation-on-delete would be a new product
+  decision, not a side effect of this fix.
+
+  Bounded: the media_id partial index (083) keys the messages side; conversation_participants' PK keys
+  the membership probe. → {:ok, %{allowed: bool}}
+  """
+  @impl true
+  def media_download_allowed(attrs) do
+    with media_id when is_binary(media_id) and media_id != "" <- attr(attrs, "media_id"),
+         owner when is_binary(owner) and owner != "" <- attr(attrs, "owner_user_id"),
+         viewer when is_binary(viewer) and viewer != "" <- attr(attrs, "viewer_user_id") do
+      %{rows: [[allowed]]} =
+        Repo.query!(
+          "SELECT EXISTS (" <>
+            "SELECT 1 FROM messages m " <>
+            "JOIN conversation_participants cp ON cp.conversation_id = m.conversation_id " <>
+            "AND cp.user_id = $3::uuid AND cp.left_at IS NULL " <>
+            "WHERE m.media_id = $1::uuid AND m.sender_user_id = $2::uuid)",
+          [media_id, owner, viewer]
+        )
+
+      {:ok, %{allowed: allowed}}
+    else
+      _ -> {:ok, %{allowed: false}}
+    end
+  rescue
+    _ -> {:ok, %{allowed: false}}
   end
 
   defp maybe_before(query, before) when is_binary(before) and before != "" do

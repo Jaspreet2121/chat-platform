@@ -127,6 +127,11 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Statuses.media_allowed(body(conn)))
   end
 
+  # Owner-anchored message-media download authorization (the gateway's "message" purpose arm).
+  post "/internal/media/download_allowed" do
+    send_result(conn, MessageService.MessageStore.media_download_allowed(body(conn)))
+  end
+
   # Read-only admin analytics (gated upstream by the gateway's RequireAdmin + the internal TokenPlug).
   post "/internal/analytics/overview" do
     send_result(conn, {:ok, MessageService.Analytics.overview(Map.get(body(conn), "app_id"))})

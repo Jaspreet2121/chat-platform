@@ -45,21 +45,28 @@ defmodule ApiGatewayWeb.MediaAuthz do
     end
   end
 
+  # OWNER-ANCHORED message-media rule (replaces the oldest-message-wins resolve, which authorized a
+  # reused media_id against exactly ONE conversation — breaking broadcasts and web forwarding for
+  # recipients 2..N): the viewer may download iff they are an active member of ANY conversation
+  # containing a message referencing this media_id whose SENDER IS THE ASSET'S OWNER. The anchor is
+  # what makes widening safe — message-create does NOT validate media ownership, so a user CAN plant a
+  # reference to someone else's media_id in a conversation they control; anchored to sender=owner, that
+  # planted message grants nobody anything, while every send BY the owner (broadcast fan-out, forward)
+  # authorizes its recipients. The OWNER themselves may always download (also covers uploaded-not-yet-
+  # sent, preserving the old owner-only fallback). One indexed EXISTS (083), never a scan.
   defp authorize_message_media(media_id, asset, user_id) do
-    case MessageClient.get_by_media_id(%{"media_id" => media_id}) do
-      {:ok, result} ->
-        case aget(result, :conversation_id) do
-          conversation_id when is_binary(conversation_id) -> membership(conversation_id, user_id)
-          # Attached to no readable conversation → fall back to owner-only.
-          _ -> owner_only(asset, user_id)
-        end
-
-      {:error, :message_unavailable} ->
-        {:error, :conversation_unavailable}
-
-      # Not attached to any message (uploaded, not sent) → only the owner may download it.
-      _ ->
-        owner_only(asset, user_id)
+    with {:owner, false} <- {:owner, aget(asset, :owner_user_id) == user_id},
+         {:ok, result} <-
+           MessageClient.media_download_allowed(%{
+             "media_id" => media_id,
+             "owner_user_id" => aget(asset, :owner_user_id),
+             "viewer_user_id" => user_id
+           }) do
+      if aget(result, :allowed) == true, do: :ok, else: {:error, :not_a_member}
+    else
+      {:owner, true} -> :ok
+      {:error, :message_unavailable} -> {:error, :conversation_unavailable}
+      _ -> {:error, :not_a_member}
     end
   end
 
@@ -80,10 +87,6 @@ defmodule ApiGatewayWeb.MediaAuthz do
       {:error, :conversation_unavailable} -> {:error, :conversation_unavailable}
       _ -> {:error, :not_a_member}
     end
-  end
-
-  defp owner_only(asset, user_id) do
-    if aget(asset, :owner_user_id) == user_id, do: :ok, else: {:error, :not_a_member}
   end
 
   defp aget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))

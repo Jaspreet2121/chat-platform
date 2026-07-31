@@ -2,8 +2,9 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
   @moduledoc """
   The download read path never trusts the client. `object_key` is resolved server-side from the row; the
   gateway authorizes by PURPOSE before any URL is minted:
-    * message      → the conversation the media was sent to (MessageClient.get_by_media_id) → membership;
-                     not-yet-sent (no message) → owner-only.
+    * message      → OWNER-ANCHORED: member of any conversation with a message referencing the media
+                     SENT BY the asset's owner (MessageClient.media_download_allowed); the owner
+                     always may; not-yet-sent (no qualifying message) → owner-only.
     * group_avatar → the asset's conversation_id → membership.
     * user_avatar  → same app + authenticated.
   Every failure → 404 (no existence reveal, never 403). No DB: the media/message/conversation clients are
@@ -76,11 +77,22 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
 
   defmodule MessageStub do
     @moduledoc false
-    @convo "11111111-1111-4111-8111-111111111111"
+    @member "22222222-2222-4222-8222-222222222222"
+    @owner "77777777-7777-4777-8777-777777777777"
     @msg_media "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-    # Sent message media resolves to its conversation; everything else (incl. the unsent asset) → not_found.
-    def get_by_media_id(%{"media_id" => @msg_media}), do: {:ok, %{conversation_id: @convo}}
-    def get_by_media_id(_), do: {:error, :not_found}
+
+    # The owner-anchored rule: for the SENT media, only @member sits in a conversation holding the
+    # owner's send (a stranger AND a former participant — left_at — both fail the active-membership
+    # probe); the unsent asset has no qualifying message for anyone. The OWNER never reaches here
+    # (the fast-path in MediaAuthz short-circuits).
+    def media_download_allowed(%{
+          "media_id" => @msg_media,
+          "owner_user_id" => @owner,
+          "viewer_user_id" => @member
+        }),
+        do: {:ok, %{allowed: true}}
+
+    def media_download_allowed(_attrs), do: {:ok, %{allowed: false}}
   end
 
   defmodule ConvStub do

@@ -65,6 +65,9 @@ defmodule MessageService.MessageClientInProcess do
   def status_media_allowed(attrs), do: MessageService.Statuses.media_allowed(attrs)
 
   @impl true
+  def media_download_allowed(attrs), do: MessageService.MessageStore.media_download_allowed(attrs)
+
+  @impl true
   def mark_delivered(attrs), do: Receipts.mark_delivered(attrs)
 
   @impl true

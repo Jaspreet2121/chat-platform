@@ -49,7 +49,10 @@ defmodule SharedInfra.MessageClient do
   @callback list_status_posts(attrs()) :: result()
   @callback delete_status(attrs()) :: result()
   @callback status_media_allowed(attrs()) :: result()
+  # Owner-anchored message-media download authorization.
+  @callback media_download_allowed(attrs()) :: result()
   @optional_callbacks message_info: 1,
+                      media_download_allowed: 1,
                       vote_poll: 1,
                       list_poll_votes: 1,
                       post_status: 1,
@@ -74,6 +77,7 @@ defmodule SharedInfra.MessageClient do
   def list_status_posts(attrs), do: adapter().list_status_posts(attrs)
   def delete_status(attrs), do: adapter().delete_status(attrs)
   def status_media_allowed(attrs), do: adapter().status_media_allowed(attrs)
+  def media_download_allowed(attrs), do: adapter().media_download_allowed(attrs)
   def mark_delivered(attrs), do: adapter().mark_delivered(attrs)
   def analytics_overview(attrs), do: adapter().analytics_overview(attrs)
   def analytics_timeseries(attrs), do: adapter().analytics_timeseries(attrs)
