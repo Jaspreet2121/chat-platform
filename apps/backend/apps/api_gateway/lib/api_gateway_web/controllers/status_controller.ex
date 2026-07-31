@@ -43,22 +43,87 @@ defmodule ApiGatewayWeb.StatusController do
     with {:ok, session} <- session(conn),
          {:ok, %{threads: threads}} <-
            SharedInfra.MessageClient.status_feed(%{"viewer_user_id" => session.user_id}),
-         {:ok, %{posts: own}} <-
-           SharedInfra.MessageClient.list_status_posts(%{
-             "viewer_user_id" => session.user_id,
-             "owner_user_id" => session.user_id
-           }) do
-      my_status =
-        case own do
-          [] -> nil
-          posts -> %{post_count: length(posts), latest_at: List.last(posts).created_at}
-        end
-
+         # "My status" carries its VIEW COUNT (commit 2) under the same reciprocity as the viewer list:
+         # 0 + viewers_hidden when the OWNER turned read receipts off.
+         {:ok, my_status} <-
+           SharedInfra.MessageClient.my_status(%{"owner_user_id" => session.user_id}) do
       json(conn, %{my_status: my_status, threads: threads})
     else
       error -> handle_error(conn, error)
     end
   end
+
+  @doc """
+  Audience settings — GET/PUT /api/v1/status/audience {mode, member_user_ids}. Per-USER (not per-post),
+  WhatsApp's model. 'contacts' (default) | 'except' (contacts minus the list) | 'only' (contacts
+  intersected with the list). Enforced inside the ONE shared audience predicate — modes narrow, never
+  widen: an 'only' listee still needs the shared conversation to PREDATE the post.
+  """
+  def get_audience(conn, _params) do
+    with {:ok, session} <- session(conn),
+         {:ok, audience} <-
+           SharedInfra.MessageClient.get_status_audience(%{"user_id" => session.user_id}) do
+      json(conn, audience)
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  def set_audience(conn, params) do
+    with {:ok, session} <- session(conn),
+         {:ok, audience} <-
+           SharedInfra.MessageClient.set_status_audience(%{
+             "user_id" => session.user_id,
+             "mode" => params["mode"],
+             "member_user_ids" => params["member_user_ids"]
+           }) do
+      json(conn, audience)
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  @doc """
+  Record that the caller opened a status. Gated by the SAME audience predicate — a viewer who can't see
+  it can't record (404), so a BLOCKED viewer never produces a row. The row is the dedup key (first view
+  wins); DISCLOSURE is filtered at read, so a receipts-off viewer still records one. The owner's own
+  view records nothing.
+  """
+  def record_view(conn, %{"status_id" => status_id}) when is_binary(status_id) and status_id != "" do
+    with {:ok, session} <- session(conn),
+         {:ok, result} <-
+           SharedInfra.MessageClient.record_status_view(%{
+             "status_id" => status_id,
+             "viewer_user_id" => session.user_id
+           }) do
+      json(conn, result)
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  def record_view(conn, _params), do: ErrorResponse.invalid_request(conn, "status.invalid_request")
+
+  @doc """
+  "Seen by" — the OWNER'S viewer list for one of their posts. Owner-only (anyone else → 404, no
+  existence reveal). Reciprocity: a viewer appears iff THEY kept receipts on AND the owner did;
+  `viewers_hidden: true` means the OWNER'S OWN setting hides it (client copy: "You have read receipts
+  turned off"), never "nobody looked".
+  """
+  def viewers(conn, %{"status_id" => status_id}) when is_binary(status_id) and status_id != "" do
+    with {:ok, session} <- session(conn),
+         {:ok, result} <-
+           SharedInfra.MessageClient.status_viewers(%{
+             "status_id" => status_id,
+             "owner_user_id" => session.user_id
+           }) do
+      json(conn, result)
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  def viewers(conn, _params), do: ErrorResponse.invalid_request(conn, "status.invalid_request")
 
   def list(conn, %{"owner_user_id" => owner}) when is_binary(owner) and owner != "" do
     with {:ok, session} <- session(conn),
@@ -139,6 +204,18 @@ defmodule ApiGatewayWeb.StatusController do
         conn,
         "status.invalid_media",
         "media_id must reference your own ready status upload"
+      )
+
+  defp handle_error(conn, {:error, :status_invalid_mode}),
+    do: ErrorResponse.invalid_request(conn, "status.invalid_mode")
+
+  defp handle_error(conn, {:error, :status_audience_limit}),
+    do:
+      ErrorResponse.invalid_request_with(
+        conn,
+        "status.audience_limit",
+        "Too many audience members",
+        %{limit: 256}
       )
 
   defp handle_error(conn, {:error, :status_not_found}),

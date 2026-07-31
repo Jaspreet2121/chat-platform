@@ -5,8 +5,10 @@ defmodule ApiGatewayWeb.StatusControllerTest do
   not-ready media_id → 422 status.invalid_media — the avatar ownership rule); the feed carries
   `my_status` (nil without posts, summary with); validation codes surface; delete 404 maps; the
   MediaAuthz "status" arm allows exactly when the message service says allowed (deny + unavailable
-  mapped; UNKNOWN purposes stay denied — nothing else loosened); 401s. The audience/expiry/sweep SQL is
-  MessageService.StatusesTest.
+  mapped; UNKNOWN purposes stay denied — nothing else loosened); 401s. Commit 2 adds: the audience
+  settings round-trip + its codes, view recording (404 when the caller can't see the post), the
+  owner-only viewer list incl. viewers_hidden passthrough, and my_status carrying its view count. The
+  audience/expiry/sweep/reciprocity SQL is MessageService.StatusesTest.
   """
   use ExUnit.Case, async: false
 
@@ -49,11 +51,41 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     def status_feed(%{"viewer_user_id" => @me}),
       do: {:ok, %{threads: [%{owner_user_id: @friend, post_count: 2, latest_at: "t9", unseen_count: 1}]}}
 
-    # The viewer's own posts (my_status): present for @me, empty for others.
-    def list_status_posts(%{"viewer_user_id" => @me, "owner_user_id" => @me}),
-      do: {:ok, %{posts: [%{status_id: "mine-1", created_at: "t5"}, %{status_id: "mine-2", created_at: "t6"}]}}
+    # "My status" now carries its VIEW COUNT (commit 2).
+    def my_status(%{"owner_user_id" => @me}),
+      do: {:ok, %{post_count: 2, latest_at: "t6", view_count: 3, viewers_hidden: false}}
+
+    def my_status(_attrs), do: {:ok, nil}
 
     def list_status_posts(%{"owner_user_id" => owner}) when owner != @me, do: {:ok, %{posts: []}}
+    def list_status_posts(_attrs), do: {:ok, %{posts: []}}
+
+    # --- commit 2 ---
+    def get_status_audience(%{"user_id" => @me}),
+      do: {:ok, %{mode: "contacts", member_user_ids: []}}
+
+    def set_status_audience(%{"mode" => "everyone"}), do: {:error, :status_invalid_mode}
+    def set_status_audience(%{"mode" => "toomany"}), do: {:error, :status_audience_limit}
+
+    def set_status_audience(%{"mode" => mode, "member_user_ids" => members}),
+      do: {:ok, %{mode: mode, member_user_ids: members || []}}
+
+    # A status the caller can't see (or that doesn't exist) → not_found, identical either way.
+    def record_status_view(%{"status_id" => "st-1"}), do: {:ok, %{recorded: true}}
+    def record_status_view(_attrs), do: {:error, :status_not_found}
+
+    # Owner-only: only @me owns "st-1".
+    def status_viewers(%{"status_id" => "st-1", "owner_user_id" => @me}),
+      do:
+        {:ok,
+         %{
+           status_id: "st-1",
+           viewers: [%{user_id: @friend, viewed_at: "t7"}],
+           view_count: 1,
+           viewers_hidden: false
+         }}
+
+    def status_viewers(_attrs), do: {:error, :status_not_found}
 
     def delete_status(%{"status_id" => "st-1", "owner_user_id" => @me}), do: {:ok, %{deleted: true}}
     def delete_status(_attrs), do: {:error, :status_not_found}
@@ -135,13 +167,65 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     assert body(conn)["error"]["code"] == "status.invalid_kind"
   end
 
-  test "feed: threads + my_status summary (latest of the viewer's own posts)" do
+  test "feed: threads + my_status carrying its VIEW COUNT (commit 2)" do
     conn = StatusController.feed(authed(:get), %{})
     assert conn.status == 200
 
     response = body(conn)
     assert [%{"owner_user_id" => @friend, "post_count" => 2, "unseen_count" => 1}] = response["threads"]
-    assert response["my_status"] == %{"post_count" => 2, "latest_at" => "t6"}
+
+    assert response["my_status"] == %{
+             "post_count" => 2,
+             "latest_at" => "t6",
+             "view_count" => 3,
+             "viewers_hidden" => false
+           }
+  end
+
+  test "audience settings round-trip; invalid mode + cap carry their codes" do
+    get_conn = StatusController.get_audience(authed(:get), %{})
+    assert get_conn.status == 200
+    assert body(get_conn) == %{"mode" => "contacts", "member_user_ids" => []}
+
+    set_conn =
+      StatusController.set_audience(authed(:put), %{"mode" => "only", "member_user_ids" => [@friend]})
+
+    assert set_conn.status == 200
+    assert body(set_conn) == %{"mode" => "only", "member_user_ids" => [@friend]}
+
+    bad = StatusController.set_audience(authed(:put), %{"mode" => "everyone"})
+    assert bad.status == 400
+    assert body(bad)["error"]["code"] == "status.invalid_mode"
+
+    capped = StatusController.set_audience(authed(:put), %{"mode" => "toomany"})
+    assert capped.status == 400
+    assert body(capped)["error"]["code"] == "status.audience_limit"
+    assert body(capped)["error"]["limit"] == 256
+  end
+
+  test "view recording: 200 when visible; 404 when the caller can't see it (indistinguishable from unknown)" do
+    ok = StatusController.record_view(authed(:post), %{"status_id" => "st-1"})
+    assert ok.status == 200
+    assert body(ok) == %{"recorded" => true}
+
+    hidden = StatusController.record_view(authed(:post), %{"status_id" => "not-visible"})
+    assert hidden.status == 404
+    assert body(hidden)["error"]["code"] == "status.not_found"
+  end
+
+  test "viewer list is OWNER-ONLY: the owner gets it, anyone else 404s" do
+    mine = StatusController.viewers(authed(:get), %{"status_id" => "st-1"})
+    assert mine.status == 200
+
+    assert body(mine) == %{
+             "status_id" => "st-1",
+             "viewers" => [%{"user_id" => @friend, "viewed_at" => "t7"}],
+             "view_count" => 1,
+             "viewers_hidden" => false
+           }
+
+    theirs = StatusController.viewers(authed(:get, @friend), %{"status_id" => "st-1"})
+    assert theirs.status == 404
   end
 
   test "an owner list the viewer can't see is an EMPTY list (no existence reveal); delete maps 404" do
@@ -170,9 +254,13 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     assert {:error, :not_a_member} = MediaAuthz.authorize_download("x", %{purpose: "mystery"}, @me)
   end
 
-  test "no session → 401 across the surface" do
+  test "no session → 401 across the surface (incl. the commit-2 actions)" do
     assert StatusController.create(authed(:post, ""), %{"kind" => "text", "body" => "x"}).status == 401
     assert StatusController.feed(authed(:get, ""), %{}).status == 401
     assert StatusController.delete(authed(:delete, ""), %{"status_id" => "s"}).status == 401
+    assert StatusController.get_audience(authed(:get, ""), %{}).status == 401
+    assert StatusController.set_audience(authed(:put, ""), %{"mode" => "contacts"}).status == 401
+    assert StatusController.record_view(authed(:post, ""), %{"status_id" => "st-1"}).status == 401
+    assert StatusController.viewers(authed(:get, ""), %{"status_id" => "st-1"}).status == 401
   end
 end

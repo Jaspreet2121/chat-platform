@@ -172,6 +172,13 @@ defmodule ApiGatewayWeb.Router do
 
     post "/", StatusController, :create
     get "/feed", StatusController, :feed
+    # Audience settings (commit 2) — literal path, so it must precede "/:owner_user_id".
+    get "/audience", StatusController, :get_audience
+    put "/audience", StatusController, :set_audience
+    # View recording + the owner's "seen by" list (two-segment paths never collide with the one-segment
+    # owner list below).
+    post "/:status_id/view", StatusController, :record_view
+    get "/:status_id/viewers", StatusController, :viewers
     delete "/:status_id", StatusController, :delete
     get "/:owner_user_id", StatusController, :list
   end

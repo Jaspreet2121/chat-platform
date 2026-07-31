@@ -20,13 +20,22 @@ defmodule MessageService.Statuses do
   deny (blocks, leaving, expiry, delete) stays live. And the owner's own joined_at is checked too —
   the owner JOINING a big group after posting must not retroactively admit that group.
 
-  Commit 1 honors mode 'contacts' only; 'except'/'only' (status_audience/members) land in commit 2.
+  AUDIENCE MODES (commit 2) are enforced INSIDE this same predicate — never a second evaluation path:
+  'contacts' (default, no row) = the rule above; 'except' = that MINUS the listed users; 'only' = that
+  INTERSECTED with the listed users. NOTE the composition: 'only' still requires the PREDATING shared
+  conversation — listing someone does not retroactively admit them to posts made before you shared a
+  conversation. Modes narrow; they never widen.
 
   EXPIRY: every read carries `expires_at > now() AND deleted_at IS NULL`. THE SWEEP (write-amortised,
   no scheduler): each post drains ≤#{25} posts expired >1h ago — purge the media object (MediaClient)
   + stamp media_purged_at — and hard-deletes post+view rows >30 days old. Sweep rate ≥25× accrual rate
   ⇒ the backlog converges while the system is alive; owner-delete purges its object immediately.
   """
+
+  import Ecto.Query
+  # The reciprocity predicate's THIRD consumer — one definition, expanded here exactly as the read_by_count
+  # aggregate and the per-message reader list expand it (MessageService.ReadReceipts).
+  import MessageService.ReadReceipts
 
   require Logger
 
@@ -37,6 +46,8 @@ defmodule MessageService.Statuses do
   @sweep_grace_seconds 3600
   @purge_rows_after_days 30
   @max_body 700
+  # Audience list cap (mirrors the broadcast-list member cap; the list is a contact selection, not a feed).
+  @audience_limit 256
   @kinds ~w(text image video)
 
   # --- POST --------------------------------------------------------------------------------------
@@ -102,6 +113,17 @@ defmodule MessageService.Statuses do
       WHERE (b.blocker_user_id = $1::uuid AND b.blocked_user_id = sp.owner_user_id)
          OR (b.blocker_user_id = sp.owner_user_id AND b.blocked_user_id = $1::uuid)
     )
+    AND CASE COALESCE(
+               (SELECT a.mode FROM status_audience a WHERE a.user_id = sp.owner_user_id),
+               'contacts')
+          WHEN 'except' THEN NOT EXISTS (
+            SELECT 1 FROM status_audience_members m
+            WHERE m.user_id = sp.owner_user_id AND m.member_user_id = $1::uuid)
+          WHEN 'only' THEN EXISTS (
+            SELECT 1 FROM status_audience_members m
+            WHERE m.user_id = sp.owner_user_id AND m.member_user_id = $1::uuid)
+          ELSE true
+        END
     """
   end
 
@@ -205,6 +227,249 @@ defmodule MessageService.Statuses do
   rescue
     Ecto.Query.CastError -> {:ok, %{allowed: false}}
   end
+
+  # --- AUDIENCE SETTINGS (commit 2) ---------------------------------------------------------------
+
+  @doc "The caller's audience setting. No row → the default. → {:ok, %{mode, member_user_ids}}"
+  def get_audience(attrs) do
+    with :ok <- ensure_persistence(),
+         {:ok, user_id} <- required(attrs, "user_id") do
+      %{rows: mode_rows} =
+        Repo.query!("SELECT mode FROM status_audience WHERE user_id = $1::text::uuid", [user_id])
+
+      %{rows: member_rows} =
+        Repo.query!(
+          "SELECT member_user_id::text FROM status_audience_members WHERE user_id = $1::text::uuid",
+          [user_id]
+        )
+
+      mode = case mode_rows do
+        [[mode]] -> mode
+        _ -> "contacts"
+      end
+
+      {:ok, %{mode: mode, member_user_ids: Enum.map(member_rows, &hd/1)}}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :status_invalid}
+  end
+
+  @doc """
+  Set the audience mode + its member list (ONE list whose meaning the mode fixes: 'except' = excluded,
+  'only' = the allowed set; 'contacts' ignores it but the list is KEPT so switching modes back doesn't
+  lose it). Errors: :status_invalid_mode | :status_audience_limit.
+  """
+  def set_audience(attrs) do
+    with :ok <- ensure_persistence(),
+         {:ok, user_id} <- required(attrs, "user_id"),
+         {:ok, mode} <- valid_mode(attrs),
+         {:ok, members} <- valid_members(attrs, user_id) do
+      {:ok, _} =
+        Repo.transaction(fn ->
+          Repo.query!(
+            "INSERT INTO status_audience (user_id, mode) VALUES ($1::text::uuid, $2) " <>
+              "ON CONFLICT (user_id) DO UPDATE SET mode = EXCLUDED.mode, updated_at = now()",
+            [user_id, mode]
+          )
+
+          if members do
+            Repo.query!("DELETE FROM status_audience_members WHERE user_id = $1::text::uuid", [user_id])
+
+            if members != [] do
+              Repo.query!(
+                "INSERT INTO status_audience_members (user_id, member_user_id) " <>
+                  "SELECT $1::text::uuid, unnest($2::uuid[])",
+                [user_id, members]
+              )
+            end
+          end
+        end)
+
+      get_audience(%{"user_id" => user_id})
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :status_invalid}
+  end
+
+  # --- VIEWS (commit 2) ---------------------------------------------------------------------------
+
+  @doc """
+  Record that `viewer_user_id` opened a status. Gated by the SAME audience predicate the feed uses — a
+  viewer who cannot see the post cannot record a view (→ :status_not_found), which is also why a BLOCKED
+  viewer never produces a row (asserted in the tests rather than assumed). The row is the DEDUP KEY:
+  always written (first view wins its timestamp), regardless of either side's receipt settings —
+  disclosure is filtered at READ, matching read_by_count's exclusion semantics. The OWNER viewing their
+  own status records nothing.
+  """
+  def record_view(attrs) do
+    with :ok <- ensure_persistence(),
+         {:ok, status_id} <- required(attrs, "status_id"),
+         {:ok, viewer} <- required(attrs, "viewer_user_id") do
+      %{rows: rows} =
+        Repo.query!(
+          "SELECT (sp.owner_user_id = $1::uuid) FROM status_posts sp " <>
+            "WHERE sp.id = $2::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL " <>
+            "AND ((sp.owner_user_id = $1::uuid) OR (" <> audience_sql() <> "))",
+          [viewer, status_id]
+        )
+
+      case rows do
+        [[true]] ->
+          # The owner's own view is not a "view".
+          {:ok, %{recorded: false}}
+
+        [[false]] ->
+          Repo.query!(
+            "INSERT INTO status_views (status_id, viewer_user_id) VALUES ($1::text::uuid, $2::text::uuid) " <>
+              "ON CONFLICT (status_id, viewer_user_id) DO NOTHING",
+            [status_id, viewer]
+          )
+
+          {:ok, %{recorded: true}}
+
+        _ ->
+          {:error, :status_not_found}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :status_not_found}
+  end
+
+  @doc """
+  The owner's viewer list for ONE of their posts ("seen by"). OWNER-ONLY (anyone else →
+  :status_not_found — no existence reveal). Reciprocity, via the SHARED predicate: a viewer appears iff
+  THEY kept receipts on (`read_receipts_on/1`, expanded in the Ecto query below — the macro's third
+  consumer) AND the OWNER kept theirs on (`viewer_sees_read_receipts?/1`; when off, the list is empty
+  and `viewers_hidden: true` — the owner's OWN setting hides it, exactly like message-info's
+  read_hidden, NOT "nobody looked"). Rows exist regardless; only disclosure is filtered.
+  → {:ok, %{status_id, viewers: [%{user_id, viewed_at}], view_count, viewers_hidden}}
+  """
+  def viewers(attrs) do
+    with :ok <- ensure_persistence(),
+         {:ok, status_id} <- required(attrs, "status_id"),
+         {:ok, owner} <- required(attrs, "owner_user_id"),
+         :ok <- ensure_owns(status_id, owner) do
+      if viewer_sees_read_receipts?(owner) do
+        rows =
+          "status_views"
+          |> where([v], v.status_id == type(^status_id, :binary_id))
+          |> join(:left, [v], ps in "user_privacy_settings", on: ps.user_id == v.viewer_user_id)
+          |> where([v, ps], read_receipts_on(ps))
+          |> order_by([v], desc: v.viewed_at)
+          |> select([v], {v.viewer_user_id, v.viewed_at})
+          |> Repo.all()
+
+        viewers =
+          Enum.map(rows, fn {user_id, viewed_at} ->
+            %{user_id: Ecto.UUID.cast!(user_id), viewed_at: iso8601(viewed_at)}
+          end)
+
+        {:ok,
+         %{
+           status_id: status_id,
+           viewers: viewers,
+           view_count: length(viewers),
+           viewers_hidden: false
+         }}
+      else
+        {:ok, %{status_id: status_id, viewers: [], view_count: 0, viewers_hidden: true}}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :status_not_found}
+  end
+
+  @doc """
+  The owner's own thread summary for the feed ("My status"): post_count + latest_at, plus the DISTINCT
+  viewer count across their live posts under the same reciprocity (0 + viewers_hidden when the owner
+  turned receipts off). Bounded: 2 indexed queries + the owner-half privacy lookup.
+  → {:ok, nil} when the owner has no live posts.
+  """
+  def my_status(attrs) do
+    with :ok <- ensure_persistence(),
+         {:ok, owner} <- required(attrs, "owner_user_id") do
+      %{rows: [[post_count, latest_at]]} =
+        Repo.query!(
+          "SELECT count(*)::int, " <>
+            "to_char(max(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') " <>
+            "FROM status_posts WHERE owner_user_id = $1::text::uuid " <>
+            "AND expires_at > now() AND deleted_at IS NULL",
+          [owner]
+        )
+
+      if post_count == 0 do
+        {:ok, nil}
+      else
+        hidden = not viewer_sees_read_receipts?(owner)
+
+        view_count =
+          if hidden do
+            0
+          else
+            "status_views"
+            |> join(:inner, [v], p in "status_posts", on: p.id == v.status_id)
+            |> join(:left, [v, _p], ps in "user_privacy_settings", on: ps.user_id == v.viewer_user_id)
+            |> where([v, p, ps], p.owner_user_id == type(^owner, :binary_id))
+            |> where([v, p, _ps], p.expires_at > ^DateTime.utc_now() and is_nil(p.deleted_at))
+            |> where([v, _p, ps], read_receipts_on(ps))
+            |> select([v], count(v.viewer_user_id, :distinct))
+            |> Repo.one()
+          end
+
+        {:ok,
+         %{
+           post_count: post_count,
+           latest_at: latest_at,
+           view_count: view_count,
+           viewers_hidden: hidden
+         }}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :status_invalid}
+  end
+
+  defp ensure_owns(status_id, owner) do
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT 1 FROM status_posts WHERE id = $1::text::uuid AND owner_user_id = $2::text::uuid " <>
+          "AND expires_at > now() AND deleted_at IS NULL",
+        [status_id, owner]
+      )
+
+    if rows == [], do: {:error, :status_not_found}, else: :ok
+  end
+
+  defp valid_mode(attrs) do
+    case get_attr(attrs, "mode") do
+      mode when mode in ~w(contacts except only) -> {:ok, mode}
+      _ -> {:error, :status_invalid_mode}
+    end
+  end
+
+  # Absent → keep the stored list; present → full replace (self + dupes dropped).
+  defp valid_members(attrs, user_id) do
+    case get_attr(attrs, "member_user_ids") do
+      nil ->
+        {:ok, nil}
+
+      ids when is_list(ids) ->
+        ids = ids |> Enum.uniq() |> Enum.reject(&(&1 == user_id))
+
+        cond do
+          not Enum.all?(ids, &(is_binary(&1) and &1 != "")) -> {:error, :status_invalid}
+          length(ids) > @audience_limit -> {:error, :status_audience_limit}
+          true -> {:ok, ids}
+        end
+
+      _ ->
+        {:error, :status_invalid}
+    end
+  end
+
+  defp iso8601(nil), do: nil
+  defp iso8601(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp iso8601(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt) <> "Z"
 
   # --- DELETE ------------------------------------------------------------------------------------
 

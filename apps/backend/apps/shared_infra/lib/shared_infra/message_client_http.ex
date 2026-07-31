@@ -67,6 +67,21 @@ defmodule SharedInfra.MessageClientHttp do
   def status_media_allowed(attrs), do: post("/internal/status/media_allowed", attrs)
 
   @impl true
+  def get_status_audience(attrs), do: post("/internal/status/audience/get", attrs)
+
+  @impl true
+  def set_status_audience(attrs), do: post("/internal/status/audience/set", attrs)
+
+  @impl true
+  def record_status_view(attrs), do: post("/internal/status/view", attrs)
+
+  @impl true
+  def status_viewers(attrs), do: post("/internal/status/viewers", attrs)
+
+  @impl true
+  def my_status(attrs), do: post("/internal/status/mine", attrs)
+
+  @impl true
   def media_download_allowed(attrs), do: post("/internal/media/download_allowed", attrs)
 
   @impl true

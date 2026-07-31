@@ -971,6 +971,10 @@ defmodule MessageService.MessageStore.PostgresAdapter do
 
   import Ecto.Query
 
+  # The read-receipt reciprocity predicate lives in ONE place (MessageService.ReadReceipts) so the
+  # aggregate, the per-message reader list, and the status viewer lists provably share it.
+  import MessageService.ReadReceipts
+
   alias MessageService.Repo
   alias MessageService.Schemas.Message
   alias MessageService.Schemas.MessageReaction
@@ -1461,16 +1465,6 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   # Batched read/delivered aggregate for the listed messages in ONE query (no N+1). COUNT(column)
   # ignores NULLs, and each (conversation, message, user) receipt row is a distinct user, so the count
   # is the number of other users who have read / received each message.
-  # THE reader half of read-receipt reciprocity (46e4e7f), defined ONCE: a reader counts/appears iff they
-  # kept read receipts ON (no privacy row → NULL → default enabled). Expanded inside Ecto query macros by
-  # BOTH receipt_counts (the aggregate) and message_info (the per-user list), so the count and the list are
-  # provably the same predicate and cannot drift.
-  defmacrop read_receipts_on(ps) do
-    quote do
-      is_nil(unquote(ps).read_receipts_enabled) or unquote(ps).read_receipts_enabled
-    end
-  end
-
   # --- Polls (079) ------------------------------------------------------------------------------
 
   @doc """
@@ -1704,29 +1698,6 @@ defmodule MessageService.MessageStore.PostgresAdapter do
       {message_id, %{read_by_count: read_by, delivered_by_count: delivered_by}}
     end)
   end
-
-  # ONE lookup for the whole page: does this viewer still SEE read receipts? A viewer who turned them OFF sees
-  # none (the reciprocal rule's viewer half). No row / true / null → yes (default). Fail-OPEN — a privacy
-  # read glitch shows receipts rather than hiding everyone's.
-  defp viewer_sees_read_receipts?(viewer) when is_binary(viewer) and viewer != "" do
-    case Ecto.UUID.dump(viewer) do
-      {:ok, uid} ->
-        case Repo.query!(
-               "SELECT read_receipts_enabled FROM user_privacy_settings WHERE user_id = $1",
-               [uid]
-             ) do
-          %Postgrex.Result{rows: [[false]]} -> false
-          _ -> true
-        end
-
-      :error ->
-        true
-    end
-  rescue
-    _ -> true
-  end
-
-  defp viewer_sees_read_receipts?(_viewer), do: true
 
   defp hide_read_count(message, true), do: message
   defp hide_read_count(message, false), do: Map.put(message, :read_by_count, 0)

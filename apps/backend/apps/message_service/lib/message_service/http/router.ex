@@ -127,6 +127,26 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Statuses.media_allowed(body(conn)))
   end
 
+  post "/internal/status/audience/get" do
+    send_result(conn, MessageService.Statuses.get_audience(body(conn)))
+  end
+
+  post "/internal/status/audience/set" do
+    send_result(conn, MessageService.Statuses.set_audience(body(conn)))
+  end
+
+  post "/internal/status/view" do
+    send_result(conn, MessageService.Statuses.record_view(body(conn)))
+  end
+
+  post "/internal/status/viewers" do
+    send_result(conn, MessageService.Statuses.viewers(body(conn)))
+  end
+
+  post "/internal/status/mine" do
+    send_result(conn, MessageService.Statuses.my_status(body(conn)))
+  end
+
   # Owner-anchored message-media download authorization (the gateway's "message" purpose arm).
   post "/internal/media/download_allowed" do
     send_result(conn, MessageService.MessageStore.media_download_allowed(body(conn)))

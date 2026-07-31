@@ -65,6 +65,21 @@ defmodule MessageService.MessageClientInProcess do
   def status_media_allowed(attrs), do: MessageService.Statuses.media_allowed(attrs)
 
   @impl true
+  def get_status_audience(attrs), do: MessageService.Statuses.get_audience(attrs)
+
+  @impl true
+  def set_status_audience(attrs), do: MessageService.Statuses.set_audience(attrs)
+
+  @impl true
+  def record_status_view(attrs), do: MessageService.Statuses.record_view(attrs)
+
+  @impl true
+  def status_viewers(attrs), do: MessageService.Statuses.viewers(attrs)
+
+  @impl true
+  def my_status(attrs), do: MessageService.Statuses.my_status(attrs)
+
+  @impl true
   def media_download_allowed(attrs), do: MessageService.MessageStore.media_download_allowed(attrs)
 
   @impl true

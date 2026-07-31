@@ -7,6 +7,13 @@ defmodule MessageService.StatusesTest do
   media_allowed all go dark at expires_at); the owner's own list bypasses the audience; owner-delete
   tombstones + purges immediately; and THE SWEEP (run inline — the async task can't share the SQL
   sandbox) purges expired media, stamps media_purged_at, and hard-deletes >30-day rows.
+
+  COMMIT 2 adds: audience MODES enforced inside the same predicate ('except' excludes, 'only' restricts)
+  and COMPOSING with the predating rule (an 'only' listee who joined the shared conversation AFTER the
+  post is still denied — modes narrow, never widen); view recording gated by that predicate (so a BLOCKED
+  viewer provably never gets a row); and the owner's viewer list under read-receipt reciprocity — a
+  receipts-off viewer is ABSENT from the list while their view ROW still exists, and a receipts-off OWNER
+  sees an empty list with viewers_hidden.
   """
   use MessageService.DataCase, async: false
 
@@ -141,7 +148,7 @@ defmodule MessageService.StatusesTest do
     old_friend = user!()
     shared_conversation!(owner, old_friend)
 
-    post = post!(owner)
+    _post = post!(owner)
 
     # The predating contact sees the thread + posts.
     assert feed_owners(old_friend) == [owner]
@@ -322,5 +329,222 @@ defmodule MessageService.StatusesTest do
     assert thread.post_count == 2
     assert thread.unseen_count == 2
     assert is_binary(thread.latest_at)
+  end
+
+  # --- commit 2 helpers ---------------------------------------------------------------------------
+
+  defp set_audience!(user_id, mode, members \\ nil) do
+    attrs = %{"user_id" => user_id, "mode" => mode}
+    attrs = if members, do: Map.put(attrs, "member_user_ids", members), else: attrs
+    {:ok, audience} = Statuses.set_audience(attrs)
+    audience
+  end
+
+  defp receipts_off!(user_id) do
+    Repo.query!(
+      "INSERT INTO user_privacy_settings (user_id, last_seen_visibility, profile_photo_visibility, " <>
+        "read_receipts_enabled, created_at, updated_at) " <>
+        "VALUES ($1::text::uuid, 'contacts', 'contacts', false, now(), now()) " <>
+        "ON CONFLICT (user_id) DO UPDATE SET read_receipts_enabled = false",
+      [user_id]
+    )
+  end
+
+  defp view!(status_id, viewer),
+    do: Statuses.record_view(%{"status_id" => status_id, "viewer_user_id" => viewer})
+
+  defp viewers_of(status_id, owner) do
+    {:ok, result} = Statuses.viewers(%{"status_id" => status_id, "owner_user_id" => owner})
+    result
+  end
+
+  defp view_rows(status_id) do
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT viewer_user_id::text FROM status_views WHERE status_id = $1::text::uuid",
+        [status_id]
+      )
+
+    Enum.map(rows, &hd/1)
+  end
+
+  # --- commit 2 tests -----------------------------------------------------------------------------
+
+  @tag :postgres_integration
+  test "AUDIENCE MODES narrow the SAME predicate: 'except' excludes, 'only' restricts (feed + list + media)" do
+    owner = user!()
+    alice = user!()
+    bob = user!()
+    shared_conversation!(owner, alice)
+    shared_conversation!(owner, bob)
+
+    media_id = Ecto.UUID.generate()
+    post = post!(owner, %{"kind" => "image", "media_id" => media_id})
+
+    # Default ('contacts'): both see it, through all three consumers of the predicate.
+    assert feed_owners(alice) == [owner]
+    assert feed_owners(bob) == [owner]
+    assert allowed?(alice, media_id)
+
+    # EXCEPT alice → alice loses it everywhere; bob keeps it.
+    set_audience!(owner, "except", [alice])
+    assert feed_owners(alice) == []
+    assert posts_of(alice, owner) == []
+    refute allowed?(alice, media_id)
+    assert feed_owners(bob) == [owner]
+    assert allowed?(bob, media_id)
+
+    # ONLY alice → the inverse, with no second evaluation path anywhere.
+    set_audience!(owner, "only", [alice])
+    assert feed_owners(alice) == [owner]
+    assert allowed?(alice, media_id)
+    assert feed_owners(bob) == []
+    refute allowed?(bob, media_id)
+
+    # Back to contacts: the stored list is KEPT but ignored.
+    assert %{mode: "contacts", member_user_ids: [^alice]} = set_audience!(owner, "contacts")
+    assert feed_owners(bob) == [owner]
+
+    # The owner always sees their own, whatever the mode.
+    set_audience!(owner, "only", [])
+    assert [%{status_id: sid}] = posts_of(owner, owner)
+    assert sid == post.status_id
+  end
+
+  @tag :postgres_integration
+  test "THE COMPOSITION: an 'only' listee who joined the shared conversation AFTER the post is STILL denied" do
+    owner = user!()
+    latecomer = user!()
+
+    # The post exists BEFORE any shared conversation with the latecomer.
+    _before = post!(owner)
+    shared_conversation!(owner, latecomer, 0)
+
+    # Explicitly listed under 'only' — the mode cannot widen past the predating rule.
+    set_audience!(owner, "only", [latecomer])
+    assert feed_owners(latecomer) == []
+    assert posts_of(latecomer, owner) == []
+
+    # A post made AFTER the relationship IS visible to them (the rule stays per-post).
+    fresh = post!(owner, %{"body" => "after"})
+    assert Enum.map(posts_of(latecomer, owner), & &1.status_id) == [fresh.status_id]
+  end
+
+  @tag :postgres_integration
+  test "VIEW RECORDING is gated by the predicate: a BLOCKED viewer provably gets NO row; the owner's own view isn't one" do
+    owner = user!()
+    friend = user!()
+    blocked = user!()
+    shared_conversation!(owner, friend)
+    shared_conversation!(owner, blocked)
+
+    post = post!(owner)
+
+    # A legitimate viewer records once; a repeat is idempotent (the row is the dedup key).
+    assert {:ok, %{recorded: true}} = view!(post.status_id, friend)
+    assert {:ok, %{recorded: true}} = view!(post.status_id, friend)
+    assert view_rows(post.status_id) == [friend]
+
+    # BLOCKED (either direction) → can't view → can't record → NO ROW EXISTS (asserted, not assumed).
+    block!(owner, blocked)
+    assert {:error, :status_not_found} = view!(post.status_id, blocked)
+    assert view_rows(post.status_id) == [friend]
+
+    # An 'except'-excluded viewer likewise cannot record.
+    excluded = user!()
+    shared_conversation!(owner, excluded)
+    set_audience!(owner, "except", [excluded])
+    assert {:error, :status_not_found} = view!(post.status_id, excluded)
+
+    # The OWNER opening their own status is not a view.
+    assert {:ok, %{recorded: false}} = view!(post.status_id, owner)
+    assert view_rows(post.status_id) == [friend]
+  end
+
+  @tag :postgres_integration
+  test "VIEWER LIST reciprocity: a receipts-off viewer is ABSENT while their ROW still exists" do
+    owner = user!()
+    on_viewer = user!()
+    off_viewer = user!()
+    shared_conversation!(owner, on_viewer)
+    shared_conversation!(owner, off_viewer)
+
+    post = post!(owner)
+    receipts_off!(off_viewer)
+
+    assert {:ok, %{recorded: true}} = view!(post.status_id, on_viewer)
+    assert {:ok, %{recorded: true}} = view!(post.status_id, off_viewer)
+
+    # BOTH rows exist — recording is unconditional; only DISCLOSURE is filtered (read_by_count semantics).
+    assert Enum.sort(view_rows(post.status_id)) == Enum.sort([on_viewer, off_viewer])
+
+    result = viewers_of(post.status_id, owner)
+    assert Enum.map(result.viewers, & &1.user_id) == [on_viewer]
+    assert result.view_count == 1
+    refute result.viewers_hidden
+
+    # The OWNER half: with the owner's own receipts off, the list is empty + flagged (their setting).
+    receipts_off!(owner)
+    hidden = viewers_of(post.status_id, owner)
+    assert hidden.viewers == []
+    assert hidden.view_count == 0
+    assert hidden.viewers_hidden == true
+  end
+
+  @tag :postgres_integration
+  test "VIEWER LIST is OWNER-ONLY (anyone else → not_found), and my_status carries the distinct view count" do
+    owner = user!()
+    alice = user!()
+    bob = user!()
+    shared_conversation!(owner, alice)
+    shared_conversation!(owner, bob)
+
+    p1 = post!(owner)
+    p2 = post!(owner, %{"body" => "second"})
+
+    # A non-owner can never read a viewer list — even one they appear in.
+    assert {:ok, %{recorded: true}} = view!(p1.status_id, alice)
+
+    assert {:error, :status_not_found} =
+             Statuses.viewers(%{"status_id" => p1.status_id, "owner_user_id" => alice})
+
+    # my_status: DISTINCT viewers across live posts (alice saw both → counted once).
+    assert {:ok, %{recorded: true}} = view!(p2.status_id, alice)
+    assert {:ok, %{recorded: true}} = view!(p2.status_id, bob)
+
+    {:ok, mine} = Statuses.my_status(%{"owner_user_id" => owner})
+    assert mine.post_count == 2
+    assert mine.view_count == 2
+    refute mine.viewers_hidden
+    assert is_binary(mine.latest_at)
+
+    # No live posts → nil (the feed renders no "My status" entry).
+    {:ok, _} = Statuses.delete_status(%{"owner_user_id" => owner, "status_id" => p1.status_id})
+    {:ok, _} = Statuses.delete_status(%{"owner_user_id" => owner, "status_id" => p2.status_id})
+    assert {:ok, nil} = Statuses.my_status(%{"owner_user_id" => owner})
+  end
+
+  @tag :postgres_integration
+  test "audience settings: defaults, validation, self+dupes dropped, the cap" do
+    owner = user!()
+    friend = user!()
+
+    # No row → the default.
+    assert {:ok, %{mode: "contacts", member_user_ids: []}} = Statuses.get_audience(%{"user_id" => owner})
+
+    assert {:error, :status_invalid_mode} =
+             Statuses.set_audience(%{"user_id" => owner, "mode" => "everyone"})
+
+    # Self + duplicates are dropped rather than erroring.
+    assert %{mode: "only", member_user_ids: [^friend]} =
+             set_audience!(owner, "only", [friend, friend, owner])
+
+    # Absent member list = keep the stored one (a mode-only switch).
+    assert %{mode: "except", member_user_ids: [^friend]} = set_audience!(owner, "except")
+
+    too_many = for _ <- 1..257, do: Ecto.UUID.generate()
+
+    assert {:error, :status_audience_limit} =
+             Statuses.set_audience(%{"user_id" => owner, "mode" => "only", "member_user_ids" => too_many})
   end
 end
