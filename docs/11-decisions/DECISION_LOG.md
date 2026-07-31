@@ -2,6 +2,48 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-01] Scylla full port (Option A): design accepted, commit 1 built, the rest deliberately unbuilt
+
+- **Context:** Option A (full message-store port) was designed. Reading the adapter before designing
+  changed the premises materially: the "core 13" was actually **7 functions that had never executed a
+  single CQL statement against a real engine + 6 explicit stubs** (reactions, stars, search), the 7
+  carried guaranteed Phase-D type errors (ISO strings against `date`, nested maps against
+  `map<text,text>`), `get_message` was a list-200-and-find, and `list_messages` returned
+  `next_cursor: nil` unconditionally. Scope grew materially once the adapter was actually read:
+  **7 unverified + 6 stubs + 6 unported + an inbox that reads messages from another service.**
+- **Built (commit 1 — "make the existing surface real"):** the Phase-D codec with the uniform
+  metadata-JSON convention (every metadata value stored as its JSON encoding — stated in the CQL file
+  header, `ScyllaCodec`, and enforced by a live round-trip of a nested poll definition);
+  bucket-derived point reads (timeuuid → bucket, previous-day candidate for the midnight race); real
+  cursor pagination (per-bucket queries merged client-side — the first live run against a real engine
+  caught that `LIMIT` + multi-partition `IN` truncates in token order before any client-side sort,
+  which a fake can never catch); `scripts/test-scylla.sh` + a CI step running every `@tag
+  :scylla_integration` suite against a real Scylla; a CQL drift test mirroring the Postgres one.
+  The adapter stays unselected; production stays Postgres.
+- **The two findings that make this a re-architecture rather than a port (verbatim from the design):**
+  - *"The inbox reads the messages table directly, from another service. `conversation_service`'s
+    `@inbox_sql` laterals over `messages` for the preview and the unread count — honouring
+    `cleared_before`, `auto_delete_seconds`, and read receipts, per participant. If messages leave
+    Postgres, the inbox breaks. The unwired `messages_by_user_inbox` table exists for this, but
+    maintaining it means per-recipient fan-out (256 read-modify-writes per group message — Scylla
+    `int`, not a counter, and the unread logic would need reimplementing against per-user windows)."*
+    The alternatives — inbox projection fan-out in Scylla, conversation_service composing
+    preview/unread from Scylla at read time, or a Postgres shadow (dual-store by another name) — are
+    an undecided checkpoint. **Read this before considering the port.**
+  - *"`put_message` is a transactional outbox. Message insert + `webhook_outbox` rows commit as one
+    Postgres transaction — that's the no-lost-webhook guarantee. With messages in Scylla there is no
+    shared transaction: a Scylla-committed message whose outbox insert fails emits no webhook (or
+    vice versa). The guarantee degrades to at-least-once with reconciliation, and that must be stated
+    as a weakened contract, not discovered later."*
+- **Deliberately unbuilt:** the six optional callbacks (media trio / message_info / polls — designed:
+  two new CQL tables, cross-store composition, poll validation via Scylla point-read with votes
+  staying Postgres), the inbox decision, dual-write + backfill + shadow-read + cutover, and
+  `search_messages` (no honest Scylla answer; ILIKE-over-participants needs a body shadow or external
+  search — its own decision).
+- **Trigger — unchanged:** flip only when `list_messages` latency or Postgres write throughput is a
+  MEASURED bottleneck (the slice-49 profiling standard). The adapter seam keeps the option open at
+  zero carrying cost; commit 1 just made the seam real instead of load-bearing fiction.
+
 ## [2026-08-01] ScyllaDB position: hybrid end-state, measured trigger — not a scheduled migration
 
 - **Context:** Phases A and B shipped (container + schema behind the `scylla` compose profile; a real

@@ -184,17 +184,54 @@ end
 
 defmodule MessageService.MessageStore.ScyllaAdapter do
   @moduledoc """
-  ScyllaDB adapter backed by the configured `SharedInfra.Scylla.Client`.
+  ScyllaDB adapter backed by the configured `SharedInfra.Scylla.Client`. NOT the default; selecting it
+  requires `MESSAGE_STORE_ADAPTER=scylla` plus a configured client — production is Postgres.
 
-  This adapter is not the default yet. Configure `:scylla_client_adapter` with a
-  real client module before enabling it in an environment.
+  Every export is one of exactly TWO things — verified against a REAL Scylla in CI
+  (`scripts/test-scylla.sh`, `@tag :scylla_integration`), or an explicit documented stub. There is no
+  third category; a function that looks implemented but has never touched an engine is how the
+  `$N::uuid` class of bug ships.
+
+      put_message      VERIFIED   single-table write (fan-out to projections is the port, not this slice)
+      get_message      VERIFIED   bucket-derived point read (bucket from the timeuuid via ScyllaCodec)
+      list_messages    VERIFIED   real cursor pagination, windowed bucket walk (see below)
+      update_message   VERIFIED   resolves the row's bucket via point read, then updates
+      delete_message   VERIFIED   same resolution; soft-delete status write
+      mark_delivered   VERIFIED   receipt upsert
+      mark_read        VERIFIED   receipt upsert
+      upsert_reaction  STUB       {:error, :message_store_unavailable}
+      remove_reaction  STUB       {:error, :message_store_unavailable}
+      star_message     STUB       {:error, :message_store_unavailable}
+      unstar_message   STUB       {:error, :message_store_unavailable}
+      list_starred     STUB       {:error, :message_store_unavailable}
+      search_messages  STUB       {:error, :message_store_unavailable}
+
+  The six optional callbacks (media/message_info/polls) are NOT exported here at all — the boundary
+  answers `{:error, :message_unavailable}` for them, which the gateway maps to denial. Their port is
+  designed (see DECISION_LOG 2026-08-01, Option A) and deliberately unbuilt.
+
+  ## Pagination and the daily-bucket consequence
+
+  `messages_by_conversation` partitions on `(conversation_id, bucket_date)` — one calendar day per
+  partition. A page walks buckets newest-first in #{7}-day windows (one `bucket_date IN` query per
+  window, rows merged and time-sorted client-side; timeuuids CLUSTER by embedded time but their
+  STRING form does not sort chronologically, hence the codec sort). The walk is capped at
+  #{730} days: a conversation idle longer than that lists as EMPTY under this adapter — a real
+  behavioural gap vs Postgres, documented here and in the port design (month-sized buckets are the
+  fix, and a schema decision that belongs to the port, not this slice). The cursor is
+  `"bucket_date|message_id"`, opaque to callers.
   """
 
   @behaviour MessageService.MessageStore
 
+  alias MessageService.Persistence.MessageReceipts
   alias MessageService.Persistence.MessageTimelineReads
   alias MessageService.Persistence.MessageTimelineWrites
-  alias MessageService.Persistence.MessageReceipts
+  alias MessageService.Persistence.ScyllaCodec
+
+  @window_days 7
+  @max_lookback_days 730
+  @default_limit 50
 
   @impl true
   def put_message(attrs) do
@@ -202,7 +239,7 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
     with {:ok, client} <- client_adapter(),
          {:ok, _result} <- execute(client, plan) do
-      {:ok, message_response(attrs)}
+      {:ok, response_from_attrs(attrs)}
     else
       {:error, reason} -> {:error, reason}
     end
@@ -210,73 +247,71 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
   @impl true
   def get_message(attrs) do
-    message_id = attr(attrs, "message_id")
-    plan = MessageTimelineReads.list_recent_plan(Map.put_new(attrs, "limit", 200))
-
-    with {:ok, client} <- client_adapter(),
-         {:ok, result} <- execute(client, plan) do
-      result
-      |> rows()
-      |> Enum.find(fn row -> attr(row, "message_id") == message_id end)
-      |> case do
-        nil -> {:error, :message_not_found}
-        row -> {:ok, message_response(row)}
+    with {:ok, client} <- client_adapter() do
+      case find_row(client, attr(attrs, "conversation_id"), attr(attrs, "message_id")) do
+        {:ok, row, _bucket} -> {:ok, response_from_row(row)}
+        {:error, reason} -> {:error, reason}
       end
     end
   end
 
   @impl true
   def list_messages(attrs) do
-    plan = MessageTimelineReads.list_recent_plan(attrs)
+    conversation_id = attr(attrs, "conversation_id")
+    limit = attr(attrs, "limit") || @default_limit
 
     with {:ok, client} <- client_adapter(),
-         {:ok, result} <- execute(client, plan) do
+         {:ok, rows, next_cursor} <- walk_buckets(client, conversation_id, cursor(attrs), limit) do
       {:ok,
        %{
-         conversation_id: attrs["conversation_id"],
-         messages: result |> rows() |> Enum.map(&message_response/1),
-         next_cursor: nil
+         conversation_id: conversation_id,
+         messages: Enum.map(rows, &response_from_row/1),
+         next_cursor: next_cursor
        }}
-    else
-      {:error, reason} -> {:error, reason}
     end
   end
 
   @impl true
   def update_message(attrs) do
-    plan = MessageTimelineWrites.mark_edited_plan(attrs)
+    mutate_resolved(attrs, fn bucket ->
+      MessageTimelineWrites.mark_edited_plan(
+        attrs
+        |> Map.put("bucket_date", bucket)
+        |> Map.put_new("edited_at", DateTime.utc_now())
+      )
+    end)
+    |> case do
+      {:ok, row} ->
+        {:ok, Map.merge(response_from_row(row), %{status: "edited", body: attr(attrs, "body")})}
 
-    with {:ok, client} <- client_adapter(),
-         {:ok, _result} <- execute(client, plan) do
-      {:ok, message_response(Map.merge(attrs, %{"status" => "edited"}))}
-    else
-      {:error, reason} -> {:error, reason}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
   @impl true
   def delete_message(attrs) do
-    plan = MessageTimelineWrites.mark_deleted_plan(attrs)
-
-    with {:ok, client} <- client_adapter(),
-         {:ok, _result} <- execute(client, plan) do
-      {:ok, message_response(Map.merge(attrs, %{"status" => "deleted"}))}
-    else
+    mutate_resolved(attrs, fn bucket ->
+      MessageTimelineWrites.mark_deleted_plan(
+        attrs
+        |> Map.put("bucket_date", bucket)
+        |> Map.put_new("deleted_at", DateTime.utc_now())
+      )
+    end)
+    |> case do
+      {:ok, row} -> {:ok, Map.put(response_from_row(row), :status, "deleted")}
       {:error, reason} -> {:error, reason}
     end
   end
 
   @impl true
-  def mark_delivered(attrs) do
-    put_receipt(Map.merge(attrs, %{"status" => "delivered"}))
-  end
+  def mark_delivered(attrs), do: put_receipt(Map.merge(attrs, %{"status" => "delivered"}))
 
   @impl true
-  def mark_read(attrs) do
-    put_receipt(Map.merge(attrs, %{"status" => "read"}))
-  end
+  def mark_read(attrs), do: put_receipt(Map.merge(attrs, %{"status" => "read"}))
 
-  # Reactions/stars/search aren't implemented for the Scylla store yet — Postgres is the durable backend.
+  # --- documented stubs (see the moduledoc table; completing these is the port, not this slice) ----
+
   @impl true
   def upsert_reaction(_attrs), do: {:error, :message_store_unavailable}
 
@@ -295,8 +330,166 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   @impl true
   def search_messages(_attrs), do: {:error, :message_store_unavailable}
 
+  # --- point read + bucket resolution --------------------------------------------------------------
+
+  # The partition key includes bucket_date, which callers don't carry — derive candidate days from the
+  # timeuuid (the day it encodes, plus the previous day for the midnight race) and try each: at most
+  # two point reads, usually one.
+  defp find_row(client, conversation_id, message_id) do
+    candidates = ScyllaCodec.bucket_candidates(message_id)
+
+    if candidates == [] do
+      {:error, :message_not_found}
+    else
+      Enum.reduce_while(candidates, {:error, :message_not_found}, fn bucket, acc ->
+        plan =
+          MessageTimelineReads.get_message_plan(%{
+            "conversation_id" => conversation_id,
+            "bucket_date" => bucket,
+            "message_id" => message_id
+          })
+
+        case execute(client, plan) do
+          {:ok, result} ->
+            case rows(result) do
+              [row | _] -> {:halt, {:ok, row, bucket}}
+              [] -> {:cont, acc}
+            end
+
+          {:error, reason} ->
+            {:halt, {:error, reason}}
+        end
+      end)
+    end
+  end
+
+  # update/delete need the row's REAL bucket (it is part of the primary key): resolve via point read
+  # first — which also gives the not-found answer for free — then run the mutation against it.
+  defp mutate_resolved(attrs, plan_fun) do
+    with {:ok, client} <- client_adapter(),
+         {:ok, row, bucket} <-
+           find_row(client, attr(attrs, "conversation_id"), attr(attrs, "message_id")),
+         {:ok, _result} <- execute(client, plan_fun.(bucket)) do
+      {:ok, row}
+    end
+  end
+
+  # --- pagination ----------------------------------------------------------------------------------
+
+  defp cursor(attrs) do
+    with cursor when is_binary(cursor) <- attr(attrs, "cursor") || attr(attrs, "before"),
+         [date_part, id_part] <- String.split(cursor, "|", parts: 2),
+         {:ok, date} <- Date.from_iso8601(date_part) do
+      {date, id_part}
+    else
+      _ -> nil
+    end
+  end
+
+  defp walk_buckets(client, conversation_id, cursor, limit) do
+    {anchor, before_id} =
+      case cursor do
+        {date, id} -> {date, id}
+        nil -> {Date.utc_today(), nil}
+      end
+
+    do_walk(client, conversation_id, anchor, before_id, limit, [], @max_lookback_days)
+  end
+
+  defp do_walk(_client, _conversation_id, _anchor, _before_id, _limit, acc, days_left)
+       when days_left <= 0 do
+    # Lookback exhausted: whatever we found is the last page. See the moduledoc for what this means
+    # for conversations idle longer than the cap.
+    {:ok, acc, nil}
+  end
+
+  # ONE QUERY PER BUCKET, merged client-side. The first cut used a single `bucket_date IN (...)`
+  # window query — and the first live run against a real engine caught it: Scylla applies LIMIT in
+  # TOKEN order across the IN partitions, truncating before any client-side time sort can run, so an
+  # old bucket whose token sorts first could shadow the newest messages entirely. Per-bucket queries
+  # (clustering DESC gives newest-first WITHIN each partition) + merge + take is correct by
+  # construction: up to #{@window_days} point-partition reads per window, each LIMIT-bounded.
+  defp do_walk(client, conversation_id, anchor, before_id, limit, acc, days_left) do
+    window = for offset <- 0..(@window_days - 1), do: Date.add(anchor, -offset)
+    remaining = limit - length(acc)
+
+    fetched_result =
+      Enum.reduce_while(window, {:ok, []}, fn bucket, {:ok, collected} ->
+        plan = bucket_plan(conversation_id, bucket, before_id, remaining)
+
+        case execute(client, plan) do
+          {:ok, result} -> {:cont, {:ok, collected ++ rows(result)}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    case fetched_result do
+      {:ok, fetched} ->
+        # timeuuid STRINGS don't sort chronologically — sort by the embedded timestamp, newest first.
+        acc =
+          acc ++ (fetched |> Enum.sort_by(&timeuuid_sort_key/1, :desc) |> Enum.take(remaining))
+
+        if length(acc) >= limit do
+          {:ok, acc, next_cursor(acc)}
+        else
+          next_anchor = Date.add(anchor, -@window_days)
+
+          do_walk(
+            client,
+            conversation_id,
+            next_anchor,
+            before_id,
+            limit,
+            acc,
+            days_left - @window_days
+          )
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp bucket_plan(conversation_id, bucket, nil, limit) do
+    MessageTimelineReads.list_recent_plan(%{
+      "conversation_id" => conversation_id,
+      "bucket_date" => bucket,
+      "limit" => limit
+    })
+  end
+
+  defp bucket_plan(conversation_id, bucket, before_id, limit) do
+    MessageTimelineReads.list_before_plan(%{
+      "conversation_id" => conversation_id,
+      "bucket_date" => bucket,
+      "before_message_id" => before_id,
+      "limit" => limit
+    })
+  end
+
+  defp timeuuid_sort_key(row) do
+    case ScyllaCodec.timeuuid_to_datetime(attr(row, "message_id")) do
+      {:ok, dt} -> DateTime.to_unix(dt, :microsecond)
+      _ -> 0
+    end
+  end
+
+  defp next_cursor([]), do: nil
+
+  defp next_cursor(rows_list) do
+    oldest = List.last(rows_list)
+
+    case ScyllaCodec.timeuuid_to_datetime(attr(oldest, "message_id")) do
+      {:ok, dt} -> "#{DateTime.to_date(dt)}|#{attr(oldest, "message_id")}"
+      _ -> nil
+    end
+  end
+
+  # --- receipts ------------------------------------------------------------------------------------
+
   defp put_receipt(attrs) do
-    plan = MessageReceipts.upsert_receipt_plan(attrs)
+    plan =
+      MessageReceipts.upsert_receipt_plan(Map.put_new(attrs, "updated_at", DateTime.utc_now()))
 
     with {:ok, client} <- client_adapter(),
          {:ok, _result} <- execute(client, plan) do
@@ -305,6 +498,8 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  # --- plumbing ------------------------------------------------------------------------------------
 
   defp client_adapter do
     case Application.get_env(:message_service, :scylla_client_adapter, SharedInfra.Scylla.Client) do
@@ -329,10 +524,11 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   defp rows(rows) when is_list(rows), do: rows
   defp rows(_result), do: []
 
-  defp message_response(attrs) do
+  # Response from INPUT attrs (put_message): metadata is already in domain form; timestamps may be
+  # DateTimes — normalise to the ISO strings every other adapter emits.
+  defp response_from_attrs(attrs) do
     %{
       conversation_id: attr(attrs, "conversation_id"),
-      bucket_date: attr(attrs, "bucket_date"),
       message_id: attr(attrs, "message_id"),
       sender_user_id: attr(attrs, "sender_user_id"),
       message_type: attr(attrs, "message_type"),
@@ -341,9 +537,28 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
       reply_to_message_id: attr(attrs, "reply_to_message_id"),
       status: attr(attrs, "status"),
       metadata: attr(attrs, "metadata") || %{},
-      created_at: attr(attrs, "created_at"),
-      edited_at: attr(attrs, "edited_at"),
-      deleted_at: attr(attrs, "deleted_at")
+      created_at: ScyllaCodec.decode_timestamp(attr(attrs, "created_at")),
+      edited_at: ScyllaCodec.decode_timestamp(attr(attrs, "edited_at")),
+      deleted_at: ScyllaCodec.decode_timestamp(attr(attrs, "deleted_at"))
+    }
+  end
+
+  # Response from a Xandra ROW: metadata values are JSON-encoded text (the ScyllaCodec convention),
+  # timestamps are DateTimes, uuids are strings. bucket_date is internal and never emitted.
+  defp response_from_row(row) do
+    %{
+      conversation_id: attr(row, "conversation_id"),
+      message_id: attr(row, "message_id"),
+      sender_user_id: attr(row, "sender_user_id"),
+      message_type: attr(row, "message_type"),
+      body: attr(row, "body"),
+      media_id: attr(row, "media_id"),
+      reply_to_message_id: attr(row, "reply_to_message_id"),
+      status: attr(row, "status"),
+      metadata: ScyllaCodec.decode_metadata(attr(row, "metadata")),
+      created_at: ScyllaCodec.decode_timestamp(attr(row, "created_at")),
+      edited_at: ScyllaCodec.decode_timestamp(attr(row, "edited_at")),
+      deleted_at: ScyllaCodec.decode_timestamp(attr(row, "deleted_at"))
     }
   end
 
@@ -353,7 +568,7 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
       message_id: attr(attrs, "message_id"),
       user_id: attr(attrs, "user_id"),
       status: attr(attrs, "status"),
-      updated_at: attr(attrs, "updated_at")
+      updated_at: ScyllaCodec.decode_timestamp(attr(attrs, "updated_at"))
     }
   end
 

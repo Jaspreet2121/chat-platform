@@ -5,6 +5,7 @@ defmodule MessageService.Persistence.MessageReceipts do
 
   alias MessageService.Persistence.Attrs
   alias MessageService.Persistence.QueryPlan
+  alias MessageService.Persistence.ScyllaCodec
 
   @table "message_receipts_by_conversation"
 
@@ -18,11 +19,11 @@ defmodule MessageService.Persistence.MessageReceipts do
       ) VALUES (?, ?, ?, ?, ?)
       """,
       [
-        Attrs.get(attrs, :conversation_id),
-        Attrs.get(attrs, :message_id),
-        Attrs.get(attrs, :user_id),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :conversation_id)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :message_id)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :user_id)),
         Attrs.get(attrs, :status),
-        Attrs.get(attrs, :updated_at)
+        ScyllaCodec.encode_timestamp(Attrs.get(attrs, :updated_at))
       ]
     )
   end
@@ -37,8 +38,8 @@ defmodule MessageService.Persistence.MessageReceipts do
       WHERE conversation_id = ? AND message_id = ?
       """,
       [
-        Attrs.get(attrs, :conversation_id),
-        Attrs.get(attrs, :message_id)
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :conversation_id)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :message_id))
       ]
     )
   end

@@ -1,5 +1,10 @@
 ExUnit.start()
 
 ExUnit.configure(
-  exclude: [postgres_integration: true, kafka_integration: true, http_integration: true]
+  exclude: [
+    postgres_integration: true,
+    kafka_integration: true,
+    http_integration: true,
+    scylla_integration: true
+  ]
 )

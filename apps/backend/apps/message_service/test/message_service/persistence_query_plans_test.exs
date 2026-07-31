@@ -9,6 +9,8 @@ defmodule MessageService.PersistenceQueryPlansTest do
 
   @conversation_id "11111111-1111-1111-1111-111111111111"
   @bucket_date "2026-06-17"
+  # What the codec puts ON THE WIRE for that bucket — CQL `date` wants %Date{}, not an ISO string.
+  @bucket_date_wire ~D[2026-06-17]
   @message_id "22222222-2222-1222-8222-222222222222"
   @sender_user_id "33333333-3333-3333-3333-333333333333"
   @user_id "44444444-4444-4444-4444-444444444444"
@@ -39,7 +41,7 @@ defmodule MessageService.PersistenceQueryPlansTest do
 
     assert Enum.take(plan.params, 6) == [
              @conversation_id,
-             @bucket_date,
+             @bucket_date_wire,
              @message_id,
              @sender_user_id,
              "text",
@@ -73,13 +75,20 @@ defmodule MessageService.PersistenceQueryPlansTest do
              "edited",
              @now,
              @conversation_id,
-             @bucket_date,
+             @bucket_date_wire,
              @message_id
            ]
 
     assert delete_plan.operation == :mark_message_deleted
     assert_placeholder_count(delete_plan.statement, 5)
-    assert delete_plan.params == ["deleted", @now, @conversation_id, @bucket_date, @message_id]
+
+    assert delete_plan.params == [
+             "deleted",
+             @now,
+             @conversation_id,
+             @bucket_date_wire,
+             @message_id
+           ]
   end
 
   test "message timeline read plans target partition keys and limits" do
@@ -100,11 +109,11 @@ defmodule MessageService.PersistenceQueryPlansTest do
 
     assert recent_plan.table == "messages_by_conversation"
     assert_placeholder_count(recent_plan.statement, 3)
-    assert recent_plan.params == [@conversation_id, @bucket_date, 50]
+    assert recent_plan.params == [@conversation_id, @bucket_date_wire, 50]
 
     assert before_plan.operation == :list_messages_before
     assert_placeholder_count(before_plan.statement, 4)
-    assert before_plan.params == [@conversation_id, @bucket_date, @message_id, 25]
+    assert before_plan.params == [@conversation_id, @bucket_date_wire, @message_id, 25]
   end
 
   test "receipt plans target message_receipts_by_conversation" do

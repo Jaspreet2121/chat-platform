@@ -140,6 +140,15 @@ jobs:
       - name: Test (http_integration)
         run: mix test --include http_integration
 
+      # Scylla suites run against a REAL engine — a fake client validated 7 store functions for months
+      # while they carried guaranteed type errors (the $N::uuid failure shape). The script owns the
+      # container (GH service containers can't carry Scylla's required command flags) and is the same
+      # file a human runs locally, so the two can't drift. ~60-90s boot + a small suite: the cost of
+      # never again shipping CQL no engine has parsed.
+      - name: Scylla suites (scripts/test-scylla.sh)
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/test-scylla.sh
+
   # Layer 3: the REAL distributed-failure proof — brings up docker-compose.prod.yml (gateway +
   # services as separate containers, gateway flipped to HTTP adapters) and runs the gateway→auth
   # 401/503/recovery differential over the network. GATED (NOT on the per-push fast path): runs only

@@ -5,6 +5,7 @@ defmodule MessageService.Persistence.MessageTimelineWrites do
 
   alias MessageService.Persistence.Attrs
   alias MessageService.Persistence.QueryPlan
+  alias MessageService.Persistence.ScyllaCodec
 
   @table "messages_by_conversation"
 
@@ -20,19 +21,19 @@ defmodule MessageService.Persistence.MessageTimelineWrites do
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """,
       [
-        Attrs.get(attrs, :conversation_id),
-        Attrs.get(attrs, :bucket_date),
-        Attrs.get(attrs, :message_id),
-        Attrs.get(attrs, :sender_user_id),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :conversation_id)),
+        ScyllaCodec.encode_date(Attrs.get(attrs, :bucket_date)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :message_id)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :sender_user_id)),
         Attrs.get(attrs, :message_type),
         Attrs.get(attrs, :body),
-        Attrs.get(attrs, :media_id),
-        Attrs.get(attrs, :reply_to_message_id),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :media_id)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :reply_to_message_id)),
         Attrs.get(attrs, :status),
-        Attrs.get(attrs, :metadata),
-        Attrs.get(attrs, :created_at),
-        Attrs.get(attrs, :edited_at),
-        Attrs.get(attrs, :deleted_at)
+        ScyllaCodec.encode_metadata(Attrs.get(attrs, :metadata)),
+        ScyllaCodec.encode_timestamp(Attrs.get(attrs, :created_at)),
+        ScyllaCodec.encode_timestamp(Attrs.get(attrs, :edited_at)),
+        ScyllaCodec.encode_timestamp(Attrs.get(attrs, :deleted_at))
       ]
     )
   end
@@ -49,10 +50,10 @@ defmodule MessageService.Persistence.MessageTimelineWrites do
       [
         Attrs.get(attrs, :body),
         "edited",
-        Attrs.get(attrs, :edited_at),
-        Attrs.get(attrs, :conversation_id),
-        Attrs.get(attrs, :bucket_date),
-        Attrs.get(attrs, :message_id)
+        ScyllaCodec.encode_timestamp(Attrs.get(attrs, :edited_at)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :conversation_id)),
+        ScyllaCodec.encode_date(Attrs.get(attrs, :bucket_date)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :message_id))
       ]
     )
   end
@@ -68,10 +69,10 @@ defmodule MessageService.Persistence.MessageTimelineWrites do
       """,
       [
         "deleted",
-        Attrs.get(attrs, :deleted_at),
-        Attrs.get(attrs, :conversation_id),
-        Attrs.get(attrs, :bucket_date),
-        Attrs.get(attrs, :message_id)
+        ScyllaCodec.encode_timestamp(Attrs.get(attrs, :deleted_at)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :conversation_id)),
+        ScyllaCodec.encode_date(Attrs.get(attrs, :bucket_date)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :message_id))
       ]
     )
   end
