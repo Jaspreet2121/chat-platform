@@ -1,0 +1,49 @@
+name: Web CI
+
+# The web app previously had NO CI job at all — it shipped to production on every release with only
+# whatever a developer happened to run locally. This gate is the fast, hermetic one: typecheck, lint,
+# and the vitest suite (no network, no DB, no timers — a few hundred milliseconds).
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    name: Web typecheck, lint, and test
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: apps/web
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      # LINT IS DELIBERATELY NOT A GATE YET. `npm run lint` currently reports 18 PRE-EXISTING errors
+      # (all "Calling setState synchronously within an effect", spread across production components)
+      # plus 1 warning — verified identical before and after this slice, so none of them are new.
+      # Adding it as a required step would make this job red on arrival, which trains people to ignore
+      # it. Clearing those 18 is its own scoped slice (they are behaviour-carrying React effect
+      # changes); add `- run: npm run lint` here the moment it is clean.

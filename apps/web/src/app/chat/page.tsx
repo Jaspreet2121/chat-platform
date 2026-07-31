@@ -19,7 +19,6 @@ import {
   getConversation,
   getCurrentSession,
   getMe,
-  getMediaDownloadUrl,
   listConversations,
   listMessages,
   reactToMessage,
@@ -60,6 +59,7 @@ import { primeUserProfile, useUserProfile } from "@/components/chat/useUserProfi
 import { pickDirectPeer, primeConversationDetail } from "@/components/chat/useDirectPeer";
 import { cn } from "@/lib/cn";
 import imageCompression from "browser-image-compression";
+import { reuploadMediaForForward } from "@/lib/forward";
 import { ForwardPicker } from "./ForwardPicker";
 import { LocationShareSheet } from "@/components/chat/LocationShareSheet";
 
@@ -899,66 +899,6 @@ export default function ChatPage() {
     }
   }
 
-  // Re-upload a forwarded media asset into `target` as a NEW asset (fresh media_id, owned by the forwarder),
-  // then send the forwarded message referencing ONLY that fresh id — source.media_id never reaches the
-  // outgoing create. See handleForward for why reusing it fails for received media. Mirrors Android.
-  async function reuploadMediaForForward(
-    source: Message,
-    target: ConversationListItem,
-    metadata: Record<string, unknown>
-  ) {
-    // Resolve the source bytes the same way the message bubble does: presign a download URL from the media_id
-    // + its object_key (carried in metadata). We reach here only for a cross-conversation media forward, so
-    // media_id is set; a missing object_key means we can't fetch the bytes to re-upload.
-    const meta = source.metadata ?? {};
-    const objectKey = typeof meta.object_key === "string" ? meta.object_key : undefined;
-    if (!source.media_id || !objectKey) throw new Error("This media can't be forwarded.");
-
-    const { download_url } = await getMediaDownloadUrl(source.media_id, objectKey);
-
-    const fileResponse = await fetch(download_url);
-    if (!fileResponse.ok) {
-      throw new Error(`Couldn't load the media to forward (${fileResponse.status}).`);
-    }
-    const blob = await fileResponse.blob();
-
-    const filename = typeof meta.filename === "string" ? meta.filename : "forwarded";
-    const contentType =
-      (typeof meta.content_type === "string" && meta.content_type) ||
-      blob.type ||
-      "application/octet-stream";
-
-    const upload = await createMediaUpload({
-      filename,
-      content_type: contentType,
-      size_bytes: blob.size,
-      purpose: "message",
-      conversation_id: target.conversation_id
-    });
-
-    const putResponse = await fetch(upload.upload_url, {
-      method: "PUT",
-      body: blob,
-      headers: { "Content-Type": contentType }
-    });
-    if (!putResponse.ok) throw new Error(`Forward upload failed with ${putResponse.status}.`);
-
-    await completeMediaUpload(upload.media_id, upload.object_key);
-
-    await createMessage({
-      conversationId: target.conversation_id,
-      messageType: "media",
-      mediaId: upload.media_id,
-      caption: source.caption ?? undefined,
-      metadata: {
-        ...metadata,
-        object_key: upload.object_key,
-        filename,
-        content_type: contentType,
-        size_bytes: blob.size
-      }
-    });
-  }
 
   async function handleEditMessage(messageId: string, body: string) {
     try {
