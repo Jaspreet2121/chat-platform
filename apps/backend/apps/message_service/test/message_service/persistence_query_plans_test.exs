@@ -133,8 +133,11 @@ defmodule MessageService.PersistenceQueryPlansTest do
       })
 
     assert upsert_plan.table == "message_receipts_by_conversation"
-    assert_placeholder_count(upsert_plan.statement, 5)
-    assert upsert_plan.params == [@conversation_id, @message_id, @user_id, "read", @now]
+    # 003: the upsert writes the STATUS-SPECIFIC timestamp column too (read_at here), so the
+    # delivered->read upgrade merges both timestamps into one row — 6 placeholders, timestamp twice.
+    assert_placeholder_count(upsert_plan.statement, 6)
+    assert upsert_plan.statement =~ "read_at"
+    assert upsert_plan.params == [@conversation_id, @message_id, @user_id, "read", @now, @now]
 
     assert list_plan.params == [@conversation_id, @message_id]
     assert_placeholder_count(list_plan.statement, 2)

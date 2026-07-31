@@ -212,9 +212,18 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
                                   no external users; a rebuildable tsvector INDEX must ship first
                                   otherwise. Do not implement casually — read that entry.
 
-  The six optional callbacks (media/message_info/polls) are NOT exported here at all — the boundary
-  answers `{:error, :message_unavailable}` for them, which the gateway maps to denial. Their port is
-  designed (see DECISION_LOG 2026-08-01, Option A) and deliberately unbuilt.
+  The six optional callbacks (C4), all VERIFIED live in ScyllaMediaOracleTest:
+
+      poll_vote / list_poll_votes    (iii) validation point-read via get_message (metadata-JSON
+                                     delivers the definition); votes stay Postgres poll_votes
+      get_by_media_id                (i)   earliest reference from messages_by_media
+      media_download_allowed         (i)   THE ORACLE — references+senders from Scylla, ACTIVE
+                                     membership live from Postgres; empty references DENY LOUDLY
+      list_media                     (i)   gallery projection + viewer window mask (LIMITATION: new
+                                     after-viewing materialisation is Postgres-adapter behaviour — a
+                                     tracked flip blocker, not a silent drop)
+      message_info                   (ii)  receipts partition + one privacy query, reciprocity
+                                     applied app-side with the same two halves as Postgres
 
   ## Media projections (C3 — tables deployed, NOTHING here reads them until C4)
 
@@ -243,13 +252,17 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
   import Ecto.Query, only: [where: 3, order_by: 3, limit: 2, offset: 2, select: 3]
 
+  alias MessageService.Persistence.MediaProjections
   alias MessageService.Persistence.MessageReactions
   alias MessageService.Persistence.MessageReceipts
   alias MessageService.Persistence.MessageTimelineReads
   alias MessageService.Persistence.MessageTimelineWrites
   alias MessageService.Persistence.ScyllaCodec
   alias MessageService.Repo
+  alias MessageService.Schemas.PollVote
   alias MessageService.Schemas.StarredMessage
+
+  require Logger
 
   @window_days 7
   @max_lookback_days 730
@@ -261,9 +274,67 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
     with {:ok, client} <- client_adapter(),
          {:ok, _result} <- execute(client, plan) do
+      # MEDIA FAN-OUT (C4): the authoritative row is committed; the projections are derived. A failed
+      # projection write must not fail the message — but it must NEVER be silent: a missing
+      # messages_by_media row makes the download oracle DENY (fail-closed), which is exactly the
+      # failure that once looked like a client bug for days. Loud log + repair_media_projections/2
+      # is the recovery path.
+      write_media_projections(client, attrs)
       {:ok, response_from_attrs(attrs)}
     else
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp write_media_projections(client, attrs) do
+    media_id = attr(attrs, "media_id")
+
+    if is_binary(media_id) and media_id != "" do
+      reference = MediaProjections.insert_reference_plan(attrs)
+      gallery = MediaProjections.upsert_gallery_plan(Map.put(attrs, "deleted", false))
+
+      for plan <- [reference, gallery] do
+        case execute(client, plan) do
+          {:ok, _} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.error(
+              "MEDIA PROJECTION WRITE FAILED (#{plan.table}) media=#{media_id} " <>
+                "conversation=#{attr(attrs, "conversation_id")} message=#{attr(attrs, "message_id")}: " <>
+                "#{inspect(reason)} — the oracle will DENY this media until " <>
+                "ScyllaAdapter.repair_media_projections/2 runs"
+            )
+        end
+      end
+    end
+
+    :ok
+  end
+
+  @doc """
+  Rebuild both media projections for one message from the AUTHORITY (the stated recovery path for a
+  failed fan-out — see 002's invariant). Idempotent: keyed upserts.
+  """
+  def repair_media_projections(conversation_id, message_id) do
+    with {:ok, client} <- client_adapter(),
+         {:ok, row, _bucket} <- find_row(client, conversation_id, message_id) do
+      attrs = %{
+        "conversation_id" => attr(row, "conversation_id"),
+        "message_id" => attr(row, "message_id"),
+        "media_id" => attr(row, "media_id"),
+        "sender_user_id" => attr(row, "sender_user_id"),
+        "created_at" => attr(row, "created_at"),
+        "metadata" => attr(row, "metadata") || %{},
+        "deleted" => not is_nil(attr(row, "deleted_at"))
+      }
+
+      if is_binary(attrs["media_id"]) do
+        {:ok, _} = execute(client, MediaProjections.insert_reference_plan(attrs))
+        {:ok, _} = execute(client, MediaProjections.upsert_gallery_plan(attrs))
+      end
+
+      :ok
     end
   end
 
@@ -321,9 +392,49 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
       )
     end)
     |> case do
-      {:ok, row} -> {:ok, Map.put(response_from_row(row), :status, "deleted")}
-      {:error, reason} -> {:error, reason}
+      {:ok, row} ->
+        tombstone_gallery(row)
+        {:ok, Map.put(response_from_row(row), :status, "deleted")}
+
+      {:error, reason} ->
+        {:error, reason}
     end
+  end
+
+  # The gallery tombstone: same-primary-key rewrite with deleted=true (replace identity proven by
+  # ScyllaSchemaShapeTest). messages_by_media is deliberately NOT touched — authorization is by
+  # membership, not message liveness (002's invariant). A failed rewrite leaves the item rendering
+  # until repair — LOUD, per the same rule as the fan-out.
+  defp tombstone_gallery(row) do
+    media_id = attr(row, "media_id")
+
+    if is_binary(media_id) and media_id != "" do
+      with {:ok, client} <- client_adapter(),
+           {:ok, _} <-
+             execute(
+               client,
+               MediaProjections.upsert_gallery_plan(%{
+                 "conversation_id" => attr(row, "conversation_id"),
+                 "created_at" => attr(row, "created_at"),
+                 "message_id" => attr(row, "message_id"),
+                 "media_id" => media_id,
+                 "sender_user_id" => attr(row, "sender_user_id"),
+                 "metadata" => attr(row, "metadata") || %{},
+                 "deleted" => true
+               })
+             ) do
+        :ok
+      else
+        error ->
+          Logger.error(
+            "GALLERY TOMBSTONE FAILED conversation=#{attr(row, "conversation_id")} " <>
+              "message=#{attr(row, "message_id")}: #{inspect(error)} — item renders until " <>
+              "repair_media_projections/2 converges it (002's stated hazard)"
+          )
+      end
+    end
+
+    :ok
   end
 
   @impl true
@@ -495,6 +606,367 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   # DECISION_LOG 2026-08-01 before implementing anything here.
   @impl true
   def search_messages(_attrs), do: {:error, :message_store_unavailable}
+
+  # --- the six optional callbacks (C4), in classification order ------------------------------------
+
+  # (iii) POLLS — reclassification survived contact: the ONLY messages dependency is the validation
+  # point-read (re-verified against fetch_poll before porting), which get_message serves — and the
+  # poll definition arrives through the metadata-JSON convention (nested map intact, proven live in
+  # C1's round-trip). Votes are and stay Postgres (poll_votes).
+  @impl true
+  def poll_vote(attrs) do
+    conversation_id = attr(attrs, "conversation_id")
+    user_id = attr(attrs, "user_id")
+    option_ids = attrs["option_ids"] || []
+
+    with {:ok, message, definition} <- fetch_scylla_poll(attrs, conversation_id),
+         :ok <- valid_scylla_vote_set(definition, option_ids) do
+      {:ok, _} =
+        Repo.transaction(fn ->
+          Repo.query!(
+            "DELETE FROM poll_votes WHERE message_id = $1::text::uuid AND user_id = $2::text::uuid",
+            [message.message_id, user_id]
+          )
+
+          if option_ids != [] do
+            Repo.query!(
+              "INSERT INTO poll_votes (conversation_id, message_id, user_id, option_id) " <>
+                "SELECT $1::text::uuid, $2::text::uuid, $3::text::uuid, unnest($4::text[])",
+              [message.conversation_id, message.message_id, user_id, option_ids]
+            )
+          end
+        end)
+
+      {:ok,
+       %{
+         message_id: message.message_id,
+         poll:
+           MessageService.Polls.build_aggregate(
+             definition,
+             scylla_poll_votes_of(message.message_id)
+           )
+       }}
+    end
+  end
+
+  @impl true
+  def list_poll_votes(attrs) do
+    conversation_id = attr(attrs, "conversation_id")
+
+    with {:ok, message, definition} <- fetch_scylla_poll(attrs, conversation_id) do
+      {:ok,
+       %{
+         message_id: message.message_id,
+         poll:
+           MessageService.Polls.build_aggregate(
+             definition,
+             scylla_poll_votes_of(message.message_id),
+             nil
+           )
+       }}
+    end
+  end
+
+  # The same gates as PostgresAdapter.fetch_poll, against the Scylla point-read: live poll message in
+  # THIS conversation with a definition — anything else :message_not_found (a voter learns nothing
+  # about other conversations' messages).
+  defp fetch_scylla_poll(attrs, conversation_id) do
+    case get_message(attrs) do
+      {:ok, %{message_type: "poll", deleted_at: nil, conversation_id: ^conversation_id} = message} ->
+        case message.metadata do
+          %{"poll" => %{} = definition} -> {:ok, message, definition}
+          _ -> {:error, :message_not_found}
+        end
+
+      _ ->
+        {:error, :message_not_found}
+    end
+  end
+
+  defp valid_scylla_vote_set(definition, option_ids) do
+    known = MapSet.new(definition["options"] || [], & &1["id"])
+
+    cond do
+      not Enum.all?(option_ids, &MapSet.member?(known, &1)) -> {:error, :poll_invalid_option}
+      length(option_ids) > 1 and definition["allows_multiple"] != true -> {:error, :poll_single_choice}
+      true -> :ok
+    end
+  end
+
+  defp scylla_poll_votes_of(message_id) do
+    PollVote
+    |> where([v], v.message_id == ^message_id)
+    |> order_by([v], asc: v.created_at)
+    |> select([v], {v.option_id, v.user_id})
+    |> Repo.all()
+  end
+
+  # (i) MEDIA — the projections from C3, now read.
+
+  @impl true
+  def get_by_media_id(attrs) do
+    case attr(attrs, "media_id") do
+      media_id when is_binary(media_id) and media_id != "" ->
+        with {:ok, client} <- client_adapter(),
+             {:ok, result} <- execute(client, MediaProjections.earliest_reference_plan(%{"media_id" => media_id})) do
+          case rows(result) do
+            [row | _] -> {:ok, %{conversation_id: attr(row, "conversation_id")}}
+            [] -> {:error, :not_found}
+          end
+        end
+
+      _ ->
+        {:error, :not_found}
+    end
+  end
+
+  @doc """
+  THE OWNER-ANCHORED DOWNLOAD ORACLE — the rule preserved EXACTLY from the Postgres EXISTS: the viewer
+  may download iff some conversation they are an ACTIVE member of contains a message referencing this
+  media SENT BY THE ASSET'S OWNER. Split across the stores: the reference set (with senders) comes
+  from messages_by_media; the ACTIVE-membership probe stays on authoritative Postgres
+  conversation_participants, so left_at is a LIVE deny even though the projection still names the
+  conversation.
+
+  FAIL CLOSED, NEVER SILENTLY: an empty reference set denies AND logs loudly — it is either an unsent
+  media_id (rare: the gateway's owner fast-path never reaches here for owners) or a LOST PROJECTION
+  WRITE, and the two are indistinguishable from here. The silent version of this exact denial once
+  cost days. A NON-empty set whose owner-sent conversations simply don't include the viewer is a
+  clean deny — that is the rule working, not a fault.
+  """
+  @impl true
+  def media_download_allowed(attrs) do
+    with media_id when is_binary(media_id) and media_id != "" <- attr(attrs, "media_id"),
+         owner when is_binary(owner) and owner != "" <- attr(attrs, "owner_user_id"),
+         viewer when is_binary(viewer) and viewer != "" <- attr(attrs, "viewer_user_id"),
+         {:ok, client} <- client_adapter(),
+         {:ok, result} <- execute(client, MediaProjections.list_references_plan(%{"media_id" => media_id})) do
+      references = rows(result)
+
+      if references == [] do
+        Logger.error(
+          "media oracle: NO REFERENCES for media=#{media_id} (owner=#{owner}) — denying. " <>
+            "Either unsent media or a LOST PROJECTION WRITE; if the message exists, run " <>
+            "ScyllaAdapter.repair_media_projections(conversation_id, message_id)"
+        )
+
+        {:ok, %{allowed: false}}
+      else
+        # The sender==owner filter IS the leak defense: a planted reference (someone else re-sending
+        # the owner's media_id) must grant nothing.
+        conversation_ids =
+          references
+          |> Enum.filter(&(attr(&1, "sender_user_id") == owner))
+          |> Enum.map(&attr(&1, "conversation_id"))
+          |> Enum.uniq()
+
+        {:ok, %{allowed: viewer_active_in_any?(viewer, conversation_ids)}}
+      end
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:ok, %{allowed: false}}
+    end
+  end
+
+  defp viewer_active_in_any?(_viewer, []), do: false
+
+  defp viewer_active_in_any?(viewer, conversation_ids) do
+    %{rows: [[exists]]} =
+      Repo.query!(
+        "SELECT EXISTS (SELECT 1 FROM conversation_participants " <>
+          "WHERE user_id = $1::text::uuid AND left_at IS NULL " <>
+          "AND conversation_id = ANY($2::text[]::uuid[]))",
+        [viewer, conversation_ids]
+      )
+
+    exists
+  end
+
+  # The shared-media gallery from the C3 projection, newest first. The viewer's window (cleared_before
+  # / auto-delete) comes from their OWN participant row (Postgres) and masks client-side; rows the
+  # after-viewing feature ALREADY materialised into user_hidden_messages are excluded. LIMITATION,
+  # stated: NEW after-viewing materialisation is a Postgres-adapter behaviour and does not run here —
+  # a flip blocker tracked with the port, not silently dropped.
+  @impl true
+  def list_media(attrs) do
+    conversation_id = attr(attrs, "conversation_id")
+    viewer = attr(attrs, "viewer_user_id")
+    limit = min(attr(attrs, "limit") || 50, 100)
+
+    with {:ok, client} <- client_adapter(),
+         {:ok, result} <-
+           execute(
+             client,
+             MediaProjections.list_gallery_plan(%{
+               "conversation_id" => conversation_id,
+               "before" => attr(attrs, "before"),
+               # Over-fetch: deleted + window-masked rows are filtered below.
+               "limit" => limit * 2
+             })
+           ) do
+      raw = rows(result)
+      window = viewer_window(conversation_id, viewer)
+      hidden = hidden_message_ids(conversation_id, viewer)
+
+      items =
+        raw
+        |> Enum.reject(&attr(&1, "deleted"))
+        |> Enum.reject(&MapSet.member?(hidden, attr(&1, "message_id")))
+        |> Enum.filter(&inside_window?(&1, window))
+        |> Enum.take(limit)
+        |> Enum.map(fn row ->
+          %{
+            message_id: attr(row, "message_id"),
+            media_id: attr(row, "media_id"),
+            sender_user_id: attr(row, "sender_user_id"),
+            message_type: "media",
+            metadata: ScyllaCodec.decode_metadata(attr(row, "metadata")),
+            created_at: ScyllaCodec.decode_timestamp(attr(row, "created_at"))
+          }
+        end)
+
+      next_cursor =
+        case List.last(raw) do
+          nil -> nil
+          last when length(raw) >= limit * 2 -> ScyllaCodec.decode_timestamp(attr(last, "created_at"))
+          _ -> nil
+        end
+
+      {:ok, %{conversation_id: conversation_id, items: items, next_cursor: next_cursor}}
+    end
+  end
+
+  defp viewer_window(_conversation_id, nil), do: %{cleared_before: nil, auto_delete_seconds: nil}
+  defp viewer_window(_conversation_id, ""), do: %{cleared_before: nil, auto_delete_seconds: nil}
+
+  defp viewer_window(conversation_id, viewer) do
+    case Repo.query!(
+           "SELECT cleared_before, auto_delete_seconds FROM conversation_participants " <>
+             "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+           [conversation_id, viewer]
+         ) do
+      %{rows: [[cleared, auto]]} -> %{cleared_before: cleared, auto_delete_seconds: auto}
+      _ -> %{cleared_before: nil, auto_delete_seconds: nil}
+    end
+  end
+
+  defp hidden_message_ids(_conversation_id, nil), do: MapSet.new()
+  defp hidden_message_ids(_conversation_id, ""), do: MapSet.new()
+
+  defp hidden_message_ids(_conversation_id, viewer) do
+    # The table is (user_id, message_id) only — no conversation column (verified against the live
+    # schema after assuming otherwise). Message ids are globally unique, so the per-user read is
+    # exact; it just can't be conversation-scoped.
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT message_id::text FROM user_hidden_messages WHERE user_id = $1::text::uuid",
+        [viewer]
+      )
+
+    MapSet.new(rows, fn [id] -> id end)
+  end
+
+  defp inside_window?(row, window) do
+    created_at = attr(row, "created_at")
+
+    inside_cleared =
+      is_nil(window.cleared_before) or DateTime.compare(created_at, window.cleared_before) == :gt
+
+    inside_auto =
+      is_nil(window.auto_delete_seconds) or
+        DateTime.compare(created_at, DateTime.add(DateTime.utc_now(), -window.auto_delete_seconds, :second)) == :gt
+
+    inside_cleared and inside_auto
+  end
+
+  # (ii) MESSAGE_INFO — cross-store composition: message + receipts from Scylla, privacy from
+  # Postgres, the reciprocity rule applied app-side with the SAME two halves the Postgres adapter
+  # uses (reader half: receipts on unless explicitly off; owner half: viewer_sees_read_receipts?).
+  # Same 3 round-trips as the Postgres path's 3 queries.
+  @impl true
+  def message_info(attrs) do
+    conversation_id = attr(attrs, "conversation_id")
+    viewer = attr(attrs, "viewer_user_id")
+
+    case get_message(attrs) do
+      {:error, reason} ->
+        {:error, reason}
+
+      {:ok, message} ->
+        cond do
+          message.conversation_id != conversation_id -> {:error, :message_not_found}
+          not is_nil(message.deleted_at) -> {:error, :message_not_found}
+          message.sender_user_id != viewer -> {:error, :not_sender}
+          true -> build_scylla_message_info(message, viewer)
+        end
+    end
+  end
+
+  defp build_scylla_message_info(message, viewer) do
+    with {:ok, client} <- client_adapter(),
+         {:ok, result} <-
+           execute(
+             client,
+             MessageReceipts.list_for_message_plan(%{
+               "conversation_id" => message.conversation_id,
+               "message_id" => message.message_id
+             })
+           ) do
+      receipt_rows =
+        result |> rows() |> Enum.reject(&(attr(&1, "user_id") == viewer))
+
+      visible = privacy_visibility(Enum.map(receipt_rows, &attr(&1, "user_id")))
+      show_read = MessageService.ReadReceipts.viewer_sees_read_receipts?(viewer)
+
+      read =
+        if show_read do
+          receipt_rows
+          |> Enum.filter(fn row ->
+            attr(row, "read_at") != nil and Map.get(visible, attr(row, "user_id"), true)
+          end)
+          |> Enum.sort_by(&attr(&1, "read_at"), {:desc, DateTime})
+          |> Enum.map(&%{user_id: attr(&1, "user_id"), read_at: attr(&1, "read_at")})
+        else
+          []
+        end
+
+      read_ids = MapSet.new(read, & &1.user_id)
+
+      delivered =
+        receipt_rows
+        |> Enum.filter(fn row ->
+          (attr(row, "delivered_at") || attr(row, "read_at")) &&
+            not MapSet.member?(read_ids, attr(row, "user_id"))
+        end)
+        |> Enum.map(&%{user_id: attr(&1, "user_id"), delivered_at: attr(&1, "delivered_at") || attr(&1, "read_at")})
+        |> Enum.sort_by(& &1.delivered_at, {:desc, DateTime})
+
+      {:ok,
+       %{
+         conversation_id: message.conversation_id,
+         message_id: message.message_id,
+         sender_user_id: message.sender_user_id,
+         read: read,
+         delivered: delivered,
+         read_hidden: not show_read
+       }}
+    end
+  end
+
+  # The reader half of reciprocity, resolved in ONE Postgres query: enabled unless a privacy row says
+  # explicitly false (missing row = enabled — read_receipts_on's NULL semantics, restated app-side).
+  defp privacy_visibility([]), do: %{}
+
+  defp privacy_visibility(user_ids) do
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT user_id::text, read_receipts_enabled FROM user_privacy_settings " <>
+          "WHERE user_id = ANY($1::text[]::uuid[])",
+        [user_ids]
+      )
+
+    Map.new(rows, fn [user_id, enabled] -> {user_id, enabled != false} end)
+  end
 
   # --- point read + bucket resolution --------------------------------------------------------------
 

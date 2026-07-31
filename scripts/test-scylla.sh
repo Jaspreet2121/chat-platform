@@ -71,7 +71,17 @@ echo "==> scylla ready after ~$((i * 3))s"
 # Load the schema — idempotent (every statement IF NOT EXISTS), so rerunning is always safe.
 echo "==> loading infra/docker/scylladb/init/*.cql"
 for f in infra/docker/scylladb/init/*.cql; do
-  docker exec -i "$CONTAINER" cqlsh < "$f" || { echo "CQL LOAD FAILED: $f"; exit 1; }
+  out="$(docker exec -i "$CONTAINER" cqlsh < "$f" 2>&1)" && continue
+  # Scylla 5.4 has no `ALTER ... ADD IF NOT EXISTS` (verified live — SyntaxException), so ALTER
+  # migrations rerun as "conflicts with an existing column". That NARROW error is already-applied,
+  # not failure; anything else still fails the load loudly.
+  if echo "$out" | grep -q "conflicts with an existing column"; then
+    echo "      (already applied: $f)"
+  else
+    echo "CQL LOAD FAILED: $f"
+    echo "$out"
+    exit 1
+  fi
 done
 
 # Truncate between runs so suites assert against known state (IF NOT EXISTS load keeps data).
