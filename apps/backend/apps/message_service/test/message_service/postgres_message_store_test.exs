@@ -27,7 +27,32 @@ defmodule MessageService.PostgresMessageStoreTest do
       Application.put_env(:message_service, :message_store_adapter, previous_adapter)
     end)
 
+    seed_conversation!()
     :ok
+  end
+
+  # REQUIRED since messages became tenant-anchored: put_message/1 resolves the conversation's
+  # AUTHORITATIVE app_id and stamps it on the row, so a message whose conversation does not exist is
+  # rejected with :message_invalid rather than landing under the tenant-zero default. These suites
+  # predate that change and seeded no conversation, which is why they could never pass against a real
+  # database — nothing ran them.
+  defp seed_conversation! do
+    Repo.query!(
+      "INSERT INTO users_auth (id, phone_number) VALUES ($1::text::uuid, $2) ON CONFLICT DO NOTHING",
+      [@sender_user_id, "+911234500001"]
+    )
+
+    Repo.query!(
+      "INSERT INTO conversations (id, type, created_by) " <>
+        "VALUES ($1::text::uuid, 'group', $2::text::uuid) ON CONFLICT DO NOTHING",
+      [@conversation_id, @sender_user_id]
+    )
+
+    Repo.query!(
+      "INSERT INTO conversation_participants (conversation_id, user_id) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid) ON CONFLICT DO NOTHING",
+      [@conversation_id, @sender_user_id]
+    )
   end
 
   @tag :postgres_integration

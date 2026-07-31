@@ -30,8 +30,8 @@ defmodule ApiGatewayWeb.AdminScopeAnalyticsPostgresIntegrationTest do
     seed_user!(int_user, int_app)
     seed_convo!(zero_convo, @default, zero_user)
     seed_convo!(int_convo, int_app, int_user)
-    seed_message!(zero_convo, zero_user)
-    seed_message!(int_convo, int_user)
+    seed_message!(zero_convo, zero_user, @default)
+    seed_message!(int_convo, int_user, int_app)
     seed_media!(zero_user, @default)
     seed_media!(int_user, int_app)
 
@@ -83,11 +83,14 @@ defmodule ApiGatewayWeb.AdminScopeAnalyticsPostgresIntegrationTest do
     )
   end
 
-  defp seed_message!(conversation_id, sender) do
+  # messages.app_id is NOT NULL and is the column this suite's whole point rests on (per-tenant
+  # counting), so it must be seeded EXPLICITLY rather than left to a default. Without it the seed
+  # raised 23502 in setup and the suite could never run.
+  defp seed_message!(conversation_id, sender, app_id) do
     MsgRepo.query!(
-      "INSERT INTO messages (message_id, conversation_id, sender_user_id, message_type, status) " <>
-        "VALUES (gen_random_uuid(), $1::text::uuid, $2::text::uuid, 'text', 'active')",
-      [conversation_id, sender]
+      "INSERT INTO messages (message_id, conversation_id, sender_user_id, app_id, message_type, status) " <>
+        "VALUES (gen_random_uuid(), $1::text::uuid, $2::text::uuid, $3::text::uuid, 'text', 'active')",
+      [conversation_id, sender, app_id]
     )
   end
 

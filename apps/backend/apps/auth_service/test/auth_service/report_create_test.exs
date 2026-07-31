@@ -10,7 +10,7 @@ defmodule AuthService.ReportCreateTest do
 
   @tag :postgres_integration
   test "a created report is visible to the admin list_reports for the same tenant, status 'open'" do
-    app = Ecto.UUID.generate()
+    app = seed_app!()
     reporter = seed_user(app)
     reported = seed_user(app)
 
@@ -38,7 +38,7 @@ defmodule AuthService.ReportCreateTest do
 
   @tag :postgres_integration
   test "an unknown reported user → :report_invalid (FK), never a 500" do
-    app = Ecto.UUID.generate()
+    app = seed_app!()
     reporter = seed_user(app)
 
     assert {:error, :report_invalid} =
@@ -47,6 +47,19 @@ defmodule AuthService.ReportCreateTest do
                "reported_user_id" => Ecto.UUID.generate(),
                "reason" => "spam"
              })
+  end
+
+  # users_auth.app_id is FK-constrained to apps(id), so a bare Ecto.UUID.generate() tenant fails with
+  # 23503 before the test reaches its assertion. The tenant row has to exist.
+  defp seed_app! do
+    id = Ecto.UUID.generate()
+
+    Repo.query!(
+      "INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'Report Test', $2)",
+      [id, "rpt-" <> String.slice(String.replace(id, "-", ""), 0, 12)]
+    )
+
+    id
   end
 
   defp seed_user(app_id) do

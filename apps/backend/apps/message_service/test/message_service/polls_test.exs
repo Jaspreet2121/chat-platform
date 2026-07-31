@@ -36,7 +36,38 @@ defmodule MessageService.PollsTest do
       Application.put_env(:message_service, :message_store_adapter, prev.adapter)
     end)
 
+    seed_conversation!()
     :ok
+  end
+
+  # REQUIRED since messages became tenant-anchored: put_message/1 resolves the conversation's
+  # AUTHORITATIVE app_id and stamps it on the row, so a message whose conversation does not exist is
+  # rejected with :message_invalid rather than landing under the tenant-zero default. This suite
+  # predates that change and seeded no conversation, which is why it could never pass against a real
+  # database — nothing ran it.
+  defp participants, do: [@sender, @alice, @bob]
+
+  defp seed_conversation! do
+    for {user, i} <- Enum.with_index(participants()) do
+      Repo.query!(
+        "INSERT INTO users_auth (id, phone_number) VALUES ($1::text::uuid, $2) ON CONFLICT DO NOTHING",
+        [user, "+9112345#{100_000 + i}"]
+      )
+    end
+
+    Repo.query!(
+      "INSERT INTO conversations (id, type, created_by) " <>
+        "VALUES ($1::text::uuid, 'group', $2::text::uuid) ON CONFLICT DO NOTHING",
+      [@conv, @sender]
+    )
+
+    for user <- participants() do
+      Repo.query!(
+        "INSERT INTO conversation_participants (conversation_id, user_id) " <>
+          "VALUES ($1::text::uuid, $2::text::uuid) ON CONFLICT DO NOTHING",
+        [@conv, user]
+      )
+    end
   end
 
   defp create_poll!(overrides \\ %{}) do
