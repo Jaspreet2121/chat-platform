@@ -28,6 +28,35 @@ COMPOSE="infra/docker/docker-compose.yml"
 CONTAINER="chat-platform-scylladb"
 NODES="${SCYLLA_TEST_NODES:-localhost:9042}"
 
+# THE STARS HYBRID (C2) MADE THIS GATE NEED POSTGRES TOO: starred_messages is a relational satellite,
+# so list_starred's live test writes Postgres and hydrates from Scylla. Without this check the gate
+# silently depended on whatever container happened to be running — the it-works-on-my-machine false
+# green this repo has already paid for. In CI the service container + the postgres gate (an earlier
+# step of the same job) provide a migrated chat_platform_test; locally we boot compose postgres if
+# nothing answers, and REFUSE (with the fix) if the test DB was never migrated — this script loads
+# CQL, not SQL, and must not half-own the relational schema.
+if command -v pg_isready >/dev/null 2>&1 && pg_isready -h localhost -p 5432 >/dev/null 2>&1; then
+  : # something already answers on 5432 (CI service container, or a local server)
+else
+  echo "==> starting postgres (compose service — the stars hybrid needs it)"
+  docker compose -f "$COMPOSE" up -d postgres
+  i=0
+  until docker exec chat-platform-postgres pg_isready -U chat_user >/dev/null 2>&1; do
+    i=$((i + 1)); [ "$i" -ge 60 ] && { echo "postgres never became ready"; exit 1; }
+    sleep 1
+  done
+fi
+
+db_exists="$(docker exec chat-platform-postgres psql -U chat_user -d postgres -tAc \
+  "SELECT 1 FROM pg_database WHERE datname='chat_platform_test'" 2>/dev/null || \
+  PGPASSWORD=chat_password psql -h localhost -U chat_user -d postgres -tAc \
+  "SELECT 1 FROM pg_database WHERE datname='chat_platform_test'" 2>/dev/null || true)"
+
+if [ "$db_exists" != "1" ]; then
+  echo "ERROR: chat_platform_test does not exist. Run ./scripts/test-postgres.sh first (it owns the SQL schema)."
+  exit 1
+fi
+
 echo "==> starting scylla (compose service 'scylladb')"
 docker compose -f "$COMPOSE" up -d scylladb
 
@@ -46,7 +75,7 @@ for f in infra/docker/scylladb/init/*.cql; do
 done
 
 # Truncate between runs so suites assert against known state (IF NOT EXISTS load keeps data).
-for t in messages_by_conversation message_receipts_by_conversation message_reactions_by_message messages_by_user_inbox; do
+for t in messages_by_conversation message_receipts_by_conversation message_reactions_by_message messages_by_user_inbox messages_by_media media_by_conversation; do
   docker exec "$CONTAINER" cqlsh -e "TRUNCATE chat_messages.$t" >/dev/null
 done
 

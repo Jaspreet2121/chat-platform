@@ -216,6 +216,17 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   answers `{:error, :message_unavailable}` for them, which the gateway maps to denial. Their port is
   designed (see DECISION_LOG 2026-08-01, Option A) and deliberately unbuilt.
 
+  ## Media projections (C3 — tables deployed, NOTHING here reads them until C4)
+
+  `messages_by_media` and `media_by_conversation` exist and are shape-verified live
+  (ScyllaSchemaShapeTest). THE INVARIANT C4 IMPLEMENTS AGAINST, stated here and in the CQL header so
+  it is a rule and not a rediscovery: `messages_by_conversation` is THE AUTHORITY; both projections
+  are rebuildable derivations. `media_by_conversation.deleted` is a denormalised tombstone COPY — a
+  failed delete fan-out leaves a tombstoned item rendering in the gallery until the projection
+  reconciler (C4) converges it; readers treat `deleted` as eventually consistent and never treat the
+  projection as evidence a message exists or is live. `messages_by_media` rows survive message
+  tombstones BY DESIGN (authorization is by membership, not message liveness).
+
   ## Pagination and the daily-bucket consequence
 
   `messages_by_conversation` partitions on `(conversation_id, bucket_date)` — one calendar day per
