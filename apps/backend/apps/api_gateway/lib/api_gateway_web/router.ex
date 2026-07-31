@@ -165,6 +165,17 @@ defmodule ApiGatewayWeb.Router do
     get "/:user_id/avatar", UserController, :avatar
   end
 
+  # Status (082) — ephemeral 24h posts. Feed + per-owner list are audience-gated; media rides the
+  # purpose-"status" authz arm on the normal media download route.
+  scope "/api/v1/status", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/", StatusController, :create
+    get "/feed", StatusController, :feed
+    delete "/:status_id", StatusController, :delete
+    get "/:owner_user_id", StatusController, :list
+  end
+
   # Broadcast lists (081) — a saved recipient set; send fans out N independent DMs. Owner-scoped CRUD;
   # the send is rate-limited (fail-closed) + single-flight per user.
   scope "/api/v1/broadcasts", ApiGatewayWeb do

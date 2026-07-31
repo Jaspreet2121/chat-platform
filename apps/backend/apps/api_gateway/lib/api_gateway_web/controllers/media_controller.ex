@@ -118,7 +118,7 @@ defmodule ApiGatewayWeb.MediaController do
 
   defp upload_purpose(params) do
     case params["purpose"] do
-      purpose when purpose in ["message", "user_avatar", "group_avatar"] -> purpose
+      purpose when purpose in ["message", "user_avatar", "group_avatar", "status"] -> purpose
       _ -> "message"
     end
   end

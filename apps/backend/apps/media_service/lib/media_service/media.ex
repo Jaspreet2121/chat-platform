@@ -10,6 +10,9 @@ defmodule MediaService.Media do
   alias MediaService.Schemas.MediaAsset
   alias MediaService.Storage
 
+  # Status presign TTL (seconds) — deliberately shorter than the default chat-media TTL.
+  @status_url_expires_seconds 300
+
   # Kept in sync with the frontend allowedMediaTypes set (apps/web chat page). video/quicktime (.mov)
   # is what Mac screen recordings / iPhone clips use; video/webm + video/x-matroska (.mkv) are common too.
   # audio/webm + audio/ogg are the typical MediaRecorder voice-message outputs (Chrome/Firefox); Safari
@@ -180,12 +183,17 @@ defmodule MediaService.Media do
 
       %MediaAsset{} = asset ->
         if purpose_ok?(asset, expected_purpose) do
-          expires_at = expires_at()
+          # STATUS presigns are SHORT-lived (300s vs the 900s default): status URLs are fetched at open
+          # and never long-lived, and the short TTL bounds how long an issued URL outlives the post's
+          # 24h expiry (the stated presign residual).
+          override = if asset.purpose == "status", do: @status_url_expires_seconds, else: nil
+          expires_at = expires_at(override)
 
           case Storage.get_download_url(%{
                  "object_key" => asset.object_key,
                  "media_id" => media_id,
-                 "expires_at" => expires_at
+                 "expires_at" => expires_at,
+                 "url_expires_seconds" => override
                }) do
             {:ok, media} -> {:ok, download_response(media, asset, expires_at)}
             {:error, reason} -> {:error, reason}
@@ -239,6 +247,36 @@ defmodule MediaService.Media do
   rescue
     # A non-UUID media_id casts-errors on the lookup; treat as not found (no 500).
     Ecto.Query.CastError -> {:error, :not_found}
+  end
+
+  @doc """
+  PURGE an asset's bytes (the status sweep + owner-delete path): delete the stored object (best-effort)
+  and mark the row deleted so it can never presign again. Row kept as a tombstone (ids stay dead, not
+  reusable). Missing asset → {:ok, %{purged: false}} — the sweep must be idempotent.
+  """
+  def purge_asset(attrs) do
+    with {:ok, media_id} <- required_attr(attrs, "media_id"),
+         {:ok, app_id} <- required_attr(attrs, "app_id") do
+      if media_persistence_enabled?() do
+        case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
+          nil ->
+            {:ok, %{purged: false}}
+
+          %MediaAsset{} = asset ->
+            _ = Storage.delete_object(%{"object_key" => asset.object_key})
+
+            asset
+            |> MediaAsset.status_changeset("deleted", DateTime.utc_now())
+            |> Repo.update()
+
+            {:ok, %{purged: true}}
+        end
+      else
+        {:ok, %{purged: false}}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:ok, %{purged: false}}
   end
 
   @doc """
@@ -450,11 +488,12 @@ defmodule MediaService.Media do
     end
   end
 
-  defp expires_at do
+  defp expires_at(override \\ nil) do
     expires_in_seconds =
-      :media_service
-      |> Application.get_env(:minio, [])
-      |> Keyword.get(:url_expires_seconds, 900)
+      override ||
+        :media_service
+        |> Application.get_env(:minio, [])
+        |> Keyword.get(:url_expires_seconds, 900)
 
     DateTime.utc_now()
     |> DateTime.add(expires_in_seconds, :second)

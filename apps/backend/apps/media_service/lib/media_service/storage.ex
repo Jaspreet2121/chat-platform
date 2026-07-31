@@ -106,6 +106,7 @@ defmodule MediaService.Storage.MinioAdapter do
   @impl true
   def get_download_url(attrs) do
     with {:ok, config} <- config(),
+         config = override_url_expiry(config, attrs["url_expires_seconds"]),
          {:ok, download_url} <- presigned_url("GET", attrs["object_key"], config) do
       {:ok,
        %{
@@ -188,6 +189,12 @@ defmodule MediaService.Storage.MinioAdapter do
   defp normalize_header_value([value | _]), do: value
   defp normalize_header_value([]), do: nil
   defp normalize_header_value(value), do: value
+
+  # Per-call presign TTL override (status media uses 300s; everything else keeps the config default).
+  defp override_url_expiry(config, seconds) when is_integer(seconds) and seconds > 0,
+    do: Keyword.put(config, :url_expires_seconds, seconds)
+
+  defp override_url_expiry(config, _seconds), do: config
 
   defp presigned_url(method, object_key, config) do
     now = Keyword.get(config, :now) || DateTime.utc_now()

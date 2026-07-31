@@ -106,6 +106,27 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Polls.list_votes(body(conn)))
   end
 
+  # Status (082) — session + purpose gates live in the gateway.
+  post "/internal/status/post" do
+    send_result(conn, MessageService.Statuses.post_status(body(conn)))
+  end
+
+  post "/internal/status/feed" do
+    send_result(conn, MessageService.Statuses.feed(body(conn)))
+  end
+
+  post "/internal/status/list" do
+    send_result(conn, MessageService.Statuses.list_posts(body(conn)))
+  end
+
+  post "/internal/status/delete" do
+    send_result(conn, MessageService.Statuses.delete_status(body(conn)))
+  end
+
+  post "/internal/status/media_allowed" do
+    send_result(conn, MessageService.Statuses.media_allowed(body(conn)))
+  end
+
   # Read-only admin analytics (gated upstream by the gateway's RequireAdmin + the internal TokenPlug).
   post "/internal/analytics/overview" do
     send_result(conn, {:ok, MessageService.Analytics.overview(Map.get(body(conn), "app_id"))})

@@ -21,4 +21,7 @@ defmodule MediaService.MediaClientInProcess do
 
   @impl true
   def get_asset(attrs), do: Media.get_asset(attrs)
+
+  @impl true
+  def purge_asset(attrs), do: Media.purge_asset(attrs)
 end

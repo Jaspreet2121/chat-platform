@@ -29,6 +29,10 @@ defmodule MediaService.HTTP.Router do
     send_result(conn, MediaService.Media.get_download_url(body(conn)))
   end
 
+  post "/internal/media/purge_asset" do
+    send_result(conn, MediaService.Media.purge_asset(body(conn)))
+  end
+
   post "/internal/media/get_asset" do
     send_result(conn, MediaService.Media.get_asset(body(conn)))
   end

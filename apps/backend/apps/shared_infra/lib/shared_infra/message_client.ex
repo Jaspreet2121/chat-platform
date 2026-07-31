@@ -43,7 +43,20 @@ defmodule SharedInfra.MessageClient do
   # Polls: replace-the-set vote + the uncapped voter lists.
   @callback vote_poll(attrs()) :: result()
   @callback list_poll_votes(attrs()) :: result()
-  @optional_callbacks message_info: 1, vote_poll: 1, list_poll_votes: 1
+  # Status (082): posts, the one-query feed, per-owner list, owner delete, media-authz support.
+  @callback post_status(attrs()) :: result()
+  @callback status_feed(attrs()) :: result()
+  @callback list_status_posts(attrs()) :: result()
+  @callback delete_status(attrs()) :: result()
+  @callback status_media_allowed(attrs()) :: result()
+  @optional_callbacks message_info: 1,
+                      vote_poll: 1,
+                      list_poll_votes: 1,
+                      post_status: 1,
+                      status_feed: 1,
+                      list_status_posts: 1,
+                      delete_status: 1,
+                      status_media_allowed: 1
 
   def create_message(attrs), do: adapter().create_message(attrs)
   def send_message(attrs), do: adapter().send_message(attrs)
@@ -56,6 +69,11 @@ defmodule SharedInfra.MessageClient do
   def message_info(attrs), do: adapter().message_info(attrs)
   def vote_poll(attrs), do: adapter().vote_poll(attrs)
   def list_poll_votes(attrs), do: adapter().list_poll_votes(attrs)
+  def post_status(attrs), do: adapter().post_status(attrs)
+  def status_feed(attrs), do: adapter().status_feed(attrs)
+  def list_status_posts(attrs), do: adapter().list_status_posts(attrs)
+  def delete_status(attrs), do: adapter().delete_status(attrs)
+  def status_media_allowed(attrs), do: adapter().status_media_allowed(attrs)
   def mark_delivered(attrs), do: adapter().mark_delivered(attrs)
   def analytics_overview(attrs), do: adapter().analytics_overview(attrs)
   def analytics_timeseries(attrs), do: adapter().analytics_timeseries(attrs)

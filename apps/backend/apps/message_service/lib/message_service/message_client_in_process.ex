@@ -50,6 +50,21 @@ defmodule MessageService.MessageClientInProcess do
   def list_poll_votes(attrs), do: MessageService.Polls.list_votes(attrs)
 
   @impl true
+  def post_status(attrs), do: MessageService.Statuses.post_status(attrs)
+
+  @impl true
+  def status_feed(attrs), do: MessageService.Statuses.feed(attrs)
+
+  @impl true
+  def list_status_posts(attrs), do: MessageService.Statuses.list_posts(attrs)
+
+  @impl true
+  def delete_status(attrs), do: MessageService.Statuses.delete_status(attrs)
+
+  @impl true
+  def status_media_allowed(attrs), do: MessageService.Statuses.media_allowed(attrs)
+
+  @impl true
   def mark_delivered(attrs), do: Receipts.mark_delivered(attrs)
 
   @impl true

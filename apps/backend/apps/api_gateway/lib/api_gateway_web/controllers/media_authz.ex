@@ -24,7 +24,24 @@ defmodule ApiGatewayWeb.MediaAuthz do
       "message" -> authorize_message_media(media_id, asset, user_id)
       "group_avatar" -> authorize_group_avatar(asset, user_id)
       "user_avatar" -> :ok
+      # Status media: the owning POST authorizes — it must be LIVE (expired/deleted → denied even with
+      # the id in hand) and the viewer must pass the SAME audience predicate the status feed runs
+      # (owner always allowed). Unknown purposes below stay denied — nothing else loosens.
+      "status" -> authorize_status_media(media_id, user_id)
       _ -> {:error, :not_a_member}
+    end
+  end
+
+  defp authorize_status_media(media_id, user_id) do
+    case MessageClient.status_media_allowed(%{"media_id" => media_id, "viewer_user_id" => user_id}) do
+      {:ok, result} ->
+        if aget(result, :allowed) == true, do: :ok, else: {:error, :not_a_member}
+
+      {:error, :message_unavailable} ->
+        {:error, :conversation_unavailable}
+
+      _ ->
+        {:error, :not_a_member}
     end
   end
 
