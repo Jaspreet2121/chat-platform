@@ -318,6 +318,14 @@ defmodule ApiGatewayWeb.Router do
 
     post "/", ConversationController, :create
     get "/", ConversationController, :index
+
+    # CONVERSATION TAGS — user-defined lists (085). DECLARED BEFORE "/:conversation_id" DELIBERATELY:
+    # Phoenix matches in declaration order, so "/tags" would otherwise bind as a conversation id.
+    # Owner-scoped by the session; a tag is private and never visible to another user.
+    post "/tags", ConversationTagController, :create
+    get "/tags", ConversationTagController, :index
+    patch "/tags/:tag_id", ConversationTagController, :update
+    delete "/tags/:tag_id", ConversationTagController, :delete
     get "/:conversation_id", ConversationController, :show
     # Ongoing group call (for the "join call" banner) — membership-gated (Slice C1).
     get "/:conversation_id/ongoing-call", ConversationController, :ongoing_call
@@ -333,6 +341,11 @@ defmodule ApiGatewayWeb.Router do
     # them) + pin (sorts above; server-capped at 3 → 400 conversations.pin_limit). Broadcast :pref to the caller.
     put "/:conversation_id/archive", ConversationController, :archive
     put "/:conversation_id/pin", ConversationController, :pin
+
+    # Assign / unassign one of the caller's tags to one of their conversations. Both broadcast :pref to
+    # the caller's own devices — the recomputed inbox row carries tag_ids, so no new event is needed.
+    put "/:conversation_id/tags/:tag_id", ConversationTagController, :assign
+    delete "/:conversation_id/tags/:tag_id", ConversationTagController, :unassign
     # Group name/photo (owner-gated in the conversation service).
     put "/:conversation_id/group-profile", ConversationController, :group_profile
     delete "/:conversation_id/participants/:user_id", ConversationController, :remove_participant

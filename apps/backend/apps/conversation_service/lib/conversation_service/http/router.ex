@@ -70,6 +70,30 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Participants.set_mute(body(conn)))
   end
 
+  post "/internal/tags/create" do
+    send_result(conn, ConversationService.ConversationTags.create_tag(body(conn)))
+  end
+
+  post "/internal/tags/list" do
+    send_result(conn, ConversationService.ConversationTags.list_tags(body(conn)))
+  end
+
+  post "/internal/tags/update" do
+    send_result(conn, ConversationService.ConversationTags.update_tag(body(conn)))
+  end
+
+  post "/internal/tags/delete" do
+    send_result(conn, ConversationService.ConversationTags.delete_tag(body(conn)))
+  end
+
+  post "/internal/tags/assign" do
+    send_result(conn, ConversationService.ConversationTags.assign(body(conn)))
+  end
+
+  post "/internal/tags/unassign" do
+    send_result(conn, ConversationService.ConversationTags.unassign(body(conn)))
+  end
+
   post "/internal/participants/set_archive" do
     send_result(conn, ConversationService.Participants.set_archive(body(conn)))
   end

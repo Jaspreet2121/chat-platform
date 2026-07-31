@@ -163,6 +163,24 @@ defmodule SharedInfra.ConversationClientHttp do
   def set_pin(attrs), do: post("/internal/participants/set_pin", attrs)
 
   @impl true
+  def create_tag(attrs), do: post("/internal/tags/create", attrs)
+
+  @impl true
+  def list_tags(attrs), do: post("/internal/tags/list", attrs)
+
+  @impl true
+  def update_tag(attrs), do: post("/internal/tags/update", attrs)
+
+  @impl true
+  def delete_tag(attrs), do: post("/internal/tags/delete", attrs)
+
+  @impl true
+  def assign_tag(attrs), do: post("/internal/tags/assign", attrs)
+
+  @impl true
+  def unassign_tag(attrs), do: post("/internal/tags/unassign", attrs)
+
+  @impl true
   def set_group_profile(attrs), do: post("/internal/conversations/set_group_profile", attrs)
 
   @impl true

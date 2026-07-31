@@ -509,7 +509,8 @@ defmodule ConversationService.Conversations do
          COALESCE(un.unread, 0)::int,
          gp.avatar_media_id::text,
          (cp.pinned_at IS NOT NULL),
-         (cp.archived_at IS NOT NULL)
+         (cp.archived_at IS NOT NULL),
+         COALESCE(tg.tag_ids, ARRAY[]::text[])
   FROM conversations c
   JOIN conversation_participants cp
     ON cp.conversation_id = c.id AND cp.user_id = ANY($1::uuid[]) AND cp.left_at IS NULL
@@ -540,6 +541,15 @@ defmodule ConversationService.Conversations do
           AND r.user_id = cp.user_id AND (r.status = 'read' OR r.read_at IS NOT NULL)
       )
   ) un ON true
+  -- THE CALLER'S OWN tags on this conversation. Anchored on cp.user_id, so a row can only ever carry
+  -- the tags of the user the row is for — another participant's tags are unreachable from here, not
+  -- merely filtered out. Rides conversation_tag_assignments(conversation_id) from migration 085.
+  LEFT JOIN LATERAL (
+    SELECT array_agg(t.id::text ORDER BY t.position, t.created_at) AS tag_ids
+    FROM conversation_tag_assignments a
+    JOIN conversation_tags t ON t.id = a.tag_id AND t.owner_user_id = cp.user_id
+    WHERE a.conversation_id = c.id
+  ) tg ON true
   WHERE c.status = 'active'
     AND ($2::uuid IS NULL OR c.id = $2::uuid)
     -- ARCHIVE SCOPE ($3): 'active' hides archived (the default list), 'archived' shows only archived (the
@@ -586,7 +596,8 @@ defmodule ConversationService.Conversations do
                         unread,
                         avatar_media_id,
                         pinned,
-                        archived
+                        archived,
+                        tag_ids
                       ] ->
       %{
         user_id: user_id,
@@ -605,7 +616,12 @@ defmodule ConversationService.Conversations do
         # Per-user inbox prefs — DERIVED booleans, not the raw timestamps (the client sorts by the server's
         # ORDER BY and renders the pin/archive state from these; it never needs the times).
         pinned: pinned,
-        archived: archived
+        archived: archived,
+        # The caller's OWN tag ids (never names/colours — those come from list_tags/1, at most 20 rows
+        # that change rarely). Carrying the ids here is what lets a tag change reach the user's other
+        # devices through the EXISTING :pref broadcast: pref_mutation recomputes this row, so the frame
+        # already carries the new state and no new event or refetch is needed. Filtering is CLIENT-side.
+        tag_ids: tag_ids
       }
     end)
   end

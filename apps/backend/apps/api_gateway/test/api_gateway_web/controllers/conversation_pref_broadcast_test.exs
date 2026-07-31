@@ -34,6 +34,13 @@ defmodule ApiGatewayWeb.ConversationPrefBroadcastTest do
     def set_auto_delete(%{"conversation_id" => c}),
       do: {:ok, %{conversation_id: c, auto_delete: "24h"}}
 
+    # TAGS (085) reuse the very same :pref path — a tag is per-user state exactly like mute/archive.
+    def assign_tag(%{"conversation_id" => c, "tag_id" => t}),
+      do: {:ok, %{conversation_id: c, tag_id: t, tagged: true}}
+
+    def unassign_tag(%{"conversation_id" => c, "tag_id" => t}),
+      do: {:ok, %{conversation_id: c, tag_id: t, tagged: false}}
+
     # The :pref broadcast (only: [me]) fetches the caller's own row.
     def inbox_rows(%{"conversation_id" => c, "user_ids" => uids}) do
       {:ok, %{rows: Enum.map(uids, &%{user_id: &1, conversation_id: c, unread_count: 0})}}
@@ -94,6 +101,34 @@ defmodule ApiGatewayWeb.ConversationPrefBroadcastTest do
         "conversation_id" => @conv,
         "mode" => "24h",
         "scope" => "mine"
+      })
+
+    assert conn.status == 200
+    assert_pref_to_me_only()
+  end
+
+  # A tag is per-user state, so its broadcast must behave exactly like the five prefs above: the
+  # acting user's OTHER devices update live, and the peer — who cannot even see the tag exists —
+  # hears nothing. This is what makes "reach other devices through the EXISTING machinery" true
+  # rather than aspirational.
+  @tag_id "44444444-4444-4444-8444-444444444444"
+
+  test "ASSIGN TAG → 200 + :pref to the acting user ONLY (the peer never learns a tag exists)" do
+    conn =
+      ApiGatewayWeb.ConversationTagController.assign(authed(:put), %{
+        "conversation_id" => @conv,
+        "tag_id" => @tag_id
+      })
+
+    assert conn.status == 200
+    assert_pref_to_me_only()
+  end
+
+  test "UNASSIGN TAG → 200 + :pref to the acting user ONLY" do
+    conn =
+      ApiGatewayWeb.ConversationTagController.unassign(authed(:delete), %{
+        "conversation_id" => @conv,
+        "tag_id" => @tag_id
       })
 
     assert conn.status == 200

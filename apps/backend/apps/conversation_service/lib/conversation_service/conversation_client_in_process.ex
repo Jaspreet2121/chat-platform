@@ -9,6 +9,7 @@ defmodule ConversationService.ConversationClientInProcess do
   @behaviour SharedInfra.ConversationClient
 
   alias ConversationService.Conversations
+  alias ConversationService.ConversationTags
   alias ConversationService.Participants
 
   @impl true
@@ -61,6 +62,24 @@ defmodule ConversationService.ConversationClientInProcess do
 
   @impl true
   def set_pin(attrs), do: Participants.set_pin(attrs)
+
+  @impl true
+  def create_tag(attrs), do: ConversationTags.create_tag(attrs)
+
+  @impl true
+  def list_tags(attrs), do: ConversationTags.list_tags(attrs)
+
+  @impl true
+  def update_tag(attrs), do: ConversationTags.update_tag(attrs)
+
+  @impl true
+  def delete_tag(attrs), do: ConversationTags.delete_tag(attrs)
+
+  @impl true
+  def assign_tag(attrs), do: ConversationTags.assign(attrs)
+
+  @impl true
+  def unassign_tag(attrs), do: ConversationTags.unassign(attrs)
 
   @impl true
   def set_group_profile(attrs), do: ConversationService.Conversations.set_group_profile(attrs)

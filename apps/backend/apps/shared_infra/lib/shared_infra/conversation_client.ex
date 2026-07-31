@@ -32,6 +32,14 @@ defmodule SharedInfra.ConversationClient do
   # Per-user inbox prefs (archive/pin) — same shape as set_mute; set_pin may return {:error, :pin_limit}.
   @callback set_archive(attrs()) :: result()
   @callback set_pin(attrs()) :: result()
+  # CONVERSATION TAGS (085) — user-defined lists over the caller's own conversations. Owner-scoped
+  # everywhere: a tag is private and never reachable from another user's session.
+  @callback create_tag(attrs()) :: result()
+  @callback list_tags(attrs()) :: result()
+  @callback update_tag(attrs()) :: result()
+  @callback delete_tag(attrs()) :: result()
+  @callback assign_tag(attrs()) :: result()
+  @callback unassign_tag(attrs()) :: result()
   @callback set_group_profile(attrs()) :: result()
   @callback set_participant_role(attrs()) :: result()
   @callback set_group_settings(attrs()) :: result()
@@ -161,6 +169,12 @@ defmodule SharedInfra.ConversationClient do
   def set_mute(attrs), do: adapter().set_mute(attrs)
   def set_archive(attrs), do: adapter().set_archive(attrs)
   def set_pin(attrs), do: adapter().set_pin(attrs)
+  def create_tag(attrs), do: adapter().create_tag(attrs)
+  def list_tags(attrs), do: adapter().list_tags(attrs)
+  def update_tag(attrs), do: adapter().update_tag(attrs)
+  def delete_tag(attrs), do: adapter().delete_tag(attrs)
+  def assign_tag(attrs), do: adapter().assign_tag(attrs)
+  def unassign_tag(attrs), do: adapter().unassign_tag(attrs)
   def set_group_profile(attrs), do: adapter().set_group_profile(attrs)
   def set_participant_role(attrs), do: adapter().set_participant_role(attrs)
   def set_group_settings(attrs), do: adapter().set_group_settings(attrs)
