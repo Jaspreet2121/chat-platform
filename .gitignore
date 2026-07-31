@@ -39,3 +39,7 @@ tmp/
 # IDE
 .vscode/
 .idea/
+# Editor / shell backups. `docker-compose.prod.yml.save` is what `nano` leaves behind after an
+# on-server edit — exactly how the FCM wiring drifted out of the repo in the first place.
+*.save
+*.save.*

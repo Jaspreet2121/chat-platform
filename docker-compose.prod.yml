@@ -273,11 +273,15 @@ services:
     networks: [chatnet]
     profiles: ["kafka"]
     mem_limit: 384m
+    volumes:
+      - ./fcm-service-account.json:/app/fcm-service-account.json:ro
     environment:
       <<: *secrets
       KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
       # Web-push sender (Phase 1). Empty keys = push disabled cleanly (fan-out rows still written).
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
+      FCM_SERVICE_ACCOUNT_PATH: ${FCM_SERVICE_ACCOUNT_PATH:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@growblic.com}
       # Presence-aware suppression (Phase 3c): the gateway writes short-TTL "user viewing conversation"
@@ -286,6 +290,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       NOTIFICATION_CONSUMER_ENABLED: "true"
       NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED: "true"
+      NOTIFICATION_CALL_CONSUMER_ENABLED: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -471,6 +476,9 @@ services:
       # the proper design lands (per-category buckets: auth/read/write; per-user sub-limits to stop one
       # client starving a tenant; X-RateLimit-* headers; sliding window). Affects ONLY /v1 — /api/v1 runs
       # on the `:api` pipeline, which has no rate-limit plug.
+      CALL_PUSH_ENABLED: ${CALL_PUSH_ENABLED:-}
+      KAFKA_PRODUCER_ADAPTER: brod
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
       V1_RATE_LIMIT: "3000"
       # Allowed browser CORS origin(s), comma-separated. Read at runtime by the gateway endpoint
       # (cors_origins/0). Defaults to the local frontend dev server; override via .env for a real host.
