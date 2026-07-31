@@ -19,6 +19,41 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
   # Tenant zero — seeded by migration 048 (media_assets.app_id defaults to it + FKs apps(id)).
   @app "00000000-0000-0000-0000-000000000001"
 
+  # InMemoryAdapter.head_object deliberately refuses — nothing is really stored, so it cannot verify —
+  # which is correct for it but made the two completion cases below unpassable. Those cases are about
+  # the OWNERSHIP predicate and idempotency, not about storage.
+  #
+  # The size-verification path is NOT skipped by doing this: MediaService.CompleteVerifyTest already
+  # proves it end-to-end against a stub that varies head_object — over-cap bytes deleted and refused,
+  # the PUT that never happened → :upload_not_found, fail-closed on a transport error, and the MEASURED
+  # size overwritten over the client's claim. Duplicating that here against real MinIO would re-test
+  # storage and add a networked service to the postgres gate for no extra coverage.
+  #
+  # So: InMemoryAdapter plus a believable head_object. It gets storage out of the way rather than
+  # pretending to exercise it.
+  defmodule SizedStorage do
+    @moduledoc false
+    @behaviour MediaService.Storage
+
+    alias MediaService.Storage.InMemoryAdapter
+
+    @impl true
+    def create_upload(attrs), do: InMemoryAdapter.create_upload(attrs)
+
+    @impl true
+    def complete_upload(attrs), do: InMemoryAdapter.complete_upload(attrs)
+
+    @impl true
+    def get_download_url(attrs), do: InMemoryAdapter.get_download_url(attrs)
+
+    @impl true
+    def delete_object(attrs), do: InMemoryAdapter.delete_object(attrs)
+
+    # A stored object of a plausible, under-cap size.
+    @impl true
+    def head_object(_attrs), do: {:ok, %{size_bytes: 42}}
+  end
+
   setup do
     prev_persist = Application.get_env(:media_service, :media_persistence, false)
 
@@ -30,12 +65,9 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
       )
 
     Application.put_env(:media_service, :media_persistence, true)
-    # A non-networked adapter that returns a fake upload_url so create_upload succeeds end-to-end.
-    Application.put_env(
-      :media_service,
-      :media_storage_adapter,
-      MediaService.Storage.InMemoryAdapter
-    )
+    # A non-networked adapter that returns a fake upload_url so create_upload succeeds end-to-end,
+    # and reports a stored size so completion can verify (see SizedStorage above).
+    Application.put_env(:media_service, :media_storage_adapter, SizedStorage)
 
     start_repo!(MediaRepo)
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(MediaRepo)

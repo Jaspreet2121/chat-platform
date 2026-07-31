@@ -18,7 +18,24 @@ defmodule UserService.UsernamesTest do
     prev = Application.get_env(:user_service, :user_profile_persistence, false)
     Application.put_env(:user_service, :user_profile_persistence, true)
     on_exit(fn -> Application.put_env(:user_service, :user_profile_persistence, prev) end)
+
+    # This suite crosses a service boundary: the discoverability test below asserts that a username
+    # lookup is unaffected by phone-discovery opt-out, which means calling into AuthService. But
+    # UserService.DataCase starts only UserService.Repo, so AuthService.Repo was never started and the
+    # test died with "could not lookup Ecto repo AuthService.Repo". Nothing is missing from the
+    # environment — both repos address the SAME test database — the second one just has to be started
+    # and checked out. That boundary (per-tenant uniqueness, the holds table) is exactly the kind of
+    # thing that must not go unverified, so the harness is fixed rather than the test dropped.
+    start_auth_repo!()
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(AuthService.Repo)
     :ok
+  end
+
+  defp start_auth_repo! do
+    case AuthService.Repo.start_link() do
+      {:ok, pid} -> Process.unlink(pid)
+      {:error, {:already_started, _pid}} -> :ok
+    end
   end
 
   defp user!(app_id \\ @tenant_zero) do

@@ -90,8 +90,34 @@ else
   suites="$(grep -rl "postgres_integration" apps/*/test --include="*_test.exs" | sort | tr '\n' ' ')"
 fi
 
+# EXCLUSIONS ARE ALWAYS PRINTED, INCLUDING WHEN THERE ARE NONE. An exclusion nobody sees is
+# indistinguishable from a test that does not exist — which is precisely how "runs in your CI" stayed
+# believable while nothing ran. The convention: a suite that cannot run here carries an explicit named
+# tag saying WHY (`@moduletag :requires_kafka`, `:requires_minio`, ...), never a bare skip.
+excluded=""
+for suite in $suites; do
+  tag="$(grep -ohE '@(module)?tag :requires_[a-z_]+' "$suite" 2>/dev/null | head -1 | sed 's/.*:requires_/requires_/' || true)"
+  if [ -n "$tag" ]; then
+    excluded="$excluded$suite ($tag)\n"
+  fi
+done
+
+excluded_count=$(printf '%b' "$excluded" | grep -c . || true)
+excluded_count=${excluded_count:-0}
+total_count=$(echo $suites | wc -w | tr -d ' ')
+
+echo "==> $total_count postgres-gated suites; $excluded_count excluded"
+if [ "$excluded_count" -gt 0 ]; then
+  printf '%b' "$excluded" | sed 's/^/      EXCLUDED: /'
+fi
+
 fail=0
 for suite in $suites; do
+  # Skip the ones just reported, so the count above and the runs below can never disagree.
+  if grep -qE '@(module)?tag :requires_[a-z_]+' "$suite" 2>/dev/null; then
+    continue
+  fi
+
   printf '%-84s' "$suite"
   if out="$(mix test --include postgres_integration "$suite" 2>&1)"; then
     echo "$(echo "$out" | grep -E '^Result:' | tail -1)"

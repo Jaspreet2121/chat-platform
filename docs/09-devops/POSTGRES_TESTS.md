@@ -43,26 +43,42 @@ is present, so the build needs `{:decimal, "~> 3.0", override: true}` — which 
 `apps/backend/mix.exs`. A per-app run does not inherit it and dies with `Unchecked dependencies`.
 Always run from the umbrella root.
 
-## Known follow-ups (not fixed)
+## Exclusion convention
 
-1. **Per-app test databases** — the real fix for the shared-DB flakiness above. Every service Repo
-   currently points at the single `chat_platform_test`; giving each app its own database (or schema)
-   would make an umbrella-wide run meaningful again and let suites run concurrently. Until then the
-   per-suite loop is a workaround, not a solution.
+A suite that genuinely cannot run here carries an **explicit named tag saying why** —
+`@moduletag :requires_kafka`, `:requires_minio` — never a bare skip. `test-postgres.sh` prints the
+excluded suites and their count on **every** run, including when the count is zero:
 
-2. **`admin_scope_analytics_postgres_integration_test.exs` has a stale fixture** — its setup seeds
-   `messages` without `app_id`, which has since become `NOT NULL`, so the suite fails in `setup` with
-   `23502 not_null_violation` and has never passed. The seed helper needs an `app_id`.
+```
+==> 56 postgres-gated suites; 0 excluded
+```
 
-3. **`media_persistence_postgres_integration_test.exs` needs real MinIO bytes** — the two
-   `complete_upload` cases return `{:error, :verify_failed}` because verification looks for an object
-   that no test ever uploads. They need either a real PUT against the MinIO service or an injected
-   storage adapter. The script's per-suite output makes these two visible instead of lost in an
-   aggregate.
+Silent exclusion is how "runs in your CI" stayed believable while nothing ran. An exclusion nobody
+sees is indistinguishable from a test that does not exist.
 
-4. **~150 files fail `mix format --check-formatted`** — and that step runs *before* compile in the
-   fast `backend` job, so **that job has never reached its test step either**. The `integration` job
-   has no format step and is unblocked by the compile fix above, but the overall CI run stays red
-   until this is cleared. The fix is one mechanical command (`cd apps/backend && mix format`), kept
-   out of the CI-plumbing commit deliberately: a 150-file reformat would bury every real change it
-   was committed alongside. It wants its own commit and its own review.
+## Known follow-ups
+
+1. **Per-app test databases** — the real fix for the shared-database flakiness described above. Every
+   service Repo points at the single `chat_platform_test`, so an umbrella-wide run interferes with
+   itself. The per-suite loop is a workaround, not a solution; per-app databases (or schemas) would
+   make an aggregate run meaningful again and let suites run concurrently.
+
+2. **Elixir version pinning** — `mix format` output is version-dependent (1.20 collapses
+   `when guard, do: :ok` onto one line, 1.18 splits it), and the version is declared in exactly one
+   place: the CI workflow. Formatting on a newer local Elixir re-breaks CI. A `.tool-versions` pinning
+   1.18.4 would close this.
+
+### Resolved
+
+- ~~`admin_scope_analytics` stale fixture~~ — seeded `messages` without the now-`NOT NULL` `app_id`;
+  fixed, along with five sibling suites that predated the same tenant-anchoring change.
+- ~~`media_persistence` needs real MinIO bytes~~ — it does not. The size-verification path is already
+  proven end-to-end by `MediaService.CompleteVerifyTest` (over-cap deletion, missing PUT, fail-closed,
+  measured-size-over-claim). Those two cases are about the ownership predicate and idempotency, so
+  they now use an in-memory adapter that reports a stored size rather than adding a networked service
+  to the gate.
+- ~~`participant_events_integration` needs Kafka~~ — it never did. It captures through an in-process
+  stub, but that stub was declared inside *another test file*, so the suite only passed when that file
+  happened to load in the same run. Moved to `test/support`; passes alone, together, and in either
+  order. A latent order-dependency the per-suite runner exposed.
+- ~~~150 files fail `mix format`~~ — swept, and re-swept under CI's pinned 1.18.4.

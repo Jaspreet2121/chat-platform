@@ -1,28 +1,3 @@
-defmodule ConversationService.CaptureKafkaProducer do
-  @moduledoc false
-  # Emission runs in a Task (separate process), so we send to the test pid recorded in app
-  # env (set in setup) rather than self(); the test uses assert_receive.
-  @behaviour SharedInfra.Kafka.Producer
-
-  @impl true
-  def produce(topic, key, value, _opts \\ []) do
-    case Application.get_env(:shared_infra, :capture_test_pid) do
-      pid when is_pid(pid) -> send(pid, {:kafka_published, topic, key, value})
-      _ -> :ok
-    end
-
-    {:ok, :captured}
-  end
-end
-
-defmodule ConversationService.FailingKafkaProducer do
-  @moduledoc false
-  @behaviour SharedInfra.Kafka.Producer
-
-  @impl true
-  def produce(_topic, _key, _value, _opts \\ []), do: raise("kafka broker is down")
-end
-
 defmodule ConversationService.ParticipantEventsTest do
   @moduledoc """
   Proves the fire-and-forget participant-change emission contract WITHOUT a live broker
