@@ -26,6 +26,10 @@ defmodule MessageService.Statuses do
   conversation — listing someone does not retroactively admit them to posts made before you shared a
   conversation. Modes narrow; they never widen.
 
+  REPLIES (commit 3) quote a TEXT-ONLY snapshot ({status_id, kind, excerpt}) taken at reply time, so the
+  DM renders forever; `status_id` is a courtesy pointer that simply goes dead at expiry. No thumbnail —
+  a media pointer would decay, and copying the bytes would subvert the 24h ephemerality contract.
+
   EXPIRY: every read carries `expires_at > now() AND deleted_at IS NULL`. THE SWEEP (write-amortised,
   no scheduler): each post drains ≤#{25} posts expired >1h ago — purge the media object (MediaClient)
   + stamp media_purged_at — and hard-deletes post+view rows >30 days old. Sweep rate ≥25× accrual rate
@@ -48,6 +52,8 @@ defmodule MessageService.Statuses do
   @max_body 700
   # Audience list cap (mirrors the broadcast-list member cap; the list is a contact selection, not a feed).
   @audience_limit 256
+  # The quoted excerpt a status REPLY snapshots (text only — see status_for_reply/1).
+  @excerpt_length 140
   @kinds ~w(text image video)
 
   # --- POST --------------------------------------------------------------------------------------
@@ -470,6 +476,77 @@ defmodule MessageService.Statuses do
   defp iso8601(nil), do: nil
   defp iso8601(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp iso8601(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt) <> "Z"
+
+  # --- REPLIES (commit 3) --------------------------------------------------------------------------
+
+  @doc """
+  Resolve a status for REPLYING — the audience predicate's FOURTH consumer, evaluated at REPLY TIME
+  (audience is live, so someone who could view when they opened it may fail by the time they hit send;
+  that must be a clean, specific refusal — see the gateway's 403 status.reply_forbidden — never a 500
+  or a silent drop).
+
+  Returns the SNAPSHOT the reply quotes: {:ok, %{owner_user_id, status_id, kind, excerpt}}.
+
+  THE SNAPSHOT IS TEXT-ONLY, DELIBERATELY (no thumbnail_media_id): a media pointer would be authorized
+  by the status arm, which requires the owning post to be LIVE — so 24h later the quote's text would
+  render and its image would 404, exactly the decay the snapshot exists to prevent. Copying the bytes
+  into a replier-owned asset would survive expiry but SUBVERT EPHEMERALITY: the owner posted something
+  that disappears in 24h, and every reply would silently mint a permanent copy they cannot delete.
+  `kind` + `excerpt` render forever and are always correct ("Photo" + the caption).
+
+  Errors: :status_not_found (unknown / expired / deleted) | :status_not_visible (live, but this caller
+  is outside the audience NOW).
+  """
+  def status_for_reply(attrs) do
+    with :ok <- ensure_persistence(),
+         {:ok, status_id} <- required(attrs, "status_id"),
+         {:ok, viewer} <- required(attrs, "viewer_user_id") do
+      %{rows: rows} =
+        Repo.query!(
+          "SELECT sp.owner_user_id::text, sp.kind, sp.body, " <>
+            "((sp.owner_user_id = $1::uuid) OR (" <> audience_sql() <> ")) " <>
+            "FROM status_posts sp " <>
+            "WHERE sp.id = $2::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL",
+          [viewer, status_id]
+        )
+
+      case rows do
+        [[owner, kind, body, true]] ->
+          {:ok,
+           %{
+             owner_user_id: owner,
+             status_id: status_id,
+             kind: kind,
+             excerpt: excerpt(body)
+           }}
+
+        # Live, but the caller is outside the audience RIGHT NOW (blocked since, removed from an
+        # 'only' list, left the shared conversation, mode switched).
+        [[_owner, _kind, _body, false]] ->
+          {:error, :status_not_visible}
+
+        _ ->
+          {:error, :status_not_found}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :status_not_found}
+  end
+
+  # The quoted text, snapshotted at reply time (immune to expiry — nothing dereferences later).
+  defp excerpt(nil), do: nil
+
+  defp excerpt(body) when is_binary(body) do
+    trimmed = String.trim(body)
+
+    cond do
+      trimmed == "" -> nil
+      String.length(trimmed) <= @excerpt_length -> trimmed
+      true -> String.slice(trimmed, 0, @excerpt_length) <> "…"
+    end
+  end
+
+  defp excerpt(_body), do: nil
 
   # --- DELETE ------------------------------------------------------------------------------------
 

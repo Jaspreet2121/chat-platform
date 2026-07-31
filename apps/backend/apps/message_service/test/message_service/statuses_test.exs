@@ -14,6 +14,11 @@ defmodule MessageService.StatusesTest do
   viewer provably never gets a row); and the owner's viewer list under read-receipt reciprocity — a
   receipts-off viewer is ABSENT from the list while their view ROW still exists, and a receipts-off OWNER
   sees an empty list with viewers_hidden.
+
+  COMMIT 3 adds status_for_reply/1 — the audience predicate's FOURTH consumer, evaluated at REPLY time:
+  the TEXT-ONLY snapshot (kind + capped excerpt, no media pointer), :status_not_visible when the caller
+  fell out of the audience since opening it (distinct from :status_not_found for unknown/expired), and
+  the snapshot's independence from the post's later fate.
   """
   use MessageService.DataCase, async: false
 
@@ -546,5 +551,97 @@ defmodule MessageService.StatusesTest do
 
     assert {:error, :status_audience_limit} =
              Statuses.set_audience(%{"user_id" => owner, "mode" => "only", "member_user_ids" => too_many})
+  end
+
+  # --- commit 3: replies --------------------------------------------------------------------------
+
+  defp for_reply(status_id, viewer),
+    do: Statuses.status_for_reply(%{"status_id" => status_id, "viewer_user_id" => viewer})
+
+  @tag :postgres_integration
+  test "REPLY SNAPSHOT is text-only: kind + capped excerpt, never a media pointer" do
+    owner = user!()
+    friend = user!()
+    shared_conversation!(owner, friend)
+
+    text = post!(owner, %{"body" => "  hello there  "})
+    assert {:ok, snap} = for_reply(text.status_id, friend)
+    assert snap.owner_user_id == owner
+    assert snap.kind == "text"
+    assert snap.excerpt == "hello there"
+    # No thumbnail / media pointer of any kind — the quote can never decay.
+    refute Map.has_key?(snap, :thumbnail_media_id)
+    refute Map.has_key?(snap, :media_id)
+
+    # An image status quotes its CAPTION; a captionless one quotes nothing (the client renders "Photo").
+    captioned = post!(owner, %{"kind" => "image", "media_id" => Ecto.UUID.generate(), "body" => "at the beach"})
+    assert {:ok, %{kind: "image", excerpt: "at the beach"}} = for_reply(captioned.status_id, friend)
+
+    bare = post!(owner, %{"kind" => "video", "media_id" => Ecto.UUID.generate(), "body" => nil})
+    assert {:ok, %{kind: "video", excerpt: nil}} = for_reply(bare.status_id, friend)
+
+    # Long bodies are capped at 140 + an ellipsis (the snapshot is a quote, not a copy).
+    long = post!(owner, %{"body" => String.duplicate("x", 300)})
+    assert {:ok, %{excerpt: excerpt}} = for_reply(long.status_id, friend)
+    assert String.length(excerpt) == 141
+    assert String.ends_with?(excerpt, "…")
+  end
+
+  @tag :postgres_integration
+  test "THE REPLY-TIME GATE: falling out of the audience turns a viewable status into :status_not_visible" do
+    owner = user!()
+    friend = user!()
+    shared_conversation!(owner, friend)
+    post = post!(owner)
+
+    # Openable now.
+    assert {:ok, _} = for_reply(post.status_id, friend)
+
+    # Blocked between open and send → a DISTINCT refusal (not_visible), never not_found.
+    block!(owner, friend)
+    assert {:error, :status_not_visible} = for_reply(post.status_id, friend)
+    Repo.query!("DELETE FROM user_blocks WHERE blocker_user_id = $1::text::uuid", [owner])
+
+    # Dropped from an 'only' list between open and send → same distinct refusal.
+    set_audience!(owner, "only", [])
+    assert {:error, :status_not_visible} = for_reply(post.status_id, friend)
+    set_audience!(owner, "contacts")
+    assert {:ok, _} = for_reply(post.status_id, friend)
+
+    # A stranger who never qualified gets the SAME not_visible (the post is live) — and an
+    # unknown/expired/deleted status is not_found, so nothing distinguishes those two states.
+    stranger = user!()
+    assert {:error, :status_not_visible} = for_reply(post.status_id, stranger)
+    assert {:error, :status_not_found} = for_reply(Ecto.UUID.generate(), friend)
+
+    expire!(post.status_id)
+    assert {:error, :status_not_found} = for_reply(post.status_id, friend)
+  end
+
+  @tag :postgres_integration
+  test "the OWNER may resolve their own status (the gateway refuses the self-reply, not the domain)" do
+    owner = user!()
+    post = post!(owner)
+
+    # The domain allows it (owner bypass); refusing a DM-with-yourself is the gateway's job — a
+    # self-reply would dedupe to ONE participant, skip find_or_create_direct, and orphan a conversation.
+    assert {:ok, %{owner_user_id: ^owner}} = for_reply(post.status_id, owner)
+  end
+
+  @tag :postgres_integration
+  test "the snapshot is INDEPENDENT of the post's later fate (nothing dereferences status_id later)" do
+    owner = user!()
+    friend = user!()
+    shared_conversation!(owner, friend)
+    post = post!(owner, %{"body" => "ephemeral thought"})
+
+    assert {:ok, snap} = for_reply(post.status_id, friend)
+    assert snap.excerpt == "ephemeral thought"
+
+    # The post dies; the snapshot the caller already holds is unaffected — it is a VALUE, and the only
+    # thing that dies is the courtesy pointer (a fresh resolve now 404s, as it must).
+    {:ok, _} = Statuses.delete_status(%{"owner_user_id" => owner, "status_id" => post.status_id})
+    assert snap.excerpt == "ephemeral thought"
+    assert {:error, :status_not_found} = for_reply(post.status_id, friend)
   end
 end

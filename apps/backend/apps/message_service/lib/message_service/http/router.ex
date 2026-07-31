@@ -147,6 +147,10 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Statuses.my_status(body(conn)))
   end
 
+  post "/internal/status/for_reply" do
+    send_result(conn, MessageService.Statuses.status_for_reply(body(conn)))
+  end
+
   # Owner-anchored message-media download authorization (the gateway's "message" purpose arm).
   post "/internal/media/download_allowed" do
     send_result(conn, MessageService.MessageStore.media_download_allowed(body(conn)))

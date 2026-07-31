@@ -9,6 +9,11 @@ defmodule ApiGatewayWeb.StatusControllerTest do
   settings round-trip + its codes, view recording (404 when the caller can't see the post), the
   owner-only viewer list incl. viewers_hidden passthrough, and my_status carrying its view count. The
   audience/expiry/sweep/reciprocity SQL is MessageService.StatusesTest.
+
+  Commit 3 adds replies: the DM goes through the ORDINARY create path (resolve-or-create direct →
+  authorize_send → create_message) carrying a TEXT-ONLY metadata.status_ref snapshot; the reply-time
+  audience refusal is a clean 403 status.reply_forbidden; a self-reply is refused 409 BEFORE any
+  conversation is created; a blocked owner still yields the synthetic-ack 201 with no live fan-out.
   """
   use ExUnit.Case, async: false
 
@@ -87,6 +92,23 @@ defmodule ApiGatewayWeb.StatusControllerTest do
 
     def status_viewers(_attrs), do: {:error, :status_not_found}
 
+    # --- commit 3 ---
+    # "st-1" is @friend's live status, visible to @me. "st-gone" fell out of the audience (live but
+    # not visible now); "st-mine" is the caller's OWN; anything else is unknown/expired.
+    def status_for_reply(%{"status_id" => "st-1", "viewer_user_id" => @me}),
+      do: {:ok, %{owner_user_id: @friend, status_id: "st-1", kind: "image", excerpt: "at the beach"}}
+
+    def status_for_reply(%{"status_id" => "st-mine", "viewer_user_id" => @me}),
+      do: {:ok, %{owner_user_id: @me, status_id: "st-mine", kind: "text", excerpt: "mine"}}
+
+    def status_for_reply(%{"status_id" => "st-gone"}), do: {:error, :status_not_visible}
+    def status_for_reply(_attrs), do: {:error, :status_not_found}
+
+    def create_message(attrs) do
+      send(:status_reply_test, {:created, attrs})
+      {:ok, %{message_id: "msg-1", conversation_id: attrs["conversation_id"], body: attrs["body"]}}
+    end
+
     def delete_status(%{"status_id" => "st-1", "owner_user_id" => @me}), do: {:ok, %{deleted: true}}
     def delete_status(_attrs), do: {:error, :status_not_found}
 
@@ -96,6 +118,32 @@ defmodule ApiGatewayWeb.StatusControllerTest do
 
     def status_media_allowed(%{"media_id" => "m-down"}), do: {:error, :message_unavailable}
     def status_media_allowed(_attrs), do: {:ok, %{allowed: false}}
+  end
+
+  defmodule ConvStub do
+    @owner_dm "dm-with-owner"
+
+    def start_link, do: Agent.start_link(fn -> %{log: [], blocked: false} end, name: __MODULE__)
+    def set_blocked(v), do: Agent.update(__MODULE__, &Map.put(&1, :blocked, v))
+    def log, do: Agent.get(__MODULE__, & &1.log) |> Enum.reverse()
+    defp record(entry), do: Agent.update(__MODULE__, &Map.update!(&1, :log, fn l -> [entry | l] end))
+
+    # The SAME entry point a normal first DM uses (find_or_create_direct downstream).
+    def create_conversation(%{"type" => "direct", "participant_user_ids" => [recipient]} = attrs) do
+      record({:create_conversation, recipient, attrs["created_by"]})
+      {:ok, %{conversation_id: @owner_dm, type: "direct", created: true}}
+    end
+
+    def authorize_send(_attrs) do
+      if Agent.get(__MODULE__, & &1.blocked),
+        do: {:ok, %{authorized: true, delivery: "drop"}},
+        else: {:ok, %{authorized: true}}
+    end
+
+    def get_conversation(_attrs), do: {:ok, %{participants: []}}
+
+    def inbox_rows(%{"user_ids" => uids, "conversation_id" => cid}),
+      do: {:ok, %{rows: Enum.map(uids, &%{user_id: &1, conversation_id: cid, unread_count: 0})}}
   end
 
   defmodule MediaStub do
@@ -118,20 +166,26 @@ defmodule ApiGatewayWeb.StatusControllerTest do
   end
 
   setup do
+    Process.register(self(), :status_reply_test)
+    start_supervised!(%{id: ConvStub, start: {ConvStub, :start_link, []}})
+
     prev = %{
       auth: Application.get_env(:shared_infra, :auth_client_adapter),
       msg: Application.get_env(:shared_infra, :message_client_adapter),
-      media: Application.get_env(:shared_infra, :media_client_adapter)
+      media: Application.get_env(:shared_infra, :media_client_adapter),
+      conv: Application.get_env(:shared_infra, :conversation_client_adapter)
     }
 
     Application.put_env(:shared_infra, :auth_client_adapter, AuthStub)
     Application.put_env(:shared_infra, :message_client_adapter, MsgStub)
     Application.put_env(:shared_infra, :media_client_adapter, MediaStub)
+    Application.put_env(:shared_infra, :conversation_client_adapter, ConvStub)
 
     on_exit(fn ->
       restore(:auth_client_adapter, prev.auth)
       restore(:message_client_adapter, prev.msg)
       restore(:media_client_adapter, prev.media)
+      restore(:conversation_client_adapter, prev.conv)
     end)
 
     :ok
@@ -254,6 +308,69 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     assert {:error, :not_a_member} = MediaAuthz.authorize_download("x", %{purpose: "mystery"}, @me)
   end
 
+  test "REPLY: an ordinary DM through the normal create path, carrying the TEXT-ONLY snapshot" do
+    conn = StatusController.reply(authed(:post), %{"status_id" => "st-1", "body" => "love this"})
+
+    assert conn.status == 201
+    assert body(conn)["message_id"] == "msg-1"
+
+    # The DM was resolved through the SAME create_conversation entry point (direct, to the owner).
+    assert ConvStub.log() == [{:create_conversation, @friend, @me}]
+
+    # The outgoing message is a plain text DM whose metadata quotes a snapshot — no media pointer.
+    assert_received {:created, attrs}
+    assert attrs["message_type"] == "text"
+    assert attrs["body"] == "love this"
+    ref = attrs["metadata"]["status_ref"]
+    assert ref == %{"status_id" => "st-1", "kind" => "image", "excerpt" => "at the beach"}
+    refute Map.has_key?(ref, "thumbnail_media_id")
+    refute Map.has_key?(ref, "media_id")
+    # Nothing marks it as a drop (the owner hasn't blocked the replier).
+    refute Map.has_key?(attrs, "delivery_disposition")
+  end
+
+  test "REPLY-TIME audience refusal → 403 status.reply_forbidden, and NO conversation is created" do
+    conn = StatusController.reply(authed(:post), %{"status_id" => "st-gone", "body" => "hi"})
+
+    assert conn.status == 403
+    assert body(conn)["error"]["code"] == "status.reply_forbidden"
+    # The refusal happens BEFORE any DM is minted.
+    assert ConvStub.log() == []
+    refute_received {:created, _}
+  end
+
+  test "SELF-REPLY → 409 status.cannot_reply_own, refused BEFORE any conversation is created" do
+    conn = StatusController.reply(authed(:post), %{"status_id" => "st-mine", "body" => "hi"})
+
+    assert conn.status == 409
+    assert body(conn)["error"]["code"] == "status.cannot_reply_own"
+    # Critical: no orphan single-participant conversation was minted.
+    assert ConvStub.log() == []
+    refute_received {:created, _}
+  end
+
+  test "a BLOCKED owner still yields the synthetic 201 (block-drop inherited, no live fan-out)" do
+    ConvStub.set_blocked(true)
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@friend}")
+
+    conn = StatusController.reply(authed(:post), %{"status_id" => "st-1", "body" => "hello?"})
+
+    assert conn.status == 201
+    assert_received {:created, attrs}
+    # The server sets the drop flag; the sender learns nothing.
+    assert attrs["delivery_disposition"] == "drop"
+    refute_receive %Phoenix.Socket.Broadcast{event: "conversation_updated"}, 200
+  end
+
+  test "reply validation: unknown status → 404; empty body → 400" do
+    unknown = StatusController.reply(authed(:post), %{"status_id" => "nope", "body" => "hi"})
+    assert unknown.status == 404
+
+    empty = StatusController.reply(authed(:post), %{"status_id" => "st-1", "body" => "   "})
+    assert empty.status == 400
+    assert body(empty)["error"]["code"] == "status.invalid_body"
+  end
+
   test "no session → 401 across the surface (incl. the commit-2 actions)" do
     assert StatusController.create(authed(:post, ""), %{"kind" => "text", "body" => "x"}).status == 401
     assert StatusController.feed(authed(:get, ""), %{}).status == 401
@@ -262,5 +379,6 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     assert StatusController.set_audience(authed(:put, ""), %{"mode" => "contacts"}).status == 401
     assert StatusController.record_view(authed(:post, ""), %{"status_id" => "st-1"}).status == 401
     assert StatusController.viewers(authed(:get, ""), %{"status_id" => "st-1"}).status == 401
+    assert StatusController.reply(authed(:post, ""), %{"status_id" => "st-1", "body" => "x"}).status == 401
   end
 end

@@ -82,6 +82,9 @@ defmodule SharedInfra.MessageClientHttp do
   def my_status(attrs), do: post("/internal/status/mine", attrs)
 
   @impl true
+  def status_for_reply(attrs), do: post("/internal/status/for_reply", attrs)
+
+  @impl true
   def media_download_allowed(attrs), do: post("/internal/media/download_allowed", attrs)
 
   @impl true

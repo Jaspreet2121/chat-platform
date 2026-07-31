@@ -155,6 +155,103 @@ defmodule ApiGatewayWeb.StatusController do
 
   def delete(conn, _params), do: ErrorResponse.invalid_request(conn, "status.invalid_request")
 
+  @doc """
+  Reply to a status — an ORDINARY DM to its owner, quoting a TEXT-ONLY snapshot.
+
+    POST /api/v1/status/:status_id/reply {body} → the created message
+
+  The DM goes through the SAME create path as any other (resolve-or-create the direct conversation via
+  find_or_create_direct, authorize_send's block disposition → synthetic drop, the usual live fan-out and
+  push) — nothing about replies is special downstream. `metadata.status_ref` carries
+  {status_id, kind, excerpt}: the excerpt is SNAPSHOTTED at reply time so the quote renders forever,
+  and status_id is a courtesy pointer that simply goes dead at expiry (nothing dereferences it later).
+  NO thumbnail — see MessageService.Statuses.status_for_reply/1 for why a pointer would decay and a
+  copy would subvert the 24h ephemerality contract.
+
+  THE AUDIENCE GATE RUNS AT REPLY TIME (audience is live): a caller who could view when they opened the
+  status but has since been blocked / removed from an 'only' list / dropped from the conversation gets a
+  clean 403 status.reply_forbidden — never a 500 or a silent drop. (That 403 confirms a live status
+  exists to someone already holding its unguessable id; unknown/expired/deleted stay 404, so nothing is
+  enumerable.) Replying to your OWN status is refused (409 status.cannot_reply_own): the participant set
+  would dedupe to one, skipping find_or_create_direct entirely and minting a fresh orphan
+  single-participant conversation on every reply.
+  """
+  def reply(conn, %{"status_id" => status_id} = params)
+      when is_binary(status_id) and status_id != "" do
+    with {:ok, session} <- session(conn),
+         {:ok, body} <- reply_body(params),
+         {:ok, status} <-
+           SharedInfra.MessageClient.status_for_reply(%{
+             "status_id" => status_id,
+             "viewer_user_id" => session.user_id
+           }),
+         owner = cget(status, :owner_user_id),
+         :ok <- refuse_self_reply(session.user_id, owner),
+         {:ok, conversation} <-
+           SharedInfra.ConversationClient.create_conversation(%{
+             "type" => "direct",
+             "participant_user_ids" => [owner],
+             "created_by" => session.user_id,
+             "app_id" => session_app(session)
+           }),
+         conversation_id = cget(conversation, :conversation_id),
+         {:ok, disposition} <-
+           SharedInfra.ConversationClient.authorize_send(%{
+             "conversation_id" => conversation_id,
+             "user_id" => session.user_id
+           }),
+         dropped? = dropped?(disposition),
+         {:ok, message} <-
+           %{
+             "conversation_id" => conversation_id,
+             "sender_user_id" => session.user_id,
+             "message_type" => "text",
+             "body" => body,
+             "metadata" => %{
+               "status_ref" => %{
+                 "status_id" => status_id,
+                 "kind" => cget(status, :kind),
+                 "excerpt" => cget(status, :excerpt)
+               }
+             }
+           }
+           |> put_delivery(dropped?)
+           |> SharedInfra.MessageClient.create_message() do
+      ApiGatewayWeb.ConversationBroadcast.broadcast_created(conversation)
+
+      unless dropped? do
+        ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+          conversation_id,
+          session.user_id,
+          :message
+        )
+      end
+
+      conn |> put_status(:created) |> json(message)
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  def reply(conn, _params), do: ErrorResponse.invalid_request(conn, "status.invalid_request")
+
+  defp reply_body(%{"body" => body}) when is_binary(body) do
+    if String.trim(body) != "", do: {:ok, body}, else: {:error, :status_invalid_body}
+  end
+
+  defp reply_body(_params), do: {:error, :status_invalid_body}
+
+  defp refuse_self_reply(user_id, owner) when user_id == owner, do: {:error, :status_reply_own}
+  defp refuse_self_reply(_user_id, _owner), do: :ok
+
+  defp dropped?(disposition) when is_map(disposition),
+    do: SharedInfra.Attrs.get(disposition, :delivery) == "drop"
+
+  defp dropped?(_disposition), do: false
+
+  defp put_delivery(params, true), do: Map.put(params, "delivery_disposition", "drop")
+  defp put_delivery(params, false), do: Map.delete(params, "delivery_disposition")
+
   # A media status must reference the caller's OWN ready, "status"-purpose asset (the avatar ownership
   # rule): stops posting someone else's bytes or cross-purpose reuse. Text statuses skip this.
   defp validate_media_ownership(%{"media_id" => media_id}, session)
@@ -186,6 +283,11 @@ defmodule ApiGatewayWeb.StatusController do
 
   defp session_app(session), do: Map.get(session, :app_id)
 
+  # Presence-based dual-key read (SharedInfra.Attrs): service results arrive atom-keyed in-process and
+  # string-keyed over HTTP, and some fields are legitimately nil/false.
+  defp cget(map, key) when is_map(map), do: SharedInfra.Attrs.get(map, key)
+  defp cget(_map, _key), do: nil
+
   defp handle_error(conn, {:error, :session_invalid}),
     do: ErrorResponse.unauthorized(conn, "auth.session_invalid", "Invalid or missing session")
 
@@ -216,6 +318,23 @@ defmodule ApiGatewayWeb.StatusController do
         "status.audience_limit",
         "Too many audience members",
         %{limit: 256}
+      )
+
+  # Live status, caller outside the audience AT SEND TIME (live evaluation) — a specific, clean refusal.
+  defp handle_error(conn, {:error, :status_not_visible}),
+    do:
+      ErrorResponse.forbidden(
+        conn,
+        "status.reply_forbidden",
+        "This status is no longer available to you"
+      )
+
+  defp handle_error(conn, {:error, :status_reply_own}),
+    do:
+      ErrorResponse.conflict(
+        conn,
+        "status.cannot_reply_own",
+        "You can't reply to your own status"
       )
 
   defp handle_error(conn, {:error, :status_not_found}),

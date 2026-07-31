@@ -80,6 +80,9 @@ defmodule MessageService.MessageClientInProcess do
   def my_status(attrs), do: MessageService.Statuses.my_status(attrs)
 
   @impl true
+  def status_for_reply(attrs), do: MessageService.Statuses.status_for_reply(attrs)
+
+  @impl true
   def media_download_allowed(attrs), do: MessageService.MessageStore.media_download_allowed(attrs)
 
   @impl true

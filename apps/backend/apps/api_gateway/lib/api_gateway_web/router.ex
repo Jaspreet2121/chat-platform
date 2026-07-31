@@ -179,6 +179,8 @@ defmodule ApiGatewayWeb.Router do
     # owner list below).
     post "/:status_id/view", StatusController, :record_view
     get "/:status_id/viewers", StatusController, :viewers
+    # Reply (commit 3) — an ordinary DM to the owner quoting a text-only snapshot.
+    post "/:status_id/reply", StatusController, :reply
     delete "/:status_id", StatusController, :delete
     get "/:owner_user_id", StatusController, :list
   end

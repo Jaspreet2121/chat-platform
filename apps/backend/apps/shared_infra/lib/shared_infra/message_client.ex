@@ -55,6 +55,8 @@ defmodule SharedInfra.MessageClient do
   @callback record_status_view(attrs()) :: result()
   @callback status_viewers(attrs()) :: result()
   @callback my_status(attrs()) :: result()
+  # Status commit 3: resolve a status for replying (audience gate at REPLY time + the text snapshot).
+  @callback status_for_reply(attrs()) :: result()
   # Owner-anchored message-media download authorization.
   @callback media_download_allowed(attrs()) :: result()
   @optional_callbacks message_info: 1,
@@ -70,7 +72,8 @@ defmodule SharedInfra.MessageClient do
                       set_status_audience: 1,
                       record_status_view: 1,
                       status_viewers: 1,
-                      my_status: 1
+                      my_status: 1,
+                      status_for_reply: 1
 
   def create_message(attrs), do: adapter().create_message(attrs)
   def send_message(attrs), do: adapter().send_message(attrs)
@@ -93,6 +96,7 @@ defmodule SharedInfra.MessageClient do
   def record_status_view(attrs), do: adapter().record_status_view(attrs)
   def status_viewers(attrs), do: adapter().status_viewers(attrs)
   def my_status(attrs), do: adapter().my_status(attrs)
+  def status_for_reply(attrs), do: adapter().status_for_reply(attrs)
   def media_download_allowed(attrs), do: adapter().media_download_allowed(attrs)
   def mark_delivered(attrs), do: adapter().mark_delivered(attrs)
   def analytics_overview(attrs), do: adapter().analytics_overview(attrs)
