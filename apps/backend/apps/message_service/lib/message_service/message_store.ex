@@ -1162,10 +1162,22 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     end
   end
 
+  # ERROR NORMALIZATION — a drill finding, not a guess: with the cluster process alive but the node
+  # down, Xandra returns {:error, %Xandra.ConnectionError{}} — NOT :scylla_unavailable — and a raw
+  # struct falls through every gateway clause to a 400 "invalid request". A store outage must be
+  # :message_store_unavailable (503 at the gateway), whatever shape the driver reports it in.
   defp execute(client, plan) do
     case client.execute(plan.statement, plan.params, scylla_config()) do
-      {:error, :scylla_unavailable} -> {:error, :message_store_unavailable}
-      result -> result
+      {:error, :scylla_unavailable} ->
+        {:error, :message_store_unavailable}
+
+      {:error, %{__struct__: struct} = error}
+      when struct in [Xandra.ConnectionError, Xandra.Error] ->
+        Logger.warning("scylla #{plan.operation}: #{Exception.message(error)} -> store unavailable")
+        {:error, :message_store_unavailable}
+
+      result ->
+        result
     end
   end
 
@@ -1389,6 +1401,209 @@ defmodule MessageService.MessageStore.DualWriteAdapter do
   defp bucket_date(_), do: nil
 
   defp dwattr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, String.to_atom(key))
+end
+
+defmodule MessageService.MessageStore.ShadowReadAdapter do
+  @moduledoc """
+  C8 phase 2 — THE SHADOW-READ COMPARATOR. Writes ARE DualWriteAdapter writes (Postgres
+  authoritative + Scylla mirror, unchanged); reads are served from Postgres AND replayed against
+  Scylla in a detached task that field-compares the answers. A divergence is RECORDED into
+  scylla_mirror_failures with op='read_diff' (same table the C7 verification report counts, so the
+  C8 gate sees read-path divergence through the same lens) — the USER never sees the comparison,
+  its latency, or its failures.
+
+  Selected by MESSAGE_STORE_ADAPTER=shadow_read. Exit criterion for this phase: zero new read_diff
+  rows over an agreed quiet window (the runbook says 48h) alongside the C7 gate.
+  """
+
+  @behaviour MessageService.MessageStore
+
+  alias MessageService.MessageStore.DualWriteAdapter
+  alias MessageService.MessageStore.PostgresAdapter
+  alias MessageService.MessageStore.ScyllaAdapter
+  alias MessageService.Repo
+
+  require Logger
+
+  # Writes: exactly dual-write.
+  @impl true
+  defdelegate put_message(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate update_message(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate delete_message(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate mark_delivered(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate mark_read(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate upsert_reaction(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate remove_reaction(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate star_message(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate unstar_message(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate poll_vote(attrs), to: DualWriteAdapter
+
+  # Reads the comparator shadows: the two the flip changes most.
+  @impl true
+  def get_message(attrs) do
+    result = PostgresAdapter.get_message(attrs)
+    shadow_compare(:get_message, attrs, result)
+    result
+  end
+
+  @impl true
+  def list_messages(attrs) do
+    result = PostgresAdapter.list_messages(attrs)
+    shadow_compare(:list_messages, attrs, result)
+    result
+  end
+
+  # Reads served plainly from Postgres (compared implicitly by the C7 report instead).
+  @impl true
+  defdelegate list_starred(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate search_messages(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate list_media(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate get_by_media_id(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate message_info(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate list_poll_votes(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate media_download_allowed(attrs), to: PostgresAdapter
+
+  defp shadow_compare(op, attrs, {:ok, authoritative}) do
+    run = fn ->
+      case scylla_result(op, attrs) do
+        {:ok, shadow} ->
+          case diff(op, authoritative, shadow) do
+            nil -> :ok
+            reason -> record_diff(op, attrs, reason)
+          end
+
+        {:error, :message_store_unavailable} ->
+          # An unavailable shadow is C7's lane (mirror failures) — not a read divergence.
+          :ok
+
+        {:error, reason} ->
+          record_diff(op, attrs, "shadow read errored: #{inspect(reason)}")
+      end
+    end
+
+    if Application.get_env(:message_service, :scylla_shadow_async, true) do
+      Task.Supervisor.start_child(MessageService.ShadowMirror.TaskSupervisor, run)
+    else
+      run.()
+    end
+
+    :ok
+  end
+
+  defp shadow_compare(_op, _attrs, _error), do: :ok
+
+  defp scylla_result(:get_message, attrs), do: ScyllaAdapter.get_message(attrs)
+  defp scylla_result(:list_messages, attrs), do: ScyllaAdapter.list_messages(attrs)
+
+  defp diff(:get_message, pg, sc) do
+    cond do
+      pg.body != sc.body -> "body diverged"
+      pg.status != sc.status -> "status diverged"
+      true -> nil
+    end
+  end
+
+  defp diff(:list_messages, pg, sc) do
+    pg_ids = Enum.map(pg.messages, & &1.message_id)
+    sc_ids = Enum.map(sc.messages, & &1.message_id)
+
+    if pg_ids == sc_ids, do: nil, else: "page ids diverged (pg=#{length(pg_ids)} sc=#{length(sc_ids)})"
+  end
+
+  defp record_diff(op, attrs, reason) do
+    Repo.query!(
+      "INSERT INTO scylla_mirror_failures (conversation_id, message_id, op, reason) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, $3, $4)",
+      [
+        attrs["conversation_id"] || Map.get(attrs, :conversation_id),
+        attrs["message_id"] || Map.get(attrs, :message_id) ||
+          "00000000-0000-0000-0000-000000000000",
+        "read_diff",
+        "#{op}: #{reason}"
+      ]
+    )
+
+    :ok
+  rescue
+    error ->
+      Logger.error("shadow read: failed to record diff: #{Exception.message(error)}")
+      :ok
+  end
+end
+
+defmodule MessageService.MessageStore.ScyllaReadAdapter do
+  @moduledoc """
+  C8 phase 3 — THE FLIP, with the rollback held open: READS from Scylla, WRITES still dual (Postgres
+  never stops receiving them — which is exactly what makes rollback lossless and instant). Selected
+  by MESSAGE_STORE_ADAPTER=scylla_read. ROLLBACK = select `postgres` (or `dual_write`) again: a
+  remote-console `Application.put_env` takes effect on the next call — measured in the drill — with
+  the env var updated afterwards for restart durability.
+
+  search_messages surfaces the recorded degradation (503 `search.unavailable` at the gateway) per
+  DECISION_LOG 2026-08-01.
+  """
+
+  @behaviour MessageService.MessageStore
+
+  alias MessageService.MessageStore.DualWriteAdapter
+  alias MessageService.MessageStore.ScyllaAdapter
+
+  # Writes: dual, Postgres authoritative — the rollback insurance.
+  @impl true
+  defdelegate put_message(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate update_message(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate delete_message(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate mark_delivered(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate mark_read(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate upsert_reaction(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate remove_reaction(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate star_message(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate unstar_message(attrs), to: DualWriteAdapter
+  @impl true
+  defdelegate poll_vote(attrs), to: ScyllaAdapter
+
+  # Reads: Scylla serves.
+  @impl true
+  defdelegate get_message(attrs), to: ScyllaAdapter
+  @impl true
+  defdelegate list_messages(attrs), to: ScyllaAdapter
+  @impl true
+  defdelegate list_starred(attrs), to: ScyllaAdapter
+  @impl true
+  defdelegate list_media(attrs), to: ScyllaAdapter
+  @impl true
+  defdelegate get_by_media_id(attrs), to: ScyllaAdapter
+  @impl true
+  defdelegate message_info(attrs), to: ScyllaAdapter
+  @impl true
+  defdelegate list_poll_votes(attrs), to: ScyllaAdapter
+  @impl true
+  defdelegate media_download_allowed(attrs), to: ScyllaAdapter
+  @impl true
+  defdelegate search_messages(attrs), to: ScyllaAdapter
 end
 
 defmodule MessageService.MessageStore.InMemoryAdapter do

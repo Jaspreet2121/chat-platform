@@ -161,6 +161,10 @@ if config_env() == :prod do
            # C7 dual-write: Postgres authoritative + detached Scylla shadow. OFF unless explicitly
            # selected — production stays "postgres" and deploying the code changes nothing.
            "dual_write" -> MessageService.MessageStore.DualWriteAdapter
+           # C8 cutover ladder: shadow_read compares reads silently; scylla_read is THE FLIP with
+           # writes still dual (rollback = select postgres/dual_write again, lossless).
+           "shadow_read" -> MessageService.MessageStore.ShadowReadAdapter
+           "scylla_read" -> MessageService.MessageStore.ScyllaReadAdapter
            "postgres" -> MessageService.MessageStore.PostgresAdapter
            "in_memory" -> MessageService.MessageStore.InMemoryAdapter
            _ -> MessageService.MessageStore.QueryPlanAdapter

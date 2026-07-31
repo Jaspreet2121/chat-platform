@@ -155,11 +155,14 @@ defmodule MessageService.ScyllaDualWriteTest do
     message
   end
 
-  defp failures do
+  # Scoped to the test's own conversation: the DRILL (rollback_drill.exs) runs in :auto sandbox
+  # mode, so ITS failure rows persist in the shared test DB — a global read would see them.
+  defp failures(conversation) do
     %{rows: rows} =
       Repo.query!(
-        "SELECT op, reason, resolved_at FROM scylla_mirror_failures ORDER BY inserted_at",
-        []
+        "SELECT op, reason, resolved_at FROM scylla_mirror_failures " <>
+          "WHERE conversation_id = $1::text::uuid ORDER BY inserted_at",
+        [conversation]
       )
 
     Enum.map(rows, fn [op, reason, resolved] -> %{op: op, reason: reason, resolved: resolved} end)
@@ -233,7 +236,7 @@ defmodule MessageService.ScyllaDualWriteTest do
                "message_id" => message.message_id
              })
 
-    assert failures() == []
+    assert failures(conversation) == []
   end
 
   test "NO DOUBLE WEBHOOKS: the dual path emits via the Postgres transaction only",
@@ -274,12 +277,14 @@ defmodule MessageService.ScyllaDualWriteTest do
              })
 
     # RECORDED, not just logged.
-    assert [%{op: "put", resolved: nil, reason: reason}] = failures()
+    assert [%{op: "put", resolved: nil, reason: reason}] = failures(conversation)
     assert reason =~ "unavailable"
 
     # And REPAIR consumes the record: rebuilds from authority, stamps resolved, Scylla now has it.
-    assert %{repaired: 1, gone: 0} = ScyllaBackfill.repair_failures()
-    assert [%{resolved: %DateTime{}}] = failures()
+    # (>= because repair is global and the drill's persisted failure rows may be swept up too.)
+    assert %{repaired: repaired, gone: 0} = ScyllaBackfill.repair_failures()
+    assert repaired >= 1
+    assert [%{resolved: %DateTime{}}] = failures(conversation)
 
     assert {:ok, %{body: "postgres only, for now"}} =
              ScyllaAdapter.get_message(%{
@@ -372,5 +377,37 @@ defmodule MessageService.ScyllaDualWriteTest do
     report = ScyllaBackfill.report(conversation_ids: [conversation], sample: 1.0)
     assert report.stale_diff_total >= 1
     assert report.in_flight_total >= 1
+  end
+
+  test "SHADOW READ (C8): a divergence is RECORDED as read_diff; the user answer is untouched",
+       %{conversation: conversation, sender: sender} do
+    alias MessageService.MessageStore.ShadowReadAdapter
+
+    message = put!(conversation, sender, "authoritative body")
+
+    # Corrupt the SHADOW copy only (Scylla), so the stores genuinely diverge.
+    plan =
+      MessageService.Persistence.MessageTimelineWrites.mark_edited_plan(%{
+        "conversation_id" => conversation,
+        "bucket_date" => DateTime.utc_now() |> DateTime.to_date() |> Date.to_iso8601(),
+        "message_id" => message.message_id,
+        "body" => "corrupted shadow",
+        "edited_at" => DateTime.utc_now()
+      })
+
+    {:ok, _} = XandraAdapter.execute(plan.statement, plan.params, [])
+
+    # The user reads through the comparator adapter: the POSTGRES answer, byte-for-byte.
+    assert {:ok, %{body: "authoritative body", status: "active"}} =
+             ShadowReadAdapter.get_message(%{
+               "conversation_id" => conversation,
+               "message_id" => message.message_id
+             })
+
+    # ...and the divergence became a ROW the C8 gate query counts.
+    assert [%{op: "read_diff", reason: reason}] =
+             failures(conversation) |> Enum.filter(&(&1.op == "read_diff"))
+
+    assert reason =~ "diverged"
   end
 end
