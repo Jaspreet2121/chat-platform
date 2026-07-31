@@ -18,18 +18,16 @@ defmodule ApiGatewayWeb.ContactController do
     * Self is excluded from results. Non-matches are simply ABSENT — never a "not found" row (that would
       double the payload and tell the client nothing it doesn't already know).
 
-  DEFERRED — a "who can find me by phone" discoverability opt-out. It's meaningless unless it ALSO gates
-  the single by-phone lookup (else an attacker just probes one number at a time), and it carries a product
-  decision (default + granularity), so it's its own slice. Four steps to pick it up cold:
-    1. migration: `user_privacy_settings.discoverable_by_phone boolean NOT NULL DEFAULT true` (both dirs);
-    2. expose it via `UserService.Privacy.get_privacy` + the settings-update path;
-    3. enforce in BOTH `by_phone` (single) and here (bulk) — a non-discoverable target is simply absent,
-       identical to a non-match (no existence reveal);
-    4. tests for both paths + the default.
+  DISCOVERABILITY (084 — the formerly-deferred opt-out, now SHIPPED): `discoverable_by_phone` on
+  user_privacy_settings (boolean, default TRUE — a "contacts" tier would be a no-op since contacts
+  already see you). Enforced INSIDE the auth phone lookups themselves (`lookup_active_by_phone/2` +
+  `lookup_active_by_phones/2` carry one LEFT-JOIN predicate, `discoverable_by_phone IS NOT FALSE`), so
+  this bulk path, the single by-phone lookup, AND call-add-by-phone all share ONE predicate and cannot
+  drift — no per-match privacy reads here, no Enum.reject seam. A non-discoverable target is simply
+  ABSENT, identical to a non-match (no existence reveal).
   NOTE (usernames, 080): by-username lookup is DELIBERATELY outside this setting's scope — a handle is
   opt-in and self-chosen (setting one IS the discovery consent; removing it is the revocation), so
-  discoverable_by_phone stays phone-only. Do not wire it into by-username when picking this up.
-  The seam is marked below (drop non-discoverable user_ids from the match set — one `Enum.reject`).
+  discoverable_by_phone stays phone-only.
   """
   use ApiGatewayWeb, :controller
 
@@ -81,7 +79,6 @@ defmodule ApiGatewayWeb.ContactController do
         # Exclude self — the caller's own number is always in their address book, but you can't "discover"
         # yourself. (Single lookup 409s here; bulk just drops it silently.)
         |> Enum.reject(&(match_user_id(&1) == session.user_id))
-        # DISCOVERABILITY SEAM (deferred): |> Enum.reject(&(not discoverable?(match_user_id(&1))))
         |> Enum.flat_map(&enrich(&1, session))
 
       _ ->

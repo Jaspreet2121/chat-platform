@@ -52,9 +52,12 @@ defmodule AuthService.Accounts do
 
   def lookup_active_by_phone(phone_number, _app_id) when is_binary(phone_number) do
     # LEGACY app-blind path (no tenant scope). Kept only so callers that don't yet pass app_id keep
-    # working unchanged; the app-scoped clause above is the correct one.
-    case get_by_phone_number(String.trim(phone_number)) do
-      %UserAuth{id: id, status: "active"} -> {:ok, %{user_id: id}}
+    # working unchanged; the app-scoped clause above is the correct one. Discoverability applies here
+    # too — a non-discoverable user is absent from EVERY phone-resolution path.
+    with %UserAuth{id: id, status: "active"} <- get_by_phone_number(String.trim(phone_number)),
+         true <- discoverable_by_phone?(id) do
+      {:ok, %{user_id: id}}
+    else
       _ -> {:error, :not_found}
     end
   end
@@ -87,11 +90,16 @@ defmodule AuthService.Accounts do
   def lookup_active_by_phones(_phone_numbers, _app_id), do: {:ok, []}
 
   # Single app-scoped row (or nil). The (app_id, phone_number) partial unique index makes this at most
-  # one row; `limit: 1` is belt-and-suspenders.
+  # one row; `limit: 1` is belt-and-suspenders. DISCOVERABILITY (084) is folded into the SAME query the
+  # single lookup, the bulk contacts sync, AND call-add-by-phone all resolve through — one predicate,
+  # no drift, no extra queries: LEFT JOIN so no-row/NULL reads as the default (discoverable).
   defp active_by_phone(phone, app_id) do
     Repo.one(
       from(u in UserAuth,
+        left_join: ps in "user_privacy_settings",
+        on: ps.user_id == u.id,
         where: u.app_id == ^app_id and u.status == "active" and u.phone_number == ^phone,
+        where: is_nil(ps.discoverable_by_phone) or ps.discoverable_by_phone,
         limit: 1
       )
     )
@@ -102,10 +110,27 @@ defmodule AuthService.Accounts do
   defp active_by_phones(phones, app_id) do
     Repo.all(
       from(u in UserAuth,
+        left_join: ps in "user_privacy_settings",
+        on: ps.user_id == u.id,
         where: u.app_id == ^app_id and u.status == "active" and u.phone_number in ^phones,
+        where: is_nil(ps.discoverable_by_phone) or ps.discoverable_by_phone,
         select: %{user_id: u.id, phone_number: u.phone_number}
       )
     )
+  end
+
+  # The legacy app-blind clause can't join in its Repo.get_by, so it checks the flag separately —
+  # same `IS NOT FALSE` semantics (no row / NULL = discoverable).
+  defp discoverable_by_phone?(user_id) do
+    %Postgrex.Result{rows: rows} =
+      Repo.query!(
+        "SELECT 1 FROM user_privacy_settings WHERE user_id = $1::text::uuid AND discoverable_by_phone = false",
+        [user_id]
+      )
+
+    rows == []
+  rescue
+    _ -> true
   end
 
   @doc """

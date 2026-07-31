@@ -206,7 +206,9 @@ defmodule AuthService.Tokens do
          token_hash <- hash_token(refresh_token),
          {:ok, existing_token} <- get_active_refresh_token(token_hash, now),
          {:ok, _response} <- revoke_refresh_token_for_logout(existing_token, now) do
-      {:ok, %{}}
+      # WHO was just signed out, from the AUTHORITATIVE row (works even when the access token already
+      # expired) — the gateway uses this to sever the device's live socket (realtime session revocation).
+      {:ok, %{user_id: existing_token.user_id, device_id: existing_token.device_id}}
     else
       {:repo, false} -> {:error, :repo_not_started}
       {:error, :refresh_invalid} -> {:error, :refresh_invalid}

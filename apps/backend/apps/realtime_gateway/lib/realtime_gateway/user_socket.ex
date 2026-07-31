@@ -25,8 +25,13 @@ defmodule RealtimeGateway.UserSocket do
     end
   end
 
+  # Per-(user, DEVICE) socket identity, so revoking ONE linked device severs exactly that device's
+  # socket (Endpoint.broadcast(id, "disconnect", %{}) — Phoenix's built-in) while the same user's other
+  # devices stay connected. Non-device sockets can't collide: /v1 end-user sockets carry the constant
+  # "end_user" and the dev placeholder "device_placeholder" — neither is ever a device_sessions.device_id.
   @impl true
-  def id(socket), do: "user_socket:#{socket.assigns.current_user_id}"
+  def id(socket),
+    do: "user_socket:#{socket.assigns.current_user_id}:#{socket.assigns.device_id}"
 
   defp authenticated_connect(params, socket) do
     with :ok <- require_db_backed_sessions(),

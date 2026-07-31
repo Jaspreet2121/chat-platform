@@ -254,6 +254,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Devices.revoke_other_devices(body(conn)))
   end
 
+  post "/internal/devices/session_active" do
+    send_result(conn, AuthService.Devices.session_active?(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "auth", status: "ok", deps: %{}}})
   end

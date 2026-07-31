@@ -9,6 +9,13 @@ defmodule RealtimeGateway.UserChannel do
   # the reliable place to refresh the connection-counter entry (heartbeat) and release it on disconnect. Kept
   # well under RT_CONN_TTL_SECONDS (default 120s) so a live socket is never wrongly aged out of the count.
   @conn_heartbeat_ms 30_000
+  # REVOCATION FALLBACK: re-verify the (user, device) session every Nth heartbeat (10 × 30s ≈ 5 min).
+  # The primary path is the gateway's disconnect broadcast at revoke time; this catches a MISSED signal
+  # (restart mid-call, a revocation written outside the gateway) and admin suspend/ban (which touches no
+  # device_sessions row). COST SCALING: one indexed EXISTS per live socket per 5 minutes — N concurrent
+  # sockets ⇒ N/300 queries/sec (10k sockets ≈ 33/s); if that number ever matters, this constant is the
+  # dial (raise the interval before caching anything).
+  @session_recheck_beats 10
 
   @impl true
   def join("user:" <> user_id = topic, _payload, socket) do
@@ -112,6 +119,16 @@ defmodule RealtimeGateway.UserChannel do
     # Refresh the online marker's TTL so it never lapses mid-session. mark_online is a no-op broadcast when
     # already online (the common case) — it re-broadcasts ONLY if the key had expired (a genuine transition).
     ChannelPresence.mark_online_and_broadcast(socket)
+
+    beats = (socket.assigns[:conn_beats] || 0) + 1
+    socket = assign(socket, :conn_beats, beats)
+
+    if rem(beats, @session_recheck_beats) == 0 and not session_still_active?(socket) do
+      # Terminate the WHOLE socket (every channel), exactly as the revoke-time broadcast would have —
+      # the reconnect then fails auth at connect (current_session rejects revoked/suspended).
+      socket.endpoint.broadcast(socket.id, "disconnect", %{})
+    end
+
     Process.send_after(self(), :conn_heartbeat, @conn_heartbeat_ms)
     {:noreply, socket}
   end
@@ -174,6 +191,35 @@ defmodule RealtimeGateway.UserChannel do
   end
 
   # Redis I/O off the channel process so it never blocks realtime; fully fail-open.
+  # The fallback's oracle. Only REAL device sessions are checked: /v1 end-user sockets ("end_user") and
+  # the dev placeholder aren't device_sessions rows, and with socket auth disabled (Docker-free dev)
+  # there is nothing to verify. FAIL-OPEN on auth unavailability — an auth blip must not sever every
+  # socket in the fleet; the next re-check retries.
+  defp session_still_active?(socket) do
+    device_id = socket.assigns[:device_id]
+
+    if socket_auth_enabled?() and is_binary(device_id) and
+         device_id not in ["end_user", "device_placeholder"] do
+      case SharedInfra.AuthClient.session_active?(%{
+             "user_id" => socket.assigns.current_user_id,
+             "device_id" => device_id
+           }) do
+        {:ok, %{active: false}} -> false
+        {:ok, %{"active" => false}} -> false
+        _ -> true
+      end
+    else
+      true
+    end
+  rescue
+    _ -> true
+  end
+
+  defp socket_auth_enabled? do
+    Application.get_env(:realtime_gateway, :socket_auth_persistence, false) ||
+      System.get_env("REALTIME_AUTH_DB_BACKED") in ["true", "1", "yes"]
+  end
+
   defp mark_app(user_id) when is_binary(user_id) do
     Task.start(fn -> SharedInfra.PresenceMarker.mark_app(user_id) end)
     :ok

@@ -214,4 +214,28 @@ defmodule UserService.UsernamesTest do
     assert %{available: false, code: "username_held"} = check.(b, "popular")
     assert %{available: true} = check.(a, "popular")
   end
+
+  @tag :postgres_integration
+  test "username lookup is UNAFFECTED by discoverable_by_phone (the boundary the usernames slice set)" do
+    u = user!()
+    assert {:ok, _} = set!(u, "findable")
+
+    # Opt fully OUT of phone discovery…
+    Repo.query!(
+      "INSERT INTO user_privacy_settings (user_id, last_seen_visibility, profile_photo_visibility, " <>
+        "read_receipts_enabled, discoverable_by_phone, created_at, updated_at) " <>
+        "VALUES ($1::text::uuid, 'contacts', 'contacts', true, false, now(), now())",
+      [u]
+    )
+
+    # …the HANDLE still resolves: setting a username IS the discovery consent, and removing the handle
+    # is its revocation. discoverable_by_phone is phone-only, deliberately.
+    assert {:ok, %{user_id: ^u}} = lookup("findable")
+
+    %{rows: [[phone]]} =
+      Repo.query!("SELECT phone_number FROM users_auth WHERE id = $1::text::uuid", [u])
+
+    # …while the PHONE path for the same user goes dark.
+    assert {:error, :not_found} = AuthService.Accounts.lookup_active_by_phone(phone, @tenant_zero)
+  end
 end

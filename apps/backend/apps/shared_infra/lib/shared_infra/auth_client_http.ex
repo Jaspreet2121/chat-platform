@@ -161,6 +161,9 @@ defmodule SharedInfra.AuthClientHttp do
   def revoke_other_devices(attrs), do: post("/internal/devices/revoke_others", attrs)
 
   @impl true
+  def session_active?(attrs), do: post("/internal/devices/session_active", attrs)
+
+  @impl true
   def save_push_subscription(attrs), do: post("/internal/push/subscriptions/save", attrs)
 
   @impl true

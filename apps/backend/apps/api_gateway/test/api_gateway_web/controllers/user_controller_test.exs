@@ -26,7 +26,9 @@ defmodule ApiGatewayWeb.UserControllerTest do
              "privacy" => %{
                "last_seen_visibility" => "contacts",
                "profile_photo_visibility" => "contacts",
-               "read_receipts_enabled" => true
+               "read_receipts_enabled" => true,
+               # 084: "who can find me by phone", default TRUE (preserves today's discovery).
+               "discoverable_by_phone" => true
              }
            }
   end

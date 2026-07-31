@@ -53,6 +53,9 @@ defmodule ApiGatewayWeb.DeviceController do
              "user_id" => session.user_id,
              "device_id" => device_id
            }) do
+      # REALTIME SESSION REVOCATION: sever exactly that device's live socket (the per-(user, device)
+      # socket id) — the same user's OTHER devices, including this caller, are untouched.
+      disconnect_device_socket(session.user_id, device_id)
       json(conn, %{revoked: true})
     else
       error -> handle_error(conn, error)
@@ -68,11 +71,25 @@ defmodule ApiGatewayWeb.DeviceController do
              "user_id" => session.user_id,
              "device_id" => session.device_id
            }) do
+      # Sever each swept device's live socket; the CURRENT device's socket is untouched by construction
+      # (its id was excluded from the sweep).
+      result
+      |> cget(:revoked_device_ids)
+      |> List.wrap()
+      |> Enum.each(&disconnect_device_socket(session.user_id, &1))
+
       json(conn, %{revoked_count: cget(result, :revoked_count) || 0})
     else
       error -> handle_error(conn, error)
     end
   end
+
+  defp disconnect_device_socket(user_id, device_id)
+       when is_binary(device_id) and device_id != "" do
+    ApiGatewayWeb.Endpoint.broadcast("user_socket:#{user_id}:#{device_id}", "disconnect", %{})
+  end
+
+  defp disconnect_device_socket(_user_id, _device_id), do: :ok
 
   # Logout owns "sign out this device" — aliasing it here would be one gesture with two names, and a
   # client iterating a device list must not be able to cut its own session off mid-flight by accident.

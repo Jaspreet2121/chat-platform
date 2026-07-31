@@ -6,6 +6,11 @@ defmodule AuthService.AccountsPhoneLookupTest do
   could resolve another tenant's user. Proves: ONE app-scoped `= ANY` query returns only the caller-app
   ACTIVE matches (cross-tenant + suspended excluded, one row per number, the stored phone echoed), and the
   single lookup resolves WITHIN the right tenant for a number that two tenants share.
+
+  ALSO (084) the DISCOVERABILITY predicate, folded into these SAME queries so single by-phone, bulk
+  contacts sync AND call-add-by-phone share one rule: discoverable_by_phone = false → the user is
+  ABSENT from every phone resolution (never an error); no row / NULL → discoverable (the default that
+  preserves today's behaviour for every existing user).
   """
   use AuthService.DataCase, async: false
 
@@ -97,5 +102,58 @@ defmodule AuthService.AccountsPhoneLookupTest do
     )
 
     id
+  end
+
+  defp set_discoverable(user_id, value) do
+    Repo.query!(
+      "INSERT INTO user_privacy_settings (user_id, last_seen_visibility, profile_photo_visibility, " <>
+        "read_receipts_enabled, discoverable_by_phone, created_at, updated_at) " <>
+        "VALUES ($1::text::uuid, 'contacts', 'contacts', true, $2, now(), now()) " <>
+        "ON CONFLICT (user_id) DO UPDATE SET discoverable_by_phone = EXCLUDED.discoverable_by_phone",
+      [user_id, value]
+    )
+  end
+
+  @tag :postgres_integration
+  test "DISCOVERABILITY: opting out removes the user from BOTH phone paths; the default keeps them in" do
+    app = seed_app()
+    opted_out = seed_user(app, "+15552220001", "active")
+    stays = seed_user(app, "+15552220002", "active")
+    # `stays` gets a privacy ROW with the flag left at its default — proving the default (not just a
+    # missing row) is discoverable.
+    set_discoverable(stays, true)
+
+    # Baseline: both resolvable through both paths.
+    assert {:ok, %{user_id: ^opted_out}} = Accounts.lookup_active_by_phone("+15552220001", app)
+    {:ok, rows} = Accounts.lookup_active_by_phones(["+15552220001", "+15552220002"], app)
+    assert length(rows) == 2
+
+    set_discoverable(opted_out, false)
+
+    # SINGLE lookup (by_phone + call-add-by-phone): absent, and indistinguishable from an unknown number.
+    assert {:error, :not_found} = Accounts.lookup_active_by_phone("+15552220001", app)
+    assert {:error, :not_found} = Accounts.lookup_active_by_phone("+15559999999", app)
+
+    # BULK lookup (contacts sync): simply not in the matches — identical to a non-match.
+    {:ok, rows} = Accounts.lookup_active_by_phones(["+15552220001", "+15552220002"], app)
+    assert Enum.map(rows, & &1.user_id) == [stays]
+
+    # Flipping back restores discovery (nothing was destroyed).
+    set_discoverable(opted_out, true)
+    assert {:ok, %{user_id: ^opted_out}} = Accounts.lookup_active_by_phone("+15552220001", app)
+  end
+
+  @tag :postgres_integration
+  test "DISCOVERABILITY DEFAULT: a user with NO privacy row is discoverable (today's behaviour preserved)" do
+    app = seed_app()
+    fresh = seed_user(app, "+15553330001", "active")
+
+    %{rows: rows} =
+      Repo.query!("SELECT 1 FROM user_privacy_settings WHERE user_id = $1::text::uuid", [fresh])
+
+    assert rows == [], "fixture must have no privacy row"
+
+    assert {:ok, %{user_id: ^fresh}} = Accounts.lookup_active_by_phone("+15553330001", app)
+    {:ok, [%{user_id: ^fresh}]} = Accounts.lookup_active_by_phones(["+15553330001"], app)
   end
 end

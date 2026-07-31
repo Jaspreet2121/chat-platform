@@ -14,7 +14,7 @@ defmodule UserService.Privacy do
   @type privacy_attrs :: map()
   @type result :: {:ok, map()} | {:error, atom()}
 
-  @keys ~w(last_seen_visibility profile_photo_visibility read_receipts_enabled)
+  @keys ~w(last_seen_visibility profile_photo_visibility read_receipts_enabled discoverable_by_phone)
 
   @callback get_privacy(privacy_attrs()) :: result()
   @callback update_privacy(privacy_attrs()) :: result()
@@ -67,7 +67,8 @@ defmodule UserService.Privacy do
     %{
       last_seen_visibility: "contacts",
       profile_photo_visibility: "contacts",
-      read_receipts_enabled: true
+      read_receipts_enabled: true,
+      discoverable_by_phone: true
     }
   end
 
@@ -98,7 +99,8 @@ defmodule UserService.Privacy do
     %{
       "last_seen_visibility" => "contacts",
       "profile_photo_visibility" => "contacts",
-      "read_receipts_enabled" => true
+      "read_receipts_enabled" => true,
+      "discoverable_by_phone" => true
     }
     |> Map.merge(changes)
     |> Map.put("user_id", user_id)
@@ -120,7 +122,8 @@ defmodule UserService.Privacy do
     %{
       last_seen_visibility: row.last_seen_visibility,
       profile_photo_visibility: row.profile_photo_visibility,
-      read_receipts_enabled: row.read_receipts_enabled
+      read_receipts_enabled: row.read_receipts_enabled,
+      discoverable_by_phone: row.discoverable_by_phone
     }
   end
 

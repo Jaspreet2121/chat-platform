@@ -178,6 +178,9 @@ defmodule AuthService.AuthClientInProcess do
   def revoke_other_devices(attrs), do: AuthService.Devices.revoke_other_devices(attrs)
 
   @impl true
+  def session_active?(attrs), do: AuthService.Devices.session_active?(attrs)
+
+  @impl true
   def get_user_phone(attrs) do
     with user_id when is_binary(user_id) and user_id != "" <- attrs["user_id"] || :error,
          %{status: "active"} = user <- AuthService.Accounts.get_user(user_id) || :error do

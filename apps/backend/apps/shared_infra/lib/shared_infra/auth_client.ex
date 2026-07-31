@@ -49,6 +49,8 @@ defmodule SharedInfra.AuthClient do
   @callback list_devices(attrs()) :: result()
   @callback revoke_device(attrs()) :: result()
   @callback revoke_other_devices(attrs()) :: result()
+  # Realtime revocation fallback: is this (user, device) session still live (non-revoked + account active)?
+  @callback session_active?(attrs()) :: result()
   @callback save_push_subscription(attrs()) :: result()
   @callback delete_push_subscription(attrs()) :: result()
   # Phase-2 Android: the FCM device-token twin of the two above.
@@ -110,7 +112,8 @@ defmodule SharedInfra.AuthClient do
                       create_report: 1,
                       list_devices: 1,
                       revoke_device: 1,
-                      revoke_other_devices: 1
+                      revoke_other_devices: 1,
+                      session_active?: 1
 
   def current_session(attrs), do: adapter().current_session(attrs)
   def persistence_enabled?, do: adapter().persistence_enabled?()
@@ -170,6 +173,7 @@ defmodule SharedInfra.AuthClient do
   def list_devices(attrs), do: adapter().list_devices(attrs)
   def revoke_device(attrs), do: adapter().revoke_device(attrs)
   def revoke_other_devices(attrs), do: adapter().revoke_other_devices(attrs)
+  def session_active?(attrs), do: adapter().session_active?(attrs)
   def save_push_subscription(attrs), do: adapter().save_push_subscription(attrs)
   def delete_push_subscription(attrs), do: adapter().delete_push_subscription(attrs)
   def save_fcm_token(attrs), do: adapter().save_fcm_token(attrs)

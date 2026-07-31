@@ -15,6 +15,9 @@ defmodule UserService.Schemas.UserPrivacySettings do
     field(:last_seen_visibility, :string, default: "contacts")
     field(:profile_photo_visibility, :string, default: "contacts")
     field(:read_receipts_enabled, :boolean, default: true)
+    # "Who can find me by phone number" (084) — a BOOLEAN, deliberately not the visibility vocabulary
+    # (phone discovery is performed by non-contacts, so a "contacts" tier would be a no-op).
+    field(:discoverable_by_phone, :boolean, default: true)
     field(:created_at, :utc_datetime_usec)
     field(:updated_at, :utc_datetime_usec)
   end
@@ -25,13 +28,15 @@ defmodule UserService.Schemas.UserPrivacySettings do
       :user_id,
       :last_seen_visibility,
       :profile_photo_visibility,
-      :read_receipts_enabled
+      :read_receipts_enabled,
+      :discoverable_by_phone
     ])
     |> validate_required([
       :user_id,
       :last_seen_visibility,
       :profile_photo_visibility,
-      :read_receipts_enabled
+      :read_receipts_enabled,
+      :discoverable_by_phone
     ])
     |> validate_visibility()
     |> foreign_key_constraint(:user_id)
@@ -39,11 +44,17 @@ defmodule UserService.Schemas.UserPrivacySettings do
 
   def update_changeset(user_privacy_settings, attrs) do
     user_privacy_settings
-    |> cast(attrs, [:last_seen_visibility, :profile_photo_visibility, :read_receipts_enabled])
+    |> cast(attrs, [
+      :last_seen_visibility,
+      :profile_photo_visibility,
+      :read_receipts_enabled,
+      :discoverable_by_phone
+    ])
     |> validate_required([
       :last_seen_visibility,
       :profile_photo_visibility,
-      :read_receipts_enabled
+      :read_receipts_enabled,
+      :discoverable_by_phone
     ])
     |> validate_visibility()
   end

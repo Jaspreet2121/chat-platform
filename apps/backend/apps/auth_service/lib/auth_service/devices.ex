@@ -111,10 +111,35 @@ defmodule AuthService.Devices do
         |> Repo.all()
 
       revoke_sessions_tx(others, user_id)
-      {:ok, %{revoked_count: length(others)}}
+      # The swept device ids ride back so the gateway can sever each device's live socket.
+      {:ok, %{revoked_count: length(others), revoked_device_ids: Enum.map(others, & &1.device_id)}}
     end
   rescue
     Ecto.Query.CastError -> {:error, :auth_invalid}
+  end
+
+  @doc """
+  Is this (user, device) session still live? ONE indexed EXISTS: the device_session is non-revoked AND
+  the account is still ACTIVE — so the realtime heartbeat re-check catches BOTH device revocation and
+  admin suspend/ban (which deliberately doesn't touch device_sessions rows; without this, a suspended
+  user's socket would survive). → {:ok, %{active: bool}}. Unknown pair → active: false (fail closed —
+  a socket whose session row vanished has no business staying up).
+  """
+  def session_active?(attrs) do
+    with {:ok, user_id} <- required(attrs, "user_id"),
+         {:ok, device_id} <- required(attrs, "device_id") do
+      %{rows: [[active]]} =
+        Repo.query!(
+          "SELECT EXISTS (SELECT 1 FROM device_sessions ds JOIN users_auth u ON u.id = ds.user_id " <>
+            "WHERE ds.user_id = $1::text::uuid AND ds.device_id = $2 " <>
+            "AND ds.revoked_at IS NULL AND u.status = 'active')",
+          [user_id, device_id]
+        )
+
+      {:ok, %{active: active}}
+    end
+  rescue
+    Ecto.Query.CastError -> {:ok, %{active: false}}
   end
 
   # One transaction for the whole sweep: sessions marked, refresh tokens revoked, FCM rows gone.

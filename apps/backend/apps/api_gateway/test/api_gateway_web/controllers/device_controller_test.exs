@@ -43,7 +43,7 @@ defmodule ApiGatewayWeb.DeviceControllerTest do
     def revoke_device(_attrs), do: {:error, :device_not_found}
 
     def revoke_other_devices(%{"user_id" => @me, "device_id" => "web-aaaa"}),
-      do: {:ok, %{revoked_count: 2}}
+      do: {:ok, %{revoked_count: 2, revoked_device_ids: ["phone-1", "tablet-2"]}}
   end
 
   setup do
@@ -108,5 +108,49 @@ defmodule ApiGatewayWeb.DeviceControllerTest do
     assert DeviceController.index(authed(:get, "nobody"), %{}).status == 401
     assert DeviceController.delete(authed(:delete, "nobody"), %{"device_id" => "x"}).status == 401
     assert DeviceController.revoke_others(authed(:post, "nobody"), %{}).status == 401
+  end
+
+  test "REVOKE severs exactly that device's live socket; the caller's own socket is untouched" do
+    # The per-(user, device) socket id is what makes this surgical.
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user_socket:#{@me}:phone-1")
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user_socket:#{@me}:#{@current_device}")
+
+    conn = DeviceController.delete(authed(:delete), %{"device_id" => "phone-1"})
+    assert conn.status == 200
+
+    assert_receive %Phoenix.Socket.Broadcast{
+                     topic: "user_socket:" <> _,
+                     event: "disconnect"
+                   },
+                   1000
+
+    # The CALLER's own device keeps its socket (nothing else was severed).
+    refute_receive %Phoenix.Socket.Broadcast{event: "disconnect"}, 200
+  end
+
+  test "REVOKE-OTHERS severs each swept device, and only those" do
+    for device <- ["phone-1", "tablet-2"],
+        do: Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user_socket:#{@me}:#{device}")
+
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user_socket:#{@me}:#{@current_device}")
+
+    conn = DeviceController.revoke_others(authed(:post), %{})
+    assert conn.status == 200
+    assert body(conn) == %{"revoked_count" => 2}
+
+    # One disconnect per swept device…
+    assert_receive %Phoenix.Socket.Broadcast{event: "disconnect"}, 1000
+    assert_receive %Phoenix.Socket.Broadcast{event: "disconnect"}, 1000
+    # …and nothing for the current device (it was excluded from the sweep by construction).
+    refute_receive %Phoenix.Socket.Broadcast{event: "disconnect"}, 200
+  end
+
+  test "a REFUSED self-revoke severs nothing" do
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user_socket:#{@me}:#{@current_device}")
+
+    conn = DeviceController.delete(authed(:delete), %{"device_id" => @current_device})
+    assert conn.status == 400
+
+    refute_receive %Phoenix.Socket.Broadcast{event: "disconnect"}, 200
   end
 end
