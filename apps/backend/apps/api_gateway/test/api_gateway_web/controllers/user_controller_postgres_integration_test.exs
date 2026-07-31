@@ -46,15 +46,30 @@ defmodule ApiGatewayWeb.UserControllerPostgresIntegrationTest do
              })
              |> UserRepo.insert()
 
-    conn = public_profile_request(user_id)
+    # The public-profile read became SESSION-GATED; this test predated the gate and sent no
+    # credentials, so it had been asserting 200 against a route that answers 401.
+    viewer = create_session_fixture!()
+    conn = public_profile_request(user_id, create_access_token!(viewer))
 
     assert conn.status == 200
     response = Jason.decode!(conn.resp_body)
 
     assert response["user_id"] == user_id
     assert response["display_name"] == "Public Jaspreet"
-    assert response["avatar_media_id"] == avatar_media_id
     assert response["bio"] == "Public profile bio"
+
+    # The AVATAR is viewer-dependent, so it can no longer be asserted as a constant. ProfilePresenter
+    # applies the photo-visibility rule, and for a viewer who is not a contact it drops the raw
+    # avatar_media_id entirely (so the client cannot resolve the object itself) and returns
+    # avatar_url: nil — deliberately the same shape a genuinely avatarless profile returns. The old
+    # assertion (avatar_media_id == the seeded id) described the pre-visibility-rule world.
+    assert response["avatar_url"] == nil
+    refute Map.has_key?(response, "avatar_media_id")
+    assert is_binary(avatar_media_id)
+
+    # Authenticating the test above must NOT quietly delete the only coverage of the gate itself:
+    # the unauthenticated call still has to be refused.
+    assert public_profile_request(user_id).status == 401
   end
 
   @tag :postgres_integration
@@ -199,10 +214,15 @@ defmodule ApiGatewayWeb.UserControllerPostgresIntegrationTest do
     ApiGatewayWeb.Endpoint.call(conn, [])
   end
 
-  defp public_profile_request(user_id) do
-    :get
-    |> conn("/api/v1/users/#{user_id}/profile")
-    |> ApiGatewayWeb.Endpoint.call([])
+  defp public_profile_request(user_id, access_token \\ nil) do
+    conn = conn(:get, "/api/v1/users/#{user_id}/profile")
+
+    conn =
+      if access_token,
+        do: put_req_header(conn, "authorization", "Bearer #{access_token}"),
+        else: conn
+
+    ApiGatewayWeb.Endpoint.call(conn, [])
   end
 
   defp insert_user_auth_parent_for_user_repo!(user_id) do

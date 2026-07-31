@@ -73,7 +73,16 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
     assert {:ok, _} = Ecto.UUID.cast(response["session_id"])
     assert is_binary(response["access_token"])
     assert is_binary(response["refresh_token"])
-    assert response["access_token_expires_in_seconds"] == 900
+    # The LOGIN path deliberately does NOT use Tokens' global default access TTL: otp.ex passes
+    # `access_ttl_seconds: Tokens.session_ttl_seconds(remember_me?)`, documented at tokens.ex ("the
+    # login path passes :access_ttl_seconds (remember-me aware); other callers use the global
+    # default"). This test used to assert 900 — the one value this path intentionally bypasses.
+    # Assert the RELATIONSHIP, not the number, so it cannot go stale when the value moves.
+    assert response["access_token_expires_in_seconds"] ==
+             AuthService.Tokens.session_ttl_seconds(false)
+
+    refute response["access_token_expires_in_seconds"] == 900
+
     assert response["refresh_token_expires_in_seconds"] == 2_592_000
 
     assert %UserAuth{id: user_id, phone_number: ^phone_number} =
@@ -94,6 +103,41 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
 
     assert session_id == response["session_id"]
     assert refresh_token_hash == refresh_token.token_hash
+  end
+
+  # The other half of the same rule: remember-me selects the LONGER session TTL. Asserting the
+  # relationship (remember-me > plain, and each equals its Tokens value) rather than 604800 vs 10800
+  # keeps this honest when either number moves.
+  #
+  # A 3h access token is NOT a revocation risk here: current_session checks
+  # device_sessions.revoked_at on EVERY request, so sign-out is immediate regardless of token
+  # lifetime — token TTL does not gate revocation.
+  @tag :postgres_integration
+  test "the login access TTL IS the session TTL, and remember-me yields the longer one" do
+    verify = fn remember_me ->
+      phone_number = unique_phone_number()
+      otp_request_id = create_verification_code!(phone_number, "123456")
+
+      conn =
+        json_request(:post, "/api/v1/auth/otp/verify", %{
+          "otp_request_id" => otp_request_id,
+          "phone_number" => phone_number,
+          "otp_code" => "123456",
+          "device_id" => "ios-remember-#{remember_me}",
+          "platform" => "ios",
+          "remember_me" => remember_me
+        })
+
+      assert conn.status == 200
+      Jason.decode!(conn.resp_body)["access_token_expires_in_seconds"]
+    end
+
+    plain = verify.(false)
+    remembered = verify.(true)
+
+    assert plain == AuthService.Tokens.session_ttl_seconds(false)
+    assert remembered == AuthService.Tokens.session_ttl_seconds(true)
+    assert remembered > plain
   end
 
   @tag :postgres_integration
