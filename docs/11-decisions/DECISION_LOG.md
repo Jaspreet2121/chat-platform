@@ -2,6 +2,32 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-01] C6 — webhook outbox write-ahead intent: the promise, restated precisely
+
+- **What the old guarantee actually was (verified in code before writing this):** the same-transaction
+  `emit` guaranteed the outbox ROW's existence atomically with the message — atomicity of the
+  ENQUEUE. Delivery was ALWAYS at-least-once: `claim_due` uses a visibility timeout, so a worker
+  dying mid-delivery re-POSTs an already-received event; retries reuse the stable `event_id`. The
+  C6 weakening is therefore narrower than "exactly-once is gone": exactly-once never existed for
+  delivery; what is given up is enqueue atomicity, on the Scylla path only.
+- **The mechanism:** stage (durable Postgres intent, status='staged', invisible to the dispatcher)
+  → Scylla put → promote ('pending', guarded by status='staged' — idempotent by construction, and
+  no path ever inserts a second row for the same intent). Synchronous put failure aborts the staged
+  rows immediately with the reason. A CRASH between put and promote strands rows the
+  WebhookOutboxSweeper resolves each interval (60s default): message present → promote; message
+  ABSENT (the store answered) → abort; store UNREACHABLE → leave staged, never abort on an outage.
+- **Abort is KEPT-AND-MARKED, not deleted:** an aborted row is evidence a write was attempted and
+  lost. Operators see it via `SELECT * FROM webhook_outbox WHERE status='aborted'` (last_error names
+  the cause); the row is the record, or can be re-driven manually (status='pending') if the message
+  was repaired into existence. Migration 087 extends the status CHECK with 'staged'/'aborted'.
+- **Proven live, not reasoned (ScyllaWebhookOutboxTest):** the crash window is reproduced literally
+  (stage + put, promote skipped) — sweep promotes exactly once, a second sweep and a direct
+  re-promote are no-ops, the row is claimable exactly once; abort keeps and marks; an unreachable
+  store leaves rows staged.
+- **The contract lives where integrators read it** (INTEGRATION_GUIDE §7): at-least-once delivery
+  (unchanged, and never was exactly-once), dedupe on `x-webhook-event-id`, crash-window enqueue lag
+  bounded by sweep interval + stale window (~2 min worst case, default config).
+
 ## [2026-08-01] Inbox denormalisation (086) + the port ladder — pressure-tested and reordered
 
 - **Context:** the Scylla port's §0.5 inbox fork. Chosen (over Scylla-side fan-out, read-composition,

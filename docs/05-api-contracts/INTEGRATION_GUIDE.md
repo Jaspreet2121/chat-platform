@@ -314,14 +314,33 @@ The body envelope:
 }
 ```
 
-**Delivery semantics.**
-- Events are enqueued in a durable outbox **in the same transaction** as the
-  underlying write, so a rolled-back message never produces a webhook, and a
-  committed one always does.
-- Delivery is **at-least-once**: on non-2xx or timeout (5s), we retry with
-  backoff, then dead-letter after a cap. Because retries reuse
-  `x-webhook-event-id`, **make your handler idempotent** — dedupe on that id.
-- Return a `2xx` quickly to acknowledge. Do heavy work asynchronously.
+**Delivery semantics.** Read this precisely — the enqueue guarantee depends on the
+message store in use, and it changed with the ScyllaDB message-store work.
+
+- **Delivery is, and always has been, at-least-once.** On non-2xx or timeout
+  (5s) we retry with backoff, then dead-letter after a cap; a worker that dies
+  mid-delivery can also re-POST an already-received event after its visibility
+  window. Retries and re-POSTs reuse `x-webhook-event-id` — **idempotency keys
+  are your defence: dedupe on that id.** This was never exactly-once delivery.
+- **Enqueue, Postgres message store (current production):** events are enqueued
+  **in the same transaction** as the message write. A rolled-back message never
+  produces a webhook; a committed one always, immediately, does. What this
+  guarantees is the outbox row's existence atomically with the message — the
+  atomicity of the *enqueue*, not of delivery.
+- **Enqueue, ScyllaDB message store (after the flip):** the same transaction no
+  longer exists, so enqueue becomes **write-ahead intent**: the outbox row is
+  written durably *before* the message, promoted to deliverable after the
+  message commits, and a sweeper resolves crashes in between by checking the
+  store. What you keep: **no lost webhook** — a committed message's event
+  always becomes deliverable. What changes: in a crash window, **delivery may
+  lag by up to one sweep interval plus the stale window (60s + 60s ≈ 2 minutes
+  worst case; sweep interval configurable via `WEBHOOK_SWEEP_INTERVAL_SECONDS`,
+  default 60)** — and an event whose message write *failed* is marked aborted
+  and never delivered, rather than having never existed.
+- Net for your handler: **nothing new is required beyond what at-least-once
+  already demanded** — dedupe on `x-webhook-event-id`, return `2xx` quickly, do
+  heavy work asynchronously. The change you may observe is enqueue latency in
+  rare crash windows, not duplicate semantics.
 
 ---
 

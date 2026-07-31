@@ -57,6 +57,103 @@ defmodule SharedInfra.WebhookOutbox do
   def emit(_repo, _app_id, _event_type, _payload), do: :ok
 
   @doc """
+  WRITE-AHEAD INTENT (C6, the Scylla-store path): like `emit/4` but status='staged' and OUTSIDE any
+  domain transaction — the row is durable Postgres intent BEFORE the authoritative Scylla put. The
+  dispatcher never claims 'staged' (claim_due selects pending/delivering only), so a staged row can
+  never deliver early. Returns the staged row ids for the promote/abort that follows.
+
+  The contract this preserves: NO LOST WEBHOOK — the intent exists before the message does, so a
+  crash between put and promote leaves evidence the sweeper resolves, never a committed message with
+  no enqueued event. What is GIVEN UP vs the same-transaction emit: atomicity of the enqueue — a
+  staged row may exist for a message that never landed (resolved as 'aborted', kept).
+  """
+  def stage(repo, app_id, event_type, payload)
+      when is_binary(app_id) and app_id != "" and is_binary(event_type) do
+    payload_json = Jason.encode!(payload)
+
+    {:ok, %{rows: endpoints}} =
+      repo.query(
+        "SELECT id::text FROM webhook_endpoints " <>
+          "WHERE app_id = $1::text::uuid AND enabled = true AND $2 = ANY(event_types)",
+        [app_id, event_type]
+      )
+
+    ids =
+      Enum.map(endpoints, fn [endpoint_id] ->
+        {:ok, %{rows: [[id]]}} =
+          repo.query(
+            "INSERT INTO webhook_outbox " <>
+              "(id, app_id, endpoint_id, event_id, event_type, payload, status, attempts, next_attempt_at, created_at) " <>
+              "VALUES (gen_random_uuid(), $1::text::uuid, $2::text::uuid, gen_random_uuid(), $3, $4::jsonb, 'staged', 0, now(), now()) " <>
+              "RETURNING id::text",
+            [app_id, endpoint_id, event_type, payload_json]
+          )
+
+        id
+      end)
+
+    {:ok, ids}
+  end
+
+  def stage(_repo, _app_id, _event_type, _payload), do: {:ok, []}
+
+  @doc """
+  Promote staged rows to deliverable. IDEMPOTENT BY THE STATUS GUARD: only status='staged' flips, so
+  re-promoting (sweeper racing the caller, a retried promote after a lost response) is a no-op on
+  rows already pending/delivering/delivered — promotion changes a row's state exactly once, and no
+  path ever inserts a second row for the same intent.
+  """
+  def promote_staged(repo, ids) when is_list(ids) do
+    if ids == [] do
+      {:ok, 0}
+    else
+      {:ok, %{num_rows: n}} =
+        repo.query(
+          "UPDATE webhook_outbox SET status = 'pending', next_attempt_at = now() " <>
+            "WHERE id = ANY($1::text[]::uuid[]) AND status = 'staged'",
+          [ids]
+        )
+
+      {:ok, n}
+    end
+  end
+
+  @doc """
+  Abort staged rows: KEPT AND MARKED, never deleted — an aborted row is evidence that a write was
+  attempted and lost, which an operator can see (status='aborted', last_error says why, payload names
+  the message) and act on: verify the message truly never landed, then leave the row as the record,
+  or re-drive it manually after repairing. The dispatcher never claims 'aborted'.
+  """
+  def abort_staged(repo, ids, reason) when is_list(ids) do
+    if ids == [] do
+      {:ok, 0}
+    else
+      {:ok, %{num_rows: n}} =
+        repo.query(
+          "UPDATE webhook_outbox SET status = 'aborted', last_error = $2 " <>
+            "WHERE id = ANY($1::text[]::uuid[]) AND status = 'staged'",
+          [ids, reason]
+        )
+
+      {:ok, n}
+    end
+  end
+
+  @doc "Staged rows older than `stale_seconds`, with the payload the sweeper needs to check the store."
+  def stale_staged(repo, stale_seconds, limit \\ 200) do
+    {:ok, %{rows: rows}} =
+      repo.query(
+        "SELECT id::text, payload FROM webhook_outbox " <>
+          "WHERE status = 'staged' AND created_at < now() - make_interval(secs => $1) " <>
+          "ORDER BY created_at LIMIT $2",
+        [stale_seconds, limit]
+      )
+
+    # Postgrex hands jsonb back as raw text on this path — decode here so every caller gets a map.
+    Enum.map(rows, fn [id, payload] -> %{id: id, payload: decode_payload(payload)} end)
+  end
+
+  @doc """
   Atomically claim up to `limit` due rows (pending OR a stale 'delivering') with FOR UPDATE SKIP LOCKED,
   mark them 'delivering' (hide for the visibility window), and return them. Concurrent workers never
   claim the same row.

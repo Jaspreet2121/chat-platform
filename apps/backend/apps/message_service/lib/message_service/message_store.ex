@@ -272,19 +272,35 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   def put_message(attrs) do
     plan = MessageTimelineWrites.insert_message_plan(attrs)
 
+    # WRITE-AHEAD INTENT (C6): the webhook outbox row is durable Postgres intent BEFORE the
+    # authoritative Scylla put — status='staged', invisible to the dispatcher. Success promotes it
+    # to 'pending' (idempotent: only 'staged' flips); a known failure aborts it (kept as evidence);
+    # a CRASH between put and promote leaves it staged for the sweeper, which checks Scylla and
+    # promotes/aborts. NO LOST WEBHOOK survives; what the same-transaction emit had and this does
+    # not is atomicity of the ENQUEUE — stated in the integration guide, not just here.
+    app_id = MessageService.WebhookEvents.conversation_app_id(attr(attrs, "conversation_id"))
+    {:ok, staged_ids} = stage_webhooks(app_id, attrs)
+
     with {:ok, client} <- client_adapter(),
          {:ok, _result} <- execute(client, plan) do
-      # MEDIA FAN-OUT (C4): the authoritative row is committed; the projections are derived. A failed
-      # projection write must not fail the message — but it must NEVER be silent: a missing
-      # messages_by_media row makes the download oracle DENY (fail-closed), which is exactly the
-      # failure that once looked like a client bug for days. Loud log + repair_media_projections/2
-      # is the recovery path.
+      {:ok, _} = SharedInfra.WebhookOutbox.promote_staged(Repo, staged_ids)
       write_media_projections(client, attrs)
       {:ok, response_from_attrs(attrs)}
     else
-      {:error, reason} -> {:error, reason}
+      {:error, reason} ->
+        {:ok, _} =
+          SharedInfra.WebhookOutbox.abort_staged(
+            Repo,
+            staged_ids,
+            "scylla put_message failed before promote: #{inspect(reason)}"
+          )
+
+        {:error, reason}
     end
   end
+
+  defp stage_webhooks(nil, _attrs), do: {:ok, []}
+  defp stage_webhooks(app_id, attrs), do: MessageService.WebhookEvents.stage(app_id, attrs)
 
   defp write_media_projections(client, attrs) do
     media_id = attr(attrs, "media_id")
@@ -1923,57 +1939,17 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   # → the event is DROPPED, never emitted with an internal or blank id (the call webhooks'
   # unattributable-drop rule). Cost: one indexed PK lookup inside the write txn.
   defp emit_message_created(app_id, %Message{} = message) do
-    case sender_external_id(app_id, message.sender_user_id) do
-      {:ok, external_id} ->
-        SharedInfra.WebhookOutbox.emit(
-          Repo,
-          app_id,
-          "message.created",
-          message_event(message, external_id)
-        )
-
-      :drop ->
-        Logger.warning(
-          "message.created webhook dropped: sender #{message.sender_user_id} has no external_id in app #{app_id}"
-        )
-
-        :ok
-    end
+    # Shared with the Scylla adapter's stage path (C6) so the event wire shape cannot drift.
+    MessageService.WebhookEvents.emit(app_id, %{
+      message_id: message.message_id,
+      conversation_id: message.conversation_id,
+      sender_user_id: message.sender_user_id,
+      message_type: message.message_type,
+      body: message.body,
+      created_at: message.created_at
+    })
   end
 
-  defp sender_external_id(app_id, user_id)
-       when is_binary(app_id) and app_id != "" and is_binary(user_id) and user_id != "" do
-    case Repo.query(
-           "SELECT external_id FROM users_auth " <>
-             "WHERE id = $1::text::uuid AND app_id = $2::text::uuid AND external_id IS NOT NULL",
-           [user_id, app_id]
-         ) do
-      {:ok, %{rows: [[external_id]]}} when is_binary(external_id) and external_id != "" ->
-        {:ok, external_id}
-
-      _ ->
-        :drop
-    end
-  end
-
-  defp sender_external_id(_app_id, _user_id), do: :drop
-
-  # The `data` body an integrator receives for message.created (the worker wraps it in the signed envelope).
-  defp message_event(%Message{} = message, sender_external_id) do
-    %{
-      "message_id" => message.message_id,
-      "conversation_id" => message.conversation_id,
-      "sender_external_id" => sender_external_id,
-      "message_type" => message.message_type,
-      "body" => message.body,
-      "created_at" => to_iso(message.created_at)
-    }
-  end
-
-  defp to_iso(nil), do: nil
-  defp to_iso(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
-  defp to_iso(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
-  defp to_iso(other), do: other
 
   @impl true
   def get_message(attrs) do
