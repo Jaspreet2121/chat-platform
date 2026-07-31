@@ -191,10 +191,27 @@ the Phase D type problem below and put junk in a table whose migration is undesi
 Phase B adds env to the message service, so **deploying it recreates the message container** — the
 first behaviour-affecting change of this Scylla work. Everything else stays as it was.
 
-## 8. Phase C / D (still required before Scylla can serve traffic)
+## 8. The position (2026-08-01): hybrid end-state, measured trigger
+
+Recorded in `docs/11-decisions/DECISION_LOG.md` so it is not rediscovered as a mystery later:
+
+- Phases A + B shipped; `MESSAGE_STORE_ADAPTER` is `postgres` and the `scylla` profile is off —
+  **nothing runs today and it costs nothing**. Phase D below is the remaining prerequisite.
+- **The plan's shape changed under it:** `message_store.ex` now carries seven relational joins —
+  receipt reciprocity (`user_privacy_settings`), the media download oracle
+  (`conversation_participants`), stars, poll/receipt aggregates — that are not Scylla-shaped and
+  would stay in Postgres. The eventual shape is therefore a **hybrid** (message CRUD in Scylla,
+  relational satellites in Postgres), **not a migration**.
+- **The trigger is a measurement, not a date:** flip only when `list_messages` latency or Postgres
+  write throughput is a profiled bottleneck (the slice-49 standard). Until then the adapter seam is
+  the whole point — it keeps the option open at zero carrying cost.
+
+## 9. Phase C / D (still required before Scylla can serve traffic)
 
 **Phase C — missing Scylla-side features.** `MessageStore.ScyllaAdapter` has no equivalent for stars,
-polls, media listing, search, or the receipt/reaction aggregates the Postgres adapter provides.
+polls, media listing, search, or the receipt/reaction aggregates the Postgres adapter provides — the
+same satellites the position above keeps in Postgres, which shrinks Phase C to whatever a hybrid
+still needs from the adapter itself.
 
 **Phase D — the type/encoding gap (the real blocker).** The write plans supply Elixir terms that do
 not match the CQL column types:

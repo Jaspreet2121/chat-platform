@@ -2,6 +2,24 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-01] ScyllaDB position: hybrid end-state, measured trigger — not a scheduled migration
+
+- **Context:** Phases A and B shipped (container + schema behind the `scylla` compose profile; a real
+  Xandra driver behind the client boundary). `MESSAGE_STORE_ADAPTER` is `postgres` and the profile is
+  off, so **nothing runs today and it costs nothing**. Phase D (type encoding — bucket_date/timestamp/
+  metadata vs the CQL column types) remains the prerequisite before the adapter can flip.
+- **What changed since the plan:** `message_store.ex` now carries seven relational joins that did not
+  exist when the Scylla schema was designed — receipt reciprocity (`user_privacy_settings`, twice),
+  the media download oracle (`conversation_participants`), stars, and the poll/receipt aggregates.
+  None of that is Scylla-shaped, and it would stay in Postgres.
+- **Decision:** the eventual shape is a **HYBRID** — message CRUD in Scylla, relational satellites
+  (receipts-with-privacy, media authz, polls, stars) in Postgres — not a migration. "We're moving
+  messages to Scylla" now under-describes the work and should not be said.
+- **Trigger:** do **not** flip on a schedule. Flip when `list_messages` latency or Postgres write
+  throughput is a **measured** bottleneck, profiled the way slice 49 profiled the Android client.
+  Until then the adapter seam is the whole point: it keeps the option open at zero carrying cost.
+- **Status:** dormant by design. See `docs/09-devops/SCYLLA.md` for the operational detail.
+
 ## [2026-07-26] Privacy settings enforcement + first-party presence broadcast fix
 
 - **Context:** privacy settings existed as a table + placeholder read, unexposed and unenforced; and
