@@ -1290,17 +1290,29 @@ defmodule MessageService.MessageStore.PostgresAdapter do
           "SELECT EXISTS (" <>
             "SELECT 1 FROM messages m " <>
             "JOIN conversation_participants cp ON cp.conversation_id = m.conversation_id " <>
-            "AND cp.user_id = $3::uuid AND cp.left_at IS NULL " <>
-            "WHERE m.media_id = $1::uuid AND m.sender_user_id = $2::uuid)",
+            "AND cp.user_id = $3::text::uuid AND cp.left_at IS NULL " <>
+            "WHERE m.media_id = $1::text::uuid AND m.sender_user_id = $2::text::uuid)",
           [media_id, owner, viewer]
         )
 
       {:ok, %{allowed: allowed}}
     else
+      # A MISSING/blank identifier is a genuine authorization miss: deny quietly, it is not a fault.
       _ -> {:ok, %{allowed: false}}
     end
   rescue
-    _ -> {:ok, %{allowed: false}}
+    # An exception here does NOT mean "not authorized" — it means the ORACLE ITSELF is broken (bad SQL,
+    # a parameter-encoding error, the DB down). Still fail closed: a media authz oracle that answers
+    # "allowed" when it cannot tell would leak media. But NEVER silently: this rescue previously turned
+    # a DBConnection.EncodeError (from `$N::uuid` casts against string params) into a plain "denied",
+    # so every inbound download 403'd for days with nothing in the logs. Log it loudly instead.
+    error ->
+      Logger.error(
+        "media_download_allowed FAILED (denying, but this is a FAULT not a decision): " <>
+          Exception.format(:error, error, __STACKTRACE__)
+      )
+
+      {:ok, %{allowed: false}}
   end
 
   defp maybe_before(query, before) when is_binary(before) and before != "" do

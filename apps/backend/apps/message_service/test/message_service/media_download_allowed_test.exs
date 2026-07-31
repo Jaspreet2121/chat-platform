@@ -219,4 +219,42 @@ defmodule MessageService.MediaDownloadAllowedTest do
 
     assert count == 1
   end
+
+  # THE REGRESSION THIS FILE EXISTS FOR. A `$N::uuid` cast against a STRING param raises
+  # DBConnection.EncodeError; the old blanket `rescue _ -> {:ok, %{allowed: false}}` turned that into a
+  # plain "denied", so every inbound media download 403'd for days with NOTHING in the logs — own photos
+  # rendered (the gateway's owner fast-path skips this oracle), everyone else's showed "Tap to retry".
+  # Fail-closed is still right; failing SILENTLY is not. A broken oracle must be loud.
+  @tag :postgres_integration
+  test "a BROKEN oracle still denies, but LOGS at error level (it is a fault, not a decision)" do
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        # Not a uuid → Postgres rejects the ::uuid cast → the query raises inside the rescue.
+        assert {:ok, %{allowed: false}} =
+                 MessageStore.PostgresAdapter.media_download_allowed(%{
+                   "media_id" => "definitely-not-a-uuid",
+                   "owner_user_id" => @owner,
+                   "viewer_user_id" => @bob
+                 })
+      end)
+
+    assert log =~ "media_download_allowed FAILED"
+    assert log =~ "[error]"
+  end
+
+  # The complement: a MISSING identifier is a genuine authorization miss, not a fault — deny quietly.
+  @tag :postgres_integration
+  test "a missing identifier denies WITHOUT logging (that path is a decision, not a fault)" do
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:ok, %{allowed: false}} =
+                 MessageStore.PostgresAdapter.media_download_allowed(%{
+                   "media_id" => "",
+                   "owner_user_id" => @owner,
+                   "viewer_user_id" => @bob
+                 })
+      end)
+
+    refute log =~ "media_download_allowed FAILED"
+  end
 end

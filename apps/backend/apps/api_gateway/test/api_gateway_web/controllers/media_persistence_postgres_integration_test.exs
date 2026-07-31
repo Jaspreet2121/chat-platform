@@ -219,14 +219,14 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
 
   defp seed_user!(id) do
     MediaRepo.query!(
-      "INSERT INTO users_auth (id, phone_number, status) VALUES ($1::uuid, $2, 'active')",
+      "INSERT INTO users_auth (id, phone_number, status) VALUES ($1::text::uuid, $2, 'active')",
       [id, "+1" <> String.slice(String.replace(id, "-", ""), 0, 10)]
     )
   end
 
   defp seed_app!(id) do
     MediaRepo.query!(
-      "INSERT INTO apps (id, name, slug) VALUES ($1::uuid, 'Other App', $2)",
+      "INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'Other App', $2)",
       [id, "other-" <> String.slice(String.replace(id, "-", ""), 0, 12)]
     )
   end
@@ -234,7 +234,7 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
   # app_id defaults to tenant-zero (migration 048), so this conversation lands in @app.
   defp seed_conversation!(id, created_by) do
     MediaRepo.query!(
-      "INSERT INTO conversations (id, type, created_by) VALUES ($1::uuid, 'group', $2::uuid)",
+      "INSERT INTO conversations (id, type, created_by) VALUES ($1::text::uuid, 'group', $2::text::uuid)",
       [id, created_by]
     )
   end

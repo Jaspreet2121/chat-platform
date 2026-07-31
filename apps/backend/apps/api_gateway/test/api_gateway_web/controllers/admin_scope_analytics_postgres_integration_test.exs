@@ -58,7 +58,7 @@ defmodule ApiGatewayWeb.AdminScopeAnalyticsPostgresIntegrationTest do
   end
 
   defp seed_app!(id) do
-    MsgRepo.query!("INSERT INTO apps (id, name, slug) VALUES ($1::uuid, 'Integrator', $2)", [
+    MsgRepo.query!("INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'Integrator', $2)", [
       id,
       "int-" <> String.slice(String.replace(id, "-", ""), 0, 12)
     ])
@@ -67,7 +67,7 @@ defmodule ApiGatewayWeb.AdminScopeAnalyticsPostgresIntegrationTest do
   defp seed_user!(id, app_id) do
     MsgRepo.query!(
       "INSERT INTO users_auth (id, phone_number, status, app_id, role) " <>
-        "VALUES ($1::uuid, $2, 'active', $3::uuid, 'user')",
+        "VALUES ($1::text::uuid, $2, 'active', $3::text::uuid, 'user')",
       [id, "+1#{String.slice(String.replace(id, "-", ""), 0, 10)}", app_id]
     )
   end
@@ -75,7 +75,7 @@ defmodule ApiGatewayWeb.AdminScopeAnalyticsPostgresIntegrationTest do
   defp seed_convo!(id, app_id, created_by) do
     MsgRepo.query!(
       "INSERT INTO conversations (id, app_id, type, created_by, status) " <>
-        "VALUES ($1::uuid, $2::uuid, 'group', $3::uuid, 'active')",
+        "VALUES ($1::text::uuid, $2::text::uuid, 'group', $3::text::uuid, 'active')",
       [id, app_id, created_by]
     )
   end
@@ -83,7 +83,7 @@ defmodule ApiGatewayWeb.AdminScopeAnalyticsPostgresIntegrationTest do
   defp seed_message!(conversation_id, sender) do
     MsgRepo.query!(
       "INSERT INTO messages (message_id, conversation_id, sender_user_id, message_type, status) " <>
-        "VALUES (gen_random_uuid(), $1::uuid, $2::uuid, 'text', 'active')",
+        "VALUES (gen_random_uuid(), $1::text::uuid, $2::text::uuid, 'text', 'active')",
       [conversation_id, sender]
     )
   end
@@ -91,7 +91,7 @@ defmodule ApiGatewayWeb.AdminScopeAnalyticsPostgresIntegrationTest do
   defp seed_media!(owner, app_id) do
     MsgRepo.query!(
       "INSERT INTO media_assets (id, owner_user_id, app_id, purpose, storage_provider, bucket, " <>
-        "object_key, mime_type, size_bytes, status) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, " <>
+        "object_key, mime_type, size_bytes, status) VALUES (gen_random_uuid(), $1::text::uuid, $2::text::uuid, " <>
         "'message', 'minio', 'chat-media', $3, 'image/png', 10, 'ready')",
       [owner, app_id, "media/#{owner}/#{Ecto.UUID.generate()}/a.png"]
     )

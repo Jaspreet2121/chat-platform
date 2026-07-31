@@ -180,7 +180,7 @@ defmodule ConversationService.BroadcastLists do
   defp insert_members(list_id, member_ids) do
     Repo.query!(
       "INSERT INTO broadcast_list_members (list_id, user_id) " <>
-        "SELECT $1::text::uuid, unnest($2::uuid[])",
+        "SELECT $1::text::uuid, unnest($2::text[]::uuid[])",
       [list_id, member_ids]
     )
 
@@ -222,7 +222,7 @@ defmodule ConversationService.BroadcastLists do
   defp ensure_members_valid(member_ids, app_id) do
     %{rows: [[valid_count]]} =
       Repo.query!(
-        "SELECT count(*)::int FROM users_auth WHERE id = ANY($1::uuid[]) " <>
+        "SELECT count(*)::int FROM users_auth WHERE id = ANY($1::text[]::uuid[]) " <>
           "AND app_id = $2::text::uuid AND status = 'active'",
         [member_ids, app_id]
       )

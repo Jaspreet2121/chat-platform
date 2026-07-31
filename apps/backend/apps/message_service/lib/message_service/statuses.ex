@@ -111,23 +111,23 @@ defmodule MessageService.Statuses do
       JOIN conversation_participants them
         ON them.conversation_id = me.conversation_id
       JOIN conversations c ON c.id = me.conversation_id AND c.status = 'active'
-      WHERE me.user_id = $1::uuid AND me.left_at IS NULL AND me.joined_at < sp.created_at
+      WHERE me.user_id = $1::text::uuid AND me.left_at IS NULL AND me.joined_at < sp.created_at
         AND them.user_id = sp.owner_user_id AND them.left_at IS NULL AND them.joined_at < sp.created_at
     )
     AND NOT EXISTS (
       SELECT 1 FROM user_blocks b
-      WHERE (b.blocker_user_id = $1::uuid AND b.blocked_user_id = sp.owner_user_id)
-         OR (b.blocker_user_id = sp.owner_user_id AND b.blocked_user_id = $1::uuid)
+      WHERE (b.blocker_user_id = $1::text::uuid AND b.blocked_user_id = sp.owner_user_id)
+         OR (b.blocker_user_id = sp.owner_user_id AND b.blocked_user_id = $1::text::uuid)
     )
     AND CASE COALESCE(
                (SELECT a.mode FROM status_audience a WHERE a.user_id = sp.owner_user_id),
                'contacts')
           WHEN 'except' THEN NOT EXISTS (
             SELECT 1 FROM status_audience_members m
-            WHERE m.user_id = sp.owner_user_id AND m.member_user_id = $1::uuid)
+            WHERE m.user_id = sp.owner_user_id AND m.member_user_id = $1::text::uuid)
           WHEN 'only' THEN EXISTS (
             SELECT 1 FROM status_audience_members m
-            WHERE m.user_id = sp.owner_user_id AND m.member_user_id = $1::uuid)
+            WHERE m.user_id = sp.owner_user_id AND m.member_user_id = $1::text::uuid)
           ELSE true
         END
     """
@@ -147,8 +147,8 @@ defmodule MessageService.Statuses do
             "to_char(max(sp.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'), " <>
             "count(*) FILTER (WHERE v.viewer_user_id IS NULL)::int " <>
             "FROM status_posts sp " <>
-            "LEFT JOIN status_views v ON v.status_id = sp.id AND v.viewer_user_id = $1::uuid " <>
-            "WHERE sp.expires_at > now() AND sp.deleted_at IS NULL AND sp.owner_user_id <> $1::uuid " <>
+            "LEFT JOIN status_views v ON v.status_id = sp.id AND v.viewer_user_id = $1::text::uuid " <>
+            "WHERE sp.expires_at > now() AND sp.deleted_at IS NULL AND sp.owner_user_id <> $1::text::uuid " <>
             "AND " <> audience_sql() <>
             "GROUP BY sp.owner_user_id ORDER BY max(sp.created_at) DESC",
           [viewer]
@@ -180,8 +180,8 @@ defmodule MessageService.Statuses do
             "to_char(sp.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'), " <>
             "to_char(sp.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') " <>
             "FROM status_posts sp " <>
-            "WHERE sp.owner_user_id = $2::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL " <>
-            "AND (sp.owner_user_id = $1::uuid OR (" <> audience_sql() <> ")) " <>
+            "WHERE sp.owner_user_id = $2::text::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL " <>
+            "AND (sp.owner_user_id = $1::text::uuid OR (" <> audience_sql() <> ")) " <>
             "ORDER BY sp.created_at ASC",
           [viewer, owner]
         )
@@ -218,9 +218,9 @@ defmodule MessageService.Statuses do
          {:ok, media_id} <- required(attrs, "media_id") do
       %{rows: rows} =
         Repo.query!(
-          "SELECT (sp.owner_user_id = $1::uuid) OR (" <> audience_sql() <> ") " <>
+          "SELECT (sp.owner_user_id = $1::text::uuid) OR (" <> audience_sql() <> ") " <>
             "FROM status_posts sp " <>
-            "WHERE sp.media_id = $2::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL " <>
+            "WHERE sp.media_id = $2::text::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL " <>
             "LIMIT 1",
           [viewer, media_id]
         )
@@ -284,7 +284,7 @@ defmodule MessageService.Statuses do
             if members != [] do
               Repo.query!(
                 "INSERT INTO status_audience_members (user_id, member_user_id) " <>
-                  "SELECT $1::text::uuid, unnest($2::uuid[])",
+                  "SELECT $1::text::uuid, unnest($2::text[]::uuid[])",
                 [user_id, members]
               )
             end
@@ -313,9 +313,9 @@ defmodule MessageService.Statuses do
          {:ok, viewer} <- required(attrs, "viewer_user_id") do
       %{rows: rows} =
         Repo.query!(
-          "SELECT (sp.owner_user_id = $1::uuid) FROM status_posts sp " <>
-            "WHERE sp.id = $2::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL " <>
-            "AND ((sp.owner_user_id = $1::uuid) OR (" <> audience_sql() <> "))",
+          "SELECT (sp.owner_user_id = $1::text::uuid) FROM status_posts sp " <>
+            "WHERE sp.id = $2::text::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL " <>
+            "AND ((sp.owner_user_id = $1::text::uuid) OR (" <> audience_sql() <> "))",
           [viewer, status_id]
         )
 
@@ -504,9 +504,9 @@ defmodule MessageService.Statuses do
       %{rows: rows} =
         Repo.query!(
           "SELECT sp.owner_user_id::text, sp.kind, sp.body, " <>
-            "((sp.owner_user_id = $1::uuid) OR (" <> audience_sql() <> ")) " <>
+            "((sp.owner_user_id = $1::text::uuid) OR (" <> audience_sql() <> ")) " <>
             "FROM status_posts sp " <>
-            "WHERE sp.id = $2::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL",
+            "WHERE sp.id = $2::text::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL",
           [viewer, status_id]
         )
 

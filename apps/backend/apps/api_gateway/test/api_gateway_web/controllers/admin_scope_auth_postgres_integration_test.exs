@@ -68,7 +68,7 @@ defmodule ApiGatewayWeb.AdminScopeAuthPostgresIntegrationTest do
 
   defp role_of(user_id) do
     %Postgrex.Result{rows: [[role]]} =
-      AuthRepo.query!("SELECT role FROM users_auth WHERE id = $1::uuid", [user_id])
+      AuthRepo.query!("SELECT role FROM users_auth WHERE id = $1::text::uuid", [user_id])
 
     role
   end
@@ -83,7 +83,7 @@ defmodule ApiGatewayWeb.AdminScopeAuthPostgresIntegrationTest do
   end
 
   defp seed_app!(id) do
-    AuthRepo.query!("INSERT INTO apps (id, name, slug) VALUES ($1::uuid, 'Integrator', $2)", [
+    AuthRepo.query!("INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'Integrator', $2)", [
       id,
       "int-" <> String.slice(String.replace(id, "-", ""), 0, 12)
     ])
@@ -92,7 +92,7 @@ defmodule ApiGatewayWeb.AdminScopeAuthPostgresIntegrationTest do
   defp seed_user!(id, app_id, tag) do
     AuthRepo.query!(
       "INSERT INTO users_auth (id, phone_number, status, app_id, role) " <>
-        "VALUES ($1::uuid, $2, 'active', $3::uuid, 'user')",
+        "VALUES ($1::text::uuid, $2, 'active', $3::text::uuid, 'user')",
       [id, "+1#{tag}#{String.slice(String.replace(id, "-", ""), 0, 8)}", app_id]
     )
   end

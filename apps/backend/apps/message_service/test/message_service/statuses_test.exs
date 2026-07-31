@@ -140,6 +140,19 @@ defmodule MessageService.StatusesTest do
     allowed
   end
 
+  # Push a post's created_at into the past. REQUIRED, not a convenience: `now()` is TRANSACTION-frozen
+  # and the SQL sandbox runs each test inside ONE transaction, so every `now()` in a test is the SAME
+  # instant. The predating rule's strict `me.joined_at < sp.created_at` then sees a TIE and denies —
+  # correctly. So a test can never get "the post happened before/after the join" by letting statements
+  # run in sequence; the ordering has to be STATED. Backdate the earlier post and join the participant
+  # at an offset between it and the later post. (Mirrors expire!/1.)
+  defp backdate!(status_id, seconds_ago) do
+    Repo.query!(
+      "UPDATE status_posts SET created_at = now() - make_interval(secs => $2) WHERE id = $1::text::uuid",
+      [status_id, seconds_ago]
+    )
+  end
+
   defp expire!(status_id) do
     Repo.query!(
       "UPDATE status_posts SET expires_at = now() - interval '1 second' WHERE id = $1::text::uuid",
@@ -153,7 +166,9 @@ defmodule MessageService.StatusesTest do
     old_friend = user!()
     shared_conversation!(owner, old_friend)
 
-    _post = post!(owner)
+    post = post!(owner)
+    # Anchor the post 10 minutes back so later joins can sit strictly after it (see backdate!/2).
+    backdate!(post.status_id, 600)
 
     # The predating contact sees the thread + posts.
     assert feed_owners(old_friend) == [owner]
@@ -161,8 +176,8 @@ defmodule MessageService.StatusesTest do
 
     # RETROACTIVE PATH 1 — a DM started AFTER the post: the stranger never sees it.
     stranger = user!()
-    shared_conversation!(owner, stranger, 0)
-    # (joined now, post created moments ago → joined_at > created_at)
+    # Joined 5 min ago — AFTER the post (-600) but BEFORE the second post below (now).
+    shared_conversation!(owner, stranger, 300)
     assert feed_owners(stranger) == []
     assert posts_of(stranger, owner) == []
 
@@ -421,9 +436,12 @@ defmodule MessageService.StatusesTest do
     owner = user!()
     latecomer = user!()
 
-    # The post exists BEFORE any shared conversation with the latecomer.
-    _before = post!(owner)
-    shared_conversation!(owner, latecomer, 0)
+    # The post exists BEFORE any shared conversation with the latecomer (stated explicitly — see
+    # backdate!/2: `now()` is frozen for the whole test, so statement order proves nothing).
+    before_post = post!(owner)
+    backdate!(before_post.status_id, 600)
+    # Joined 5 min ago — after that post, before the `fresh` one below.
+    shared_conversation!(owner, latecomer, 300)
 
     # Explicitly listed under 'only' — the mode cannot widen past the predating rule.
     set_audience!(owner, "only", [latecomer])
