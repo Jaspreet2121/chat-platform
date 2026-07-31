@@ -1231,6 +1231,166 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   end
 end
 
+defmodule MessageService.MessageStore.DualWriteAdapter do
+  @moduledoc """
+  C7: POSTGRES AUTHORITATIVE, SCYLLA SHADOW. Every callback delegates to the PostgresAdapter —
+  identical results, identical latency, identical webhooks/inbox maintenance (all of that happens
+  inside the Postgres adapter's own transaction, untouched). After a successful WRITE, the same data
+  is mirrored into Scylla via MessageService.ShadowMirror: detached supervised task, bounded
+  timeouts, failures RECORDED in scylla_mirror_failures — never surfaced to the caller. Reads never
+  touch Scylla.
+
+  Selected by MESSAGE_STORE_ADAPTER=dual_write (runtime.exs). DEFAULT IS UNCHANGED (postgres):
+  deploying this code with the flag unset changes nothing observable — the module is simply never
+  in the call path.
+
+  The six optional callbacks delegate to Postgres too (the flip, not the shadow, moves them);
+  poll votes / stars are Postgres either way.
+  """
+
+  @behaviour MessageService.MessageStore
+
+  alias MessageService.MessageStore.PostgresAdapter
+  alias MessageService.ShadowMirror
+
+  # --- writes: delegate, then mirror the COMMITTED result ------------------------------------------
+
+  @impl true
+  def put_message(attrs) do
+    with {:ok, response} <- PostgresAdapter.put_message(attrs) do
+      ShadowMirror.mirror_put(mirror_attrs(response))
+      {:ok, response}
+    end
+  end
+
+  @impl true
+  def update_message(attrs) do
+    with {:ok, response} <- PostgresAdapter.update_message(attrs) do
+      ShadowMirror.mirror_edit(mirror_attrs(response))
+      {:ok, response}
+    end
+  end
+
+  @impl true
+  def delete_message(attrs) do
+    with {:ok, response} <- PostgresAdapter.delete_message(attrs) do
+      ShadowMirror.mirror_delete(mirror_attrs(response))
+      {:ok, response}
+    end
+  end
+
+  @impl true
+  def mark_delivered(attrs) do
+    with {:ok, response} <- PostgresAdapter.mark_delivered(attrs) do
+      ShadowMirror.mirror_receipt(receipt_attrs(response, "delivered"))
+      {:ok, response}
+    end
+  end
+
+  @impl true
+  def mark_read(attrs) do
+    with {:ok, response} <- PostgresAdapter.mark_read(attrs) do
+      ShadowMirror.mirror_receipt(receipt_attrs(response, "read"))
+      {:ok, response}
+    end
+  end
+
+  @impl true
+  def upsert_reaction(attrs) do
+    with {:ok, response} <- PostgresAdapter.upsert_reaction(attrs) do
+      ShadowMirror.mirror_reaction(%{
+        "conversation_id" => dwattr(attrs, "conversation_id"),
+        "message_id" => dwattr(attrs, "message_id"),
+        "user_id" => dwattr(attrs, "user_id"),
+        "reaction" => dwattr(attrs, "emoji"),
+        "created_at" => DateTime.utc_now()
+      })
+
+      {:ok, response}
+    end
+  end
+
+  @impl true
+  def remove_reaction(attrs) do
+    with {:ok, response} <- PostgresAdapter.remove_reaction(attrs) do
+      ShadowMirror.mirror_reaction(%{
+        "conversation_id" => dwattr(attrs, "conversation_id"),
+        "message_id" => dwattr(attrs, "message_id"),
+        "user_id" => dwattr(attrs, "user_id"),
+        "__reaction_op" => "remove"
+      })
+
+      {:ok, response}
+    end
+  end
+
+  # --- everything else: Postgres, verbatim ----------------------------------------------------------
+
+  @impl true
+  defdelegate get_message(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate list_messages(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate star_message(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate unstar_message(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate list_starred(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate search_messages(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate list_media(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate get_by_media_id(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate message_info(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate poll_vote(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate list_poll_votes(attrs), to: PostgresAdapter
+  @impl true
+  defdelegate media_download_allowed(attrs), to: PostgresAdapter
+
+  # The COMMITTED response is the mirror's source (not the caller's attrs): it carries the stamped
+  # fields exactly as Postgres holds them, so both stores derive from one authority.
+  defp mirror_attrs(response) do
+    created_at = response[:created_at] || response["created_at"]
+
+    %{
+      "conversation_id" => response[:conversation_id],
+      "bucket_date" => created_at |> bucket_date(),
+      "message_id" => response[:message_id],
+      "sender_user_id" => response[:sender_user_id],
+      "message_type" => response[:message_type],
+      "body" => response[:body],
+      "media_id" => response[:media_id],
+      "reply_to_message_id" => response[:reply_to_message_id],
+      "status" => response[:status],
+      "metadata" => response[:metadata] || %{},
+      "created_at" => created_at,
+      "edited_at" => response[:edited_at],
+      "deleted_at" => response[:deleted_at]
+    }
+  end
+
+  defp receipt_attrs(response, status) do
+    %{
+      "conversation_id" => response[:conversation_id],
+      "message_id" => response[:message_id],
+      "user_id" => response[:user_id],
+      "status" => status,
+      "updated_at" => response[:updated_at] || DateTime.utc_now()
+    }
+  end
+
+  defp bucket_date(%DateTime{} = dt), do: dt |> DateTime.to_date() |> Date.to_iso8601()
+  defp bucket_date(%NaiveDateTime{} = dt), do: dt |> NaiveDateTime.to_date() |> Date.to_iso8601()
+  defp bucket_date(value) when is_binary(value), do: String.slice(value, 0, 10)
+  defp bucket_date(_), do: nil
+
+  defp dwattr(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, String.to_atom(key))
+end
+
 defmodule MessageService.MessageStore.InMemoryAdapter do
   @moduledoc """
   Test-safe in-memory message store adapter.

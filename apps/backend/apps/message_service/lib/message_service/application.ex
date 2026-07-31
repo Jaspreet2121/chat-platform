@@ -27,6 +27,10 @@ defmodule MessageService.Application do
     # store path; sweeping an empty set is a no-op, so it is safe to run everywhere the repo runs).
     sweeper = if repo == [], do: [], else: [MessageService.WebhookOutboxSweeper]
 
+    # C7: the shadow-mirror task supervisor is ALWAYS cheap to run (idle unless dual_write is the
+    # selected adapter) and must exist before any mirror dispatches.
+    shadow = [{Task.Supervisor, name: MessageService.ShadowMirror.TaskSupervisor}]
+
     client = if kafka_client_needed?(), do: [brod_client_child_spec()], else: []
 
     # Make the Kafka wiring auditable at boot — a silent supervision tree masked the baked-
@@ -41,7 +45,7 @@ defmodule MessageService.Application do
     projection_consumer =
       if kafka_projection_consumer_enabled?(), do: [conversation_summary_child_spec()], else: []
 
-    repo ++ sweeper ++ client ++ log_consumer ++ projection_consumer ++ scylla_children() ++ http_children()
+    repo ++ sweeper ++ shadow ++ client ++ log_consumer ++ projection_consumer ++ scylla_children() ++ http_children()
   end
 
   # ScyllaDB driver (Phase B) — DRIVER ONLY: this starts a connection pool, it does NOT make Scylla

@@ -158,6 +158,9 @@ if config_env() == :prod do
       message_store_adapter:
         (case adapter do
            "scylla" -> MessageService.MessageStore.ScyllaAdapter
+           # C7 dual-write: Postgres authoritative + detached Scylla shadow. OFF unless explicitly
+           # selected — production stays "postgres" and deploying the code changes nothing.
+           "dual_write" -> MessageService.MessageStore.DualWriteAdapter
            "postgres" -> MessageService.MessageStore.PostgresAdapter
            "in_memory" -> MessageService.MessageStore.InMemoryAdapter
            _ -> MessageService.MessageStore.QueryPlanAdapter

@@ -206,7 +206,38 @@ Recorded in `docs/11-decisions/DECISION_LOG.md` so it is not rediscovered as a m
   write throughput is a profiled bottleneck (the slice-49 standard). Until then the adapter seam is
   the whole point — it keeps the option open at zero carrying cost.
 
-## 9. Phase C / D (still required before Scylla can serve traffic)
+## 9. Dual-write operations (C7)
+
+**The flag:** `MESSAGE_STORE_ADAPTER=dual_write` on the message service. Default is unchanged
+(`postgres`) — deploying the C7 code without touching the env changes nothing observable; the dual
+adapter is simply never in the call path. Reads never touch Scylla under dual-write; Postgres stays
+authoritative for everything.
+
+**Shadow isolation:** mirrors run as detached supervised tasks with 2s per-call timeouts; with the
+scylla container stopped (the current production state) each mirror fails in microseconds via the
+local process check. Failed mirrors are RECORDED in `scylla_mirror_failures`, not just logged.
+
+**Operator sequence** (remote console on the message service):
+
+```elixir
+# 1. after enabling dual_write and bringing scylla up: copy history
+MessageService.ScyllaBackfill.run()
+
+# 2. re-drive anything the shadow missed while scylla was flaky
+MessageService.ScyllaBackfill.repair_failures()
+
+# 3. THE VERIFICATION REPORT — the C8 gate
+MessageService.ScyllaBackfill.report()
+```
+
+**The gate for C8:** `stale_diff_total == 0 AND unresolved_failures == 0` on TWO consecutive reports
+at least 10 minutes apart, during steady traffic. Rows younger than the 300s in-flight horizon are
+excluded (that is lag, not divergence); a diff that appears in both reports with the same message_id
+is real — investigate before proceeding. Divergent rows are recopied from authority with
+`ScyllaBackfill.recopy(conversation_id, ids)`; convergence under live writes is the verify-then-
+recopy discipline (proven by the race test in ScyllaDualWriteTest).
+
+## 10. Phase C / D (still required before Scylla can serve traffic)
 
 **Phase C — missing Scylla-side features.** `MessageStore.ScyllaAdapter` has no equivalent for stars,
 polls, media listing, search, or the receipt/reaction aggregates the Postgres adapter provides — the
