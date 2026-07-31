@@ -16,7 +16,12 @@ defmodule SharedInfra.PresenceTest do
     @moduledoc false
     @behaviour SharedInfra.Presence
 
-    def start_link, do: Agent.start_link(fn -> %{online: MapSet.new(), last_seen: %{}, fail: false} end, name: __MODULE__)
+    def start_link,
+      do:
+        Agent.start_link(fn -> %{online: MapSet.new(), last_seen: %{}, fail: false} end,
+          name: __MODULE__
+        )
+
     def fail!, do: Agent.update(__MODULE__, &Map.put(&1, :fail, true))
 
     @impl true
@@ -33,7 +38,11 @@ defmodule SharedInfra.PresenceTest do
     @impl true
     def clear_online(user_id, now_unix) do
       Agent.update(__MODULE__, fn s ->
-        %{s | online: MapSet.delete(s.online, user_id), last_seen: Map.put(s.last_seen, user_id, now_unix)}
+        %{
+          s
+          | online: MapSet.delete(s.online, user_id),
+            last_seen: Map.put(s.last_seen, user_id, now_unix)
+        }
       end)
 
       :ok
@@ -56,7 +65,13 @@ defmodule SharedInfra.PresenceTest do
     start_supervised!(%{id: MemoryAdapter, start: {MemoryAdapter, :start_link, []}})
     prev = Application.get_env(:shared_infra, :presence_adapter)
     Application.put_env(:shared_infra, :presence_adapter, MemoryAdapter)
-    on_exit(fn -> if prev, do: Application.put_env(:shared_infra, :presence_adapter, prev), else: Application.delete_env(:shared_infra, :presence_adapter) end)
+
+    on_exit(fn ->
+      if prev,
+        do: Application.put_env(:shared_infra, :presence_adapter, prev),
+        else: Application.delete_env(:shared_infra, :presence_adapter)
+    end)
+
     :ok
   end
 

@@ -52,6 +52,7 @@ defmodule SharedInfra.InternalApiTest do
     setup do
       previous = Application.get_env(:shared_infra, :internal_api_token)
       Application.put_env(:shared_infra, :internal_api_token, "test-internal-token")
+
       on_exit(fn ->
         if previous,
           do: Application.put_env(:shared_infra, :internal_api_token, previous),

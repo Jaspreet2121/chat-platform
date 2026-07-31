@@ -55,7 +55,11 @@ defmodule NotificationService.PushSender do
   end
 
   defp build_call_payload(attrs) do
-    caller = if is_binary(attrs["caller_name"]) and attrs["caller_name"] != "", do: attrs["caller_name"], else: "Someone"
+    caller =
+      if is_binary(attrs["caller_name"]) and attrs["caller_name"] != "",
+        do: attrs["caller_name"],
+        else: "Someone"
+
     label = if attrs["call_type"] == "video", do: "Video call", else: "Voice call"
 
     Jason.encode!(%{
@@ -113,7 +117,8 @@ defmodule NotificationService.PushSender do
   # PHX_HOST; nil in dev / non-real host, or if the sender's app can't be resolved → the SW uses the app
   # icon. A broken/absent avatar → the route 404s → the notification still shows with the app icon.
   defp avatar_icon_url(sender_user_id) do
-    with host when is_binary(host) and host not in ["", "localhost"] <- System.get_env("PHX_HOST"),
+    with host when is_binary(host) and host not in ["", "localhost"] <-
+           System.get_env("PHX_HOST"),
          app_id when is_binary(app_id) <- sender_app_id(sender_user_id) do
       "https://#{host}/api/v1/push/avatar/#{SharedInfra.AvatarToken.sign(sender_user_id, app_id)}"
     else
@@ -124,7 +129,9 @@ defmodule NotificationService.PushSender do
   # The token binds the sender's app_id → the sender's own tenant (users_auth.app_id). One cheap indexed
   # lookup against the shared Postgres this service already reads (no extra service round trip).
   defp sender_app_id(sender_user_id) do
-    case Repo.query("SELECT app_id::text FROM users_auth WHERE id = $1::text::uuid", [sender_user_id]) do
+    case Repo.query("SELECT app_id::text FROM users_auth WHERE id = $1::text::uuid", [
+           sender_user_id
+         ]) do
       {:ok, %{rows: [[app_id]]}} when is_binary(app_id) -> app_id
       _ -> nil
     end

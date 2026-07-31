@@ -25,6 +25,7 @@ defmodule SharedInfra.MediaClient do
   def create_upload(attrs), do: adapter().create_upload(attrs)
   def complete_upload(attrs), do: adapter().complete_upload(attrs)
   def get_download_url(attrs), do: adapter().get_download_url(attrs)
+
   # Read-path authz metadata (purpose/owner/conversation) by (media_id, app_id); never returns object_key.
   def get_asset(attrs), do: adapter().get_asset(attrs)
   def purge_asset(attrs), do: adapter().purge_asset(attrs)

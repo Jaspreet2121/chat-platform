@@ -111,7 +111,8 @@ defmodule SharedInfra.RedisKV do
   def zset_count(_key, _min_keep), do: {:error, :invalid_args}
 
   @doc "ZREM key member (drop a member — the immediate decrement on a clean disconnect). :ok | {:error}."
-  def zset_remove(key, member) when is_binary(key) and key != "" and is_binary(member) and member != "" do
+  def zset_remove(key, member)
+      when is_binary(key) and key != "" and is_binary(member) and member != "" do
     with_connection(fn conn ->
       case command(conn, ["ZREM", key, member]) do
         {:ok, _} -> :ok
@@ -170,9 +171,16 @@ defmodule SharedInfra.RedisKV do
 
   defp maybe_select_database(conn, "/" <> database) do
     case Integer.parse(database) do
-      {0, ""} -> :ok
-      {db, ""} when db > 0 -> if command(conn, ["SELECT", db]) == {:ok, "OK"}, do: :ok, else: {:error, :invalid_redis_database}
-      _ -> {:error, :invalid_redis_database}
+      {0, ""} ->
+        :ok
+
+      {db, ""} when db > 0 ->
+        if command(conn, ["SELECT", db]) == {:ok, "OK"},
+          do: :ok,
+          else: {:error, :invalid_redis_database}
+
+      _ ->
+        {:error, :invalid_redis_database}
     end
   end
 
@@ -186,10 +194,11 @@ defmodule SharedInfra.RedisKV do
   end
 
   defp encode(args) do
-    body = Enum.map(args, fn part ->
-      part = to_string(part)
-      ["$", Integer.to_string(byte_size(part)), "\r\n", part, "\r\n"]
-    end)
+    body =
+      Enum.map(args, fn part ->
+        part = to_string(part)
+        ["$", Integer.to_string(byte_size(part)), "\r\n", part, "\r\n"]
+      end)
 
     ["*", Integer.to_string(length(args)), "\r\n", body]
   end
@@ -216,7 +225,9 @@ defmodule SharedInfra.RedisKV do
   end
 
   defp parse(<<"+", rest::binary>>), do: with_line(rest, fn line, tail -> {:ok, line, tail} end)
-  defp parse(<<"-", rest::binary>>), do: with_line(rest, fn line, tail -> {:redis_error, line, tail} end)
+
+  defp parse(<<"-", rest::binary>>),
+    do: with_line(rest, fn line, tail -> {:redis_error, line, tail} end)
 
   defp parse(<<":", rest::binary>>),
     do: with_line(rest, fn line, tail -> {:ok, String.to_integer(line), tail} end)

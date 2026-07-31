@@ -7,7 +7,8 @@ defmodule SharedInfra.Scylla.Client do
   development remain Docker-free until an environment opts into a real driver.
   """
 
-  @callback prepare(statement :: String.t(), opts :: keyword()) :: {:ok, term()} | {:error, term()}
+  @callback prepare(statement :: String.t(), opts :: keyword()) ::
+              {:ok, term()} | {:error, term()}
   @callback execute(statement :: String.t(), params :: list(), opts :: keyword()) ::
               {:ok, term()} | {:error, term()}
 

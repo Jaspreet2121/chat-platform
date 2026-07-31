@@ -43,7 +43,9 @@ defmodule SharedInfra.HttpClientCorrelationIntegrationTest do
   end
 
   defp echo do
-    HttpClient.post_result("http://localhost:#{@port}", "/echo", %{}, unavailable: :echo_unavailable)
+    HttpClient.post_result("http://localhost:#{@port}", "/echo", %{},
+      unavailable: :echo_unavailable
+    )
   end
 
   @tag :http_integration

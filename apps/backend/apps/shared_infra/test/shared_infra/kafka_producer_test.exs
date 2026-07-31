@@ -14,7 +14,12 @@ defmodule SharedInfra.Kafka.ProducerTest do
 
   test "dispatcher routes to the configured adapter" do
     previous = Application.get_env(:shared_infra, :kafka_producer_adapter)
-    Application.put_env(:shared_infra, :kafka_producer_adapter, SharedInfra.TestAdapters.KafkaProducer)
+
+    Application.put_env(
+      :shared_infra,
+      :kafka_producer_adapter,
+      SharedInfra.TestAdapters.KafkaProducer
+    )
 
     on_exit(fn ->
       if previous do

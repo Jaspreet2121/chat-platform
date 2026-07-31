@@ -71,7 +71,8 @@ defmodule NotificationService.CallIncomingConsumerTest do
   test "an unknown MAP type on the topic logs (never silently ignored again) and does NOT dispatch" do
     log =
       capture_log(fn ->
-        assert {:ok, :commit, :state} = handle!(Jason.encode!(%{"type" => "call.weird", "x" => 1}))
+        assert {:ok, :commit, :state} =
+                 handle!(Jason.encode!(%{"type" => "call.weird", "x" => 1}))
       end)
 
     assert log =~ "unrecognised event on call.events.v1"
@@ -81,7 +82,8 @@ defmodule NotificationService.CallIncomingConsumerTest do
   test "a double-encoded NON-call payload logs as unrecognised (one re-decode attempt only)" do
     log =
       capture_log(fn ->
-        assert {:ok, :commit, :state} = handle!(Jason.encode!(Jason.encode!(%{"type" => "other"})))
+        assert {:ok, :commit, :state} =
+                 handle!(Jason.encode!(Jason.encode!(%{"type" => "other"})))
       end)
 
     assert log =~ "unrecognised event on call.events.v1"

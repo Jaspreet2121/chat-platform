@@ -62,10 +62,13 @@ defmodule NotificationService.Events.CallIncomingConsumer do
         log_unrecognised(other)
 
       {:error, reason} ->
-        Logger.warning("notification: call event JSON decode failed, skipping: #{inspect(reason)}")
+        Logger.warning(
+          "notification: call event JSON decode failed, skipping: #{inspect(reason)}"
+        )
     end
   rescue
-    error -> Logger.warning("notification: call event handling raised, ignored: #{inspect(error)}")
+    error ->
+      Logger.warning("notification: call event handling raised, ignored: #{inspect(error)}")
   end
 
   defp dispatch(event) do

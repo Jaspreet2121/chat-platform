@@ -74,7 +74,8 @@ defmodule SharedInfra.ConversationBroadcast do
   whether or not anything changed, so it cannot tell us itself. The cheaper future fix is to have `mark_read`
   report whether the upsert actually transitioned the receipt, which removes this pre-read entirely.
   """
-  def unread_before(conversation_id, user_id) when is_binary(conversation_id) and is_binary(user_id) do
+  def unread_before(conversation_id, user_id)
+      when is_binary(conversation_id) and is_binary(user_id) do
     case SharedInfra.ConversationClient.inbox_rows(%{
            "conversation_id" => conversation_id,
            "user_ids" => [user_id]

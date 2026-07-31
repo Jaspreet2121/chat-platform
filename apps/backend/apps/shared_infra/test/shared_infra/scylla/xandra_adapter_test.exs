@@ -124,7 +124,11 @@ defmodule SharedInfra.Scylla.XandraAdapterTest do
              ] == "chat_messages"
 
       refute Keyword.has_key?(XandraAdapter.cluster_options(nodes: [{"s", 9042}]), :keyspace)
-      refute Keyword.has_key?(XandraAdapter.cluster_options(nodes: [{"s", 9042}], keyspace: ""), :keyspace)
+
+      refute Keyword.has_key?(
+               XandraAdapter.cluster_options(nodes: [{"s", 9042}], keyspace: ""),
+               :keyspace
+             )
     end
 
     test "accepts contact_points (Config.Scylla emits both keys) and plain strings" do
@@ -188,7 +192,9 @@ defmodule SharedInfra.Scylla.XandraAdapterTest do
       Process.sleep(2_000)
 
       assert {:ok, %{rows: rows}} =
-               XandraAdapter.execute("SELECT release_version FROM system.local", [], timeout: 5_000)
+               XandraAdapter.execute("SELECT release_version FROM system.local", [],
+                 timeout: 5_000
+               )
 
       assert [%{"release_version" => version}] = rows
       assert is_binary(version)

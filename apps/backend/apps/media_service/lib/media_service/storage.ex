@@ -120,7 +120,8 @@ defmodule MediaService.Storage.MinioAdapter do
   end
 
   @impl true
-  def head_object(%{"object_key" => object_key}) when is_binary(object_key) and object_key != "" do
+  def head_object(%{"object_key" => object_key})
+      when is_binary(object_key) and object_key != "" do
     with {:ok, config} <- config(),
          {:ok, url} <- presigned_url("HEAD", object_key, internal(config)),
          {:ok, status, headers} <- SharedInfra.HttpClient.head(url) do
@@ -149,7 +150,8 @@ defmodule MediaService.Storage.MinioAdapter do
   def head_object(_attrs), do: {:error, :verify_failed}
 
   @impl true
-  def delete_object(%{"object_key" => object_key}) when is_binary(object_key) and object_key != "" do
+  def delete_object(%{"object_key" => object_key})
+      when is_binary(object_key) and object_key != "" do
     with {:ok, config} <- config(),
          {:ok, url} <- presigned_url("DELETE", object_key, internal(config)),
          {:ok, status, _headers} <- SharedInfra.HttpClient.delete(url) do
@@ -177,11 +179,14 @@ defmodule MediaService.Storage.MinioAdapter do
     end)
     |> normalize_header_value()
     |> case do
-      nil -> nil
-      raw -> case Integer.parse(to_string(raw)) do
-               {size, _} when size >= 0 -> size
-               _ -> nil
-             end
+      nil ->
+        nil
+
+      raw ->
+        case Integer.parse(to_string(raw)) do
+          {size, _} when size >= 0 -> size
+          _ -> nil
+        end
     end
   end
 
@@ -202,6 +207,7 @@ defmodule MediaService.Storage.MinioAdapter do
     date_stamp = Calendar.strftime(now, "%Y%m%d")
     credential_scope = "#{date_stamp}/#{config[:region]}/#{@service}/aws4_request"
     canonical_uri = canonical_uri(config, object_key)
+
     # Sign against the browser-reachable public endpoint when set (so the SigV4 host header matches the
     # host the browser actually PUTs/GETs); fall back to the internal endpoint otherwise.
     endpoint_uri = URI.parse(config[:public_endpoint] || config[:endpoint])
@@ -260,8 +266,13 @@ defmodule MediaService.Storage.MinioAdapter do
   @doc false
   def canonical_host(%URI{} = uri) do
     case uri.port do
-      nil -> uri.host
-      port -> if port == URI.default_port(uri.scheme || "http"), do: uri.host, else: "#{uri.host}:#{port}"
+      nil ->
+        uri.host
+
+      port ->
+        if port == URI.default_port(uri.scheme || "http"),
+          do: uri.host,
+          else: "#{uri.host}:#{port}"
     end
   end
 
@@ -424,6 +435,7 @@ defmodule MediaService.Storage.InMemoryAdapter do
         :ok
     end
   end
+
   # In-memory: nothing is really stored, so verification is not meaningful here. Tests that exercise the
   # size-verification path swap in their own adapter (see MediaService.CompleteVerifyTest).
   @impl true
@@ -431,5 +443,4 @@ defmodule MediaService.Storage.InMemoryAdapter do
 
   @impl true
   def delete_object(_attrs), do: :ok
-
 end

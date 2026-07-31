@@ -10,7 +10,8 @@ defmodule SharedInfra.TestAdaptersTest do
   end
 
   test "Kafka dummy producer returns publish plans without publishing" do
-    assert {:ok, %{topic: "message.events.v1", key: "message_123", value: %{type: "message_created"}}} =
+    assert {:ok,
+            %{topic: "message.events.v1", key: "message_123", value: %{type: "message_created"}}} =
              SharedInfra.TestAdapters.KafkaProducer.produce(
                "message.events.v1",
                "message_123",
@@ -34,7 +35,8 @@ defmodule SharedInfra.TestAdaptersTest do
                "SELECT * FROM messages WHERE conversation_id = ?"
              )
 
-    assert {:ok, %{statement: "SELECT * FROM messages WHERE conversation_id = ?", params: ["conv_123"]}} =
+    assert {:ok,
+            %{statement: "SELECT * FROM messages WHERE conversation_id = ?", params: ["conv_123"]}} =
              SharedInfra.TestAdapters.Scylla.execute(
                "SELECT * FROM messages WHERE conversation_id = ?",
                ["conv_123"]
@@ -43,7 +45,12 @@ defmodule SharedInfra.TestAdaptersTest do
 
   test "Scylla configured client defaults to unavailable" do
     previous_adapter = Application.get_env(:shared_infra, :scylla_client_adapter)
-    Application.put_env(:shared_infra, :scylla_client_adapter, SharedInfra.Scylla.UnavailableClient)
+
+    Application.put_env(
+      :shared_infra,
+      :scylla_client_adapter,
+      SharedInfra.Scylla.UnavailableClient
+    )
 
     on_exit(fn ->
       if previous_adapter do

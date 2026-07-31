@@ -703,7 +703,8 @@ defmodule ConversationService.CallStore do
   # A call is promotable when it's LIVE: a direct call that's been answered ("accepted"), or an already-group
   # call that's still ringing/ongoing (idempotent re-promote). Anything else → not promotable.
   defp ensure_promotable(%Call{kind: "group", status: status})
-       when status in ["ringing", "ongoing"], do: :ok
+       when status in ["ringing", "ongoing"],
+       do: :ok
 
   defp ensure_promotable(%Call{kind: "direct", status: "accepted"}), do: :ok
   defp ensure_promotable(_), do: {:error, :call_not_promotable}

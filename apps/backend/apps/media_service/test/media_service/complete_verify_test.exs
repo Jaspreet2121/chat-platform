@@ -19,7 +19,10 @@ defmodule MediaService.CompleteVerifyTest do
     @behaviour MediaService.Storage
 
     def start_link,
-      do: Agent.start_link(fn -> %{head: {:error, :verify_failed}, deleted: [], delete: :ok} end, name: __MODULE__)
+      do:
+        Agent.start_link(fn -> %{head: {:error, :verify_failed}, deleted: [], delete: :ok} end,
+          name: __MODULE__
+        )
 
     def set_head(result), do: Agent.update(__MODULE__, &Map.put(&1, :head, result))
     def set_delete(result), do: Agent.update(__MODULE__, &Map.put(&1, :delete, result))
@@ -57,7 +60,8 @@ defmodule MediaService.CompleteVerifyTest do
   end
 
   # An asset row as it exists between create and complete: size_bytes is the client's CLAIM.
-  defp asset(claimed_size), do: %MediaAsset{object_key: @key, size_bytes: claimed_size, status: "created"}
+  defp asset(claimed_size),
+    do: %MediaAsset{object_key: @key, size_bytes: claimed_size, status: "created"}
 
   defp max_bytes do
     case System.get_env("MEDIA_MAX_SIZE_BYTES") do

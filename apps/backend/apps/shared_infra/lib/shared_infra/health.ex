@@ -43,7 +43,11 @@ defmodule SharedInfra.Health do
   @doc "HTTP GET probe — 2xx = up. Used for MinIO's health endpoint and any HTTP dependency."
   def http_ok(url, timeout \\ @default_timeout) do
     timed(fn ->
-      case Req.get(url, receive_timeout: timeout, retry: false, connect_options: [timeout: timeout]) do
+      case Req.get(url,
+             receive_timeout: timeout,
+             retry: false,
+             connect_options: [timeout: timeout]
+           ) do
         {:ok, %Req.Response{status: status}} when status in 200..299 -> :ok
         {:ok, %Req.Response{status: status}} -> {:error, "http #{status}"}
         {:error, reason} -> {:error, inspect(reason)}

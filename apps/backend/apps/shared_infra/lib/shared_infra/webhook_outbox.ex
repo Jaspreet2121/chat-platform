@@ -75,7 +75,16 @@ defmodule SharedInfra.WebhookOutbox do
         [limit, @visibility_seconds]
       )
 
-    Enum.map(rows, fn [id, app_id, endpoint_id, event_id, event_type, payload, attempts, created_at] ->
+    Enum.map(rows, fn [
+                        id,
+                        app_id,
+                        endpoint_id,
+                        event_id,
+                        event_type,
+                        payload,
+                        attempts,
+                        created_at
+                      ] ->
       %{
         id: id,
         app_id: app_id,
@@ -152,7 +161,8 @@ defmodule SharedInfra.WebhookOutbox do
     {where, params, n} =
       case Keyword.get(opts, :cursor) do
         {ts, id} when is_binary(ts) and is_binary(id) ->
-          {where ++ ["(o.created_at, o.id) < ($#{n + 1}::text::timestamptz, $#{n + 2}::text::uuid)"],
+          {where ++
+             ["(o.created_at, o.id) < ($#{n + 1}::text::timestamptz, $#{n + 2}::text::uuid)"],
            params ++ [ts, id], n + 2}
 
         _ ->
@@ -223,7 +233,8 @@ defmodule SharedInfra.WebhookOutbox do
     {where, params, n} =
       case Keyword.get(opts, :cursor) do
         {ts, id} when is_binary(ts) and is_binary(id) ->
-          {where ++ ["(o.created_at, o.id) < ($#{n + 1}::text::timestamptz, $#{n + 2}::text::uuid)"],
+          {where ++
+             ["(o.created_at, o.id) < ($#{n + 1}::text::timestamptz, $#{n + 2}::text::uuid)"],
            params ++ [ts, id], n + 2}
 
         _ ->
@@ -291,7 +302,10 @@ defmodule SharedInfra.WebhookOutbox do
 
   defp normalize_reenqueue({:ok, :reenqueued}), do: {:ok, :reenqueued}
   defp normalize_reenqueue({:error, :locked_or_missing}), do: {:ok, :noop, :locked_or_missing}
-  defp normalize_reenqueue({:error, {:not_failed, status}}), do: {:ok, :noop, {:not_failed, status}}
+
+  defp normalize_reenqueue({:error, {:not_failed, status}}),
+    do: {:ok, :noop, {:not_failed, status}}
+
   defp normalize_reenqueue(other), do: other
 
   @doc "Bulk re-drive up to :limit (<= #{@max_bulk}) failed rows for a filter. Returns {:ok, count}."
@@ -407,7 +421,8 @@ defmodule SharedInfra.WebhookOutbox do
         [row.id, attempts, error]
       )
     else
-      backoff = min(@cap_backoff_seconds, trunc(@base_backoff_seconds * :math.pow(2, attempts - 1)))
+      backoff =
+        min(@cap_backoff_seconds, trunc(@base_backoff_seconds * :math.pow(2, attempts - 1)))
 
       repo.query!(
         "UPDATE webhook_outbox SET status='pending', attempts=$2, " <>

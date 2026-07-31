@@ -59,9 +59,10 @@ defmodule ApiGatewayWeb.V1.MessageController do
                 _ -> true
               end
 
-            if aget(asset, :purpose) == "message" and aget(asset, :status) == "ready" and owner_ok,
-              do: :ok,
-              else: {:error, :invalid_media}
+            if aget(asset, :purpose) == "message" and aget(asset, :status) == "ready" and
+                 owner_ok,
+               do: :ok,
+               else: {:error, :invalid_media}
 
           _ ->
             {:error, :invalid_media}

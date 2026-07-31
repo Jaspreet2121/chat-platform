@@ -19,7 +19,10 @@ defmodule SharedInfra.InternalApi do
 
   @doc "Encode an in-process result into the internal wire envelope (a JSON-encodable map)."
   def encode_result({:ok, value}), do: %{"ok" => value}
-  def encode_result({:error, reason}) when is_atom(reason), do: %{"error" => Atom.to_string(reason)}
+
+  def encode_result({:error, reason}) when is_atom(reason),
+    do: %{"error" => Atom.to_string(reason)}
+
   def encode_result({:error, reason}), do: %{"error" => inspect(reason)}
   def encode_result(value), do: %{"result" => value}
 
@@ -38,7 +41,10 @@ defmodule SharedInfra.InternalApi do
   def decode_result(envelope, opts \\ [])
 
   def decode_result(%{"ok" => value}, opts), do: {:ok, atomize_keys(value, skip(opts))}
-  def decode_result(%{"error" => name}, _opts) when is_binary(name), do: {:error, safe_existing_atom(name)}
+
+  def decode_result(%{"error" => name}, _opts) when is_binary(name),
+    do: {:error, safe_existing_atom(name)}
+
   def decode_result(%{"result" => value}, _opts), do: value
 
   defp skip(opts), do: Keyword.get(opts, :skip_atomize, [])
@@ -90,7 +96,8 @@ defmodule SharedInfra.InternalApi.TokenPlug do
     expected = SharedInfra.InternalApi.internal_token()
     provided = conn |> get_req_header("x-internal-token") |> List.first()
 
-    if is_binary(expected) and is_binary(provided) and Plug.Crypto.secure_compare(expected, provided) do
+    if is_binary(expected) and is_binary(provided) and
+         Plug.Crypto.secure_compare(expected, provided) do
       conn
     else
       conn

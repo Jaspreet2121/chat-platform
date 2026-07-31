@@ -7,5 +7,6 @@ defmodule SharedInfra.Redis.Client do
   """
 
   @callback command(command :: [term()], opts :: keyword()) :: {:ok, term()} | {:error, term()}
-  @callback pipeline(commands :: [[term()]], opts :: keyword()) :: {:ok, term()} | {:error, term()}
+  @callback pipeline(commands :: [[term()]], opts :: keyword()) ::
+              {:ok, term()} | {:error, term()}
 end

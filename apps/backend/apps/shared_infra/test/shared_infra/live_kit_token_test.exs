@@ -28,7 +28,9 @@ defmodule SharedInfra.LiveKitTokenTest do
 
   test "mints an HS256 JWT whose signature verifies against LIVEKIT_API_SECRET (what LiveKit does)" do
     now = 1_700_000_000
-    {:ok, jwt} = LiveKitToken.create("user-1", "room-abc", name: "Alice", now: now, ttl_seconds: 600)
+
+    {:ok, jwt} =
+      LiveKitToken.create("user-1", "room-abc", name: "Alice", now: now, ttl_seconds: 600)
 
     assert [header_b64, claims_b64, signature_b64] = String.split(jwt, ".")
 
@@ -73,7 +75,14 @@ defmodule SharedInfra.LiveKitTokenTest do
 
   test "name defaults to the identity when not given" do
     {:ok, jwt} = LiveKitToken.create("user-42", "room-1")
-    claims = jwt |> String.split(".") |> Enum.at(1) |> Base.url_decode64!(padding: false) |> Jason.decode!()
+
+    claims =
+      jwt
+      |> String.split(".")
+      |> Enum.at(1)
+      |> Base.url_decode64!(padding: false)
+      |> Jason.decode!()
+
     assert claims["sub"] == "user-42"
     assert claims["name"] == "user-42"
   end

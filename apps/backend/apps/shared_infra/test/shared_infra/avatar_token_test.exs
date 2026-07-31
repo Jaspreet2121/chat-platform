@@ -11,10 +11,16 @@ defmodule SharedInfra.AvatarTokenTest do
 
   setup do
     prev = System.get_env("SECRET_KEY_BASE")
-    System.put_env("SECRET_KEY_BASE", "test_secret_key_base_deterministic_at_least_sixty_four_chars_long_x")
+
+    System.put_env(
+      "SECRET_KEY_BASE",
+      "test_secret_key_base_deterministic_at_least_sixty_four_chars_long_x"
+    )
 
     on_exit(fn ->
-      if prev, do: System.put_env("SECRET_KEY_BASE", prev), else: System.delete_env("SECRET_KEY_BASE")
+      if prev,
+        do: System.put_env("SECRET_KEY_BASE", prev),
+        else: System.delete_env("SECRET_KEY_BASE")
     end)
 
     :ok
@@ -37,7 +43,7 @@ defmodule SharedInfra.AvatarTokenTest do
 
   test "a tampered token → :error" do
     token = AvatarToken.sign("user-a", "app-x")
-    tampered = String.slice(token, 0..-2//1) <> (if String.last(token) == "a", do: "b", else: "a")
+    tampered = String.slice(token, 0..-2//1) <> if String.last(token) == "a", do: "b", else: "a"
     assert AvatarToken.verify(tampered) == :error
   end
 
@@ -60,7 +66,13 @@ defmodule SharedInfra.AvatarTokenTest do
   end
 
   test "a token signed under a DIFFERENT secret → :error (rotation invalidates)" do
-    other = Plug.Crypto.sign("a_totally_different_secret_key_base_value_also_long_enough_x", @salt, %{"u" => "user-a", "a" => "app-x", "k" => "avatar"})
+    other =
+      Plug.Crypto.sign("a_totally_different_secret_key_base_value_also_long_enough_x", @salt, %{
+        "u" => "user-a",
+        "a" => "app-x",
+        "k" => "avatar"
+      })
+
     assert AvatarToken.verify(other) == :error
   end
 

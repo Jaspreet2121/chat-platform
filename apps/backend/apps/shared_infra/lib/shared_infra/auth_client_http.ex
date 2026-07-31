@@ -48,7 +48,8 @@ defmodule SharedInfra.AuthClientHttp do
   def lookup_external_user(attrs), do: post("/internal/app_auth/lookup_user", attrs)
 
   @impl true
-  def resolve_user_external_id(attrs), do: post("/internal/app_auth/resolve_user_external_id", attrs)
+  def resolve_user_external_id(attrs),
+    do: post("/internal/app_auth/resolve_user_external_id", attrs)
 
   @impl true
   def verify_app_user_token(attrs), do: post("/internal/app_auth/verify_token", attrs)

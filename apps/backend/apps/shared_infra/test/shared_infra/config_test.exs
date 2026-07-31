@@ -5,7 +5,10 @@ defmodule SharedInfra.ConfigTest do
 
   describe "Redis config" do
     test "reads configured redis placeholders" do
-      assert Redis.from_app(:realtime_gateway) == [url: "redis://localhost:6379/0", timeout: 1_000]
+      assert Redis.from_app(:realtime_gateway) == [
+               url: "redis://localhost:6379/0",
+               timeout: 1_000
+             ]
     end
 
     test "falls back safely when config is missing" do
@@ -69,12 +72,13 @@ defmodule SharedInfra.ConfigTest do
     end
 
     test "normalizes contact points and timeout" do
-      assert Scylla.normalize(contact_points: [{"scylla", 9042}], keyspace: "chat", timeout: 250) == [
-               nodes: [{"scylla", 9042}],
-               contact_points: [{"scylla", 9042}],
-               keyspace: "chat",
-               timeout: 250
-             ]
+      assert Scylla.normalize(contact_points: [{"scylla", 9042}], keyspace: "chat", timeout: 250) ==
+               [
+                 nodes: [{"scylla", 9042}],
+                 contact_points: [{"scylla", 9042}],
+                 keyspace: "chat",
+                 timeout: 250
+               ]
     end
   end
 end

@@ -40,7 +40,10 @@ defmodule SharedInfra.ProdConfigTest do
 
     test "raises when set to a known insecure placeholder" do
       System.put_env(@var, "local-token-secret-change-before-production")
-      assert_raise RuntimeError, ~r/insecure placeholder/, fn -> ProdConfig.require_secret!(@var) end
+
+      assert_raise RuntimeError, ~r/insecure placeholder/, fn ->
+        ProdConfig.require_secret!(@var)
+      end
     end
 
     test "returns the value when it is a real secret" do

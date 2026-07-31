@@ -18,11 +18,15 @@ defmodule MediaService.MediaClientInProcessTest do
 
   test "get_download_url through the client == MediaService.Media directly (deterministic error path)" do
     attrs = %{}
-    assert SharedInfra.MediaClient.get_download_url(attrs) == MediaService.Media.get_download_url(attrs)
+
+    assert SharedInfra.MediaClient.get_download_url(attrs) ==
+             MediaService.Media.get_download_url(attrs)
   end
 
   test "complete_upload through the client == MediaService.Media directly (deterministic error path)" do
     attrs = %{}
-    assert SharedInfra.MediaClient.complete_upload(attrs) == MediaService.Media.complete_upload(attrs)
+
+    assert SharedInfra.MediaClient.complete_upload(attrs) ==
+             MediaService.Media.complete_upload(attrs)
   end
 end

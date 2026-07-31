@@ -114,6 +114,10 @@ defmodule SharedInfra.MessageClient do
 
   @doc "The configured Message client adapter (default `MessageService.MessageClientInProcess`)."
   def adapter do
-    Application.get_env(:shared_infra, :message_client_adapter, MessageService.MessageClientInProcess)
+    Application.get_env(
+      :shared_infra,
+      :message_client_adapter,
+      MessageService.MessageClientInProcess
+    )
   end
 end

@@ -41,7 +41,13 @@ defmodule MediaService.MediaClientHttpIntegrationTest do
     assert SharedInfra.MediaClientHttp.create_upload(%{}) == MediaService.Media.create_upload(%{})
 
     # Valid path: UUID is non-deterministic, so assert the {:ok, _} envelope only.
-    attrs = %{"owner_user_id" => "u1", "filename" => "p.png", "content_type" => "image/png", "size_bytes" => 10}
+    attrs = %{
+      "owner_user_id" => "u1",
+      "filename" => "p.png",
+      "content_type" => "image/png",
+      "size_bytes" => 10
+    }
+
     assert {:ok, upload} = SharedInfra.MediaClientHttp.create_upload(attrs)
     assert is_map(upload)
   end
@@ -50,7 +56,8 @@ defmodule MediaService.MediaClientHttpIntegrationTest do
   test "get_download_url (invalid) over HTTP == in-process error" do
     Application.put_env(:shared_infra, :media_service_url, "http://localhost:#{@port}")
 
-    assert SharedInfra.MediaClientHttp.get_download_url(%{}) == MediaService.Media.get_download_url(%{})
+    assert SharedInfra.MediaClientHttp.get_download_url(%{}) ==
+             MediaService.Media.get_download_url(%{})
   end
 
   @tag :http_integration

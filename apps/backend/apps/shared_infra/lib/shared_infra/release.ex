@@ -35,7 +35,11 @@ defmodule SharedInfra.Release do
     try do
       Enum.each(files, fn path ->
         statements = path |> File.read!() |> statements()
-        Logger.info("load_schema: applying #{Path.basename(path)} (#{length(statements)} statements)")
+
+        Logger.info(
+          "load_schema: applying #{Path.basename(path)} (#{length(statements)} statements)"
+        )
+
         Enum.each(statements, &Postgrex.query!(conn, &1, []))
       end)
     after

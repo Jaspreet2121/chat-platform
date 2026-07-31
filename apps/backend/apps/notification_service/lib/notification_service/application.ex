@@ -13,7 +13,10 @@ defmodule NotificationService.Application do
 
   @impl true
   def start(_type, _args) do
-    Supervisor.start_link(children(), strategy: :one_for_one, name: NotificationService.Supervisor)
+    Supervisor.start_link(children(),
+      strategy: :one_for_one,
+      name: NotificationService.Supervisor
+    )
   end
 
   # Repo is supervised at boot in dev/prod (so DB-backed requests work); NOT in :test (config

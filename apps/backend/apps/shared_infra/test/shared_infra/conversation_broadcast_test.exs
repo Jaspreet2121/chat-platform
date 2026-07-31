@@ -104,7 +104,9 @@ defmodule SharedInfra.ConversationBroadcastTest do
   end
 
   test "the wire frame carries the per-user pinned/archived prefs (the :pref frame updates the client live)" do
-    ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :pref, only: [@alice])
+    ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :pref,
+      only: [@alice]
+    )
 
     assert_receive {:broadcast, "user:" <> _, "conversation_updated", payload}, 500
     assert payload["pinned"] == true
@@ -118,12 +120,15 @@ defmodule SharedInfra.ConversationBroadcastTest do
     # The raw object-store path must not leak on the wire, in either key form.
     refute Map.has_key?(payload, "group_avatar_object_key")
     refute Map.has_key?(payload, :group_avatar_object_key)
+
     # media_id is an opaque id (not a storage path) and rides along; the object key is the only leak.
     assert payload["group_avatar_media_id"] == "gm-1"
   end
 
   test ":only limits the fan-out to the changed user (the receipt trigger — no waking all N inboxes)" do
-    ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @bob, :receipt, only: [@bob])
+    ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @bob, :receipt,
+      only: [@bob]
+    )
 
     assert_receive {:broadcast, topic, "conversation_updated", _}, 500
     assert topic == "user:#{@bob}"
@@ -157,7 +162,8 @@ defmodule SharedInfra.ConversationBroadcastTest do
       removed_user_id: "99999999-9999-4999-8999-999999999999"
     )
 
-    assert_receive {:broadcast, "user:99999999-9999-4999-8999-999999999999", "conversation_updated",
+    assert_receive {:broadcast, "user:99999999-9999-4999-8999-999999999999",
+                    "conversation_updated",
                     %{"removed" => true, "conversation_id" => @conversation}},
                    500
 
@@ -177,7 +183,14 @@ defmodule SharedInfra.ConversationBroadcastTest do
 
     # The raise happens inside the Task; the caller gets :ok regardless — a broadcast failure must never fail
     # the primary action (the message send / read / rename that triggered it).
-    assert :ok = ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message)
+    assert :ok =
+             ConversationBroadcast.broadcast_updated(
+               FakeEndpoint,
+               @conversation,
+               @alice,
+               :message
+             )
+
     refute_receive {:broadcast, _, _, _}, 300
 
     # unread_before degrades to nil ("don't skip") rather than blowing up the request path.

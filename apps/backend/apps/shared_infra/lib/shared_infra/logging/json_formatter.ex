@@ -29,8 +29,9 @@ defmodule SharedInfra.Logging.JsonFormatter do
 
   # Keep values JSON-encodable: pass through primitives, stringify atoms, inspect the rest
   # (pids, refs, tuples, structs without Jason.Encoder, etc.) so encoding never fails.
-  defp safe(value) when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value),
-    do: value
+  defp safe(value)
+       when is_binary(value) or is_number(value) or is_boolean(value) or is_nil(value),
+       do: value
 
   defp safe(value) when is_atom(value), do: Atom.to_string(value)
   defp safe(value) when is_list(value) or is_map(value), do: safe_encodable(value)

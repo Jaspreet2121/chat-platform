@@ -182,7 +182,9 @@ defmodule MediaService.MediaTest do
 
     # Non-default ports stay — internal signing against http://minio:9000 must keep ":9000".
     assert Storage.MinioAdapter.canonical_host(URI.parse("http://minio:9000")) == "minio:9000"
-    assert Storage.MinioAdapter.canonical_host(URI.parse("http://localhost:9000")) == "localhost:9000"
+
+    assert Storage.MinioAdapter.canonical_host(URI.parse("http://localhost:9000")) ==
+             "localhost:9000"
 
     assert Storage.MinioAdapter.canonical_host(URI.parse("https://media.growblic.com:8443")) ==
              "media.growblic.com:8443"

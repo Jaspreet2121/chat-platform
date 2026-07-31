@@ -116,7 +116,8 @@ defmodule MediaService.Media do
           download_persisted(media_id, app_id, optional_attr(attrs, "purpose"))
         end
       else
-        {:ok, placeholder_download_response(%{"media_id" => media_id, "expires_at" => expires_at()})}
+        {:ok,
+         placeholder_download_response(%{"media_id" => media_id, "expires_at" => expires_at()})}
       end
     end
   end

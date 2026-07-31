@@ -28,7 +28,9 @@ defmodule NotificationService.NotificationsTest do
     seed_participant(conversation_id, member_b)
 
     event_id = Ecto.UUID.generate()
-    assert {:ok, :applied} = Notifications.apply_message_created(envelope(event_id, conversation_id, sender))
+
+    assert {:ok, :applied} =
+             Notifications.apply_message_created(envelope(event_id, conversation_id, sender))
 
     recipients = recipients_for(event_id)
     assert length(recipients) == 2
@@ -61,7 +63,9 @@ defmodule NotificationService.NotificationsTest do
     event_id = Ecto.UUID.generate()
 
     assert {:ok, :applied} =
-             Notifications.apply_message_created(envelope(event_id, conversation_id, Ecto.UUID.generate()))
+             Notifications.apply_message_created(
+               envelope(event_id, conversation_id, Ecto.UUID.generate())
+             )
 
     assert recipients_for(event_id) == []
     # Event still recorded in the ledger (processed; just nobody to notify yet).
@@ -78,7 +82,10 @@ defmodule NotificationService.NotificationsTest do
 
     # First message → 1 recipient (existing).
     event1 = Ecto.UUID.generate()
-    assert {:ok, :applied} = Notifications.apply_message_created(envelope(event1, conversation_id, sender))
+
+    assert {:ok, :applied} =
+             Notifications.apply_message_created(envelope(event1, conversation_id, sender))
+
     assert recipients_for(event1) == [existing]
 
     # New participant joins the read-model.
@@ -87,7 +94,10 @@ defmodule NotificationService.NotificationsTest do
 
     # Second (distinct) message → both non-sender participants notified.
     event2 = Ecto.UUID.generate()
-    assert {:ok, :applied} = Notifications.apply_message_created(envelope(event2, conversation_id, sender))
+
+    assert {:ok, :applied} =
+             Notifications.apply_message_created(envelope(event2, conversation_id, sender))
+
     assert Enum.sort(recipients_for(event2)) == Enum.sort([existing, newcomer])
   end
 

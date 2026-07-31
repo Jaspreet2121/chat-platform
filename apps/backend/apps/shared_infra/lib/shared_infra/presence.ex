@@ -43,7 +43,8 @@ defmodule SharedInfra.Presence do
   def mark_online(user_id), do: adapter().mark_online(user_id)
 
   @doc "Mark the user offline and stamp last_seen = now. Best-effort → :ok."
-  def clear_online(user_id, now_unix \\ nil), do: adapter().clear_online(user_id, now_unix || now_unix())
+  def clear_online(user_id, now_unix \\ nil),
+    do: adapter().clear_online(user_id, now_unix || now_unix())
 
   @doc "Is the user online RIGHT NOW? FAIL-CLOSED: a miss OR any error → false (never a phantom green dot)."
   def online?(user_id), do: adapter().online?(user_id)
@@ -85,7 +86,13 @@ defmodule SharedInfra.Presence do
     @impl true
     def clear_online(user_id, now_unix) when is_binary(user_id) and user_id != "" do
       RedisKV.del(Presence.online_key(user_id))
-      RedisKV.put(Presence.last_seen_key(user_id), Integer.to_string(now_unix), Presence.last_seen_ttl_seconds())
+
+      RedisKV.put(
+        Presence.last_seen_key(user_id),
+        Integer.to_string(now_unix),
+        Presence.last_seen_ttl_seconds()
+      )
+
       :ok
     rescue
       _ -> :ok

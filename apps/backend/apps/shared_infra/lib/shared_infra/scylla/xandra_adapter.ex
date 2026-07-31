@@ -58,7 +58,10 @@ defmodule SharedInfra.Scylla.XandraAdapter do
   def start_link(opts \\ []) do
     case Xandra.Cluster.start_link(cluster_options(opts)) do
       {:ok, pid} ->
-        Logger.info("scylla: Xandra cluster started (#{inspect(nodes(opts))}) — driver only, store is postgres")
+        Logger.info(
+          "scylla: Xandra cluster started (#{inspect(nodes(opts))}) — driver only, store is postgres"
+        )
+
         {:ok, pid}
 
       {:error, reason} ->

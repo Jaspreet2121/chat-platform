@@ -14,8 +14,14 @@ defmodule SharedInfra.PresenceAuthzTest do
   @target "22222222-2222-4222-8222-222222222222"
 
   defmodule ConvStub do
-    def start_link, do: Agent.start_link(fn -> %{shares: true, blocked: false, error: false} end, name: __MODULE__)
+    def start_link,
+      do:
+        Agent.start_link(fn -> %{shares: true, blocked: false, error: false} end,
+          name: __MODULE__
+        )
+
     def set(key, v), do: Agent.update(__MODULE__, &Map.put(&1, key, v))
+
     def shares_conversation?(_attrs) do
       s = Agent.get(__MODULE__, & &1)
       if s.error, do: {:error, :conversation_unavailable}, else: {:ok, %{shares: s.shares}}
@@ -25,11 +31,17 @@ defmodule SharedInfra.PresenceAuthzTest do
   end
 
   defmodule UserStub do
-    def start_link, do: Agent.start_link(fn -> %{visibility: "contacts", error: false} end, name: __MODULE__)
+    def start_link,
+      do: Agent.start_link(fn -> %{visibility: "contacts", error: false} end, name: __MODULE__)
+
     def set(key, v), do: Agent.update(__MODULE__, &Map.put(&1, key, v))
+
     def last_seen_visibility(_attrs) do
       s = Agent.get(__MODULE__, & &1)
-      if s.error, do: {:error, :user_unavailable}, else: {:ok, %{last_seen_visibility: s.visibility}}
+
+      if s.error,
+        do: {:error, :user_unavailable},
+        else: {:ok, %{last_seen_visibility: s.visibility}}
     end
   end
 

@@ -16,7 +16,10 @@ defmodule NotificationService.ParticipantReadModelInvalidTest do
     assert {:error, :invalid_event} =
              ParticipantReadModel.apply_participant_added(%{
                "event_id" => Ecto.UUID.generate(),
-               "payload" => %{"conversation_id" => "not-a-uuid", "user_id" => Ecto.UUID.generate()}
+               "payload" => %{
+                 "conversation_id" => "not-a-uuid",
+                 "user_id" => Ecto.UUID.generate()
+               }
              })
 
     assert {:error, :invalid_event} =

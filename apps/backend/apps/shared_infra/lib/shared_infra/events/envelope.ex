@@ -83,9 +83,14 @@ defmodule SharedInfra.Events.Envelope do
   defp take_known(map) do
     Enum.reduce(@all, %{}, fn key, acc ->
       cond do
-        Map.has_key?(map, key) -> Map.put(acc, key, Map.get(map, key))
-        Map.has_key?(map, Atom.to_string(key)) -> Map.put(acc, key, Map.get(map, Atom.to_string(key)))
-        true -> acc
+        Map.has_key?(map, key) ->
+          Map.put(acc, key, Map.get(map, key))
+
+        Map.has_key?(map, Atom.to_string(key)) ->
+          Map.put(acc, key, Map.get(map, Atom.to_string(key)))
+
+        true ->
+          acc
       end
     end)
   end
