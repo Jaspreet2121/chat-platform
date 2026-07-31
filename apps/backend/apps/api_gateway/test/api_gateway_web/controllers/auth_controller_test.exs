@@ -100,6 +100,9 @@ defmodule ApiGatewayWeb.AuthControllerTest do
              "device_id" => "device_placeholder",
              "platform" => "ios",
              "is_admin" => false,
+             # IAM Phase 1: every session now carries its role + resolved permissions on the wire.
+             "role" => "user",
+             "permissions" => [],
              "app_id" => "00000000-0000-0000-0000-000000000001",
              "issued_at" => "2026-06-16T18:00:00Z",
              "expires_at" => "2026-06-16T18:15:00Z"

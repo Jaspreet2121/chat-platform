@@ -1,7 +1,14 @@
 defmodule ApiGatewayWeb.AdminModerationControllerTest.AdminAuthStub do
   @moduledoc false
   @behaviour SharedInfra.AuthClient
-  @session %{user_id: "admin-1", session_id: "s", device_id: "d", platform: "web", is_admin: true}
+  @session %{
+    user_id: "admin-1",
+    session_id: "s",
+    device_id: "d",
+    platform: "web",
+    is_admin: true,
+    role: "admin"
+  }
 
   @impl true
   def current_session(_attrs), do: {:ok, @session}
