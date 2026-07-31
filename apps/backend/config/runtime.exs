@@ -271,6 +271,33 @@ if config_env() == :prod do
     config :media_service, http_port: String.to_integer(port)
   end
 
+  # --- ScyllaDB nodes (Phase A: container + schema only) -------------------------------------------
+  # Env-gated exactly like KAFKA_BROKERS below: with SCYLLA_NODES ABSENT this writes NO config at all,
+  # so dev, test, and every current deploy are byte-identical. It teaches the message service only
+  # WHERE Scylla lives — it does NOT select the store: MESSAGE_STORE_ADAPTER (above) still decides and
+  # remains "postgres". Nothing reads this yet; SharedInfra.Scylla.Client has no real driver until
+  # Phase B, so a set value is inert rather than dangerous.
+  #
+  # SharedInfra.Config.Scylla expects nodes as {host, port} TUPLES, so parse rather than pass the raw
+  # string: "scylla:9042" or "a:9042,b:9042"; a bare host defaults to 9042.
+  if nodes = System.get_env("SCYLLA_NODES") do
+    parsed =
+      nodes
+      |> String.split(",", trim: true)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.map(fn node ->
+        case String.split(node, ":", parts: 2) do
+          [host, port] -> {host, String.to_integer(port)}
+          [host] -> {host, 9042}
+        end
+      end)
+
+    config :message_service, :scylla,
+      nodes: parsed,
+      keyspace: System.get_env("SCYLLA_KEYSPACE") || "chat_messages"
+  end
+
   # --- Kafka brokers (only if provided; Kafka stays OFF on the first deploy via its flags) ---
   if brokers = System.get_env("KAFKA_BROKERS") do
     config :message_service, :kafka, brokers: brokers, client_id: "message-service"

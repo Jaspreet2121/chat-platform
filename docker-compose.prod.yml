@@ -358,6 +358,61 @@ services:
       timeout: 3s
       retries: 5
 
+  # --- ScyllaDB (Phase A) — CONTAINER + SCHEMA ONLY. The message store is STILL Postgres: this phase
+  # does NOT touch MESSAGE_STORE_ADAPTER, adds NO driver, and NOTHING declares depends_on: scylla. With
+  # the profile off (the default) a plain `up -d` is byte-identical to today. Bring up with:
+  #   docker compose -f docker-compose.prod.yml --profile scylla up -d scylla
+  # Then load the schema ONCE (the image has no /docker-entrypoint-initdb.d equivalent — see docs/scylla.md):
+  #   docker compose -f docker-compose.prod.yml exec -T scylla cqlsh -f - < infra/docker/scylladb/init/001_chat_messages.cql
+  #
+  # MEMORY (the load-bearing part on this 7.6GB box with ~4.4GB free and 14 containers running): Scylla
+  # DEFAULTS to claiming all available RAM and would OOM-kill the rest of the platform. Every flag below
+  # is required, not decorative:
+  #   --smp 1              ONE shard. Default is one per core, and each shard reserves its own memory
+  #                        slice + threads — on a shared box that multiplies the footprint for no gain.
+  #   --memory 1G          hard cap on Scylla's own (Seastar) allocation. Without it the default is
+  #                        "everything free", which is exactly the OOM.
+  #   --overprovisioned 1  tells Seastar it does NOT own the machine: no CPU pinning, no busy-poll spin,
+  #                        no real-time scheduling assumptions. Correct for a container sharing 1 core.
+  #   --reserve-memory 0   stop Scylla ALSO holding back headroom "for the OS" on top of --memory; with
+  #                        both set it would otherwise reserve twice and overshoot the 1G budget.
+  #   --developer-mode 1   REQUIRED here: skips the production disk/AIO checks (XFS, direct-IO depth)
+  #                        that make Scylla refuse to boot on Docker's overlay filesystem.
+  # mem_limit is a BACKSTOP above the 1G Seastar budget (non-Seastar RSS: JVM-less tooling, page cache
+  # accounting) — same belt-and-braces as kafka's cap. If the container gets OOM-killed, raise this
+  # before raising --memory.
+  scylla:
+    image: scylladb/scylla:6.2
+    restart: unless-stopped
+    profiles: ["scylla"]
+    networks: [chatnet]
+    mem_limit: 1500m
+    command:
+      - --smp
+      - "1"
+      - --memory
+      - "1G"
+      - --overprovisioned
+      - "1"
+      - --reserve-memory
+      - "0"
+      - --developer-mode
+      - "1"
+    volumes:
+      - scylla_data:/var/lib/scylla
+    # INTERNAL only — reachable as scylla:9042 inside chatnet, never published to the host (postgres and
+    # redis are the same). Phase B's driver connects over this network, not through the host.
+    expose: ["9042"]
+    # cqlsh proves the CQL port is actually SERVING (nodetool status only proves the node process is up,
+    # which is weaker — the schema load and any future driver both speak CQL). start_period covers the
+    # first-boot commitlog/system-keyspace initialisation, which is slow in developer mode.
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' > /dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+
   # --- Calling (Phase 1) — LiveKit SFU. OFF by default (profiles: ["calls"]); a plain `up -d` does NOT
   # start it and the running stack is unchanged. Bring up with `--profile calls up -d livekit`.
   #
@@ -521,6 +576,7 @@ networks:
 
 volumes:
   pgdata:
+  scylla_data:
   kafka_data:
   minio_data:
   redis_data:
