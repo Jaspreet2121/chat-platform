@@ -323,18 +323,8 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
     assert row["status"] == "read"
   end
 
-  test "the STUB rows of the moduledoc table are really stubs — no third category" do
-    for fun <- [
-          :upsert_reaction,
-          :remove_reaction,
-          :star_message,
-          :unstar_message,
-          :list_starred,
-          :search_messages
-        ] do
-      assert apply(ScyllaAdapter, fun, [%{}]) == {:error, :message_store_unavailable},
-             "#{fun} must be an explicit stub"
-    end
+  test "search is the ONLY remaining stub — deliberate, with its consequence recorded" do
+    assert ScyllaAdapter.search_messages(%{}) == {:error, :message_store_unavailable}
   end
 
   test "codec self-check: bucket_candidates inverts the generator for arbitrary instants" do
@@ -354,5 +344,132 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
                Date.add(DateTime.to_date(dt), -1)
              ]
     end
+  end
+
+  test "REACTIONS: the CQL partition verified live — PK replace, aggregate ordering, removal" do
+    conversation_id = Ecto.UUID.generate()
+    {message_id, _} = put!(conversation_id, DateTime.utc_now())
+    [u1, u2, u3] = for _ <- 1..3, do: Ecto.UUID.generate()
+
+    react = fn user, emoji ->
+      {:ok, response} =
+        ScyllaAdapter.upsert_reaction(%{
+          "conversation_id" => conversation_id,
+          "message_id" => message_id,
+          "user_id" => user,
+          "emoji" => emoji
+        })
+
+      response
+    end
+
+    react.(u1, "❤️")
+    react.(u2, "❤️")
+    response = react.(u3, "👍")
+
+    # Aggregate ordering: count desc, then emoji — the Postgres adapter's exact contract.
+    assert response.reactions == [%{emoji: "❤️", count: 2}, %{emoji: "👍", count: 1}]
+
+    # THE SHAPE CHECK the schema file can't give us: an INSERT for the same (partition, user) must
+    # REPLACE (one emoji per user per message — Postgres ON CONFLICT semantics). If the primary key
+    # were declared differently than the .cql claims, this would grow to 2 rows and count ❤️+😀.
+    response = react.(u1, "😀")
+
+    assert response.reactions == [
+             %{emoji: "❤️", count: 1},
+             %{emoji: "👍", count: 1},
+             %{emoji: "😀", count: 1}
+           ]
+
+    # And the raw partition really holds ONE row for u1 with the REPLACED value in the `reaction`
+    # column (domain "emoji" is mapped at the adapter boundary, nowhere else).
+    plan =
+      MessageService.Persistence.MessageReactions.list_for_message_plan(%{
+        "conversation_id" => conversation_id,
+        "message_id" => message_id
+      })
+
+    {:ok, %{rows: raw}} = XandraAdapter.execute(plan.statement, plan.params, [])
+    u1_rows = Enum.filter(raw, &(&1["user_id"] == u1))
+    assert [%{"reaction" => "😀"}] = u1_rows
+
+    # Removal drops the user's reaction from the aggregate.
+    {:ok, response} =
+      ScyllaAdapter.remove_reaction(%{
+        "conversation_id" => conversation_id,
+        "message_id" => message_id,
+        "user_id" => u2
+      })
+
+    assert response.reactions == [%{emoji: "👍", count: 1}, %{emoji: "😀", count: 1}]
+  end
+
+  test "STARS: Postgres ids hydrated by bounded-concurrency point reads; drift drops, never crashes" do
+    # The satellite lives in Postgres — this is the ONE scylla-gate test that needs the SQL repo too.
+    case MessageService.Repo.start_link() do
+      {:ok, pid} -> Process.unlink(pid)
+      {:error, {:already_started, _}} -> :ok
+    end
+
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(MessageService.Repo)
+
+    conversation_id = Ecto.UUID.generate()
+    user = Ecto.UUID.generate()
+    now = DateTime.utc_now()
+
+    # Three real messages in Scylla, starred in reverse order (list is starred-at DESC).
+    ids =
+      for i <- 1..3 do
+        {id, _} = put!(conversation_id, DateTime.add(now, -i * 60, :second), %{"body" => "m#{i}"})
+
+        {:ok, %{is_starred: true}} =
+          ScyllaAdapter.star_message(%{
+            "conversation_id" => conversation_id,
+            "message_id" => id,
+            "user_id" => user
+          })
+
+        # Distinct starred_at so the order is deterministic.
+        MessageService.Repo.query!(
+          "UPDATE starred_messages SET created_at = now() - make_interval(secs => $3) " <>
+            "WHERE user_id = $1::text::uuid AND message_id = $2::text::uuid",
+          [user, id, (4 - i) * 60]
+        )
+
+        id
+      end
+
+    # A DRIFTED star: the id exists in Postgres but no Scylla row does.
+    {:ok, _} =
+      ScyllaAdapter.star_message(%{
+        "conversation_id" => conversation_id,
+        "message_id" => timeuuid_at(now),
+        "user_id" => user
+      })
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:ok, %{messages: messages}} = ScyllaAdapter.list_starred(%{"user_id" => user})
+
+        # The drifted id is DROPPED (shorter page), the three real ones hydrate, starred-at DESC =
+        # star order m3, m2, m1 — and every row carries is_starred.
+        assert Enum.map(messages, & &1.body) == ["m3", "m2", "m1"]
+        assert Enum.all?(messages, & &1.is_starred)
+        send(self(), :asserted)
+      end)
+
+    assert_received :asserted
+    assert log =~ "projection drift"
+
+    # Unstar removes from the page.
+    {:ok, %{is_starred: false}} =
+      ScyllaAdapter.unstar_message(%{
+        "conversation_id" => conversation_id,
+        "message_id" => hd(ids),
+        "user_id" => user
+      })
+
+    {:ok, %{messages: messages}} = ScyllaAdapter.list_starred(%{"user_id" => user})
+    refute Enum.any?(messages, &(&1.message_id == hd(ids)))
   end
 end

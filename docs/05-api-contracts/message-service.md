@@ -200,3 +200,31 @@ Response `200`:
   "delivered_at": "2026-06-17T10:30:00Z"
 }
 ```
+
+## Search (`GET /api/v1/search/messages`) — and its planned degradation
+
+Cross-conversation body search, scoped to conversations the caller still participates in. Today it is
+served by a Postgres `ILIKE` over the caller's conversations (web is its only client; Android searches
+its local Room store).
+
+**AT THE SCYLLA FLIP THIS ENDPOINT STOPS WORKING** — deliberately, not silently. Message bodies leave
+Postgres and no honest Scylla answer exists (no trigram/body index over a participant join). From the
+flip onward the endpoint answers:
+
+```json
+{
+  "error": {
+    "code": "search.unavailable",
+    "message": "Message search is temporarily unavailable",
+    "correlation_id": "corr_123"
+  }
+}
+```
+
+with HTTP 503. **Never a silent empty result list** — an empty list is indistinguishable from "no
+matches" and would hide the degradation from both users and monitoring. Web should hide the search
+affordance on this code.
+
+This is a recorded product regression with an expiry condition (DECISION_LOG 2026-08-01): acceptable
+only while there are no external users; if external users exist before the flip, a rebuildable
+non-authoritative Postgres search index (tsvector, derivable from Scylla) must ship first.

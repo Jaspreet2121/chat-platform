@@ -199,12 +199,18 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
       delete_message   VERIFIED   same resolution; soft-delete status write
       mark_delivered   VERIFIED   receipt upsert
       mark_read        VERIFIED   receipt upsert
-      upsert_reaction  STUB       {:error, :message_store_unavailable}
-      remove_reaction  STUB       {:error, :message_store_unavailable}
-      star_message     STUB       {:error, :message_store_unavailable}
-      unstar_message   STUB       {:error, :message_store_unavailable}
-      list_starred     STUB       {:error, :message_store_unavailable}
-      search_messages  STUB       {:error, :message_store_unavailable}
+      upsert_reaction  VERIFIED   partition upsert (PK replace = Postgres ON CONFLICT), aggregate read-back
+      remove_reaction  VERIFIED   partition delete + the same aggregate
+      star_message     VERIFIED   Postgres satellite write (starred_messages stays relational by design)
+      unstar_message   VERIFIED   Postgres satellite delete
+      list_starred     VERIFIED   Postgres id page (<=50) hydrated by BOUNDED-CONCURRENCY Scylla point reads
+      search_messages  STUB       DELIBERATE + PERMANENT-until-decided: no honest Scylla answer exists
+                                  (ILIKE over a participant join needs a body index). At flip the
+                                  endpoint returns capability error `search.unavailable` — never a
+                                  silent empty list. Product regression + its expiry condition are
+                                  recorded in DECISION_LOG 2026-08-01: acceptable only while there are
+                                  no external users; a rebuildable tsvector INDEX must ship first
+                                  otherwise. Do not implement casually — read that entry.
 
   The six optional callbacks (media/message_info/polls) are NOT exported here at all — the boundary
   answers `{:error, :message_unavailable}` for them, which the gateway maps to denial. Their port is
@@ -224,10 +230,15 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
   @behaviour MessageService.MessageStore
 
+  import Ecto.Query, only: [where: 3, order_by: 3, limit: 2, offset: 2, select: 3]
+
+  alias MessageService.Persistence.MessageReactions
   alias MessageService.Persistence.MessageReceipts
   alias MessageService.Persistence.MessageTimelineReads
   alias MessageService.Persistence.MessageTimelineWrites
   alias MessageService.Persistence.ScyllaCodec
+  alias MessageService.Repo
+  alias MessageService.Schemas.StarredMessage
 
   @window_days 7
   @max_lookback_days 730
@@ -310,23 +321,167 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   @impl true
   def mark_read(attrs), do: put_receipt(Map.merge(attrs, %{"status" => "read"}))
 
-  # --- documented stubs (see the moduledoc table; completing these is the port, not this slice) ----
+  # --- reactions: the CQL partition IS the per-message reaction set ---------------------------------
+  # PK ((conversation_id, message_id), user_id): an INSERT for an existing (partition, user) REPLACES
+  # the row — natively the Postgres ON CONFLICT ... SET emoji semantics (one emoji per user per
+  # message). The aggregate is one partition read, grouped client-side; a message's reactions are
+  # bounded by its conversation's membership, so the partition stays small.
+  @impl true
+  def upsert_reaction(attrs) do
+    plan =
+      MessageReactions.upsert_reaction_plan(%{
+        "conversation_id" => attr(attrs, "conversation_id"),
+        "message_id" => attr(attrs, "message_id"),
+        "user_id" => attr(attrs, "user_id"),
+        # Domain says "emoji"; the CQL column says "reaction" — mapped HERE, nowhere else.
+        "reaction" => attr(attrs, "emoji"),
+        "created_at" => DateTime.utc_now()
+      })
+
+    with {:ok, client} <- client_adapter(),
+         {:ok, _result} <- execute(client, plan),
+         {:ok, reactions} <- reactions_aggregate(client, attrs) do
+      {:ok, %{message_id: attr(attrs, "message_id"), reactions: reactions}}
+    end
+  end
 
   @impl true
-  def upsert_reaction(_attrs), do: {:error, :message_store_unavailable}
+  def remove_reaction(attrs) do
+    plan =
+      MessageReactions.delete_reaction_plan(%{
+        "conversation_id" => attr(attrs, "conversation_id"),
+        "message_id" => attr(attrs, "message_id"),
+        "user_id" => attr(attrs, "user_id")
+      })
+
+    with {:ok, client} <- client_adapter(),
+         {:ok, _result} <- execute(client, plan),
+         {:ok, reactions} <- reactions_aggregate(client, attrs) do
+      {:ok, %{message_id: attr(attrs, "message_id"), reactions: reactions}}
+    end
+  end
+
+  defp reactions_aggregate(client, attrs) do
+    plan =
+      MessageReactions.list_for_message_plan(%{
+        "conversation_id" => attr(attrs, "conversation_id"),
+        "message_id" => attr(attrs, "message_id")
+      })
+
+    with {:ok, result} <- execute(client, plan) do
+      reactions =
+        result
+        |> rows()
+        |> Enum.frequencies_by(&attr(&1, "reaction"))
+        |> Enum.map(fn {emoji, count} -> %{emoji: emoji, count: count} end)
+        |> Enum.sort_by(fn %{count: c, emoji: e} -> {-c, e} end)
+
+      {:ok, reactions}
+    end
+  end
+
+  # --- stars: Postgres ids + Scylla point-reads (the hybrid, by design) ------------------------------
+  # starred_messages is a per-user RELATIONAL satellite and stays in Postgres (DECISION_LOG
+  # 2026-08-01). The star/unstar writes are identical to the Postgres adapter's; only the HYDRATION
+  # differs: the page of ids (<= 50, the existing page_window cap) is resolved to message rows by
+  # Scylla point reads at bounded concurrency — worst case 50 reads per page in ~ceil(50/10) waves,
+  # NEVER 500 sequential reads for a 500-star user, because pagination bounds the page and
+  # async_stream bounds the parallelism. A starred id whose Scylla row is missing (projection drift)
+  # is DROPPED from the page with a warning — a shorter page, never a crash and never a phantom row.
+  @star_hydration_concurrency 10
 
   @impl true
-  def remove_reaction(_attrs), do: {:error, :message_store_unavailable}
+  def star_message(attrs) do
+    message_id = attr(attrs, "message_id")
+
+    %StarredMessage{}
+    |> StarredMessage.changeset(%{
+      "user_id" => attr(attrs, "user_id"),
+      "message_id" => message_id,
+      "conversation_id" => attr(attrs, "conversation_id"),
+      "created_at" => DateTime.utc_now()
+    })
+    |> Repo.insert(on_conflict: :nothing, conflict_target: [:user_id, :message_id])
+    |> case do
+      {:ok, _star} -> {:ok, %{message_id: message_id, is_starred: true}}
+      {:error, _changeset} -> {:error, :message_invalid}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :message_invalid}
+  end
 
   @impl true
-  def star_message(_attrs), do: {:error, :message_store_unavailable}
+  def unstar_message(attrs) do
+    user_id = attr(attrs, "user_id")
+    message_id = attr(attrs, "message_id")
+
+    StarredMessage
+    |> where([s], s.user_id == ^user_id and s.message_id == ^message_id)
+    |> Repo.delete_all()
+
+    {:ok, %{message_id: message_id, is_starred: false}}
+  rescue
+    Ecto.Query.CastError -> {:error, :message_invalid}
+  end
 
   @impl true
-  def unstar_message(_attrs), do: {:error, :message_store_unavailable}
+  def list_starred(attrs) do
+    user_id = attr(attrs, "user_id")
+    page = max(attr(attrs, "page") || 1, 1)
+    limit = attr(attrs, "limit") || 50
+    offset = (page - 1) * limit
 
-  @impl true
-  def list_starred(_attrs), do: {:error, :message_store_unavailable}
+    with {:ok, client} <- client_adapter() do
+      id_page =
+        StarredMessage
+        |> where([s], s.user_id == ^user_id)
+        |> order_by([s], desc: s.created_at)
+        |> limit(^limit)
+        |> offset(^offset)
+        |> select([s], {s.conversation_id, s.message_id})
+        |> Repo.all()
 
+      hydrated =
+        id_page
+        |> Task.async_stream(
+          fn {conversation_id, message_id} ->
+            case find_row(client, conversation_id, message_id) do
+              {:ok, row, _bucket} -> response_from_row(row)
+              _ -> nil
+            end
+          end,
+          max_concurrency: @star_hydration_concurrency,
+          timeout: 10_000,
+          on_timeout: :kill_task
+        )
+        |> Enum.map(fn
+          {:ok, row} -> row
+          {:exit, _} -> nil
+        end)
+
+      dropped = Enum.count(hydrated, &is_nil/1)
+
+      if dropped > 0 do
+        require Logger
+
+        Logger.warning(
+          "list_starred: #{dropped} starred id(s) had no Scylla row (projection drift) — dropped from page"
+        )
+      end
+
+      messages =
+        hydrated
+        |> Enum.reject(&is_nil/1)
+        |> Enum.map(&Map.put(&1, :is_starred, true))
+
+      {:ok, %{messages: messages, next_cursor: nil}}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :message_invalid}
+  end
+
+  # See the moduledoc table: DELIBERATE stub with a recorded product consequence — read
+  # DECISION_LOG 2026-08-01 before implementing anything here.
   @impl true
   def search_messages(_attrs), do: {:error, :message_store_unavailable}
 

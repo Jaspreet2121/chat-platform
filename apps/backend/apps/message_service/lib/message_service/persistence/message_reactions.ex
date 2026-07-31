@@ -5,6 +5,7 @@ defmodule MessageService.Persistence.MessageReactions do
 
   alias MessageService.Persistence.Attrs
   alias MessageService.Persistence.QueryPlan
+  alias MessageService.Persistence.ScyllaCodec
 
   @table "message_reactions_by_message"
 
@@ -18,11 +19,11 @@ defmodule MessageService.Persistence.MessageReactions do
       ) VALUES (?, ?, ?, ?, ?)
       """,
       [
-        Attrs.get(attrs, :conversation_id),
-        Attrs.get(attrs, :message_id),
-        Attrs.get(attrs, :user_id),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :conversation_id)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :message_id)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :user_id)),
         Attrs.get(attrs, :reaction),
-        Attrs.get(attrs, :created_at)
+        ScyllaCodec.encode_timestamp(Attrs.get(attrs, :created_at))
       ]
     )
   end
@@ -36,9 +37,9 @@ defmodule MessageService.Persistence.MessageReactions do
       WHERE conversation_id = ? AND message_id = ? AND user_id = ?
       """,
       [
-        Attrs.get(attrs, :conversation_id),
-        Attrs.get(attrs, :message_id),
-        Attrs.get(attrs, :user_id)
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :conversation_id)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :message_id)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :user_id))
       ]
     )
   end
@@ -53,8 +54,8 @@ defmodule MessageService.Persistence.MessageReactions do
       WHERE conversation_id = ? AND message_id = ?
       """,
       [
-        Attrs.get(attrs, :conversation_id),
-        Attrs.get(attrs, :message_id)
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :conversation_id)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :message_id))
       ]
     )
   end
