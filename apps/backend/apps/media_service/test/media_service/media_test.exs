@@ -1,10 +1,44 @@
 defmodule MediaService.MediaTest do
+  @moduledoc """
+  The media domain path with persistence ON — which since tenant-anchoring means every create INSERTs a
+  media_assets row, so this suite is `@moduletag :postgres_integration` and runs in the postgres gate.
+  It was previously a plain suite that predated the anchoring (no app_id, no row) and had been red ever
+  since. NOT :requires_minio: the "minio adapter" tests are OFFLINE — presigning is pure SigV4
+  computation against an injected frozen clock (`now:` in the adapter config); nothing here networks.
+  Postgres is the only infrastructure this suite needs, and the gate provides it.
+  """
   use ExUnit.Case, async: false
 
   alias MediaService.Media
+  alias MediaService.Repo, as: MediaRepo
   alias MediaService.Storage
 
+  @moduletag :postgres_integration
+
   @owner_user_id "11111111-1111-4111-8111-111111111111"
+  # Tenant zero — seeded by migration 048; media_assets.app_id FKs apps(id).
+  @app "00000000-0000-0000-0000-000000000001"
+
+  # InMemoryAdapter with a believable head_object, so complete_upload's size verification can pass —
+  # the same shape ApiGatewayWeb.MediaPersistencePostgresIntegrationTest uses. The verification path
+  # itself (over-cap, missing PUT, fail-closed) is proven by MediaService.CompleteVerifyTest.
+  defmodule SizedStorage do
+    @moduledoc false
+    @behaviour MediaService.Storage
+
+    alias MediaService.Storage.InMemoryAdapter
+
+    @impl true
+    defdelegate create_upload(attrs), to: InMemoryAdapter
+    @impl true
+    defdelegate complete_upload(attrs), to: InMemoryAdapter
+    @impl true
+    defdelegate get_download_url(attrs), to: InMemoryAdapter
+    @impl true
+    defdelegate delete_object(attrs), to: InMemoryAdapter
+    @impl true
+    def head_object(_attrs), do: {:ok, %{size_bytes: 123}}
+  end
 
   setup do
     previous_persistence = Application.get_env(:media_service, :media_persistence, false)
@@ -15,7 +49,11 @@ defmodule MediaService.MediaTest do
     previous_minio = Application.get_env(:media_service, :minio, [])
 
     Application.put_env(:media_service, :media_persistence, true)
-    Application.put_env(:media_service, :media_storage_adapter, Storage.InMemoryAdapter)
+    Application.put_env(:media_service, :media_storage_adapter, SizedStorage)
+
+    start_repo!()
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(MediaRepo)
+    seed_owner!()
 
     start_in_memory_storage!()
     Storage.InMemoryAdapter.reset()
@@ -34,6 +72,7 @@ defmodule MediaService.MediaTest do
     assert {:error, :media_invalid} =
              Media.create_upload(%{
                "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
                "filename" => "photo.png",
                "content_type" => "image/png"
              })
@@ -50,6 +89,7 @@ defmodule MediaService.MediaTest do
     assert {:error, :media_invalid} =
              Media.create_upload(%{
                "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
                "filename" => "script.js",
                "content_type" => "application/javascript",
                "size_bytes" => 123
@@ -60,6 +100,7 @@ defmodule MediaService.MediaTest do
     assert {:ok, upload} =
              Media.create_upload(%{
                "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
                "filename" => "voice-message-123.webm",
                "content_type" => "audio/webm",
                "size_bytes" => 4096
@@ -75,6 +116,7 @@ defmodule MediaService.MediaTest do
     assert {:ok, upload} =
              Media.create_upload(%{
                "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
                "filename" => "voice-message-123.webm",
                "content_type" => "audio/webm; codecs=opus",
                "size_bytes" => 4096
@@ -87,6 +129,7 @@ defmodule MediaService.MediaTest do
     assert {:ok, upload} =
              Media.create_upload(%{
                "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
                "filename" => "../summer photo.png",
                "content_type" => "image/png",
                "size_bytes" => 123
@@ -108,6 +151,7 @@ defmodule MediaService.MediaTest do
              Media.complete_upload(%{
                "media_id" => upload.media_id,
                "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
                "object_key" => upload.object_key
              })
 
@@ -122,6 +166,7 @@ defmodule MediaService.MediaTest do
              Media.get_download_url(%{
                "media_id" => upload.media_id,
                "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
                "object_key" => upload.object_key
              })
 
@@ -136,6 +181,7 @@ defmodule MediaService.MediaTest do
     assert {:error, :media_storage_unavailable} =
              Media.create_upload(%{
                "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
                "filename" => "photo.png",
                "content_type" => "image/png",
                "size_bytes" => 123
@@ -148,6 +194,7 @@ defmodule MediaService.MediaTest do
     assert {:ok, upload} =
              Media.create_upload(%{
                "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
                "filename" => "summer photo.png",
                "content_type" => "image/png",
                "size_bytes" => 123
@@ -204,6 +251,7 @@ defmodule MediaService.MediaTest do
     assert {:ok, upload} =
              Media.create_upload(%{
                "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
                "filename" => "photo.png",
                "content_type" => "image/png",
                "size_bytes" => 123
@@ -216,22 +264,35 @@ defmodule MediaService.MediaTest do
     assert URI.decode_query(uri.query)["X-Amz-Signature"] =~ ~r/^[0-9a-f]{64}$/
   end
 
-  test "minio adapter generates presigned download URL" do
+  test "minio adapter generates presigned download URL FROM THE ROW (client object_key ignored)" do
     configure_minio_adapter!()
 
-    object_key = "media/#{@owner_user_id}/media_123/photo.png"
+    # The row must exist: downloads resolve the object_key server-side since the capability fix — a
+    # client-supplied key is never presigned. So create first (INSERTs the row), then download by id.
+    assert {:ok, upload} =
+             Media.create_upload(%{
+               "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
+               "filename" => "photo.png",
+               "content_type" => "image/png",
+               "size_bytes" => 123
+             })
 
     assert {:ok, download} =
              Media.get_download_url(%{
-               "media_id" => "media_123",
+               "media_id" => upload.media_id,
                "owner_user_id" => @owner_user_id,
-               "object_key" => object_key
+               "app_id" => @app,
+               # POISONED client key — must be ignored in favour of the row's.
+               "object_key" => "media/#{@owner_user_id}/somewhere/else.png"
              })
 
     uri = URI.parse(download.download_url)
     params = URI.decode_query(uri.query)
 
-    assert uri.path == "/chat-media/#{object_key}"
+    # The presigned path is the ROW's server-generated key, not the poisoned one.
+    assert uri.path == "/chat-media/#{upload.object_key}"
+    refute uri.path =~ "somewhere/else"
     assert params["X-Amz-Algorithm"] == "AWS4-HMAC-SHA256"
     assert params["X-Amz-Credential"] =~ "minioadmin/20260617/us-east-1/s3/aws4_request"
     assert params["X-Amz-Signature"] =~ ~r/^[0-9a-f]{64}$/
@@ -251,6 +312,7 @@ defmodule MediaService.MediaTest do
     assert {:error, :media_storage_unavailable} =
              Media.create_upload(%{
                "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
                "filename" => "photo.png",
                "content_type" => "image/png",
                "size_bytes" => 123
@@ -260,6 +322,7 @@ defmodule MediaService.MediaTest do
   defp create_upload do
     Media.create_upload(%{
       "owner_user_id" => @owner_user_id,
+      "app_id" => @app,
       "filename" => "photo.png",
       "content_type" => "image/png",
       "size_bytes" => 123
@@ -290,5 +353,23 @@ defmodule MediaService.MediaTest do
       {:error, {:already_started, _pid}} ->
         :ok
     end
+  end
+
+  defp start_repo! do
+    case MediaRepo.start_link() do
+      {:ok, pid} -> Process.unlink(pid)
+      {:error, {:already_started, _pid}} -> :ok
+    end
+
+    :ok
+  end
+
+  # media_assets.owner_user_id FKs users_auth(id) — the row must exist before any INSERTing create.
+  defp seed_owner! do
+    MediaRepo.query!(
+      "INSERT INTO users_auth (id, phone_number, status) VALUES ($1::text::uuid, $2, 'active') " <>
+        "ON CONFLICT DO NOTHING",
+      [@owner_user_id, "+15550000001"]
+    )
   end
 end
