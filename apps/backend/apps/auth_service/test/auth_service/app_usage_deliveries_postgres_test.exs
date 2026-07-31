@@ -241,8 +241,14 @@ defmodule AuthService.AppUsageDeliveriesPostgresTest do
 
   defp start_repo! do
     case Repo.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
+      {:ok, pid} ->
+        # UNLINK — a repo tied to the first test process dies with it (see the auth_controller pg
+        # suite's identical fix); the next setup then races the death at Sandbox.checkout.
+        Process.unlink(pid)
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
     end
   end
 end

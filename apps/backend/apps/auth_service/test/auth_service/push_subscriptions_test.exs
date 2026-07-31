@@ -1,6 +1,12 @@
 defmodule AuthService.PushSubscriptionsTest do
   use AuthService.DataCase, async: false
 
+  # WHOLE-MODULE tag: DataCase's setup checks out a sandbox connection for EVERY test here, so even the
+  # validation-only test needs the database once it lives in this suite. It was the one untagged test
+  # in a DB suite — the source of the long-standing "PushSubscriptions flake": green when a local
+  # Postgres happened to be up, a 6-second connection timeout when not.
+  @moduletag :postgres_integration
+
   alias AuthService.PushSubscriptions
   alias AuthService.Repo
 
@@ -30,7 +36,6 @@ defmodule AuthService.PushSubscriptionsTest do
     n
   end
 
-  @tag :postgres_integration
   test "save upserts by endpoint (re-subscribe updates keys + owner); delete is caller-scoped" do
     seed_users!()
 

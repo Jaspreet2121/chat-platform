@@ -119,11 +119,16 @@ for suite in $suites; do
   fi
 
   printf '%-84s' "$suite"
-  if out="$(mix test --include postgres_integration "$suite" 2>&1)"; then
+  # ELIXIR_LOG_LEVEL=warning: without it, SQL debug logging floods the output and (as happened in CI)
+  # buries the actual assertion so far above the failure marker that a tail cannot reach it.
+  if out="$(ELIXIR_LOG_LEVEL=warning mix test --include postgres_integration "$suite" 2>&1)"; then
     echo "$(echo "$out" | grep -E '^Result:' | tail -1)"
   else
     echo "FAILED"
-    echo "$out" | grep -vE '^[0-9]{2}:[0-9]{2}:[0-9]{2}\.' | tail -40
+    # Print the ExUnit FAILURE BLOCKS (test name → stacktrace), not a raw tail: the raw tail showed
+    # whatever happened to be last — usually noise — and the person reading CI never saw the assertion.
+    echo "$out" | awk '/^  [0-9]+\) test /{p=1} p{print} p&&/^$/{blank++; if (blank>=2) {p=0; blank=0}}' | head -80
+    echo "$out" | grep -E "tests, [0-9]+ failure" | tail -1
     echo "--------------------------------------------------------------------------------"
     fail=1
   fi

@@ -147,11 +147,18 @@ defmodule SharedInfra.RateLimiter.InMemoryAdapter do
     max(window_seconds - (now_seconds - window_start), 1)
   end
 
+  # UNLINKED on purpose. This lazy-start runs inside whatever process first calls the adapter — in
+  # tests, a TEST PROCESS. `Agent.start_link` would tie the shared agent's life to that test: the agent
+  # dies with it, and the next caller races the death (whereis says alive, the call says no process).
+  # That race produced real CI flakes ("join crashed" in channels_test; sandbox checkout deaths). An
+  # explicitly supervised start_link/1 remains available for supervision trees.
   defp ensure_started do
     case Process.whereis(@name) do
       nil ->
-        {:ok, _pid} = start_link()
-        :ok
+        case Agent.start(fn -> %{} end, name: @name) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
 
       _pid ->
         :ok

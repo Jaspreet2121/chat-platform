@@ -622,8 +622,15 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
 
   defp start_repo!(repo) do
     case repo.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
+      {:ok, pid} ->
+        # UNLINK: without this the repo pool is tied to the FIRST test process that started it and
+        # dies with that test — the next setup then races the death at Sandbox.checkout (seen as
+        # "no process" EXITs under seed-dependent orderings, locally at seed 0 and in CI).
+        Process.unlink(pid)
+        :ok
+
+      {:error, {:already_started, _pid}} ->
+        :ok
     end
   end
 
