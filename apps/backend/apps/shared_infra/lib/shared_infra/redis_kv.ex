@@ -241,7 +241,9 @@ defmodule SharedInfra.RedisKV do
 
           {len, ""} when len >= 0 ->
             case tail do
-              <<data::binary-size(len), "\r\n", rest::binary>> -> {:ok, data, rest}
+              # `len` is bound OUTSIDE this match, so it must be pinned — unpinned it reads as a new
+              # binding and Elixir 1.18 rejects it under --warnings-as-errors.
+              <<data::binary-size(^len), "\r\n", rest::binary>> -> {:ok, data, rest}
               _ -> :incomplete
             end
 

@@ -105,9 +105,25 @@ defmodule ApiGatewayWeb.AdminContentController do
     })
   end
 
+  # No content.read → masked metadata only + a lighter oversight row. Text is dropped before serialize.
+  defp respond(conn, session, conversation_id, app_id, messages, false) do
+    masked = messages |> Enum.map(&mask/1) |> with_sender_identities()
+    audit(session, conversation_id, app_id, length(masked), "content.view.masked", true)
+
+    json(conn, %{
+      conversation_id: conversation_id,
+      app_id: app_id,
+      masked: true,
+      message_count: length(masked),
+      messages: masked
+    })
+  end
+
   # Presign media download URLs CONCURRENTLY (bounded, ordered). With the HTTP media-client adapter each
   # presign is a gateway→media-service round trip; doing up to 200 sequentially blocked the whole
   # response. A failed/slow presign degrades that one message (no URL) instead of the list.
+  # (Lives BELOW both respond/6 clauses so they stay grouped — Elixir warns otherwise, and that warning
+  # is fatal under --warnings-as-errors.)
   @enrich_concurrency 16
   @enrich_timeout_ms 5_000
   defp enrich_all(messages, app_id) do
@@ -123,20 +139,6 @@ defmodule ApiGatewayWeb.AdminContentController do
       {:ok, enriched} -> enriched
       {:exit, {message, _reason}} -> message
     end)
-  end
-
-  # No content.read → masked metadata only + a lighter oversight row. Text is dropped before serialize.
-  defp respond(conn, session, conversation_id, app_id, messages, false) do
-    masked = messages |> Enum.map(&mask/1) |> with_sender_identities()
-    audit(session, conversation_id, app_id, length(masked), "content.view.masked", true)
-
-    json(conn, %{
-      conversation_id: conversation_id,
-      app_id: app_id,
-      masked: true,
-      message_count: length(masked),
-      messages: masked
-    })
   end
 
   # Attach the sender's display_name + phone to each message (ONE batched auth lookup — no N+1) so the

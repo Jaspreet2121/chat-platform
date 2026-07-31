@@ -118,28 +118,27 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-backend-mix-
 
-      # CRITICAL: load the WHOLE init set in filename order (001..042 → 36 tables), NOT just 010.
-      # The pg suite covers message-store (020), projections (030) and notifications (040-042);
-      # loading only 010_initial_schema.sql would fail those tests. ON_ERROR_STOP aborts on any
-      # SQL error so a bad load fails the job loudly instead of running tests against half a schema.
-      - name: Load full schema into chat_platform_test (ALL init/*.sql in order)
-        working-directory: ${{ github.workspace }}
-        env:
-          PGPASSWORD: chat_password
-        run: |
-          for f in $(ls infra/docker/postgres/init/*.sql | sort); do
-            echo "Applying $f"
-            psql -h localhost -p 5432 -U chat_user -d chat_platform_test -v ON_ERROR_STOP=1 -f "$f"
-          done
-
       - name: Install dependencies
         run: mix deps.get
 
+      # Deliberately NOT --warnings-as-errors here: the fast `backend` job above already owns the lint
+      # gate. Both jobs previously used it, and a single pre-existing warning failed COMPILE in this
+      # job — so the postgres tests below never executed on any push, for months, while the run showed
+      # red and the red became normal. A lint regression must not be able to hide a DB regression.
       - name: Compile
-        run: mix compile --warnings-as-errors
+        run: mix compile
 
-      - name: Test (postgres_integration + http_integration)
-        run: mix test --include postgres_integration --include http_integration
+      # Schema load + per-suite execution live in scripts/test-postgres.sh, which is ALSO what a human
+      # runs before deploying. Invoked, not restated: a re-implementation here is exactly the drift
+      # that let "runs in your CI" stay believable while nothing ran.
+      - name: Postgres suites (scripts/test-postgres.sh)
+        working-directory: ${{ github.workspace }}
+        run: ./scripts/test-postgres.sh
+
+      # http_integration is a separate tag (the 5 HTTP client adapters' real-localhost round-trips) and
+      # needs no database, so it stays a plain umbrella run rather than going through the script.
+      - name: Test (http_integration)
+        run: mix test --include http_integration
 
   # Layer 3: the REAL distributed-failure proof — brings up docker-compose.prod.yml (gateway +
   # services as separate containers, gateway flipped to HTTP adapters) and runs the gateway→auth
