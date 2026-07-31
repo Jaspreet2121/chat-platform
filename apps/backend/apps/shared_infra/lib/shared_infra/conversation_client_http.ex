@@ -118,6 +118,21 @@ defmodule SharedInfra.ConversationClientHttp do
   def join_group_invite_link(attrs), do: post("/internal/invite-links/join", attrs)
 
   @impl true
+  def create_broadcast_list(attrs), do: post("/internal/broadcast-lists/create", attrs)
+
+  @impl true
+  def list_broadcast_lists(attrs), do: post("/internal/broadcast-lists/list", attrs)
+
+  @impl true
+  def get_broadcast_list(attrs), do: post("/internal/broadcast-lists/get", attrs)
+
+  @impl true
+  def update_broadcast_list(attrs), do: post("/internal/broadcast-lists/update", attrs)
+
+  @impl true
+  def delete_broadcast_list(attrs), do: post("/internal/broadcast-lists/delete", attrs)
+
+  @impl true
   def approve_link_participant(attrs), do: post("/internal/call-links/approve", attrs)
 
   @impl true

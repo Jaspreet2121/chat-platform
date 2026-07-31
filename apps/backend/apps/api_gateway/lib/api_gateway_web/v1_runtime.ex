@@ -34,6 +34,10 @@ defmodule ApiGatewayWeb.V1Runtime do
     # ETS tables back the :ets fallback backend; harmless to keep even when :redis is active.
     :ets.new(@rate_table, [:named_table, :public, :set, write_concurrency: true])
 
+    # Broadcast-send single-flight locks (one in-flight fan-out per user; see BroadcastController).
+    # Owned HERE so the table survives a request process dying mid-fan-out (entries are stale-swept).
+    :ets.new(:broadcast_send_locks, [:named_table, :public, :set])
+
     :ets.new(@idem_table, [
       :named_table,
       :public,

@@ -169,6 +169,21 @@ defmodule ConversationService.ConversationClientInProcess do
   def join_group_invite_link(attrs), do: ConversationService.InviteLinks.join_link(attrs)
 
   @impl true
+  def create_broadcast_list(attrs), do: ConversationService.BroadcastLists.create_list(attrs)
+
+  @impl true
+  def list_broadcast_lists(attrs), do: ConversationService.BroadcastLists.list_lists(attrs)
+
+  @impl true
+  def get_broadcast_list(attrs), do: ConversationService.BroadcastLists.get_list(attrs)
+
+  @impl true
+  def update_broadcast_list(attrs), do: ConversationService.BroadcastLists.update_list(attrs)
+
+  @impl true
+  def delete_broadcast_list(attrs), do: ConversationService.BroadcastLists.delete_list(attrs)
+
+  @impl true
   def approve_link_participant(attrs),
     do: ConversationService.CallStore.approve_link_participant(attrs)
 

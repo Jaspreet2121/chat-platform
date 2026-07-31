@@ -165,6 +165,18 @@ defmodule ApiGatewayWeb.Router do
     get "/:user_id/avatar", UserController, :avatar
   end
 
+  # Broadcast lists (081) — a saved recipient set; send fans out N independent DMs. Owner-scoped CRUD;
+  # the send is rate-limited (fail-closed) + single-flight per user.
+  scope "/api/v1/broadcasts", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/", BroadcastController, :create
+    get "/", BroadcastController, :index
+    patch "/:list_id", BroadcastController, :update
+    delete "/:list_id", BroadcastController, :delete
+    post "/:list_id/send", BroadcastController, :send_broadcast
+  end
+
   # Username availability (080) — session-authed + rate-limited (no anonymous namespace probing).
   scope "/api/v1/usernames", ApiGatewayWeb do
     pipe_through :api

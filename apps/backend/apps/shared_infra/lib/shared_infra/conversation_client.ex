@@ -65,6 +65,13 @@ defmodule SharedInfra.ConversationClient do
   @callback get_call_link(attrs()) :: result()
   @callback join_call_link(attrs()) :: result()
 
+  # Broadcast lists (081) — a user-owned recipient set (NOT a conversation); send is gateway orchestration.
+  @callback create_broadcast_list(attrs()) :: result()
+  @callback list_broadcast_lists(attrs()) :: result()
+  @callback get_broadcast_list(attrs()) :: result()
+  @callback update_broadcast_list(attrs()) :: result()
+  @callback delete_broadcast_list(attrs()) :: result()
+
   # Group invite links (077) — shareable "join a group via link".
   @callback create_group_invite_link(attrs()) :: result()
   @callback revoke_group_invite_link(attrs()) :: result()
@@ -123,7 +130,12 @@ defmodule SharedInfra.ConversationClient do
                       direct_peer_blocked?: 1,
                       set_archive: 1,
                       set_pin: 1,
-                      leave_conversation: 1
+                      leave_conversation: 1,
+                      create_broadcast_list: 1,
+                      list_broadcast_lists: 1,
+                      get_broadcast_list: 1,
+                      update_broadcast_list: 1,
+                      delete_broadcast_list: 1
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
@@ -192,6 +204,12 @@ defmodule SharedInfra.ConversationClient do
   def reset_group_invite_link(attrs), do: adapter().reset_group_invite_link(attrs)
   def preview_group_invite_link(attrs), do: adapter().preview_group_invite_link(attrs)
   def join_group_invite_link(attrs), do: adapter().join_group_invite_link(attrs)
+
+  def create_broadcast_list(attrs), do: adapter().create_broadcast_list(attrs)
+  def list_broadcast_lists(attrs), do: adapter().list_broadcast_lists(attrs)
+  def get_broadcast_list(attrs), do: adapter().get_broadcast_list(attrs)
+  def update_broadcast_list(attrs), do: adapter().update_broadcast_list(attrs)
+  def delete_broadcast_list(attrs), do: adapter().delete_broadcast_list(attrs)
   def approve_link_participant(attrs), do: adapter().approve_link_participant(attrs)
   def deny_link_participant(attrs), do: adapter().deny_link_participant(attrs)
 

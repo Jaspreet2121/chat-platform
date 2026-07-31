@@ -215,6 +215,27 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.InviteLinks.join_link(body(conn)))
   end
 
+  # Broadcast lists (081) — owner-scoped CRUD (session + limits gates live in the gateway).
+  post "/internal/broadcast-lists/create" do
+    send_result(conn, ConversationService.BroadcastLists.create_list(body(conn)))
+  end
+
+  post "/internal/broadcast-lists/list" do
+    send_result(conn, ConversationService.BroadcastLists.list_lists(body(conn)))
+  end
+
+  post "/internal/broadcast-lists/get" do
+    send_result(conn, ConversationService.BroadcastLists.get_list(body(conn)))
+  end
+
+  post "/internal/broadcast-lists/update" do
+    send_result(conn, ConversationService.BroadcastLists.update_list(body(conn)))
+  end
+
+  post "/internal/broadcast-lists/delete" do
+    send_result(conn, ConversationService.BroadcastLists.delete_list(body(conn)))
+  end
+
   post "/internal/blocks/create" do
     send_result(conn, ConversationService.Blocks.block(body(conn)))
   end
