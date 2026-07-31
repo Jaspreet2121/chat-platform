@@ -46,14 +46,22 @@ defmodule ApiGatewayWeb.MediaAuthz do
   end
 
   # OWNER-ANCHORED message-media rule (replaces the oldest-message-wins resolve, which authorized a
-  # reused media_id against exactly ONE conversation — breaking broadcasts and web forwarding for
-  # recipients 2..N): the viewer may download iff they are an active member of ANY conversation
-  # containing a message referencing this media_id whose SENDER IS THE ASSET'S OWNER. The anchor is
-  # what makes widening safe — message-create does NOT validate media ownership, so a user CAN plant a
-  # reference to someone else's media_id in a conversation they control; anchored to sender=owner, that
-  # planted message grants nobody anything, while every send BY the owner (broadcast fan-out, forward)
-  # authorizes its recipients. The OWNER themselves may always download (also covers uploaded-not-yet-
-  # sent, preserving the old owner-only fallback). One indexed EXISTS (083), never a scan.
+  # reused media_id against exactly ONE conversation — breaking BROADCASTS for recipients 2..N): the
+  # viewer may download iff they are an active member of ANY conversation containing a message
+  # referencing this media_id whose SENDER IS THE ASSET'S OWNER. The anchor is what makes widening
+  # safe — message-create does NOT validate media ownership, so a user CAN plant a reference to
+  # someone else's media_id in a conversation they control; anchored to sender=owner, that planted
+  # message grants nobody anything.
+  #
+  # WHAT THIS DOES *NOT* FIX — read before removing any client workaround: forwarding media SOMEONE
+  # ELSE SENT YOU still fails. A uploads M and sends it in A↔B; B forwards to C by reusing M; C
+  # qualifies only via a conversation where *A* sent M, and A only ever sent it to A↔B — so C is
+  # DENIED. Only forwarding YOUR OWN media works (you are the owner, so your sends qualify).
+  # Re-upload-on-forward therefore remains REQUIRED for received media (Android does this; apps/web
+  # does it too, unconditionally, in reuploadMediaForForward).
+  #
+  # The OWNER themselves may always download (also covers uploaded-not-yet-sent, preserving the old
+  # owner-only fallback). One indexed EXISTS (083), never a scan.
   defp authorize_message_media(media_id, asset, user_id) do
     with {:owner, false} <- {:owner, aget(asset, :owner_user_id) == user_id},
          {:ok, result} <-

@@ -1,7 +1,7 @@
 defmodule ApiGatewayWeb.MediaAuthzForwardTest do
   @moduledoc """
   The OWNER-ANCHORED download rule (replacing oldest-message-wins, which authorized a reused media_id
-  against exactly ONE conversation and broke broadcasts + web forwarding for recipients 2..N):
+  against exactly ONE conversation and broke BROADCASTS for recipients 2..N):
 
       allowed(viewer) = viewer IS the asset's owner
                         OR viewer is an active member of ANY conversation containing a message
@@ -9,9 +9,14 @@ defmodule ApiGatewayWeb.MediaAuthzForwardTest do
 
   The anchor is what makes the widening safe: message-create does NOT validate media ownership
   (verified — only presence is checked), so B CAN plant a reference to A's media_id in B↔C. Under the
-  anchored rule that planted message qualifies nobody — the leak case stays denied. Every send BY the
-  owner (broadcast fan-out, forward) authorizes its recipients, so the Android re-upload-on-forward
-  workaround is now belt-and-braces rather than required (its contract note should say so).
+  anchored rule that planted message qualifies nobody — the leak case stays denied.
+
+  WHAT IT DOES *NOT* FIX (do not remove a client workaround on the strength of this rule): forwarding
+  media SOMEONE ELSE SENT YOU still fails. A uploads M, sends it in A↔B; B forwards to C reusing M; C
+  qualifies only through a conversation where *A* sent M, and A only sent it to A↔B — C is DENIED.
+  Only forwarding YOUR OWN media works. RE-UPLOAD-ON-FORWARD REMAINS REQUIRED for received media —
+  Android does it, and apps/web does it unconditionally (reuploadMediaForForward, landed a31bf35);
+  the "own media" case is the only one where it is now merely belt-and-braces.
 
   The stub is the message-service oracle; the REAL EXISTS (index, the planted-reference leak on actual
   rows, deleted-message semantics, the query count) is proven on SQL in

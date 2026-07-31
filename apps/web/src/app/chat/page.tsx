@@ -861,10 +861,14 @@ export default function ChatPage() {
 
     try {
       // Forwarding MEDIA to a DIFFERENT conversation must RE-UPLOAD the bytes as a fresh asset (owned by the
-      // forwarder, scoped to the target) — it must NOT reuse source.media_id. Media download is authorized by
-      // membership of the conversation the asset was uploaded to; a recipient of the forward isn't in THIS
-      // conversation, so a reused media_id would 404 for them, silently. Re-uploading matches the Android
-      // client and keeps the server's per-conversation media authorization narrow and correct.
+      // forwarder, scoped to the target) — it must NOT reuse source.media_id.
+      //
+      // WHY, precisely (the server rule changed; the requirement did not): downloads are authorized
+      // OWNER-ANCHORED — a viewer may fetch an asset only if they share a conversation where the asset's
+      // OWNER sent it. Forwarding media SOMEONE ELSE SENT YOU therefore still fails on a reused id: the
+      // owner never sent it to the target, so the target's members are denied and see nothing, silently.
+      // (Forwarding your OWN media would now survive a reuse — but re-uploading unconditionally keeps one
+      // code path and avoids depending on sender==owner.) Mirrors the Android forward path.
       if (source.media_id && crossConversation) {
         await reuploadMediaForForward(source, target, forwardedMetadata);
         setStatus(`Forwarded to ${target.title || target.conversation_id}.`);
@@ -895,9 +899,9 @@ export default function ChatPage() {
     }
   }
 
-  // Re-upload a forwarded media asset into `target` as a NEW asset (fresh media_id, scoped to the target
-  // conversation), then send the forwarded message referencing it. See handleForward for why reusing the
-  // source media_id fails for recipients outside the source conversation. Mirrors the Android forward path.
+  // Re-upload a forwarded media asset into `target` as a NEW asset (fresh media_id, owned by the forwarder),
+  // then send the forwarded message referencing ONLY that fresh id — source.media_id never reaches the
+  // outgoing create. See handleForward for why reusing it fails for received media. Mirrors Android.
   async function reuploadMediaForForward(
     source: Message,
     target: ConversationListItem,
