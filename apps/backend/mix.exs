@@ -12,7 +12,18 @@ defmodule ChatPlatform.Backend.MixProject do
   end
 
   defp deps do
-    []
+    [
+      # UMBRELLA-WIDE OVERRIDE (Phase B). Xandra declares `decimal ~> 1.7 or ~> 2.0` as an OPTIONAL
+      # dep; ecto 3.14 pulls decimal 3.x, and Hex enforces an optional package's constraint whenever
+      # that package is present in the tree — so resolution fails without this. It must live in the
+      # umbrella ROOT because that is where cross-app dependency resolution is governed.
+      #
+      # Safe, with a precise boundary: Xandra uses decimal ONLY to encode the CQL `decimal`/`varint`
+      # types, and the `chat_messages` keyspace declares neither (uuid, timeuuid, date, text,
+      # timestamp, map<text,text> only). Adding a decimal/varint column MUST revisit this first — a
+      # decimal 2.x→3.x API drift would surface exactly there and nowhere else.
+      {:decimal, "~> 3.0", override: true}
+    ]
   end
 
   # Releases. Boot config (DATABASE_URL, secrets, host) is read at runtime in config/runtime.exs.

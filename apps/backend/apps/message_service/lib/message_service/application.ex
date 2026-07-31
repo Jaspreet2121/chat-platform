@@ -37,7 +37,32 @@ defmodule MessageService.Application do
     projection_consumer =
       if kafka_projection_consumer_enabled?(), do: [conversation_summary_child_spec()], else: []
 
-    repo ++ client ++ log_consumer ++ projection_consumer ++ http_children()
+    repo ++ client ++ log_consumer ++ projection_consumer ++ scylla_children() ++ http_children()
+  end
+
+  # ScyllaDB driver (Phase B) — DRIVER ONLY: this starts a connection pool, it does NOT make Scylla
+  # the message store (MESSAGE_STORE_ADAPTER still selects Postgres) and nothing writes to it.
+  #
+  # Started ONLY when `config :message_service, :scylla, nodes: [...]` is populated, which runtime.exs
+  # does solely from SCYLLA_NODES. Absent env → NO child → boot is byte-identical to today, and
+  # SharedInfra.Scylla.Client keeps returning the unavailable stub. The child itself can never break
+  # boot: XandraAdapter.start_link/1 returns :ignore rather than an error on any failure, so an
+  # unreachable or misconfigured cluster leaves the supervisor (and all Postgres-backed traffic)
+  # completely unaffected. shared_infra has no supervision tree of its own, so message_service — the
+  # only consumer — is the correct home.
+  defp scylla_children do
+    config = MessageService.Infrastructure.scylla_config()
+
+    if scylla_configured?(config) do
+      [{SharedInfra.Scylla.XandraAdapter, config}]
+    else
+      []
+    end
+  end
+
+  defp scylla_configured?(config) do
+    Application.get_env(:message_service, :scylla) != nil and
+      Keyword.get(config, :nodes, []) != []
   end
 
   # Internal HTTP API listener starts ONLY under MESSAGE_HTTP_API_ENABLED (default off), so the

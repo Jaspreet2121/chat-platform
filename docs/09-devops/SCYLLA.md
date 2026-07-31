@@ -1,15 +1,16 @@
-# ScyllaDB — Phase A (container + schema)
+# ScyllaDB — Phases A (container + schema) and B (driver)
 
-**Status: groundwork only. Scylla serves NO reads or writes.** Postgres remains the message store.
-This phase brings the container up and loads the CQL schema so Phase B has something to connect to.
+**Status: the driver is live; the STORE is still Postgres. Scylla serves no application reads or
+writes.** Phase A brought the container up and loaded the schema; Phase B connected a real CQL driver
+to it. `MESSAGE_STORE_ADAPTER` remains `postgres`, and nothing writes message rows to Scylla.
 
-What Phase A deliberately does **not** do:
+What these phases deliberately do **not** do:
 
-- does **not** change `MESSAGE_STORE_ADAPTER` (still `postgres` everywhere);
-- does **not** add a driver dependency (no Xandra) — `SharedInfra.Scylla.Client`'s default adapter
-  still returns `:scylla_unavailable`, so even with the container up nothing can talk to it;
-- does **not** add `depends_on: scylla` to any service — nothing can fail because Scylla is absent;
-- does **not** touch existing message data, or the CQL schema's key/table design.
+- do **not** change `MESSAGE_STORE_ADAPTER` (still `postgres` everywhere);
+- do **not** add `depends_on: scylla` to any service — nothing can fail because Scylla is absent;
+- do **not** touch existing message data, or the CQL schema's key/table design;
+- do **not** write anything into `messages_by_conversation` — the write plans' value types do not yet
+  match the CQL column types (see Phase D below), which is precisely why no write happens yet.
 
 With the `scylla` profile **off** (the default) a plain `docker compose -f docker-compose.prod.yml up -d`
 is byte-identical to before this change.
@@ -116,8 +117,8 @@ belt-and-braces as the Kafka container's cap.
 **Image tag:** pinned to `scylladb/scylla:6.2` (never `latest`). Note the deliberate skew: the dev infra
 compose (`infra/docker/docker-compose.yml`) runs `scylladb/scylla:5.4` with `--memory 750M` and no
 healthcheck. Prod is pinned separately because its constraints differ (shared box, no host-published
-ports, health-gated). Verify the tag pulls on the target host before a real deploy; align the two when
-Phase B lands.
+ports, health-gated). Verify the tag pulls on the target host before a real deploy; the dev/prod tag
+skew is still open and worth closing next time either is touched.
 
 ---
 
@@ -130,17 +131,82 @@ Phase B lands.
 | `SCYLLA_NODES` | *(gates the block — unset means nothing is configured)* | `"scylla:9042"`, or a comma list `"a:9042,b:9043"`. A bare host defaults to port 9042. Parsed into the `{host, port}` tuples `SharedInfra.Config.Scylla` expects. |
 | `SCYLLA_KEYSPACE` | `chat_messages` | Keyspace name. |
 
-**No service currently sets `SCYLLA_NODES`.** That is intentional for Phase A: adding it to the message
-service's environment would recreate that container for a value nothing reads. Phase B sets it (along
-with the driver) as part of the same change that makes it meaningful.
+Since **Phase B**, the **message service** — and only it, being the sole consumer — sets both in
+compose (`SCYLLA_NODES=scylla:9042`, `SCYLLA_KEYSPACE=chat_messages`). Setting `SCYLLA_NODES` does two
+things and only two: it configures the node list, and it points the client boundary at the real Xandra
+adapter so a supervised cluster starts. It does **not** select the store — `MESSAGE_STORE_ADAPTER`
+does that, and it is still `postgres`.
 
 ---
 
-## 7. Phase B (required before Scylla can serve anything)
+## 7. Phase B — the driver (shipped)
 
-1. A real CQL driver (Xandra) behind `SharedInfra.Scylla.Client` — today's default adapter returns
-   `:scylla_unavailable`, so the container is inert no matter what is configured.
-2. Set `SCYLLA_NODES` (and `SCYLLA_KEYSPACE` if not the default) on the message service.
-3. Only then consider `MESSAGE_STORE_ADAPTER=scylla`, and only behind a dual-write/backfill plan —
-   `MessageStore.ScyllaAdapter` has never run against a live cluster, and the existing Postgres data is
-   not migrated by anything in this phase.
+`SharedInfra.Scylla.XandraAdapter` is a supervised `Xandra.Cluster` behind the existing
+`SharedInfra.Scylla.Client` boundary. **Driver only — the store adapter is still Postgres.**
+
+It starts **only** when `SCYLLA_NODES` is configured, which compose now sets on the **message service
+alone** (`SCYLLA_NODES=scylla:9042`, `SCYLLA_KEYSPACE=chat_messages`). Absent env → no child, and the
+boundary keeps returning the `:scylla_unavailable` stub exactly as before.
+
+### Boot safety (the design constraint)
+
+message_service serves all production chat from Postgres, so Scylla must never be able to take it
+down. Three guarantees, all tested:
+
+- `XandraAdapter.start_link/1` **never returns an error** — on any failure it logs and returns
+  `:ignore`, so the supervisor carries on without the child and the app boots;
+- `sync_connect` is **off**, so boot never blocks on a TCP connect (Xandra connects in the background
+  and reconnects on its own);
+- every call checks the cluster is alive first — with it absent or dead, callers get
+  `{:error, :scylla_unavailable}` and `MessageStore.ScyllaAdapter` maps that to
+  `:message_store_unavailable`, exactly as before.
+
+Proven directly: with `SCYLLA_NODES` pointed at a dead host, `message_service` starts, its supervisor
+stays alive, the client returns an error instead of raising, and message create/list still work.
+
+### Verify the driver is live
+
+```bash
+# The cluster only logs this line when SCYLLA_NODES is set:
+docker compose -f docker-compose.prod.yml logs message | grep -i scylla
+# expect: scylla: Xandra cluster started (["scylla:9042"]) — driver only, store is postgres
+
+# The store is UNCHANGED — this must still say postgres:
+docker compose -f docker-compose.prod.yml exec -T message env | grep MESSAGE_STORE_ADAPTER
+```
+
+A live round-trip test exists but is excluded by default:
+
+```bash
+docker compose -f docker-compose.prod.yml --profile scylla up -d scylla
+cd apps/backend
+SCYLLA_TEST_NODES=localhost:9042 mix test --include scylla_integration
+```
+
+It runs `SELECT release_version FROM system.local` — deliberately a **read**. A write smoke would hit
+the Phase D type problem below and put junk in a table whose migration is undesigned.
+
+### Deploy note
+
+Phase B adds env to the message service, so **deploying it recreates the message container** — the
+first behaviour-affecting change of this Scylla work. Everything else stays as it was.
+
+## 8. Phase C / D (still required before Scylla can serve traffic)
+
+**Phase C — missing Scylla-side features.** `MessageStore.ScyllaAdapter` has no equivalent for stars,
+polls, media listing, search, or the receipt/reaction aggregates the Postgres adapter provides.
+
+**Phase D — the type/encoding gap (the real blocker).** The write plans supply Elixir terms that do
+not match the CQL column types:
+
+| Column | CQL type | What `insert_message_plan` supplies |
+|---|---|---|
+| `bucket_date` | `date` | an **ISO8601 string** (`"2026-07-31"`) |
+| `created_at` / `edited_at` / `deleted_at` | `timestamp` | strings / `DateTime`s |
+| `metadata` | `map<text, text>` | an arbitrary map (values may be integers) |
+| `message_id` / `reply_to_message_id` | `timeuuid` | hyphenated v1 strings — these are **fine** |
+| `conversation_id` / `sender_user_id` / `media_id` | `uuid` | hyphenated strings — **fine** |
+
+Only after that is settled should `MESSAGE_STORE_ADAPTER=scylla` be considered, and only behind a
+dual-write/backfill plan: the adapter has never run against a live cluster, and nothing migrates the
+existing Postgres data.

@@ -296,6 +296,12 @@ if config_env() == :prod do
     config :message_service, :scylla,
       nodes: parsed,
       keyspace: System.get_env("SCYLLA_KEYSPACE") || "chat_messages"
+
+    # Phase B: with nodes configured, point the client boundary at the REAL driver. Still DRIVER ONLY
+    # — MESSAGE_STORE_ADAPTER (above) decides the store and remains "postgres". Without SCYLLA_NODES
+    # this never runs, so the boundary keeps returning SharedInfra.Scylla.UnavailableClient exactly as
+    # before, and tests keep pinning SharedInfra.TestAdapters.Scylla themselves.
+    config :shared_infra, scylla_client_adapter: SharedInfra.Scylla.XandraAdapter
   end
 
   # --- Kafka brokers (only if provided; Kafka stays OFF on the first deploy via its flags) ---

@@ -39,7 +39,16 @@ defmodule SharedInfra.MixProject do
       {:plug, "~> 1.14"},
       # For SharedInfra.Release.load_schema/0 — runs the raw SQL schema against DATABASE_URL from
       # within the release (the slim image has no psql). Already in the tree via ecto_sql.
-      {:postgrex, "~> 0.17"}
+      {:postgrex, "~> 0.17"},
+      # The real CQL driver behind SharedInfra.Scylla.Client (Phase B). Lives HERE because the client
+      # boundary does; message_service is the only consumer today. Speaks CQL protocol v4, which
+      # Scylla 6.2 serves. NOTE: adding the dep does NOT start anything — the cluster is a supervised
+      # child that message_service starts only when SCYLLA_NODES is configured.
+      {:xandra, "~> 0.19"},
+      # Same override as the umbrella root's, repeated HERE so a per-app run (`cd apps/shared_infra &&
+      # mix test`) resolves too — a standalone app project does not inherit the root's overrides.
+      # Rationale + safety boundary: see the root mix.exs.
+      {:decimal, "~> 3.0", override: true}
     ]
   end
 end

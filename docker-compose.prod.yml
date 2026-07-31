@@ -148,7 +148,16 @@ services:
       MESSAGE_HTTP_PORT: "4104"
       MESSAGE_DB_BACKED: "true"
       # Explicit Postgres store for the first deploy (default QueryPlanAdapter; Scylla is later).
+      # UNCHANGED by Phase B: the Scylla vars below start a DRIVER, not a store. Flipping this to
+      # `scylla` is a later phase and needs the type-encoding work (Phase D) first.
       MESSAGE_STORE_ADAPTER: postgres
+      # ScyllaDB driver (Phase B) — message_service is the ONLY consumer, so these live here and
+      # nowhere else. Present env => runtime.exs configures the nodes AND points the client boundary
+      # at the real Xandra adapter; a supervised cluster then starts. It can never break boot: an
+      # unreachable cluster logs and is skipped (start_link returns :ignore). The container is
+      # profile-gated (`--profile scylla`), so with the profile off this simply never connects.
+      SCYLLA_NODES: ${SCYLLA_NODES:-scylla:9042}
+      SCYLLA_KEYSPACE: ${SCYLLA_KEYSPACE:-chat_messages}
       # Publish message.created.v1 to the live broker. BOTH are required: the adapter selects
       # BrodProducer (else NoopProducer = no-op + no client), the flag gates the produce call.
       # Producing is fire-and-forget — core message creation succeeds even if the broker is down,
