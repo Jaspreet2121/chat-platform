@@ -53,6 +53,11 @@ defmodule ApiGatewayWeb.AvatarProfileAuthTest do
            avatar_media_id: @avatar_pic
          }}
 
+    # The photo-visibility rule (fail-closed: unknown -> hidden) postdates this suite; without this
+    # stub every avatar assertion below fails as HIDDEN before what it tests is even reached.
+    def get_privacy(_attrs),
+      do: {:ok, %{profile_photo_visibility: "everyone", read_receipts_enabled: true}}
+
     def get_public_profile(%{"user_id" => @no_avatar, "app_id" => @app}),
       do:
         {:ok,

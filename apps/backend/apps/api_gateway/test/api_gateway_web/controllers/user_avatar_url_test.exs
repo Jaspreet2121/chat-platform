@@ -22,6 +22,12 @@ defmodule ApiGatewayWeb.UserAvatarUrlTest.UserWithAvatarStub do
 
   @impl true
   def update_current_profile(_attrs), do: {:error, :user_unavailable}
+
+  # The photo-visibility rule (fail-closed: unknown -> hidden) postdates this suite; without this the
+  # presenter hides the avatar before the presign under test is ever reached.
+  @impl true
+  def get_privacy(_attrs),
+    do: {:ok, %{profile_photo_visibility: "everyone", read_receipts_enabled: true}}
 end
 
 defmodule ApiGatewayWeb.UserAvatarUrlTest.MediaStub do

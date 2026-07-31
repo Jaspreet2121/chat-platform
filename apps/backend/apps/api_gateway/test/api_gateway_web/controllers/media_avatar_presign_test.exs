@@ -78,6 +78,11 @@ defmodule ApiGatewayWeb.MediaAvatarPresignTest do
     @avatar_cross "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
     @avatar_poison "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 
+    # The photo-visibility rule (fail-closed: unknown -> hidden) postdates this suite; without this
+    # stub every avatar assertion below fails as HIDDEN before what it tests is even reached.
+    def get_privacy(_attrs),
+      do: {:ok, %{profile_photo_visibility: "everyone", read_receipts_enabled: true}}
+
     def get_public_profile(%{"user_id" => uid}), do: {:ok, profile(uid)}
     def get_current_profile(%{"user_id" => uid}), do: {:ok, profile(uid)}
 

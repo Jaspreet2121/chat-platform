@@ -80,10 +80,13 @@ defmodule ApiGatewayWeb.UserControllerTest do
 
     assert conn.status == 200
 
+    # The raw avatar_media_id is DELIBERATELY ABSENT: ProfilePresenter drops it for a viewer the
+    # photo-visibility rule does not clear (fail-closed default; the placeholder caller is a stranger
+    # to user_123), so a client can never resolve the object itself. avatar_url: nil is the same shape
+    # an avatarless profile returns — hidden and absent are indistinguishable on the wire, on purpose.
     assert Jason.decode!(conn.resp_body) == %{
              "user_id" => "user_123",
              "display_name" => "Placeholder User",
-             "avatar_media_id" => nil,
              "avatar_url" => nil,
              "bio" => "Public profile placeholder"
            }
