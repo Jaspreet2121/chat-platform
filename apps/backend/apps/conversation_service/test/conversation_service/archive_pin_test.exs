@@ -69,6 +69,9 @@ defmodule ConversationService.ArchivePinTest do
         @app_id
       ]
     )
+
+    ConversationService.InboxCounters.reconcile_conversation(conversation_id)
+    id
   end
 
   # A direct chat between `owner` (+ optional `other`) with one message from `sender`, `seconds_ago` old.

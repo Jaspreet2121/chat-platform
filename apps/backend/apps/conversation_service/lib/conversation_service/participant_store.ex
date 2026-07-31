@@ -47,5 +47,17 @@ defmodule ConversationService.ParticipantStore do
     participant
     |> ConversationParticipant.reactivate_changeset(attrs)
     |> Repo.update()
+    |> tap(fn
+      # A rejoin returns a row whose counter went unmaintained for the whole absence (086) — recount
+      # from source truth. Here so BOTH reactivation callers (owner-add and invite join) get it.
+      {:ok, reactivated} ->
+        ConversationService.InboxCounters.recount(
+          reactivated.conversation_id,
+          reactivated.user_id
+        )
+
+      _ ->
+        :ok
+    end)
   end
 end

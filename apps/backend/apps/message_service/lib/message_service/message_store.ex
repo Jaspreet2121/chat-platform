@@ -1243,6 +1243,9 @@ defmodule MessageService.MessageStore.PostgresAdapter do
 
           case Repo.insert(changeset) do
             {:ok, message} ->
+              # Denormalised inbox row (086): maintained INSIDE this transaction, so under the
+              # Postgres store the counter/preview can never drift from the message that caused them.
+              MessageService.InboxProjection.record_message(message)
               emit_message_created(app_id, message)
               message_response(message)
 
@@ -2010,8 +2013,15 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         |> Message.changeset(changes)
         |> Repo.update()
         |> case do
-          {:ok, updated} -> {:ok, message_response(updated)}
-          {:error, _changeset} -> {:error, :message_invalid}
+          {:ok, updated} ->
+            # Body edits refresh the preview iff this IS the preview; metadata patches don't touch it.
+            unless is_map(attr(attrs, "metadata")),
+              do: MessageService.InboxProjection.record_edit(updated)
+
+            {:ok, message_response(updated)}
+
+          {:error, _changeset} ->
+            {:error, :message_invalid}
         end
     end
   end
@@ -2030,8 +2040,12 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         })
         |> Repo.update()
         |> case do
-          {:ok, updated} -> {:ok, message_response(updated)}
-          {:error, _changeset} -> {:error, :message_invalid}
+          {:ok, updated} ->
+            MessageService.InboxProjection.record_delete(updated)
+            {:ok, message_response(updated)}
+
+          {:error, _changeset} ->
+            {:error, :message_invalid}
         end
     end
   end
@@ -2231,12 +2245,33 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     |> MessageReceipt.changeset(changes)
     |> Repo.insert_or_update()
     |> case do
-      {:ok, receipt} -> {:ok, receipt_response(receipt)}
-      {:error, _changeset} -> {:error, :message_invalid}
+      {:ok, receipt} ->
+        # Inbox counter (086): a FIRST-TIME read decrements. `existing` gates idempotency — a repeat
+        # read of the same message must not decrement twice, and Postgres receipts are authoritative
+        # here, so the gate is exact on this path.
+        if status == "read" and not already_read?(existing) do
+          case fetch(attrs) do
+            %Message{} = message ->
+              MessageService.InboxProjection.record_read(conversation_id, user_id, message)
+
+            _ ->
+              :ok
+          end
+        end
+
+        {:ok, receipt_response(receipt)}
+
+      {:error, _changeset} ->
+        {:error, :message_invalid}
     end
   rescue
     Ecto.Query.CastError -> {:error, :message_invalid}
   end
+
+  defp already_read?(nil), do: false
+
+  defp already_read?(%MessageReceipt{} = receipt),
+    do: receipt.status == "read" or not is_nil(receipt.read_at)
 
   defp timestamp_field("delivered"), do: "delivered_at"
   defp timestamp_field("read"), do: "read_at"

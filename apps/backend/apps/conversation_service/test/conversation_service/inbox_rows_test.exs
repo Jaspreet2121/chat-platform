@@ -89,6 +89,7 @@ defmodule ConversationService.InboxRowsTest do
       ]
     )
 
+    ConversationService.InboxCounters.reconcile_conversation(conversation_id)
     id
   end
 
@@ -100,6 +101,8 @@ defmodule ConversationService.InboxRowsTest do
       """,
       [conversation_id, message_id, user_id]
     )
+
+    ConversationService.InboxCounters.reconcile_conversation(conversation_id)
   end
 
   defp group_profile!(conversation_id, name) do

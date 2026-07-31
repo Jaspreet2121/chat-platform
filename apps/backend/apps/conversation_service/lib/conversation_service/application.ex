@@ -33,7 +33,11 @@ defmodule ConversationService.Application do
         "brod client #{if client == [], do: "OFF", else: "ON"}"
     )
 
-    repo ++ client ++ http_children()
+    # The inbox reconciler (086) supervises alongside the repo: a timer GenServer that no-ops at boot
+    # unless the conversation store is DB-backed (so :test — persistence flipped per-test — never ticks).
+    reconciler = if repo == [], do: [], else: [ConversationService.InboxReconciler]
+
+    repo ++ reconciler ++ client ++ http_children()
   end
 
   # Internal HTTP API listener starts ONLY under CONVERSATION_HTTP_API_ENABLED (default off), so the

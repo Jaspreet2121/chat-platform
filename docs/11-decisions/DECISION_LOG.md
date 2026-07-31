@@ -2,6 +2,44 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-01] Inbox denormalisation (086) + the port ladder — pressure-tested and reordered
+
+- **Context:** the Scylla port's §0.5 inbox fork. Chosen (over Scylla-side fan-out, read-composition,
+  and a Postgres shadow): DENORMALISE THE INBOX ROW — maintained columns instead of read-time laterals
+  over `messages`. Pressure-tested before building; two amendments were load-bearing:
+  - **the global-preview split** — preview facts live on `conversations` (per-user variation is a
+    read-time MASK over the participant's own prefs; the newest message is always the last to leave
+    any window, so no older-message fallback exists), and only `unread_count` is per-participant.
+    Halves the write fan-out and makes edit/delete a one-row update.
+  - **`oldest_unread_at` + read-repair** — a maintained counter cannot decay as a rolling auto-delete
+    window moves (messages age out with no write anywhere). The watermark makes freshness PROVABLE;
+    stale rows get an inline recount at read time, persisted back.
+- **Deliberate: the watermark is NOT advanced on mark_read.** Advancing would need a store read per
+  receipt to find the next-oldest unread. Stale is SAFE (fails the freshness test → recount → repair);
+  auto-delete conversations pay an occasional extra recount for it. The one free advance: a decrement
+  reaching 0 NULLs it. Marked in InboxProjection's moduledoc — do not "fix" without reading this.
+- **Accepted drift, corrected not prevented:** the decrement is not idempotent under double-delivered
+  receipts, and cross-store partial failure becomes possible once messages move to Scylla. Exactness
+  would cost per-(message,user) dedup state in Postgres (receipts-in-Postgres again) or LWT per
+  receipt. Instead: clamp at 0, window-guarded decrements, and the MANDATORY `InboxReconciler`
+  (recently-active conversations, every 5 min) — which doubles as C7's dual-write comparator.
+- **Reordered ladder — C5 (this) FIRST:** it is the only rung with value independent of the port —
+  the inbox (the app's most-used screen) stops running 2 laterals x 500 conversations per open and
+  2 laterals x N recipients per message send (the conversation_updated frames already did that at
+  write time), Postgres store or not. Confirmed free of C2–C4 dependencies (the delete-path
+  next-newest read is adapter-local). Remaining: C2 core-13, C3 media CQL, C4 the six + oracle
+  battery, C6 outbox write-ahead intent, C7 dual-write + backfill, C8 shadow-read + flip + rollback
+  drill.
+- **SEARCH — a product regression accepted with eyes open:** at flip, cross-conversation message
+  search on web STOPS WORKING and returns a capability error (`search.unavailable`, never a silent
+  empty list). Android is unaffected (searches Room locally); web is the only caller of
+  `/api/v1/search/messages`. **This is a feature users can currently use, disappearing.** It is
+  acceptable because there are no external users yet — **and that reason EXPIRES the moment there
+  are.** A capability error is a fine engineering answer and a poor product one: if external users
+  exist before the flip, a rebuildable non-authoritative Postgres search INDEX (tsvector, derivable
+  from Scylla at any time — an index, not a shadow store) must ship first. Whoever schedules the flip
+  needs both halves of this.
+
 ## [2026-08-01] Scylla full port (Option A): design accepted, commit 1 built, the rest deliberately unbuilt
 
 - **Context:** Option A (full message-store port) was designed. Reading the adapter before designing

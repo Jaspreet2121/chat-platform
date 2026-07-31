@@ -244,7 +244,9 @@ defmodule ConversationService.Participants do
          {:ok, user_id} <- required_attr(attrs, "user_id") do
       if conversation_persistence_enabled?() do
         update_own_participant(
-          "cleared_before = now()",
+          # cleared_before hides everything at/before now — so unread MUST reset with it (086); a
+          # maintained counter has no lateral to notice the cutoff at read time.
+          "cleared_before = now(), unread_count = 0, oldest_unread_at = NULL",
           conversation_id,
           user_id,
           fn -> %{conversation_id: conversation_id, user_id: user_id, cleared: true} end
@@ -302,17 +304,44 @@ defmodule ConversationService.Participants do
 
         set_clause = seconds_clause <> ", " <> after_viewing_clause
 
-        case scope do
-          "both" ->
-            update_all_participants(set_clause, conversation_id, user_id, fn -> response end)
+        result =
+          case scope do
+            "both" ->
+              update_all_participants(set_clause, conversation_id, user_id, fn -> response end)
 
-          _ ->
-            update_own_participant(set_clause, conversation_id, user_id, fn -> response end)
+            _ ->
+              update_own_participant(set_clause, conversation_id, user_id, fn -> response end)
+          end
+
+        # The window just moved under whatever unread already existed — the maintained counter (086)
+        # can't know which messages entered/left it. Recount from source truth, scope-matched.
+        with {:ok, _} <- result do
+          case scope do
+            "both" -> recount_all_active(conversation_id)
+            _ -> ConversationService.InboxCounters.recount(conversation_id, user_id)
+          end
         end
+
+        result
       else
         {:ok, response}
       end
     end
+  end
+
+  defp recount_all_active(conversation_id) do
+    %{rows: rows} =
+      ConversationService.Repo.query!(
+        "SELECT user_id::text FROM conversation_participants " <>
+          "WHERE conversation_id = $1::text::uuid AND left_at IS NULL",
+        [conversation_id]
+      )
+
+    Enum.each(rows, fn [uid] ->
+      ConversationService.InboxCounters.recount(conversation_id, uid)
+    end)
+
+    :ok
   end
 
   defp disappear_scope(attrs) do
