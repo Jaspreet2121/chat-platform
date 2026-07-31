@@ -99,6 +99,7 @@ defmodule RealtimeGateway.CallPushKafkaTest do
     Application.put_env(:realtime_gateway, :call_push_enabled, true)
 
     assert App.kafka_client_needed?()
+
     assert [%{id: :realtime_gateway_kafka_client, start: {:brod, :start_link_client, args}}] =
              App.kafka_children()
 
@@ -114,14 +115,17 @@ defmodule RealtimeGateway.CallPushKafkaTest do
     assert :ok = ring!()
 
     assert_receive {:produced, "call.events.v1", "callee-1", value, opts}, 1000
+
     # THE FIX: the gateway's own client is selected per-call (the default would target a client that
     # does not exist in this release).
     assert opts[:client] == :realtime_gateway_kafka_client
+
     # The producer receives the MAP — BrodProducer does the (one) JSON encode itself. The old assertion
     # here decoded a string value, i.e. it PINNED the double-encode bug.
     assert is_map(value)
     assert value["type"] == "call.incoming"
     assert value["call_id"] == "call-1"
+
     # The wire-bytes assertion that would have caught it: applying BrodProducer's encode step must yield
     # bytes that decode ONCE back into the event (a pre-encoded string would decode to a binary instead).
     assert value |> Jason.encode!() |> Jason.decode!() == value

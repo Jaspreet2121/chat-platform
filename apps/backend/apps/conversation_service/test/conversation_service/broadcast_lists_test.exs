@@ -15,7 +15,11 @@ defmodule ConversationService.BroadcastListsTest do
   setup do
     previous = Application.get_env(:conversation_service, :conversation_persistence, false)
     Application.put_env(:conversation_service, :conversation_persistence, true)
-    on_exit(fn -> Application.put_env(:conversation_service, :conversation_persistence, previous) end)
+
+    on_exit(fn ->
+      Application.put_env(:conversation_service, :conversation_persistence, previous)
+    end)
+
     :ok
   end
 
@@ -33,7 +37,12 @@ defmodule ConversationService.BroadcastListsTest do
 
   defp app! do
     id = Ecto.UUID.generate()
-    Repo.query!("INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'T', $2)", [id, "t-#{id}"])
+
+    Repo.query!("INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'T', $2)", [
+      id,
+      "t-#{id}"
+    ])
+
     id
   end
 
@@ -65,7 +74,11 @@ defmodule ConversationService.BroadcastListsTest do
 
     # Rename keeps members; member REPLACE swaps the whole set.
     assert {:ok, %{name: "Team", member_count: 2}} =
-             BroadcastLists.update_list(%{"owner_user_id" => owner, "list_id" => list_id, "name" => "Team"})
+             BroadcastLists.update_list(%{
+               "owner_user_id" => owner,
+               "list_id" => list_id,
+               "name" => "Team"
+             })
 
     m3 = user!()
 
@@ -83,7 +96,10 @@ defmodule ConversationService.BroadcastListsTest do
              BroadcastLists.delete_list(%{"owner_user_id" => owner, "list_id" => list_id})
 
     %{rows: [[count]]} =
-      Repo.query!("SELECT count(*)::int FROM broadcast_list_members WHERE list_id = $1::text::uuid", [list_id])
+      Repo.query!(
+        "SELECT count(*)::int FROM broadcast_list_members WHERE list_id = $1::text::uuid",
+        [list_id]
+      )
 
     assert count == 0
   end
@@ -132,7 +148,8 @@ defmodule ConversationService.BroadcastListsTest do
     Repo.query!("UPDATE users_auth SET status = 'suspended' WHERE id = $1::text::uuid", [fades])
     Repo.query!("DELETE FROM users_auth WHERE id = $1::text::uuid", [vanishes])
 
-    assert {:ok, list} = BroadcastLists.get_list(%{"owner_user_id" => owner, "list_id" => list_id})
+    assert {:ok, list} =
+             BroadcastLists.get_list(%{"owner_user_id" => owner, "list_id" => list_id})
 
     # The deleted member is GONE from the list; the suspended one is present but not sendable.
     assert Enum.sort(list.member_ids) == Enum.sort([healthy, fades])
@@ -140,6 +157,7 @@ defmodule ConversationService.BroadcastListsTest do
 
     # Reactivation restores sendability — nothing was destroyed.
     Repo.query!("UPDATE users_auth SET status = 'active' WHERE id = $1::text::uuid", [fades])
+
     assert {:ok, %{sendable_member_ids: sendable}} =
              BroadcastLists.get_list(%{"owner_user_id" => owner, "list_id" => list_id})
 

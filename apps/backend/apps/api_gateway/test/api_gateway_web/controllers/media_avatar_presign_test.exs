@@ -52,7 +52,13 @@ defmodule ApiGatewayWeb.MediaAvatarPresignTest do
     def get_download_url(%{"media_id" => id, "app_id" => app, "purpose" => purpose}) do
       case Map.get(@assets, id) do
         %{app_id: ^app, purpose: ^purpose} ->
-          {:ok, %{media_id: id, download_url: "https://minio.local/get/" <> id, expires_at: "x", mime_type: "image/png"}}
+          {:ok,
+           %{
+             media_id: id,
+             download_url: "https://minio.local/get/" <> id,
+             expires_at: "x",
+             mime_type: "image/png"
+           }}
 
         _ ->
           {:error, :not_found}
@@ -203,7 +209,12 @@ defmodule ApiGatewayWeb.MediaAvatarPresignTest do
   # Drive ConversationController.show; the test's chosen group_avatar_media_id rides through the ConvStub
   # via a params key it echoes into the conversation map (→ with_group_avatar_url).
   defp show(user_id, group_avatar_media_id) do
-    base = put_req_header(conn(:get, "/api/v1/conversations/#{@convo}", %{}), "authorization", "Bearer " <> user_id)
+    base =
+      put_req_header(
+        conn(:get, "/api/v1/conversations/#{@convo}", %{}),
+        "authorization",
+        "Bearer " <> user_id
+      )
 
     ConversationController.show(base, %{
       "conversation_id" => @convo,
@@ -232,13 +243,18 @@ defmodule ApiGatewayWeb.MediaAvatarPresignTest do
   # --- admin content (enrich_media/2 direct) --------------------------------------------------------
 
   test "admin content presigns message media with the asset's app_id" do
-    enriched = AdminContentController.enrich_media(%{message_type: "media", media_id: @msg_ok}, @app)
+    enriched =
+      AdminContentController.enrich_media(%{message_type: "media", media_id: @msg_ok}, @app)
+
     assert enriched.download_url == "https://minio.local/get/" <> @msg_ok
   end
 
   test "admin content with the WRONG app_id → no download_url" do
     enriched =
-      AdminContentController.enrich_media(%{message_type: "media", media_id: @msg_ok}, "99999999-9999-4999-8999-999999999999")
+      AdminContentController.enrich_media(
+        %{message_type: "media", media_id: @msg_ok},
+        "99999999-9999-4999-8999-999999999999"
+      )
 
     refute Map.has_key?(enriched, :download_url)
   end

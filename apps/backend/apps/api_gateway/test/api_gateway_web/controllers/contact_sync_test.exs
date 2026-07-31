@@ -40,7 +40,9 @@ defmodule ApiGatewayWeb.ContactSyncTest do
     def start_link, do: Agent.start_link(fn -> 0 end, name: __MODULE__)
     def bulk_calls, do: Agent.get(__MODULE__, & &1)
 
-    def current_session(%{"authorization" => "Bearer me"}), do: {:ok, %{user_id: "u-me", app_id: @app}}
+    def current_session(%{"authorization" => "Bearer me"}),
+      do: {:ok, %{user_id: "u-me", app_id: @app}}
+
     def current_session(_), do: {:error, :session_invalid}
 
     # Single lookup (the by-phone comparison path) — app_id is now passed but the stub matches on phone.
@@ -85,16 +87,42 @@ defmodule ApiGatewayWeb.ContactSyncTest do
     def get_privacy(%{"user_id" => uid}), do: {:ok, %{profile_photo_visibility: visibility(uid)}}
 
     defp profile("u-visible"),
-      do: {:ok, %{user_id: "u-visible", display_name: "Visible", avatar_media_id: "m-vis", app_id: @app, bio: nil}}
+      do:
+        {:ok,
+         %{
+           user_id: "u-visible",
+           display_name: "Visible",
+           avatar_media_id: "m-vis",
+           app_id: @app,
+           bio: nil
+         }}
 
     defp profile("u-blocked"),
-      do: {:ok, %{user_id: "u-blocked", display_name: "Blocked", avatar_media_id: "m-blk", app_id: @app, bio: nil}}
+      do:
+        {:ok,
+         %{
+           user_id: "u-blocked",
+           display_name: "Blocked",
+           avatar_media_id: "m-blk",
+           app_id: @app,
+           bio: nil
+         }}
 
     defp profile("u-hidden"),
-      do: {:ok, %{user_id: "u-hidden", display_name: "Hidden", avatar_media_id: "m-hid", app_id: @app, bio: nil}}
+      do:
+        {:ok,
+         %{
+           user_id: "u-hidden",
+           display_name: "Hidden",
+           avatar_media_id: "m-hid",
+           app_id: @app,
+           bio: nil
+         }}
 
     defp profile("u-me"),
-      do: {:ok, %{user_id: "u-me", display_name: "Me", avatar_media_id: nil, app_id: @app, bio: nil}}
+      do:
+        {:ok,
+         %{user_id: "u-me", display_name: "Me", avatar_media_id: nil, app_id: @app, bio: nil}}
 
     defp profile(_), do: {:error, :profile_not_found}
 
@@ -193,7 +221,10 @@ defmodule ApiGatewayWeb.ContactSyncTest do
     ms = matches(conn)
     # Three matches; self (u-me) and the unknown number are NOT present.
     assert length(ms) == 3
-    assert Enum.map(ms, & &1["user_id"]) |> Enum.sort() == Enum.sort([@visible, @blocked, @hidden])
+
+    assert Enum.map(ms, & &1["user_id"]) |> Enum.sort() ==
+             Enum.sort([@visible, @blocked, @hidden])
+
     refute Enum.any?(ms, &(&1["user_id"] == @me))
     refute Enum.any?(ms, &(&1["phone"] == @p_nomatch))
 
@@ -218,6 +249,7 @@ defmodule ApiGatewayWeb.ContactSyncTest do
     assert match_for(sync([@p_visible]), @p_visible)["avatar_url"] == "https://signed/m-vis"
     assert match_for(sync([@p_blocked]), @p_blocked)["avatar_url"] == nil
     assert match_for(sync([@p_hidden]), @p_hidden)["avatar_url"] == nil
+
     # by_phone agrees (proves the comparison above wasn't nil == nil by accident on the visible case).
     assert by_phone(@p_visible)["avatar_url"] == "https://signed/m-vis"
   end
@@ -271,6 +303,7 @@ defmodule ApiGatewayWeb.ContactSyncTest do
     conn = sync(batch)
 
     assert conn.status == 200
+
     # The known matches (indices 1/2/3 → visible/blocked/hidden; 9 → self, excluded) still resolve…
     assert length(matches(conn)) == 3
     # …and the phone→user resolution was a SINGLE bulk lookup, not 500.

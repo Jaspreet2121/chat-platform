@@ -32,6 +32,7 @@ defmodule AuthService.AppUsageDeliveriesPostgresTest do
     assert usage.app_id == owned
     assert usage.users == 1
     assert usage.conversations == 1
+
     # THE ASSERTION THAT MATTERS: the message's own app_id column points at `other`, but its parent
     # conversation belongs to `owned` — the join must count it. A `messages.app_id` count would give 0.
     assert usage.messages == 1
@@ -207,9 +208,12 @@ defmodule AuthService.AppUsageDeliveriesPostgresTest do
 
   defp endpoint_for(app_id) do
     %{rows: [[id]]} =
-      Repo.query!("SELECT id::text FROM webhook_endpoints WHERE app_id = $1::text::uuid LIMIT 1", [
-        app_id
-      ])
+      Repo.query!(
+        "SELECT id::text FROM webhook_endpoints WHERE app_id = $1::text::uuid LIMIT 1",
+        [
+          app_id
+        ]
+      )
 
     id
   end
@@ -220,7 +224,16 @@ defmodule AuthService.AppUsageDeliveriesPostgresTest do
     Repo.query!(
       "INSERT INTO webhook_outbox (id, app_id, endpoint_id, event_id, event_type, payload, status, attempts) " <>
         "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5, $6::jsonb, $7, $8)",
-      [id, app_id, endpoint_id, uuid(), event_type, ~s({"secret_body":"never shown"}), status, attempts]
+      [
+        id,
+        app_id,
+        endpoint_id,
+        uuid(),
+        event_type,
+        ~s({"secret_body":"never shown"}),
+        status,
+        attempts
+      ]
     )
 
     id

@@ -18,7 +18,9 @@ defmodule ApiGatewayWeb.ReportControllerTest do
   defmodule AuthStub do
     @me "11111111-1111-4111-8111-111111111111"
     @app "33333333-3333-4333-8333-333333333333"
-    def current_session(%{"authorization" => "Bearer me"}), do: {:ok, %{user_id: @me, app_id: @app}}
+    def current_session(%{"authorization" => "Bearer me"}),
+      do: {:ok, %{user_id: @me, app_id: @app}}
+
     def current_session(_), do: {:error, :session_invalid}
 
     def create_report(%{"reported_user_id" => "ghost"}), do: {:error, :report_invalid}
@@ -29,7 +31,13 @@ defmodule ApiGatewayWeb.ReportControllerTest do
     prev_auth = Application.get_env(:shared_infra, :auth_client_adapter)
     prev_rl = Application.get_env(:shared_infra, :rate_limiter_adapter)
     Application.put_env(:shared_infra, :auth_client_adapter, AuthStub)
-    Application.put_env(:shared_infra, :rate_limiter_adapter, SharedInfra.RateLimiter.InMemoryAdapter)
+
+    Application.put_env(
+      :shared_infra,
+      :rate_limiter_adapter,
+      SharedInfra.RateLimiter.InMemoryAdapter
+    )
+
     SharedInfra.RateLimiter.InMemoryAdapter.reset()
 
     on_exit(fn ->
@@ -81,7 +89,11 @@ defmodule ApiGatewayWeb.ReportControllerTest do
 
   test "details over the cap → 400" do
     conn =
-      post(%{"reported_user_id" => @reported, "reason" => "other", "details" => String.duplicate("a", 2001)})
+      post(%{
+        "reported_user_id" => @reported,
+        "reason" => "other",
+        "details" => String.duplicate("a", 2001)
+      })
 
     assert conn.status == 400
     assert Jason.decode!(conn.resp_body)["error"]["code"] == "reports.details_too_long"

@@ -33,7 +33,10 @@ defmodule MessageService.Analytics do
           ),
         media: scalar("SELECT count(*) FROM media_assets WHERE app_id = $1", p),
         storage_bytes:
-          scalar("SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM media_assets WHERE app_id = $1", p)
+          scalar(
+            "SELECT COALESCE(SUM(size_bytes), 0)::bigint FROM media_assets WHERE app_id = $1",
+            p
+          )
       },
       activity: %{
         messages_24h: scalar(recent_messages_sql("24 hours"), p),

@@ -36,19 +36,25 @@ defmodule ApiGatewayWeb.V1.ConversationAuthzTest do
     @other_convo "88888888-8888-4888-8888-888888888888"
 
     # Tenant-only path (app actor): the (app_id, id) predicate. Cross-tenant/unknown → not_found.
-    def get_conversation_app(%{"conversation_id" => @convo, "app_id" => @app}), do: {:ok, summary()}
+    def get_conversation_app(%{"conversation_id" => @convo, "app_id" => @app}),
+      do: {:ok, summary()}
+
     def get_conversation_app(_), do: {:error, :conversation_not_found}
 
     # Membership path (end-user actor): a participant → detail (carries app_id + participants); a
     # non-participant → :conversation_forbidden; anything else (unknown/cross-tenant) → :conversation_not_found.
-    def get_conversation(%{"conversation_id" => @convo, "user_id" => @member}), do: {:ok, detail()}
+    def get_conversation(%{"conversation_id" => @convo, "user_id" => @member}),
+      do: {:ok, detail()}
+
     def get_conversation(%{"conversation_id" => @convo, "user_id" => @stranger}),
       do: {:error, :conversation_forbidden}
 
     def get_conversation(_), do: {:error, :conversation_not_found}
 
     # Membership-scoped list: each user sees only their own conversations.
-    def list_conversations(%{"user_id" => @member}), do: {:ok, %{conversations: [row(@convo, "Alice & Bob")]}}
+    def list_conversations(%{"user_id" => @member}),
+      do: {:ok, %{conversations: [row(@convo, "Alice & Bob")]}}
+
     def list_conversations(%{"user_id" => @stranger}),
       do: {:ok, %{conversations: [row(@other_convo, "Stranger's chat")]}}
 
@@ -118,7 +124,9 @@ defmodule ApiGatewayWeb.V1.ConversationAuthzTest do
 
   defmodule MsgStub do
     @moduledoc false
-    def create_message(_attrs), do: {:ok, %{"message_id" => "m1", "body" => "hi", "status" => "active"}}
+    def create_message(_attrs),
+      do: {:ok, %{"message_id" => "m1", "body" => "hi", "status" => "active"}}
+
     def list_messages(_attrs), do: {:ok, %{"messages" => [], "next_cursor" => nil}}
   end
 

@@ -15,7 +15,11 @@ defmodule ConversationService.ArchivePinTest do
   setup do
     previous = Application.get_env(:conversation_service, :conversation_persistence, false)
     Application.put_env(:conversation_service, :conversation_persistence, true)
-    on_exit(fn -> Application.put_env(:conversation_service, :conversation_persistence, previous) end)
+
+    on_exit(fn ->
+      Application.put_env(:conversation_service, :conversation_persistence, previous)
+    end)
+
     :ok
   end
 
@@ -56,7 +60,14 @@ defmodule ConversationService.ArchivePinTest do
     Repo.query!(
       "INSERT INTO messages (message_id, conversation_id, sender_user_id, message_type, body, status, created_at, app_id) " <>
         "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, 'text', $4, 'active', $5, $6::text::uuid)",
-      [id, conversation_id, sender, body, DateTime.add(DateTime.utc_now(), -seconds_ago, :second), @app_id]
+      [
+        id,
+        conversation_id,
+        sender,
+        body,
+        DateTime.add(DateTime.utc_now(), -seconds_ago, :second),
+        @app_id
+      ]
     )
   end
 
@@ -70,10 +81,13 @@ defmodule ConversationService.ArchivePinTest do
   end
 
   defp ids(rows), do: Enum.map(rows, & &1.conversation_id)
-  defp list(user), do: elem(Conversations.list_conversations(%{"user_id" => user}), 1).conversations
+
+  defp list(user),
+    do: elem(Conversations.list_conversations(%{"user_id" => user}), 1).conversations
 
   defp archived_list(user),
-    do: elem(Conversations.list_conversations(%{"user_id" => user, "archived" => true}), 1).conversations
+    do:
+      elem(Conversations.list_conversations(%{"user_id" => user, "archived" => true}), 1).conversations
 
   defp archive!(c, user, v),
     do: Participants.set_archive(%{"conversation_id" => c, "user_id" => user, "archived" => v})

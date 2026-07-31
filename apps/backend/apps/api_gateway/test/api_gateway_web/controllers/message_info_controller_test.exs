@@ -30,8 +30,12 @@ defmodule ApiGatewayWeb.MessageInfoControllerTest do
 
   defmodule ConvStub do
     # Membership: sender + member are in; anyone else is not (authorize_membership fails → 404).
-    def get_conversation(%{"user_id" => uid}) when uid in ["11111111-1111-4111-8111-111111111111", "33333333-3333-4333-8333-333333333333"],
-      do: {:ok, %{conversation_id: "22222222-2222-4222-8222-222222222222", participants: []}}
+    def get_conversation(%{"user_id" => uid})
+        when uid in [
+               "11111111-1111-4111-8111-111111111111",
+               "33333333-3333-4333-8333-333333333333"
+             ],
+        do: {:ok, %{conversation_id: "22222222-2222-4222-8222-222222222222", participants: []}}
 
     def get_conversation(_), do: {:error, :conversation_membership_forbidden}
 
@@ -47,7 +51,14 @@ defmodule ApiGatewayWeb.MessageInfoControllerTest do
     def get_public_profile(%{"user_id" => @gone}), do: {:error, :profile_not_found}
 
     def get_public_profile(%{"user_id" => uid}),
-      do: {:ok, %{user_id: uid, display_name: "Reader #{String.slice(uid, 0, 2)}", avatar_media_id: nil, bio: nil}}
+      do:
+        {:ok,
+         %{
+           user_id: uid,
+           display_name: "Reader #{String.slice(uid, 0, 2)}",
+           avatar_media_id: nil,
+           bio: nil
+         }}
 
     def get_privacy(_attrs), do: {:ok, %{profile_photo_visibility: "everyone"}}
   end
@@ -60,7 +71,8 @@ defmodule ApiGatewayWeb.MessageInfoControllerTest do
 
     def message_info(%{"message_id" => mid}) when mid != @msg, do: {:error, :message_not_found}
 
-    def message_info(%{"viewer_user_id" => viewer}) when viewer != @sender, do: {:error, :not_sender}
+    def message_info(%{"viewer_user_id" => viewer}) when viewer != @sender,
+      do: {:error, :not_sender}
 
     def message_info(_attrs) do
       {:ok,

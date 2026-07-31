@@ -106,8 +106,11 @@ defmodule RealtimeGateway.Limits do
   @doc "Write gate → :ok | a full {:reply, {:error, %{reason, retry_after}}, socket} — socket stays alive."
   def check_write(socket) do
     case rate_check(:write, socket) do
-      :ok -> :ok
-      {:limited, retry_after} -> {:reply, {:error, %{reason: "rate_limited", retry_after: retry_after}}, socket}
+      :ok ->
+        :ok
+
+      {:limited, retry_after} ->
+        {:reply, {:error, %{reason: "rate_limited", retry_after: retry_after}}, socket}
     end
   end
 

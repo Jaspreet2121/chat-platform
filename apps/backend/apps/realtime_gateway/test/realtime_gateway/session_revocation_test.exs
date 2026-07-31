@@ -84,7 +84,12 @@ defmodule RealtimeGateway.SessionRevocationTest do
 
     # The 10th beat re-checks, finds the session dead, and severs THE WHOLE SOCKET by its id.
     beat!(socket, 1)
-    assert_receive %Phoenix.Socket.Broadcast{topic: "user_socket:u1:phone-1", event: "disconnect"}, 500
+
+    assert_receive %Phoenix.Socket.Broadcast{
+                     topic: "user_socket:u1:phone-1",
+                     event: "disconnect"
+                   },
+                   500
   end
 
   test "an ACTIVE session sails through the re-check; auth being DOWN fails OPEN (no fleet-wide sever)" do
@@ -103,6 +108,7 @@ defmodule RealtimeGateway.SessionRevocationTest do
 
   test "non-device sockets are never re-checked: the /v1 'end_user' pseudo-device survives a false oracle" do
     Application.put_env(:realtime_gateway, :socket_auth_persistence, true)
+
     # The oracle says false for EVERYTHING — but an end_user socket isn't a device session at all.
     Application.put_env(:shared_infra, :auth_client_adapter, RevokedStub)
 

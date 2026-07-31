@@ -43,7 +43,9 @@ defmodule UserService.PrivacyTest do
   test "first update CREATES a row (defaults for untouched keys); later updates are SPARSE" do
     u = user!()
 
-    assert {:ok, p1} = Privacy.update_privacy(%{"user_id" => u, "last_seen_visibility" => "everyone"})
+    assert {:ok, p1} =
+             Privacy.update_privacy(%{"user_id" => u, "last_seen_visibility" => "everyone"})
+
     assert p1.last_seen_visibility == "everyone"
     assert p1.profile_photo_visibility == "contacts"
     assert p1.read_receipts_enabled == true
@@ -60,6 +62,7 @@ defmodule UserService.PrivacyTest do
   @tag :postgres_integration
   test "read_receipts_enabled = FALSE round-trips (the || trap)" do
     u = user!()
+
     assert {:ok, %{read_receipts_enabled: false}} =
              Privacy.update_privacy(%{"user_id" => u, "read_receipts_enabled" => false})
 

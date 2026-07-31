@@ -74,6 +74,7 @@ defmodule RealtimeGateway.LimitsTest do
     ConnectionCounter.touch(key, "dead_sock", t0)
     # Still counted within the window...
     assert ConnectionCounter.count(key, t0 + ttl - 1) == 1
+
     # ...and reclaimed once its last-seen score falls outside the window — no permanent leak, no lockout.
     assert ConnectionCounter.count(key, t0 + ttl + 1) == 0
   end
@@ -193,7 +194,12 @@ defmodule RealtimeGateway.LimitsTest do
   # --- fail-open ---------------------------------------------------------------------------------------
 
   test "every rate bucket fails OPEN when the rate limiter is unavailable" do
-    Application.put_env(:shared_infra, :rate_limiter_adapter, RealtimeGateway.LimitsTest.DownRateLimiter)
+    Application.put_env(
+      :shared_infra,
+      :rate_limiter_adapter,
+      RealtimeGateway.LimitsTest.DownRateLimiter
+    )
+
     # Even with the limits set to 1, an unavailable limiter must ALLOW (never take the socket down).
     System.put_env("RT_JOIN_LIMIT", "1")
     System.put_env("RT_WRITE_LIMIT", "1")
@@ -229,6 +235,7 @@ defmodule RealtimeGateway.LimitsTest do
     assert {:ok, s1} = connect(RealtimeGateway.UserSocket, %{"user_id" => user})
     assert is_binary(s1.assigns.socket_ref)
     assert {:ok, _s2} = connect(RealtimeGateway.UserSocket, %{"user_id" => user})
+
     assert {:error, %{reason: "connection_limit"}} =
              connect(RealtimeGateway.UserSocket, %{"user_id" => user})
   end

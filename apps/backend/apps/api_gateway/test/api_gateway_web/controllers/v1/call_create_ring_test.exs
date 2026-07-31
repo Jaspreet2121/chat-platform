@@ -106,7 +106,11 @@ defmodule ApiGatewayWeb.V1.CallCreateRingTest do
     Application.put_env(:shared_infra, :conversation_client_adapter, ConvStub)
     Application.put_env(:shared_infra, :user_client_adapter, UserStub)
     # LiveKitToken signs locally from this config — a real JWT, no network.
-    Application.put_env(:shared_infra, :livekit, api_key: "lk-key", api_secret: "lk-secret-0123456789", url: "wss://lk.test")
+    Application.put_env(:shared_infra, :livekit,
+      api_key: "lk-key",
+      api_secret: "lk-secret-0123456789",
+      url: "wss://lk.test"
+    )
 
     on_exit(fn ->
       restore(:shared_infra, :auth_client_adapter, prev.a)
@@ -183,8 +187,11 @@ defmodule ApiGatewayWeb.V1.CallCreateRingTest do
     assert create!(%{"callee_external_id" => "bob_ext", "type" => "voice"}).status == 200
 
     # Both parties are told the ring expired…
-    assert_receive %Phoenix.Socket.Broadcast{event: "call:missed", payload: %{call_id: @call_id}}, 2000
-    assert_receive %Phoenix.Socket.Broadcast{event: "call:missed", payload: %{call_id: @call_id}}, 2000
+    assert_receive %Phoenix.Socket.Broadcast{event: "call:missed", payload: %{call_id: @call_id}},
+                   2000
+
+    assert_receive %Phoenix.Socket.Broadcast{event: "call:missed", payload: %{call_id: @call_id}},
+                   2000
 
     # …and the SHARED missed-marking path ran (this is the fn whose CallStore transition emits the
     # call.missed webhook — proven against real Postgres in ConversationService.CallWebhooksTest).

@@ -11,7 +11,11 @@ defmodule ApiGatewayWeb.AdminTenantScopeTest do
   import Plug.Conn
   import Plug.Test
 
-  alias ApiGatewayWeb.{AdminAnalyticsController, AdminContentController, AdminModerationController}
+  alias ApiGatewayWeb.{
+    AdminAnalyticsController,
+    AdminContentController,
+    AdminModerationController
+  }
 
   @default SharedInfra.Tenancy.default_app_id()
   # @integrator lives in ConvStub (nested modules have their own attribute scope).
@@ -28,12 +32,18 @@ defmodule ApiGatewayWeb.AdminTenantScopeTest do
     @integrator_convo "22222222-2222-4222-8222-222222222222"
 
     def get_conversation_app(%{"conversation_id" => @convo}), do: {:ok, %{app_id: @default}}
-    def get_conversation_app(%{"conversation_id" => @integrator_convo}), do: {:ok, %{app_id: @integrator}}
+
+    def get_conversation_app(%{"conversation_id" => @integrator_convo}),
+      do: {:ok, %{app_id: @integrator}}
+
     def get_conversation_app(_), do: {:error, :not_found}
 
     # Echo the app_id the controller injected so the test can assert it's tenant-zero.
-    def admin_list_conversations(attrs), do: {:ok, %{conversations: [], echo_app_id: attrs["app_id"]}}
-    def admin_user_conversations(attrs), do: {:ok, %{conversations: [], echo_app_id: attrs["app_id"]}}
+    def admin_list_conversations(attrs),
+      do: {:ok, %{conversations: [], echo_app_id: attrs["app_id"]}}
+
+    def admin_user_conversations(attrs),
+      do: {:ok, %{conversations: [], echo_app_id: attrs["app_id"]}}
   end
 
   defmodule MsgStub do
@@ -57,8 +67,12 @@ defmodule ApiGatewayWeb.AdminTenantScopeTest do
     @tenant_media "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
     # Presign only a tenant-zero asset; an integrator asset (row in another app) → not_found → no URL.
-    def get_download_url(%{"media_id" => @tenant_media, "app_id" => @default, "purpose" => "message"}),
-      do: {:ok, %{download_url: "https://minio.local/get/" <> @tenant_media}}
+    def get_download_url(%{
+          "media_id" => @tenant_media,
+          "app_id" => @default,
+          "purpose" => "message"
+        }),
+        do: {:ok, %{download_url: "https://minio.local/get/" <> @tenant_media}}
 
     def get_download_url(_), do: {:error, :not_found}
   end
@@ -121,7 +135,9 @@ defmodule ApiGatewayWeb.AdminTenantScopeTest do
   end
 
   test "a user's conversations list is scoped to tenant-zero" do
-    conn = AdminContentController.user_conversations(admin_conn(), %{"id" => Ecto.UUID.generate()})
+    conn =
+      AdminContentController.user_conversations(admin_conn(), %{"id" => Ecto.UUID.generate()})
+
     assert body(conn)["echo_app_id"] == @default
   end
 
@@ -158,6 +174,10 @@ defmodule ApiGatewayWeb.AdminTenantScopeTest do
     integrator_msg = %{message_type: "media", media_id: @integrator_media}
 
     assert AdminContentController.enrich_media(tenant_msg, @default).download_url =~ @tenant_media
-    refute Map.has_key?(AdminContentController.enrich_media(integrator_msg, @default), :download_url)
+
+    refute Map.has_key?(
+             AdminContentController.enrich_media(integrator_msg, @default),
+             :download_url
+           )
   end
 end

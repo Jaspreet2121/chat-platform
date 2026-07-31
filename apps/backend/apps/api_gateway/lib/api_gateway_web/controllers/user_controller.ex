@@ -117,7 +117,8 @@ defmodule ApiGatewayWeb.UserController do
     |> redirect(external: url)
   end
 
-  defp no_avatar(conn), do: conn |> put_status(:not_found) |> json(%{error: %{code: "user.no_avatar"}})
+  defp no_avatar(conn),
+    do: conn |> put_status(:not_found) |> json(%{error: %{code: "user.no_avatar"}})
 
   @doc """
   DIRECT-PEER contact info (phone number) — the ONLY place a user's phone is exposed to another user.
@@ -163,7 +164,9 @@ defmodule ApiGatewayWeb.UserController do
   # Direct type + the target is the OTHER active participant (never the caller, never a group member).
   defp verify_direct_peer(conversation, caller_user_id, target_user_id) do
     type = Map.get(conversation, :type) || Map.get(conversation, "type")
-    participants = Map.get(conversation, :participants) || Map.get(conversation, "participants") || []
+
+    participants =
+      Map.get(conversation, :participants) || Map.get(conversation, "participants") || []
 
     participant_ids =
       Enum.map(participants, fn p -> Map.get(p, :user_id) || Map.get(p, "user_id") end)
@@ -379,21 +382,38 @@ defmodule ApiGatewayWeb.UserController do
            ) do
       json(conn, ProfilePresenter.with_avatar_url(response))
     else
-      {:error, :session_invalid} -> session_invalid(conn)
-      {:error, :auth_unavailable} -> service_unavailable(conn)
-      {:error, :user_unavailable} -> service_unavailable(conn)
-      {:error, :invalid_avatar} -> invalid_avatar(conn)
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :user_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :invalid_avatar} ->
+        invalid_avatar(conn)
+
       # Username failures carry their exact code (usernames.too_short / too_long / invalid_format /
       # reserved / taken / held / change_limit) — the atom names the failure.
-      {:error, username_error} when username_error in [:username_too_short, :username_too_long,
-                                                       :username_invalid_format, :username_reserved,
-                                                       :username_taken, :username_held,
-                                                       :username_change_limit] ->
+      {:error, username_error}
+      when username_error in [
+             :username_too_short,
+             :username_too_long,
+             :username_invalid_format,
+             :username_reserved,
+             :username_taken,
+             :username_held,
+             :username_change_limit
+           ] ->
         "username_" <> failure = Atom.to_string(username_error)
         ErrorResponse.invalid_request(conn, "usernames." <> failure)
 
-      {:error, :profile_invalid} -> invalid_request(conn)
-      _ -> invalid_request(conn)
+      {:error, :profile_invalid} ->
+        invalid_request(conn)
+
+      _ ->
+        invalid_request(conn)
     end
   end
 

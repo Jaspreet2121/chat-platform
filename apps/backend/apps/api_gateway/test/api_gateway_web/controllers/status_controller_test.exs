@@ -54,7 +54,9 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     end
 
     def status_feed(%{"viewer_user_id" => @me}),
-      do: {:ok, %{threads: [%{owner_user_id: @friend, post_count: 2, latest_at: "t9", unseen_count: 1}]}}
+      do:
+        {:ok,
+         %{threads: [%{owner_user_id: @friend, post_count: 2, latest_at: "t9", unseen_count: 1}]}}
 
     # "My status" now carries its VIEW COUNT (commit 2).
     def my_status(%{"owner_user_id" => @me}),
@@ -96,7 +98,9 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     # "st-1" is @friend's live status, visible to @me. "st-gone" fell out of the audience (live but
     # not visible now); "st-mine" is the caller's OWN; anything else is unknown/expired.
     def status_for_reply(%{"status_id" => "st-1", "viewer_user_id" => @me}),
-      do: {:ok, %{owner_user_id: @friend, status_id: "st-1", kind: "image", excerpt: "at the beach"}}
+      do:
+        {:ok,
+         %{owner_user_id: @friend, status_id: "st-1", kind: "image", excerpt: "at the beach"}}
 
     def status_for_reply(%{"status_id" => "st-mine", "viewer_user_id" => @me}),
       do: {:ok, %{owner_user_id: @me, status_id: "st-mine", kind: "text", excerpt: "mine"}}
@@ -106,10 +110,14 @@ defmodule ApiGatewayWeb.StatusControllerTest do
 
     def create_message(attrs) do
       send(:status_reply_test, {:created, attrs})
-      {:ok, %{message_id: "msg-1", conversation_id: attrs["conversation_id"], body: attrs["body"]}}
+
+      {:ok,
+       %{message_id: "msg-1", conversation_id: attrs["conversation_id"], body: attrs["body"]}}
     end
 
-    def delete_status(%{"status_id" => "st-1", "owner_user_id" => @me}), do: {:ok, %{deleted: true}}
+    def delete_status(%{"status_id" => "st-1", "owner_user_id" => @me}),
+      do: {:ok, %{deleted: true}}
+
     def delete_status(_attrs), do: {:error, :status_not_found}
 
     # The authz arm's oracle: media "m-ok" visible to @friend; everything else denied.
@@ -126,7 +134,9 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     def start_link, do: Agent.start_link(fn -> %{log: [], blocked: false} end, name: __MODULE__)
     def set_blocked(v), do: Agent.update(__MODULE__, &Map.put(&1, :blocked, v))
     def log, do: Agent.get(__MODULE__, & &1.log) |> Enum.reverse()
-    defp record(entry), do: Agent.update(__MODULE__, &Map.update!(&1, :log, fn l -> [entry | l] end))
+
+    defp record(entry),
+      do: Agent.update(__MODULE__, &Map.update!(&1, :log, fn l -> [entry | l] end))
 
     # The SAME entry point a normal first DM uses (find_or_create_direct downstream).
     def create_conversation(%{"type" => "direct", "participant_user_ids" => [recipient]} = attrs) do
@@ -205,7 +215,9 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     assert text.status == 201
     assert body(text)["status_id"] == "st-1"
 
-    ok_media = StatusController.create(authed(:post), %{"kind" => "image", "media_id" => @my_media})
+    ok_media =
+      StatusController.create(authed(:post), %{"kind" => "image", "media_id" => @my_media})
+
     assert ok_media.status == 201
 
     for media_id <- [@foreign_media, "chat-upload", "unknown-id"] do
@@ -226,7 +238,9 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     assert conn.status == 200
 
     response = body(conn)
-    assert [%{"owner_user_id" => @friend, "post_count" => 2, "unseen_count" => 1}] = response["threads"]
+
+    assert [%{"owner_user_id" => @friend, "post_count" => 2, "unseen_count" => 1}] =
+             response["threads"]
 
     assert response["my_status"] == %{
              "post_count" => 2,
@@ -242,7 +256,10 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     assert body(get_conn) == %{"mode" => "contacts", "member_user_ids" => []}
 
     set_conn =
-      StatusController.set_audience(authed(:put), %{"mode" => "only", "member_user_ids" => [@friend]})
+      StatusController.set_audience(authed(:put), %{
+        "mode" => "only",
+        "member_user_ids" => [@friend]
+      })
 
     assert set_conn.status == 200
     assert body(set_conn) == %{"mode" => "only", "member_user_ids" => [@friend]}
@@ -283,7 +300,11 @@ defmodule ApiGatewayWeb.StatusControllerTest do
   end
 
   test "an owner list the viewer can't see is an EMPTY list (no existence reveal); delete maps 404" do
-    conn = StatusController.list(authed(:get), %{"owner_user_id" => "55555555-5555-4555-8555-555555555555"})
+    conn =
+      StatusController.list(authed(:get), %{
+        "owner_user_id" => "55555555-5555-4555-8555-555555555555"
+      })
+
     assert conn.status == 200
     assert body(conn)["posts"] == []
 
@@ -298,14 +319,19 @@ defmodule ApiGatewayWeb.StatusControllerTest do
     # Visible to the friend → :ok.
     assert :ok = MediaAuthz.authorize_download("m-ok", %{purpose: "status"}, @friend)
     # Not visible (stranger / expired / deleted — the service said no) → denied.
-    assert {:error, :not_a_member} = MediaAuthz.authorize_download("m-ok", %{purpose: "status"}, @me)
-    assert {:error, :not_a_member} = MediaAuthz.authorize_download("m-hidden", %{purpose: "status"}, @friend)
+    assert {:error, :not_a_member} =
+             MediaAuthz.authorize_download("m-ok", %{purpose: "status"}, @me)
+
+    assert {:error, :not_a_member} =
+             MediaAuthz.authorize_download("m-hidden", %{purpose: "status"}, @friend)
+
     # Service down → unavailable (fail closed, mapped like the message arm).
     assert {:error, :conversation_unavailable} =
              MediaAuthz.authorize_download("m-down", %{purpose: "status"}, @friend)
 
     # The catch-all is untouched: an unknown purpose is still denied.
-    assert {:error, :not_a_member} = MediaAuthz.authorize_download("x", %{purpose: "mystery"}, @me)
+    assert {:error, :not_a_member} =
+             MediaAuthz.authorize_download("x", %{purpose: "mystery"}, @me)
   end
 
   test "REPLY: an ordinary DM through the normal create path, carrying the TEXT-ONLY snapshot" do
@@ -372,13 +398,17 @@ defmodule ApiGatewayWeb.StatusControllerTest do
   end
 
   test "no session → 401 across the surface (incl. the commit-2 actions)" do
-    assert StatusController.create(authed(:post, ""), %{"kind" => "text", "body" => "x"}).status == 401
+    assert StatusController.create(authed(:post, ""), %{"kind" => "text", "body" => "x"}).status ==
+             401
+
     assert StatusController.feed(authed(:get, ""), %{}).status == 401
     assert StatusController.delete(authed(:delete, ""), %{"status_id" => "s"}).status == 401
     assert StatusController.get_audience(authed(:get, ""), %{}).status == 401
     assert StatusController.set_audience(authed(:put, ""), %{"mode" => "contacts"}).status == 401
     assert StatusController.record_view(authed(:post, ""), %{"status_id" => "st-1"}).status == 401
     assert StatusController.viewers(authed(:get, ""), %{"status_id" => "st-1"}).status == 401
-    assert StatusController.reply(authed(:post, ""), %{"status_id" => "st-1", "body" => "x"}).status == 401
+
+    assert StatusController.reply(authed(:post, ""), %{"status_id" => "st-1", "body" => "x"}).status ==
+             401
   end
 end

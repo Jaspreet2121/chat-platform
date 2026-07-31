@@ -93,7 +93,12 @@ defmodule AuthService.DevicesTest do
     device!(me, "phone", name: "Pixel", platform: "android", last_seen: ~U[2026-07-30 10:00:00Z])
     device!(me, "laptop", name: "Chrome on macOS", last_seen: ~U[2026-07-30 12:00:00Z])
     device!(me, "old-tab", last_seen: nil)
-    device!(me, "revoked-one", last_seen: ~U[2026-07-30 13:00:00Z], revoked_at: ~U[2026-07-30 13:30:00Z])
+
+    device!(me, "revoked-one",
+      last_seen: ~U[2026-07-30 13:00:00Z],
+      revoked_at: ~U[2026-07-30 13:30:00Z]
+    )
+
     device!(other, "their-phone", last_seen: ~U[2026-07-30 14:00:00Z])
 
     devices = list!(me)
@@ -101,7 +106,9 @@ defmodule AuthService.DevicesTest do
     # Revoked + foreign rows absent; order = last_seen DESC with NULL last.
     assert Enum.map(devices, & &1.device_id) == ["laptop", "phone", "old-tab"]
     assert Enum.map(devices, & &1.device_name) == ["Chrome on macOS", "Pixel", nil]
-    assert %{platform: "android", last_seen_at: "2026-07-30T10:00:00.000000Z"} = Enum.at(devices, 1)
+
+    assert %{platform: "android", last_seen_at: "2026-07-30T10:00:00.000000Z"} =
+             Enum.at(devices, 1)
   end
 
   @tag :postgres_integration
@@ -114,7 +121,8 @@ defmodule AuthService.DevicesTest do
     fcm!(me, "phone")
     fcm!(me, "laptop")
 
-    assert {:ok, %{revoked: true}} = Devices.revoke_device(%{"user_id" => me, "device_id" => "phone"})
+    assert {:ok, %{revoked: true}} =
+             Devices.revoke_device(%{"user_id" => me, "device_id" => "phone"})
 
     # The revoked device: gone from the list, refresh dead, FCM gone.
     assert Enum.map(list!(me), & &1.device_id) == ["laptop"]
@@ -134,9 +142,14 @@ defmodule AuthService.DevicesTest do
     device!(other, "theirs")
     device!(me, "gone", revoked_at: ~U[2026-07-30 09:00:00Z])
 
-    assert {:error, :device_not_found} = Devices.revoke_device(%{"user_id" => me, "device_id" => "nope"})
-    assert {:error, :device_not_found} = Devices.revoke_device(%{"user_id" => me, "device_id" => "theirs"})
-    assert {:error, :device_not_found} = Devices.revoke_device(%{"user_id" => me, "device_id" => "gone"})
+    assert {:error, :device_not_found} =
+             Devices.revoke_device(%{"user_id" => me, "device_id" => "nope"})
+
+    assert {:error, :device_not_found} =
+             Devices.revoke_device(%{"user_id" => me, "device_id" => "theirs"})
+
+    assert {:error, :device_not_found} =
+             Devices.revoke_device(%{"user_id" => me, "device_id" => "gone"})
 
     # The foreign device is untouched.
     assert Enum.map(list!(other), & &1.device_id) == ["theirs"]

@@ -26,7 +26,9 @@ defmodule ApiGatewayWeb.UsagePeriodTest do
       do: {:ok, %{app_id: app_id, users: 3, conversations: 2, messages: 7, storage_bytes: 1024}}
 
     def app_usage_period(%{"app_id" => app_id, "period" => "2026-13"}),
-      do: {:error, :invalid_period} |> tap(fn _ -> send(self(), {:period_called, app_id, "2026-13"}) end)
+      do:
+        {:error, :invalid_period}
+        |> tap(fn _ -> send(self(), {:period_called, app_id, "2026-13"}) end)
 
     def app_usage_period(%{"app_id" => app_id, "period" => period}) do
       {:ok,

@@ -69,7 +69,10 @@ defmodule UserService.PostgresIntegrationTest do
   test "empty-string avatar fields CLEAR the photo (remove-photo path); nil leaves it unchanged" do
     previous_persistence = Application.get_env(:user_service, :user_profile_persistence, false)
     Application.put_env(:user_service, :user_profile_persistence, true)
-    on_exit(fn -> Application.put_env(:user_service, :user_profile_persistence, previous_persistence) end)
+
+    on_exit(fn ->
+      Application.put_env(:user_service, :user_profile_persistence, previous_persistence)
+    end)
 
     user_id = Ecto.UUID.generate()
     insert_user_auth_parent!(user_id)

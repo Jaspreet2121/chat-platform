@@ -112,7 +112,8 @@ defmodule AuthService.Devices do
 
       revoke_sessions_tx(others, user_id)
       # The swept device ids ride back so the gateway can sever each device's live socket.
-      {:ok, %{revoked_count: length(others), revoked_device_ids: Enum.map(others, & &1.device_id)}}
+      {:ok,
+       %{revoked_count: length(others), revoked_device_ids: Enum.map(others, & &1.device_id)}}
     end
   rescue
     Ecto.Query.CastError -> {:error, :auth_invalid}

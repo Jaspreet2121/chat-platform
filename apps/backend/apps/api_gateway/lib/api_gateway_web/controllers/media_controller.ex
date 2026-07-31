@@ -202,7 +202,10 @@ defmodule ApiGatewayWeb.MediaController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, asset} <-
-           SharedInfra.MediaClient.get_asset(%{"media_id" => media_id, "app_id" => session.app_id}),
+           SharedInfra.MediaClient.get_asset(%{
+             "media_id" => media_id,
+             "app_id" => session.app_id
+           }),
          :ok <- ApiGatewayWeb.MediaAuthz.authorize_download(media_id, asset, session.user_id),
          {:ok, response} <-
            SharedInfra.MediaClient.get_download_url(%{
@@ -238,7 +241,12 @@ defmodule ApiGatewayWeb.MediaController do
   defp not_found(conn), do: ErrorResponse.not_found(conn, "media.not_found", "Not found")
 
   defp forbidden(conn),
-    do: ErrorResponse.forbidden(conn, "media.forbidden", "Not allowed to upload for this conversation")
+    do:
+      ErrorResponse.forbidden(
+        conn,
+        "media.forbidden",
+        "Not allowed to upload for this conversation"
+      )
 
   defp authorization_header(conn) do
     case get_req_header(conn, "authorization") do

@@ -31,6 +31,7 @@ defmodule ApiGatewayWeb.PresenceRead do
   defp entry(caller_id, target) do
     if PresenceAuthz.can_see?(caller_id, target) do
       online = Presence.online?(target)
+
       # A live user reports no last_seen (they're online now); an offline one reports their last disconnect.
       last_seen = if online, do: nil, else: Presence.last_seen(target)
       %{user_id: target, online: online, last_seen_at: iso8601(last_seen)}
@@ -41,10 +42,14 @@ defmodule ApiGatewayWeb.PresenceRead do
   end
 
   defp iso8601(nil), do: nil
-  defp iso8601(unix) when is_integer(unix), do: unix |> DateTime.from_unix!() |> DateTime.to_iso8601()
+
+  defp iso8601(unix) when is_integer(unix),
+    do: unix |> DateTime.from_unix!() |> DateTime.to_iso8601()
 
   @doc "Parse a `user_ids` query value: a comma-separated string or a repeated-param list → [id]."
-  def parse_ids(value) when is_binary(value), do: value |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+  def parse_ids(value) when is_binary(value),
+    do: value |> String.split(",", trim: true) |> Enum.map(&String.trim/1)
+
   def parse_ids(value) when is_list(value), do: Enum.filter(value, &is_binary/1)
   def parse_ids(_), do: []
 end

@@ -166,7 +166,10 @@ defmodule ApiGatewayWeb.V1.MediaControllerTest do
       restore(:conversation_client_adapter, prev.conv)
       restore(:auth_client_adapter, prev.auth)
       restore(:message_client_adapter, prev.msg)
-      if prev.backend, do: System.put_env("V1_RUNTIME_BACKEND", prev.backend), else: System.delete_env("V1_RUNTIME_BACKEND")
+
+      if prev.backend,
+        do: System.put_env("V1_RUNTIME_BACKEND", prev.backend),
+        else: System.delete_env("V1_RUNTIME_BACKEND")
 
       for k <- [:test_assets, :test_conv_app, :test_members, :test_ext_users, :test_media_conv],
           do: Application.delete_env(:api_gateway, k)
@@ -178,7 +181,12 @@ defmodule ApiGatewayWeb.V1.MediaControllerTest do
   # ================================ create_upload ================================
 
   test "end-user participant → 201 with upload fields and NO object_key" do
-    conn = MediaController.create_upload(user_conn(@user), %{"purpose" => "message", "conversation_id" => @conv})
+    conn =
+      MediaController.create_upload(user_conn(@user), %{
+        "purpose" => "message",
+        "conversation_id" => @conv
+      })
+
     body = json(conn)
 
     assert conn.status == 201
@@ -190,25 +198,48 @@ defmodule ApiGatewayWeb.V1.MediaControllerTest do
   end
 
   test "end-user NON-participant upload → 404 (no reveal, not 403)" do
-    conn = MediaController.create_upload(user_conn(@outsider), %{"purpose" => "message", "conversation_id" => @conv})
+    conn =
+      MediaController.create_upload(user_conn(@outsider), %{
+        "purpose" => "message",
+        "conversation_id" => @conv
+      })
+
     assert conn.status == 404
     refute conn.status == 403
     assert json(conn)["error"]["code"] == "v1.not_found"
   end
 
   test "app actor upload to a tenant conversation → 201" do
-    conn = MediaController.create_upload(app_conn(), %{"purpose" => "message", "conversation_id" => @conv, "owner" => "ext-owner"})
+    conn =
+      MediaController.create_upload(app_conn(), %{
+        "purpose" => "message",
+        "conversation_id" => @conv,
+        "owner" => "ext-owner"
+      })
+
     assert conn.status == 201
     assert json(conn)["media_id"] == "new-media-id"
   end
 
   test "app actor upload to a CROSS-TENANT conversation → 404" do
-    conn = MediaController.create_upload(app_conn(), %{"purpose" => "message", "conversation_id" => @conv_b, "owner" => "ext-owner"})
+    conn =
+      MediaController.create_upload(app_conn(), %{
+        "purpose" => "message",
+        "conversation_id" => @conv_b,
+        "owner" => "ext-owner"
+      })
+
     assert conn.status == 404
   end
 
   test "app actor naming an owner that doesn't resolve in the app → 400" do
-    conn = MediaController.create_upload(app_conn(), %{"purpose" => "message", "conversation_id" => @conv, "owner" => "ghost"})
+    conn =
+      MediaController.create_upload(app_conn(), %{
+        "purpose" => "message",
+        "conversation_id" => @conv,
+        "owner" => "ghost"
+      })
+
     assert conn.status == 400
     assert json(conn)["error"]["code"] == "v1.invalid_request"
   end
@@ -271,7 +302,12 @@ defmodule ApiGatewayWeb.V1.MediaControllerTest do
   end
 
   test "a client-supplied object_key param is IGNORED (URL signs the row's key)" do
-    conn = MediaController.download(user_conn(@user), %{"media_id" => @ready_msg, "object_key" => "attacker/key"})
+    conn =
+      MediaController.download(user_conn(@user), %{
+        "media_id" => @ready_msg,
+        "object_key" => "attacker/key"
+      })
+
     body = json(conn)
 
     assert conn.status == 200
@@ -283,7 +319,13 @@ defmodule ApiGatewayWeb.V1.MediaControllerTest do
   # ================================ message send w/ media_id ================================
 
   test "message send with a valid own ready message asset → 201, media_id on the message" do
-    conn = MessageController.create(user_conn(@user), %{"id" => @conv, "media_id" => @ready_msg, "body" => "caption"})
+    conn =
+      MessageController.create(user_conn(@user), %{
+        "id" => @conv,
+        "media_id" => @ready_msg,
+        "body" => "caption"
+      })
+
     body = json(conn)
 
     assert conn.status == 201
@@ -303,25 +345,41 @@ defmodule ApiGatewayWeb.V1.MediaControllerTest do
   end
 
   test "message send with an incomplete (status=created) asset → 422" do
-    conn = MessageController.create(user_conn(@user), %{"id" => @conv, "media_id" => @created_msg})
+    conn =
+      MessageController.create(user_conn(@user), %{"id" => @conv, "media_id" => @created_msg})
+
     assert conn.status == 422
   end
 
   # ---- helpers ----
 
   defp asset(id, purpose, owner, conv, status),
-    do: %{media_id: id, purpose: purpose, owner_user_id: owner, conversation_id: conv, status: status}
+    do: %{
+      media_id: id,
+      purpose: purpose,
+      owner_user_id: owner,
+      conversation_id: conv,
+      status: status
+    }
 
   defp base_conn, do: conn(:post, "/v1/media", %{})
 
   defp app_conn, do: base_conn() |> assign(:v1_app_id, @app) |> assign(:v1_actor, :app)
 
   defp user_conn(user_id),
-    do: base_conn() |> assign(:v1_app_id, @app) |> assign(:v1_actor, :end_user) |> assign(:v1_user_id, user_id)
+    do:
+      base_conn()
+      |> assign(:v1_app_id, @app)
+      |> assign(:v1_actor, :end_user)
+      |> assign(:v1_user_id, user_id)
 
   # Same user, but the credential is scoped to a DIFFERENT app (cross-tenant probe).
   defp user_conn2(user_id),
-    do: base_conn() |> assign(:v1_app_id, @app2) |> assign(:v1_actor, :end_user) |> assign(:v1_user_id, user_id)
+    do:
+      base_conn()
+      |> assign(:v1_app_id, @app2)
+      |> assign(:v1_actor, :end_user)
+      |> assign(:v1_user_id, user_id)
 
   defp json(conn), do: Jason.decode!(conn.resp_body)
 

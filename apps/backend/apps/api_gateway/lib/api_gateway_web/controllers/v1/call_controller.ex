@@ -44,7 +44,10 @@ defmodule ApiGatewayWeb.V1.CallController do
          # /v1 uses). JIT creation still happens where it belongs (message sender / media owner /
          # conversation participants).
          {:ok, %{} = callee} <-
-           SharedInfra.AuthClient.lookup_external_user(%{"app_id" => app_id, "external_id" => callee_ext}),
+           SharedInfra.AuthClient.lookup_external_user(%{
+             "app_id" => app_id,
+             "external_id" => callee_ext
+           }),
          callee_id = cget(callee, :user_id),
          :ok <- refute_self(conn.assigns.v1_user_id, callee_id),
          {:ok, call} <-
@@ -55,7 +58,9 @@ defmodule ApiGatewayWeb.V1.CallController do
            }),
          room = cget(call, :room_name),
          {:ok, jwt} <-
-           SharedInfra.LiveKitToken.create(conn.assigns.v1_user_id, room, name: conn.assigns.v1_user_id) do
+           SharedInfra.LiveKitToken.create(conn.assigns.v1_user_id, room,
+             name: conn.assigns.v1_user_id
+           ) do
       # RING THE CALLEE + arm the ring timeout — the two things the socket invite does that this path didn't,
       # which left SDK-initiated calls ringing nobody, forever. Fire-and-forget: never fails the create.
       ring_and_arm_timeout(app_id, call, conn.assigns.v1_user_id, callee_id)
@@ -68,14 +73,27 @@ defmodule ApiGatewayWeb.V1.CallController do
         token: jwt
       })
     else
-      {:error, :app_only} -> app_only(conn)
-      {:error, :invalid_type} -> ErrorResponse.invalid_request(conn, "v1.invalid_request")
-      {:error, :missing} -> ErrorResponse.invalid_request(conn, "v1.invalid_request")
-      {:error, :self_call} -> ErrorResponse.invalid_request(conn, "v1.invalid_request")
+      {:error, :app_only} ->
+        app_only(conn)
+
+      {:error, :invalid_type} ->
+        ErrorResponse.invalid_request(conn, "v1.invalid_request")
+
+      {:error, :missing} ->
+        ErrorResponse.invalid_request(conn, "v1.invalid_request")
+
+      {:error, :self_call} ->
+        ErrorResponse.invalid_request(conn, "v1.invalid_request")
+
       # Unknown callee_external_id → opaque 404 (no existence reveal, no row created).
-      {:error, :user_not_found} -> not_found(conn)
-      {:error, :livekit_not_configured} -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
-      _ -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
+      {:error, :user_not_found} ->
+        not_found(conn)
+
+      {:error, :livekit_not_configured} ->
+        ErrorResponse.service_unavailable(conn, "v1.unavailable")
+
+      _ ->
+        ErrorResponse.service_unavailable(conn, "v1.unavailable")
     end
   end
 
@@ -104,12 +122,19 @@ defmodule ApiGatewayWeb.V1.CallController do
          {:ok, call} <- authorized_call(call_id, conn.assigns.v1_user_id),
          room when is_binary(room) and room != "" <- cget(call, :room_name),
          {:ok, jwt} <-
-           SharedInfra.LiveKitToken.create(conn.assigns.v1_user_id, room, name: conn.assigns.v1_user_id) do
+           SharedInfra.LiveKitToken.create(conn.assigns.v1_user_id, room,
+             name: conn.assigns.v1_user_id
+           ) do
       json(conn, %{url: SharedInfra.LiveKitToken.url(), token: jwt})
     else
-      {:error, :app_only} -> app_only(conn)
-      {:error, :livekit_not_configured} -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
-      _ -> not_found(conn)
+      {:error, :app_only} ->
+        app_only(conn)
+
+      {:error, :livekit_not_configured} ->
+        ErrorResponse.service_unavailable(conn, "v1.unavailable")
+
+      _ ->
+        not_found(conn)
     end
   end
 
@@ -256,6 +281,7 @@ defmodule ApiGatewayWeb.V1.CallController do
 
     Task.start(fn ->
       Process.sleep(RealtimeGateway.CallSignaling.ring_timeout_ms())
+
       # ring_timeout rescues internally; a still-ringing call → missed (idempotent re-check inside).
       RealtimeGateway.CallSignaling.ring_timeout(call_id, ApiGatewayWeb.Endpoint)
     end)
@@ -343,6 +369,7 @@ defmodule ApiGatewayWeb.V1.CallController do
       )
 
   defp normalize_transition({:ok, _} = ok), do: ok
+
   # The atomic guard lost the race (the call left "ringing" under the lock) → the same conflict the fast-path
   # returns.
   defp normalize_transition({:error, :call_conflict}), do: {:error, :not_ringing}
@@ -357,14 +384,16 @@ defmodule ApiGatewayWeb.V1.CallController do
   defp notify_caller(:reject, caller_id, call_id, _room),
     do: broadcast_caller(caller_id, "call:rejected", %{call_id: call_id})
 
-  defp broadcast_caller(caller_id, event, payload) when is_binary(caller_id) and caller_id != "" do
+  defp broadcast_caller(caller_id, event, payload)
+       when is_binary(caller_id) and caller_id != "" do
     Task.start(fn ->
       try do
         ApiGatewayWeb.Endpoint.broadcast("user:" <> caller_id, event, payload)
       rescue
         # Fire-and-forget must never fail the response — but a silent drop would leave the caller ringing
         # until the 35s timeout, so it must not vanish either.
-        error -> Logger.error("call #{event} broadcast to caller failed: #{Exception.message(error)}")
+        error ->
+          Logger.error("call #{event} broadcast to caller failed: #{Exception.message(error)}")
       end
     end)
 
@@ -383,7 +412,9 @@ defmodule ApiGatewayWeb.V1.CallController do
     broadcast_caller(other, "call:ended", %{call_id: call_id})
   end
 
-  defp ring_response(:accept, call_id, room), do: %{call_id: call_id, room: room, status: "accepted"}
+  defp ring_response(:accept, call_id, room),
+    do: %{call_id: call_id, room: room, status: "accepted"}
+
   defp ring_response(:reject, call_id, _room), do: %{call_id: call_id, status: "declined"}
 
   # Fetch the call ONLY if `user_id` is a seat of it — this IS the tenant seal (see @moduledoc). Any failure
@@ -420,7 +451,10 @@ defmodule ApiGatewayWeb.V1.CallController do
   defp terminate(call, call_id, user_id) do
     case cget(call, :kind) || "direct" do
       kind when kind in ["group", "link"] ->
-        case SharedInfra.ConversationClient.leave_group_call(%{"call_id" => call_id, "user_id" => user_id}) do
+        case SharedInfra.ConversationClient.leave_group_call(%{
+               "call_id" => call_id,
+               "user_id" => user_id
+             }) do
           {:ok, _} -> {:ok, "left"}
           _ -> {:error, :unavailable}
         end
@@ -436,7 +470,8 @@ defmodule ApiGatewayWeb.V1.CallController do
   # Load a call link and confirm it belongs to this app (its creator resolves within v1_app_id). Missing /
   # inactive / cross-tenant → :not_found.
   defp scoped_link(link_id, app_id) do
-    with {:ok, %{link: link}} <- SharedInfra.ConversationClient.get_call_link(%{"link_id" => link_id}),
+    with {:ok, %{link: link}} <-
+           SharedInfra.ConversationClient.get_call_link(%{"link_id" => link_id}),
          {:ok, _} <-
            SharedInfra.AuthClient.resolve_user_external_id(%{
              "app_id" => app_id,
@@ -466,7 +501,9 @@ defmodule ApiGatewayWeb.V1.CallController do
     with "joined" <- status,
          true <- is_binary(room) and room != "",
          {:ok, jwt} <-
-           SharedInfra.LiveKitToken.create(conn.assigns.v1_user_id, room, name: conn.assigns.v1_user_id) do
+           SharedInfra.LiveKitToken.create(conn.assigns.v1_user_id, room,
+             name: conn.assigns.v1_user_id
+           ) do
       Map.merge(base, %{room: room, url: SharedInfra.LiveKitToken.url(), token: jwt})
     else
       _ -> base
@@ -490,7 +527,9 @@ defmodule ApiGatewayWeb.V1.CallController do
       kind when kind in ["group", "link"] ->
         case SharedInfra.ConversationClient.get_call_with_participants(%{"call_id" => call_id}) do
           {:ok, result} ->
-            (cget(result, :participants) || []) |> Enum.map(&cget(&1, :user_id)) |> Enum.reject(&is_nil/1)
+            (cget(result, :participants) || [])
+            |> Enum.map(&cget(&1, :user_id))
+            |> Enum.reject(&is_nil/1)
 
           _ ->
             []
@@ -510,7 +549,10 @@ defmodule ApiGatewayWeb.V1.CallController do
   end
 
   defp external_id_for(app_id, user_id) when is_binary(app_id) and is_binary(user_id) do
-    case SharedInfra.AuthClient.resolve_user_external_id(%{"app_id" => app_id, "user_id" => user_id}) do
+    case SharedInfra.AuthClient.resolve_user_external_id(%{
+           "app_id" => app_id,
+           "user_id" => user_id
+         }) do
       {:ok, res} -> cget(res, :external_id)
       _ -> nil
     end
@@ -535,12 +577,18 @@ defmodule ApiGatewayWeb.V1.CallController do
   defp truthy(v), do: v in [true, "true", "1", "yes"]
 
   defp app_only(conn),
-    do: ErrorResponse.forbidden(conn, "v1.end_user_only", "This endpoint requires an end-user token")
+    do:
+      ErrorResponse.forbidden(
+        conn,
+        "v1.end_user_only",
+        "This endpoint requires an end-user token"
+      )
 
   defp not_found(conn), do: ErrorResponse.not_found(conn, "v1.not_found", "Not found")
 
   # Maps arrive atom-keyed (in-process) or string-keyed (HTTP adapter) — read either. Nil-safe.
   defp cget(nil, _key), do: nil
+
   # Presence-based (SharedInfra.Attrs): reads require_approval (a boolean) — `||` dropped a stored false.
   defp cget(map, key) when is_map(map), do: SharedInfra.Attrs.get(map, key)
   defp cget(_map, _key), do: nil

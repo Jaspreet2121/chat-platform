@@ -553,7 +553,8 @@ defmodule MessageService.StatusesTest do
     friend = user!()
 
     # No row → the default.
-    assert {:ok, %{mode: "contacts", member_user_ids: []}} = Statuses.get_audience(%{"user_id" => owner})
+    assert {:ok, %{mode: "contacts", member_user_ids: []}} =
+             Statuses.get_audience(%{"user_id" => owner})
 
     assert {:error, :status_invalid_mode} =
              Statuses.set_audience(%{"user_id" => owner, "mode" => "everyone"})
@@ -568,7 +569,11 @@ defmodule MessageService.StatusesTest do
     too_many = for _ <- 1..257, do: Ecto.UUID.generate()
 
     assert {:error, :status_audience_limit} =
-             Statuses.set_audience(%{"user_id" => owner, "mode" => "only", "member_user_ids" => too_many})
+             Statuses.set_audience(%{
+               "user_id" => owner,
+               "mode" => "only",
+               "member_user_ids" => too_many
+             })
   end
 
   # --- commit 3: replies --------------------------------------------------------------------------
@@ -592,8 +597,15 @@ defmodule MessageService.StatusesTest do
     refute Map.has_key?(snap, :media_id)
 
     # An image status quotes its CAPTION; a captionless one quotes nothing (the client renders "Photo").
-    captioned = post!(owner, %{"kind" => "image", "media_id" => Ecto.UUID.generate(), "body" => "at the beach"})
-    assert {:ok, %{kind: "image", excerpt: "at the beach"}} = for_reply(captioned.status_id, friend)
+    captioned =
+      post!(owner, %{
+        "kind" => "image",
+        "media_id" => Ecto.UUID.generate(),
+        "body" => "at the beach"
+      })
+
+    assert {:ok, %{kind: "image", excerpt: "at the beach"}} =
+             for_reply(captioned.status_id, friend)
 
     bare = post!(owner, %{"kind" => "video", "media_id" => Ecto.UUID.generate(), "body" => nil})
     assert {:ok, %{kind: "video", excerpt: nil}} = for_reply(bare.status_id, friend)

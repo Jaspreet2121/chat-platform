@@ -38,6 +38,7 @@ defmodule ApiGatewayWeb.V1.CallAcceptRejectTest do
 
     def set_status(status), do: Agent.update(__MODULE__, &Map.put(&1, :status, status))
     def set_kind(kind), do: Agent.update(__MODULE__, &Map.put(&1, :kind, kind))
+
     # Simulate the atomic race: the fast-path read "ringing", but the row-locked transition finds it moved.
     def set_conflict(v), do: Agent.update(__MODULE__, &Map.put(&1, :conflict, v))
     def transitions, do: Agent.get(__MODULE__, & &1.transitions)
@@ -84,7 +85,10 @@ defmodule ApiGatewayWeb.V1.CallAcceptRejectTest do
     end
 
     defp record(kind, call_id),
-      do: Agent.update(__MODULE__, fn s -> %{s | transitions: s.transitions ++ [{kind, call_id}]} end)
+      do:
+        Agent.update(__MODULE__, fn s ->
+          %{s | transitions: s.transitions ++ [{kind, call_id}]}
+        end)
   end
 
   defmodule MissingCallStub do
@@ -130,7 +134,12 @@ defmodule ApiGatewayWeb.V1.CallAcceptRejectTest do
     conn = CallController.accept(v1_conn(@callee), %{"id" => @call_id})
 
     assert conn.status == 200
-    assert Jason.decode!(conn.resp_body) == %{"call_id" => @call_id, "room" => @room, "status" => "accepted"}
+
+    assert Jason.decode!(conn.resp_body) == %{
+             "call_id" => @call_id,
+             "room" => @room,
+             "status" => "accepted"
+           }
 
     # The caller's ring resolves off this frame, with the room to join.
     assert_receive %Phoenix.Socket.Broadcast{
@@ -141,6 +150,7 @@ defmodule ApiGatewayWeb.V1.CallAcceptRejectTest do
                    1000
 
     assert topic == "user:#{@caller}"
+
     # And the shared transition fired (this is the fn that emits call.started, per CallWebhooksTest).
     assert CallStub.transitions() == [{:answered, @call_id}]
   end
@@ -170,6 +180,7 @@ defmodule ApiGatewayWeb.V1.CallAcceptRejectTest do
     conn = CallController.accept(v1_conn(@callee), %{"id" => @call_id})
 
     assert conn.status == 409
+
     # The guard prevented the transition — the call stays ended and no second call.started is emitted.
     assert CallStub.transitions() == []
     refute_receive %Phoenix.Socket.Broadcast{}, 200
@@ -184,6 +195,7 @@ defmodule ApiGatewayWeb.V1.CallAcceptRejectTest do
 
   test "the ATOMIC race: fast-path reads ringing but the locked transition conflicts → 409, no broadcast" do
     Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@caller}")
+
     # get_call still says "ringing" (the fast-path passes), but the row-locked transition lost the race.
     CallStub.set_conflict(true)
 

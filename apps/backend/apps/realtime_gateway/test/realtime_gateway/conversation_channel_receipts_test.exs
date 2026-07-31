@@ -14,7 +14,9 @@ defmodule RealtimeGateway.ConversationChannelReceiptsTest do
   @endpoint RealtimeGateway.TestEndpoint
 
   defmodule UserStub do
-    def start_link, do: Agent.start_link(fn -> %{"reader" => true, "peer" => true} end, name: __MODULE__)
+    def start_link,
+      do: Agent.start_link(fn -> %{"reader" => true, "peer" => true} end, name: __MODULE__)
+
     def set(user, v), do: Agent.update(__MODULE__, &Map.put(&1, user, v))
 
     def get_privacy(%{"user_id" => uid}) do
@@ -28,6 +30,7 @@ defmodule RealtimeGateway.ConversationChannelReceiptsTest do
       do: {:ok, %{type: "direct", participants: [%{user_id: "reader"}, %{user_id: "peer"}]}}
 
     def direct_peer_blocked?(_attrs), do: {:ok, %{blocked: false}}
+
     # inbox_rows / shares aren't needed here (the inbox fan-out is fire-and-forget); default to harmless.
     def inbox_rows(_attrs), do: {:ok, %{rows: []}}
   end
@@ -40,6 +43,7 @@ defmodule RealtimeGateway.ConversationChannelReceiptsTest do
 
   setup do
     start_supervised!(%{id: UserStub, start: {UserStub, :start_link, []}})
+
     prev = %{
       u: Application.get_env(:shared_infra, :user_client_adapter),
       c: Application.get_env(:shared_infra, :conversation_client_adapter),

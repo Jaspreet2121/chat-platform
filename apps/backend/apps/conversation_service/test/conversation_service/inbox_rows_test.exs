@@ -19,7 +19,11 @@ defmodule ConversationService.InboxRowsTest do
   setup do
     previous = Application.get_env(:conversation_service, :conversation_persistence, false)
     Application.put_env(:conversation_service, :conversation_persistence, true)
-    on_exit(fn -> Application.put_env(:conversation_service, :conversation_persistence, previous) end)
+
+    on_exit(fn ->
+      Application.put_env(:conversation_service, :conversation_persistence, previous)
+    end)
+
     :ok
   end
 
@@ -56,7 +60,12 @@ defmodule ConversationService.InboxRowsTest do
       INSERT INTO conversation_participants (conversation_id, user_id, role, joined_at, cleared_before)
       VALUES ($1::text::uuid, $2::text::uuid, $3, now(), $4)
       """,
-      [conversation_id, user_id, Keyword.get(opts, :role, "member"), Keyword.get(opts, :cleared_before)]
+      [
+        conversation_id,
+        user_id,
+        Keyword.get(opts, :role, "member"),
+        Keyword.get(opts, :cleared_before)
+      ]
     )
   end
 
@@ -118,7 +127,9 @@ defmodule ConversationService.InboxRowsTest do
 
     # Bob CLEARED his history just now — messages before this instant are invisible to him, and must not
     # count toward his unread NOR appear as his preview. Carol has no such window.
-    old = message!(conv, a, "before bob cleared", at: DateTime.add(DateTime.utc_now(), -60, :second))
+    old =
+      message!(conv, a, "before bob cleared", at: DateTime.add(DateTime.utc_now(), -60, :second))
+
     participant!(conv, b, cleared_before: DateTime.add(DateTime.utc_now(), -30, :second))
 
     _new = message!(conv, a, "after bob cleared")
@@ -243,7 +254,9 @@ defmodule ConversationService.InboxRowsTest do
     message!(conv, a, "again")
 
     {:ok, %{conversations: list_rows}} = Conversations.list_conversations(%{"user_id" => b})
-    {:ok, %{rows: [broadcast_row]}} = Conversations.inbox_rows(%{"conversation_id" => conv, "user_ids" => [b]})
+
+    {:ok, %{rows: [broadcast_row]}} =
+      Conversations.inbox_rows(%{"conversation_id" => conv, "user_ids" => [b]})
 
     list_row = Enum.find(list_rows, &(&1.conversation_id == conv))
 
@@ -252,6 +265,7 @@ defmodule ConversationService.InboxRowsTest do
     assert list_row.last_message_preview == broadcast_row.last_message_preview
     assert list_row.title == broadcast_row.title
     assert list_row.updated_at == broadcast_row.updated_at
+
     # The list row carries no user_id (it's implicit); the broadcast row needs it as the routing key.
     refute Map.has_key?(list_row, :user_id)
   end
@@ -267,7 +281,9 @@ defmodule ConversationService.InboxRowsTest do
     message!(conv, a, "again")
 
     # Pre-clear sanity: bob's row shows the preview + 2 unread.
-    {:ok, %{rows: [before]}} = Conversations.inbox_rows(%{"conversation_id" => conv, "user_ids" => [b]})
+    {:ok, %{rows: [before]}} =
+      Conversations.inbox_rows(%{"conversation_id" => conv, "user_ids" => [b]})
+
     assert before.unread_count == 2
     assert before.last_message_preview == "again"
 
@@ -277,24 +293,37 @@ defmodule ConversationService.InboxRowsTest do
     {:ok, _} =
       ConversationService.Participants.clear_history(%{"conversation_id" => conv, "user_id" => b})
 
-    {:ok, %{rows: [cleared]}} = Conversations.inbox_rows(%{"conversation_id" => conv, "user_ids" => [b]})
+    {:ok, %{rows: [cleared]}} =
+      Conversations.inbox_rows(%{"conversation_id" => conv, "user_ids" => [b]})
+
     assert cleared.unread_count == 0
     assert cleared.last_message_preview == nil
 
     # Alice's own view is untouched (clear is per-user).
-    {:ok, %{rows: [alice_row]}} = Conversations.inbox_rows(%{"conversation_id" => conv, "user_ids" => [a]})
+    {:ok, %{rows: [alice_row]}} =
+      Conversations.inbox_rows(%{"conversation_id" => conv, "user_ids" => [a]})
+
     assert alice_row.last_message_preview == "again"
   end
 
   @tag :postgres_integration
   test "invalid input is rejected, not crashed" do
     assert {:error, :conversation_invalid} =
-             Conversations.inbox_rows(%{"conversation_id" => Ecto.UUID.generate(), "user_ids" => []})
+             Conversations.inbox_rows(%{
+               "conversation_id" => Ecto.UUID.generate(),
+               "user_ids" => []
+             })
 
     assert {:error, :conversation_invalid} =
-             Conversations.inbox_rows(%{"conversation_id" => "not-a-uuid", "user_ids" => [Ecto.UUID.generate()]})
+             Conversations.inbox_rows(%{
+               "conversation_id" => "not-a-uuid",
+               "user_ids" => [Ecto.UUID.generate()]
+             })
 
     assert {:error, :conversation_invalid} =
-             Conversations.inbox_rows(%{"conversation_id" => Ecto.UUID.generate(), "user_ids" => ["nope"]})
+             Conversations.inbox_rows(%{
+               "conversation_id" => Ecto.UUID.generate(),
+               "user_ids" => ["nope"]
+             })
   end
 end

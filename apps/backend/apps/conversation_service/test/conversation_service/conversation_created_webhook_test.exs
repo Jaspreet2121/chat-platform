@@ -67,7 +67,9 @@ defmodule ConversationService.ConversationCreatedWebhookTest do
         [app_id]
       )
 
-    Enum.map(rows, fn [event_type, payload] -> %{event_type: event_type, payload: decode(payload)} end)
+    Enum.map(rows, fn [event_type, payload] ->
+      %{event_type: event_type, payload: decode(payload)}
+    end)
   end
 
   defp decode(payload) when is_binary(payload), do: Jason.decode!(payload)

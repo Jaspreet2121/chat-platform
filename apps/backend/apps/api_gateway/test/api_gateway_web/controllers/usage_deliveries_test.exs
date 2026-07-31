@@ -127,6 +127,7 @@ defmodule ApiGatewayWeb.UsageDeliveriesTest do
     body = conn.resp_body
 
     refute body =~ "signing_secret"
+
     # `payload` is the event body (a message.created payload carries message CONTENT) — never selected.
     refute body =~ "\"payload\""
   end
@@ -140,7 +141,11 @@ defmodule ApiGatewayWeb.UsageDeliveriesTest do
   test "deliveries threads status + limit filters, and round-trips the opaque cursor" do
     cursor = Base.url_encode64("2026-07-11T00:00:00Z|d0", padding: false)
 
-    conn = get_json("/api/v1/webhooks/deliveries?app_id=#{@owned}&status=failed&limit=5&cursor=#{cursor}")
+    conn =
+      get_json(
+        "/api/v1/webhooks/deliveries?app_id=#{@owned}&status=failed&limit=5&cursor=#{cursor}"
+      )
+
     assert conn.status == 200
     [row] = Jason.decode!(conn.resp_body)["deliveries"]
 

@@ -15,8 +15,15 @@ defmodule ApiGatewayWeb.AdminModerationController do
   # (suspend/reactivate/ban/message-delete/report-status) = users.moderate; the audit log = audit.view.
   plug RequirePermission, "users.view" when action in [:list_users, :get_user, :list_reports]
 
-  plug RequirePermission, "users.moderate"
-       when action in [:suspend_user, :reactivate_user, :ban_user, :delete_message, :update_report]
+  plug RequirePermission,
+       "users.moderate"
+       when action in [
+              :suspend_user,
+              :reactivate_user,
+              :ban_user,
+              :delete_message,
+              :update_report
+            ]
 
   plug RequirePermission, "audit.view" when action in [:list_audit]
 
@@ -162,7 +169,11 @@ defmodule ApiGatewayWeb.AdminModerationController do
     rows = mfetch(data, list_key) || []
 
     ids =
-      for row <- rows, {id_field, _prefix} <- id_fields, v = mfetch(row, id_field), is_binary(v), do: v
+      for row <- rows,
+          {id_field, _prefix} <- id_fields,
+          v = mfetch(row, id_field),
+          is_binary(v),
+          do: v
 
     lookup =
       case SharedInfra.AuthClient.list_user_summaries(%{"user_ids" => Enum.uniq(ids)}) do
@@ -226,7 +237,12 @@ defmodule ApiGatewayWeb.AdminModerationController do
 
   # Moderation hierarchy guard → 403 (you may only act on a strictly lower-ranked target, never yourself).
   defp error(conn, :cannot_moderate_peer_or_superior),
-    do: ErrorResponse.forbidden(conn, "iam.cannot_moderate_peer_or_superior", "You can only moderate users below your role")
+    do:
+      ErrorResponse.forbidden(
+        conn,
+        "iam.cannot_moderate_peer_or_superior",
+        "You can only moderate users below your role"
+      )
 
   defp error(conn, :cannot_moderate_self),
     do: ErrorResponse.forbidden(conn, "iam.cannot_moderate_self", "You cannot moderate yourself")
@@ -247,8 +263,11 @@ defmodule ApiGatewayWeb.AdminModerationController do
 
   # The message's conversation must belong to the console's tenant. Missing / cross-tenant / unresolvable
   # → :not_found (404). messages.app_id is unreliable, so the tenant comes from the parent conversation.
-  defp ensure_tenant_conversation(conversation_id) when is_binary(conversation_id) and conversation_id != "" do
-    case SharedInfra.ConversationClient.get_conversation_app(%{"conversation_id" => conversation_id}) do
+  defp ensure_tenant_conversation(conversation_id)
+       when is_binary(conversation_id) and conversation_id != "" do
+    case SharedInfra.ConversationClient.get_conversation_app(%{
+           "conversation_id" => conversation_id
+         }) do
       {:ok, %{app_id: app_id}} ->
         if app_id == SharedInfra.Tenancy.default_app_id(), do: :ok, else: {:error, :not_found}
 

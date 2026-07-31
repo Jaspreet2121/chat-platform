@@ -41,7 +41,8 @@ defmodule ApiGatewayWeb.CallController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          :ok <- authorize_call(room, session.user_id),
-         {:ok, jwt} <- SharedInfra.LiveKitToken.create(session.user_id, room, name: session.user_id) do
+         {:ok, jwt} <-
+           SharedInfra.LiveKitToken.create(session.user_id, room, name: session.user_id) do
       json(conn, %{url: SharedInfra.LiveKitToken.url(), token: jwt})
     else
       {:error, :livekit_not_configured} ->
@@ -172,6 +173,7 @@ defmodule ApiGatewayWeb.CallController do
            }) do
         {:ok, _} ->
           notify_caller_rejected(cget(call, :caller_id), call_id)
+
           # The SAME missed pill the socket reject writes (one definition, no drift) — a REST decline and a
           # socket decline are indistinguishable in the chat, and both are indistinguishable from a missed call.
           RealtimeGateway.CallSignaling.write_missed_message(call, ApiGatewayWeb.Endpoint)
@@ -197,7 +199,9 @@ defmodule ApiGatewayWeb.CallController do
   defp notify_caller_rejected(caller_id, call_id) when is_binary(caller_id) and caller_id != "" do
     Task.start(fn ->
       try do
-        ApiGatewayWeb.Endpoint.broadcast("user:" <> caller_id, "call:rejected", %{call_id: call_id})
+        ApiGatewayWeb.Endpoint.broadcast("user:" <> caller_id, "call:rejected", %{
+          call_id: call_id
+        })
       rescue
         error ->
           Logger.error("first-party call:rejected broadcast failed: #{Exception.message(error)}")
@@ -221,7 +225,9 @@ defmodule ApiGatewayWeb.CallController do
       |> Enum.uniq()
       |> Map.new(fn id -> {id, resolve_name(id, app_id)} end)
 
-    Enum.map(rows, fn row -> Map.put(row, "counterpart_name", Map.get(names, row["counterpart_id"])) end)
+    Enum.map(rows, fn row ->
+      Map.put(row, "counterpart_name", Map.get(names, row["counterpart_id"]))
+    end)
   end
 
   defp present_call(call, me) do

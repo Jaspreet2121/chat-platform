@@ -24,7 +24,9 @@ defmodule ApiGatewayWeb.V1.MessageEditDeleteTest do
 
     def get_conversation(_), do: {:error, :conversation_not_found}
 
-    def get_conversation_app(%{"conversation_id" => "conv-1"}), do: {:ok, %{conversation_id: "conv-1"}}
+    def get_conversation_app(%{"conversation_id" => "conv-1"}),
+      do: {:ok, %{conversation_id: "conv-1"}}
+
     def get_conversation_app(_), do: {:error, :conversation_not_found}
   end
 
@@ -222,6 +224,7 @@ defmodule ApiGatewayWeb.V1.MessageEditDeleteTest do
                "body" => "x"
              })
   end
+
   test "editing a SOFT-DELETED message → 404 (gone; the tombstone is never resurrected), no broadcast" do
     subscribe_conv()
 

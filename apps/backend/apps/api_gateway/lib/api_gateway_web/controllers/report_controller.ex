@@ -65,14 +65,17 @@ defmodule ApiGatewayWeb.ReportController do
     end
   end
 
-  def create(conn, _params), do: ErrorResponse.invalid_request(conn, "reports.reported_user_required")
+  def create(conn, _params),
+    do: ErrorResponse.invalid_request(conn, "reports.reported_user_required")
 
   defp validate_reason(%{"reason" => reason}) when reason in @reasons, do: {:ok, reason}
   defp validate_reason(_params), do: {:error, :invalid_reason}
 
   # details is optional; when present it must be a string within the cap.
   defp validate_details(%{"details" => details}) when is_binary(details) do
-    if String.length(details) <= @max_details, do: {:ok, details}, else: {:error, :details_too_long}
+    if String.length(details) <= @max_details,
+      do: {:ok, details},
+      else: {:error, :details_too_long}
   end
 
   defp validate_details(%{"details" => nil}), do: {:ok, nil}

@@ -99,13 +99,17 @@ defmodule ApiGatewayWeb.V1.MessageControllerBroadcastTest do
     prev_backend = System.get_env("V1_RUNTIME_BACKEND")
     Application.put_env(:shared_infra, :conversation_client_adapter, ConvStub)
     Application.put_env(:shared_infra, :message_client_adapter, MsgStub)
+
     # Force the in-process ETS idem cache (redis isn't running in test) so the replay branch is exercised.
     System.put_env("V1_RUNTIME_BACKEND", "ets")
 
     on_exit(fn ->
       restore(:conversation_client_adapter, prev_conv)
       restore(:message_client_adapter, prev_msg)
-      if prev_backend, do: System.put_env("V1_RUNTIME_BACKEND", prev_backend), else: System.delete_env("V1_RUNTIME_BACKEND")
+
+      if prev_backend,
+        do: System.put_env("V1_RUNTIME_BACKEND", prev_backend),
+        else: System.delete_env("V1_RUNTIME_BACKEND")
     end)
 
     :ok
@@ -161,7 +165,9 @@ defmodule ApiGatewayWeb.V1.MessageControllerBroadcastTest do
 
     MessageController.create(v1_conn(), send_body())
 
-    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_updated", payload: payload}, 1000
+    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_updated", payload: payload},
+                   1000
+
     assert payload["unread_count"] == 0
     assert payload["last_message_preview"] == "hello"
     # The routing key is not part of the wire frame.
@@ -177,7 +183,9 @@ defmodule ApiGatewayWeb.V1.MessageControllerBroadcastTest do
 
     # The non-sender's row carries unread 1 (the message they haven't read); the sender's carries 0 (asserted
     # above). Same conversation, different rows — the whole point of the per-user fan-out.
-    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_updated", payload: payload}, 1000
+    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_updated", payload: payload},
+                   1000
+
     assert payload["unread_count"] == 1
     assert payload["conversation_id"] == @conversation_id
   end
@@ -193,6 +201,7 @@ defmodule ApiGatewayWeb.V1.MessageControllerBroadcastTest do
 
   test "a repeated POST with the SAME Idempotency-Key broadcasts exactly ONCE" do
     Phoenix.PubSub.subscribe(ApiGateway.PubSub, "conversation:#{@conversation_id}")
+
     # Unique per run — the ETS idem cache lives for the whole suite, so a fixed key could be pre-cached.
     key = "idem-#{System.unique_integer([:positive])}"
 

@@ -83,10 +83,13 @@ defmodule ApiGatewayWeb.AdminScopeAuthPostgresIntegrationTest do
   end
 
   defp seed_app!(id) do
-    AuthRepo.query!("INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'Integrator', $2)", [
-      id,
-      "int-" <> String.slice(String.replace(id, "-", ""), 0, 12)
-    ])
+    AuthRepo.query!(
+      "INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'Integrator', $2)",
+      [
+        id,
+        "int-" <> String.slice(String.replace(id, "-", ""), 0, 12)
+      ]
+    )
   end
 
   defp seed_user!(id, app_id, tag) do

@@ -13,7 +13,9 @@ defmodule ApiGatewayWeb.PrivacyControllerTest do
   alias ApiGatewayWeb.PrivacyController
 
   defmodule AuthStub do
-    def current_session(%{"authorization" => "Bearer me"}), do: {:ok, %{user_id: "u1", app_id: "app1"}}
+    def current_session(%{"authorization" => "Bearer me"}),
+      do: {:ok, %{user_id: "u1", app_id: "app1"}}
+
     def current_session(_), do: {:error, :session_invalid}
   end
 
@@ -23,7 +25,11 @@ defmodule ApiGatewayWeb.PrivacyControllerTest do
     def get_privacy(%{"user_id" => "u1"}),
       do:
         {:ok,
-         %{last_seen_visibility: "contacts", profile_photo_visibility: "everyone", read_receipts_enabled: true}}
+         %{
+           last_seen_visibility: "contacts",
+           profile_photo_visibility: "everyone",
+           read_receipts_enabled: true
+         }}
 
     def update_privacy(attrs) do
       changes = Map.take(attrs, @keys)
@@ -37,7 +43,11 @@ defmodule ApiGatewayWeb.PrivacyControllerTest do
     end
 
     defp merge_defaults(changes) do
-      %{last_seen_visibility: "contacts", profile_photo_visibility: "contacts", read_receipts_enabled: true}
+      %{
+        last_seen_visibility: "contacts",
+        profile_photo_visibility: "contacts",
+        read_receipts_enabled: true
+      }
       |> Map.merge(Map.new(changes, fn {k, v} -> {String.to_atom(k), v} end))
     end
   end

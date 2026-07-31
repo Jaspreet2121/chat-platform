@@ -77,6 +77,7 @@ defmodule AuthService.AccountsPhoneLookupTest do
   test "defensive inputs → {:ok, []} with no query and no crash" do
     app = seed_app()
     assert {:ok, []} = Accounts.lookup_active_by_phones([], app)
+
     # No app_id → the app-scoped clause doesn't match; the bulk path returns empty rather than app-blind.
     assert {:ok, []} = Accounts.lookup_active_by_phones(["+15551110001"], nil)
   end
@@ -119,6 +120,7 @@ defmodule AuthService.AccountsPhoneLookupTest do
     app = seed_app()
     opted_out = seed_user(app, "+15552220001", "active")
     stays = seed_user(app, "+15552220002", "active")
+
     # `stays` gets a privacy ROW with the flag left at its default — proving the default (not just a
     # missing row) is discoverable.
     set_discoverable(stays, true)

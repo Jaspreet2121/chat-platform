@@ -11,7 +11,9 @@ defmodule ApiGatewayWeb.AdminAnalyticsController do
   alias ApiGatewayWeb.ErrorResponse
 
   def overview(conn, _params) do
-    case SharedInfra.MessageClient.analytics_overview(%{"app_id" => SharedInfra.Tenancy.default_app_id()}) do
+    case SharedInfra.MessageClient.analytics_overview(%{
+           "app_id" => SharedInfra.Tenancy.default_app_id()
+         }) do
       {:ok, data} -> json(conn, data)
       {:error, _reason} -> unavailable(conn)
     end

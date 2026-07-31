@@ -39,9 +39,12 @@ defmodule ApiGatewayWeb.V1.PresenceController do
           Enum.map(resolved, fn
             {ext, internal} when is_binary(internal) ->
               case Map.get(by_internal, internal) do
-                %{online: online, last_seen_at: last_seen} -> %{user_id: ext, online: online, last_seen_at: last_seen}
+                %{online: online, last_seen_at: last_seen} ->
+                  %{user_id: ext, online: online, last_seen_at: last_seen}
+
                 # Resolved but the snapshot dropped it (shouldn't happen) → fail-closed offline.
-                _ -> offline(ext)
+                _ ->
+                  offline(ext)
               end
 
             # Unresolvable external id → fail-closed offline under its original id.
@@ -52,7 +55,11 @@ defmodule ApiGatewayWeb.V1.PresenceController do
         json(conn, %{presence: presence})
 
       _ ->
-        ErrorResponse.forbidden(conn, "v1.end_user_only", "This endpoint requires an end-user token")
+        ErrorResponse.forbidden(
+          conn,
+          "v1.end_user_only",
+          "This endpoint requires an end-user token"
+        )
     end
   end
 
@@ -60,8 +67,12 @@ defmodule ApiGatewayWeb.V1.PresenceController do
 
   # Resolve-ONLY: this is a GET — an unknown external id must read as offline, never CREATE a user row
   # (which the resolve-or-create variant would). Outcome identical to before: nil → offline under the id.
-  defp resolve_internal(external, app_id) when is_binary(app_id) and app_id != "" and is_binary(external) do
-    case SharedInfra.AuthClient.lookup_external_user(%{"app_id" => app_id, "external_id" => external}) do
+  defp resolve_internal(external, app_id)
+       when is_binary(app_id) and app_id != "" and is_binary(external) do
+    case SharedInfra.AuthClient.lookup_external_user(%{
+           "app_id" => app_id,
+           "external_id" => external
+         }) do
       {:ok, res} -> Map.get(res, :user_id) || Map.get(res, "user_id")
       _ -> nil
     end

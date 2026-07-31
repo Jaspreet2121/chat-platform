@@ -23,7 +23,10 @@ defmodule ApiGatewayWeb.V1.ReactionsReceiptsTest do
       do: {:ok, %{conversation_id: "conv-1", app_id: "44444444-4444-4444-8444-444444444444"}}
 
     def get_conversation(_), do: {:error, :conversation_not_found}
-    def get_conversation_app(%{"conversation_id" => "conv-1"}), do: {:ok, %{conversation_id: "conv-1"}}
+
+    def get_conversation_app(%{"conversation_id" => "conv-1"}),
+      do: {:ok, %{conversation_id: "conv-1"}}
+
     def get_conversation_app(_), do: {:error, :conversation_not_found}
   end
 
@@ -113,7 +116,8 @@ defmodule ApiGatewayWeb.V1.ReactionsReceiptsTest do
   end
 
   test "a second emoji from the SAME user REPLACES the first (one reaction per user)" do
-    assert %{status: 200} = MessageController.set_reaction(end_user_conn(:put), Map.put(base(), "emoji", "👍"))
+    assert %{status: 200} =
+             MessageController.set_reaction(end_user_conn(:put), Map.put(base(), "emoji", "👍"))
 
     conn = MessageController.set_reaction(end_user_conn(:put), Map.put(base(), "emoji", "🎉"))
 
@@ -129,7 +133,12 @@ defmodule ApiGatewayWeb.V1.ReactionsReceiptsTest do
 
     assert conn.status == 200
     assert Jason.decode!(conn.resp_body)["reactions"] == []
-    assert_receive %Phoenix.Socket.Broadcast{event: "reaction_updated", payload: %{reactions: []}}, 1000
+
+    assert_receive %Phoenix.Socket.Broadcast{
+                     event: "reaction_updated",
+                     payload: %{reactions: []}
+                   },
+                   1000
   end
 
   test "an APP (secret-key) actor cannot react → 403 v1.end_user_only, nothing broadcasts" do
@@ -176,6 +185,7 @@ defmodule ApiGatewayWeb.V1.ReactionsReceiptsTest do
     assert payload.receipt_type == "read"
     assert payload.user_id == @user
     assert payload.event == "message_read"
+
     # The SDK reads payload.payload.message_id — it MUST stay nested or the wire forks from the socket.
     assert payload.payload["message_id"] == @msg
   end

@@ -92,7 +92,8 @@ defmodule ApiGatewayWeb.Plugs.Observability do
   # Bounded route label from the matched Phoenix controller/action; falls back to method+path.
   defp route_label(conn) do
     case {conn.private[:phoenix_controller], conn.private[:phoenix_action]} do
-      {controller, action} when is_atom(controller) and is_atom(action) and not is_nil(controller) ->
+      {controller, action}
+      when is_atom(controller) and is_atom(action) and not is_nil(controller) ->
         "#{inspect(controller)}##{action}"
 
       _ ->

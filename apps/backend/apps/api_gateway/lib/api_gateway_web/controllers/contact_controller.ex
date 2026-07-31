@@ -62,7 +62,8 @@ defmodule ApiGatewayWeb.ContactController do
     end
   end
 
-  def sync(conn, _params), do: ErrorResponse.invalid_request(conn, "contacts.phone_numbers_required")
+  def sync(conn, _params),
+    do: ErrorResponse.invalid_request(conn, "contacts.phone_numbers_required")
 
   # --- matching + enrichment ---
 

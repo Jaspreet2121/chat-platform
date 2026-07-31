@@ -52,10 +52,17 @@ defmodule ApiGatewayWeb.InviteLinkControllerTest do
 
     def join_group_invite_link(%{"code" => code, "user_id" => uid}) do
       cond do
-        code != @code -> {:error, :link_not_found}
-        uid == "u-removed" -> {:error, :removed}
-        uid == "u-already" -> {:ok, %{status: "already_member", conversation_id: @conv, role: "member"}}
-        true -> {:ok, %{status: "joined", conversation_id: @conv, role: "member"}}
+        code != @code ->
+          {:error, :link_not_found}
+
+        uid == "u-removed" ->
+          {:error, :removed}
+
+        uid == "u-already" ->
+          {:ok, %{status: "already_member", conversation_id: @conv, role: "member"}}
+
+        true ->
+          {:ok, %{status: "joined", conversation_id: @conv, role: "member"}}
       end
     end
 
@@ -125,7 +132,11 @@ defmodule ApiGatewayWeb.InviteLinkControllerTest do
 
     reset = InviteLinkController.reset_link(authed(@owner), %{"conversation_id" => @conv})
     assert reset.status == 200
-    assert body(reset) == %{"code" => @reset_code, "url" => "https://web.test/join/#{@reset_code}"}
+
+    assert body(reset) == %{
+             "code" => @reset_code,
+             "url" => "https://web.test/join/#{@reset_code}"
+           }
   end
 
   test "preview → 200 with EXACTLY {name, avatar_url, member_count} (avatar presigned)" do
@@ -133,7 +144,13 @@ defmodule ApiGatewayWeb.InviteLinkControllerTest do
     assert conn.status == 200
 
     b = body(conn)
-    assert b == %{"name" => "Design Team", "avatar_url" => "https://signed/gm-1", "member_count" => 3}
+
+    assert b == %{
+             "name" => "Design Team",
+             "avatar_url" => "https://signed/gm-1",
+             "member_count" => 3
+           }
+
     # Exactly the three fields — no member list, no conversation_id, nothing more.
     assert Enum.sort(Map.keys(b)) == ["avatar_url", "member_count", "name"]
   end

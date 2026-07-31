@@ -52,10 +52,18 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
 
     # get_asset is scoped by (media_id, app_id): only assets in the caller's app resolve; anything else
     # (unknown id, another tenant's id) → :not_found. Only assets that belong to @app are matched here.
-    def get_asset(%{"media_id" => @msg_media, "app_id" => @app}), do: ok("message", @owner, nil, @msg_media)
-    def get_asset(%{"media_id" => @unsent_media, "app_id" => @app}), do: ok("message", @owner, nil, @unsent_media)
-    def get_asset(%{"media_id" => @avatar_media, "app_id" => @app}), do: ok("user_avatar", @owner, nil, @avatar_media)
-    def get_asset(%{"media_id" => @group_media, "app_id" => @app}), do: ok("group_avatar", @owner, @convo, @group_media)
+    def get_asset(%{"media_id" => @msg_media, "app_id" => @app}),
+      do: ok("message", @owner, nil, @msg_media)
+
+    def get_asset(%{"media_id" => @unsent_media, "app_id" => @app}),
+      do: ok("message", @owner, nil, @unsent_media)
+
+    def get_asset(%{"media_id" => @avatar_media, "app_id" => @app}),
+      do: ok("user_avatar", @owner, nil, @avatar_media)
+
+    def get_asset(%{"media_id" => @group_media, "app_id" => @app}),
+      do: ok("group_avatar", @owner, @convo, @group_media)
+
     def get_asset(_), do: {:error, :not_found}
 
     # NOTE: never receives object_key — the controller passes only media_id + app_id. The URL is derived
@@ -71,7 +79,13 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
     end
 
     defp ok(purpose, owner, conversation_id, media_id) do
-      {:ok, %{media_id: media_id, purpose: purpose, owner_user_id: owner, conversation_id: conversation_id}}
+      {:ok,
+       %{
+         media_id: media_id,
+         purpose: purpose,
+         owner_user_id: owner,
+         conversation_id: conversation_id
+       }}
     end
   end
 

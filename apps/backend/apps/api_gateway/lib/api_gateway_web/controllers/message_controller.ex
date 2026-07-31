@@ -61,21 +61,41 @@ defmodule ApiGatewayWeb.MessageController do
       |> put_status(:created)
       |> json(response)
     else
-      {:error, :session_invalid} -> unauthorized(conn)
-      {:error, :auth_unavailable} -> service_unavailable(conn)
-      {:error, :message_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_membership_forbidden} -> forbidden(conn)
+      {:error, :session_invalid} ->
+        unauthorized(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :message_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_membership_forbidden} ->
+        forbidden(conn)
+
       {:error, :only_admins_can_send} ->
-        ErrorResponse.forbidden(conn, "group.only_admins_can_send", "Only admins can send messages")
+        ErrorResponse.forbidden(
+          conn,
+          "group.only_admins_can_send",
+          "Only admins can send messages"
+        )
 
       # Malformed polls are rejected with SPECIFIC codes — never stored broken.
-      {:error, poll_error} when poll_error in [:poll_invalid_question, :poll_too_few_options,
-                                               :poll_too_many_options, :poll_invalid_option,
-                                               :poll_duplicate_option] ->
+      {:error, poll_error}
+      when poll_error in [
+             :poll_invalid_question,
+             :poll_too_few_options,
+             :poll_too_many_options,
+             :poll_invalid_option,
+             :poll_duplicate_option
+           ] ->
         poll_invalid(conn, poll_error)
 
-      _ -> invalid_request(conn)
+      _ ->
+        invalid_request(conn)
     end
   end
 
@@ -281,15 +301,32 @@ defmodule ApiGatewayWeb.MessageController do
 
       json(conn, %{message_id: message_id, poll: poll})
     else
-      {:error, :session_invalid} -> unauthorized(conn)
-      {:error, :auth_unavailable} -> service_unavailable(conn)
-      {:error, :message_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_membership_forbidden} -> forbidden(conn)
-      {:error, :message_not_found} -> not_found(conn)
-      {:error, :poll_invalid_option} -> ErrorResponse.invalid_request(conn, "polls.invalid_option")
-      {:error, :poll_single_choice} -> ErrorResponse.invalid_request(conn, "polls.single_choice")
-      _ -> invalid_request(conn)
+      {:error, :session_invalid} ->
+        unauthorized(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :message_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_membership_forbidden} ->
+        forbidden(conn)
+
+      {:error, :message_not_found} ->
+        not_found(conn)
+
+      {:error, :poll_invalid_option} ->
+        ErrorResponse.invalid_request(conn, "polls.invalid_option")
+
+      {:error, :poll_single_choice} ->
+        ErrorResponse.invalid_request(conn, "polls.single_choice")
+
+      _ ->
+        invalid_request(conn)
     end
   end
 

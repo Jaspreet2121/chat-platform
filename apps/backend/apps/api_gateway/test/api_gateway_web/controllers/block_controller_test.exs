@@ -19,7 +19,9 @@ defmodule ApiGatewayWeb.BlockControllerTest do
   defmodule AuthStub do
     @me "11111111-1111-4111-8111-111111111111"
     @app "33333333-3333-4333-8333-333333333333"
-    def current_session(%{"authorization" => "Bearer me"}), do: {:ok, %{user_id: @me, app_id: @app}}
+    def current_session(%{"authorization" => "Bearer me"}),
+      do: {:ok, %{user_id: @me, app_id: @app}}
+
     def current_session(_), do: {:error, :session_invalid}
   end
 
@@ -36,7 +38,16 @@ defmodule ApiGatewayWeb.BlockControllerTest do
       do: {:ok, %{blocker_user_id: b, blocked_user_id: t}}
 
     def list_blocks(%{"blocker_user_id" => _}),
-      do: {:ok, %{blocks: [%{user_id: "22222222-2222-4222-8222-222222222222", created_at: "2026-07-01T00:00:00Z"}]}}
+      do:
+        {:ok,
+         %{
+           blocks: [
+             %{
+               user_id: "22222222-2222-4222-8222-222222222222",
+               created_at: "2026-07-01T00:00:00Z"
+             }
+           ]
+         }}
   end
 
   defmodule UserStub do
@@ -45,7 +56,9 @@ defmodule ApiGatewayWeb.BlockControllerTest do
   end
 
   defmodule MediaStub do
-    def get_download_url(%{"purpose" => "user_avatar"}), do: {:ok, %{download_url: "https://minio/bob.png"}}
+    def get_download_url(%{"purpose" => "user_avatar"}),
+      do: {:ok, %{download_url: "https://minio/bob.png"}}
+
     def get_download_url(_), do: {:error, :not_found}
   end
 

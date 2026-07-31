@@ -16,6 +16,7 @@ defmodule AuthService.Schemas.ApiKey do
     field(:name, :string)
     field(:key_hash, :string)
     field(:key_prefix, :string)
+
     # 'live' | 'test' — which key class. A test key is stored against the integrator's DISTINCT test
     # app_id (its twin), so the app_id seal isolates test from live; mode is carried for observability.
     field(:mode, :string, default: "live")

@@ -21,7 +21,12 @@ defmodule MessageService.MessageInfoTest do
   setup do
     prev = %{
       persistence: Application.get_env(:message_service, :message_persistence, false),
-      adapter: Application.get_env(:message_service, :message_store_adapter, MessageStore.QueryPlanAdapter)
+      adapter:
+        Application.get_env(
+          :message_service,
+          :message_store_adapter,
+          MessageStore.QueryPlanAdapter
+        )
     }
 
     Application.put_env(:message_service, :message_persistence, true)
@@ -80,11 +85,31 @@ defmodule MessageService.MessageInfoTest do
     privacy!(@reader_off, false)
 
     mid = send_message!()
-    Receipts.mark_delivered(%{"conversation_id" => @conv, "message_id" => mid, "user_id" => @reader_on})
-    Receipts.mark_read(%{"conversation_id" => @conv, "message_id" => mid, "user_id" => @reader_on})
+
+    Receipts.mark_delivered(%{
+      "conversation_id" => @conv,
+      "message_id" => mid,
+      "user_id" => @reader_on
+    })
+
+    Receipts.mark_read(%{
+      "conversation_id" => @conv,
+      "message_id" => mid,
+      "user_id" => @reader_on
+    })
+
     # reader_off READ it too — but disabled receipts (no prior delivered receipt: read_at proves receipt).
-    Receipts.mark_read(%{"conversation_id" => @conv, "message_id" => mid, "user_id" => @reader_off})
-    Receipts.mark_delivered(%{"conversation_id" => @conv, "message_id" => mid, "user_id" => @delivered_only})
+    Receipts.mark_read(%{
+      "conversation_id" => @conv,
+      "message_id" => mid,
+      "user_id" => @reader_off
+    })
+
+    Receipts.mark_delivered(%{
+      "conversation_id" => @conv,
+      "message_id" => mid,
+      "user_id" => @delivered_only
+    })
 
     assert {:ok, result} = info(mid)
 
@@ -100,8 +125,11 @@ defmodule MessageService.MessageInfoTest do
 
     # THE DRIFT GUARD: in the SAME run, read_by_count counts exactly the read list (both consume
     # read_receipts_on — one predicate, two call sites).
-    {:ok, timeline} = Messages.list_messages(%{"conversation_id" => @conv, "viewer_user_id" => @sender})
-    assert Enum.find(timeline.messages, &(&1.message_id == mid)).read_by_count == length(result.read)
+    {:ok, timeline} =
+      Messages.list_messages(%{"conversation_id" => @conv, "viewer_user_id" => @sender})
+
+    assert Enum.find(timeline.messages, &(&1.message_id == mid)).read_by_count ==
+             length(result.read)
   end
 
   @tag :postgres_integration
@@ -110,10 +138,21 @@ defmodule MessageService.MessageInfoTest do
     privacy!(@sender, false)
 
     mid = send_message!()
-    Receipts.mark_delivered(%{"conversation_id" => @conv, "message_id" => mid, "user_id" => @reader_on})
-    Receipts.mark_read(%{"conversation_id" => @conv, "message_id" => mid, "user_id" => @reader_on})
+
+    Receipts.mark_delivered(%{
+      "conversation_id" => @conv,
+      "message_id" => mid,
+      "user_id" => @reader_on
+    })
+
+    Receipts.mark_read(%{
+      "conversation_id" => @conv,
+      "message_id" => mid,
+      "user_id" => @reader_on
+    })
 
     assert {:ok, result} = info(mid)
+
     # No read state for a sender who turned receipts off — but the reader doesn't vanish: they show as
     # delivered. read_hidden tells the client "YOUR setting hides this", not "nobody read it".
     assert result.read == []

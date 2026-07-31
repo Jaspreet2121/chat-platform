@@ -162,7 +162,9 @@ defmodule ApiGatewayWeb.MediaControllerAuthzTest do
     test "passes media_id + owner + app_id and NEVER a client object_key" do
       # The client may send object_key in the body; the controller must drop it.
       params = %{"object_key" => "media/victim/secret/steal.png"}
-      conn = MediaController.complete_upload(upload_conn(@member), Map.put(params, "media_id", "m1"))
+
+      conn =
+        MediaController.complete_upload(upload_conn(@member), Map.put(params, "media_id", "m1"))
 
       assert conn.status == 200
       keys = body(conn)["echo_keys"]

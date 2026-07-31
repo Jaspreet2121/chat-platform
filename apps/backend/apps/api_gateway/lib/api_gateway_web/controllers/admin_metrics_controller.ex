@@ -15,7 +15,9 @@ defmodule ApiGatewayWeb.AdminMetricsController do
 
   def show(conn, params) do
     hours = parse_hours(Map.get(params, "hours"))
-    metrics = SharedInfra.Observability.metrics(ApiGateway.Application.observability_db(), hours: hours)
+
+    metrics =
+      SharedInfra.Observability.metrics(ApiGateway.Application.observability_db(), hours: hours)
 
     json(conn, Map.put(metrics, :window_hours, hours))
   end

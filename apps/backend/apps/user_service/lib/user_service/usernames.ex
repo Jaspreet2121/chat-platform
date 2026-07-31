@@ -63,7 +63,8 @@ defmodule UserService.Usernames do
   """
   def set_username(attrs) do
     with {:ok, user_id} <- required(attrs, "user_id"),
-         %UserProfile{} = profile <- ProfileStore.get_profile(user_id) || {:error, :profile_not_found} do
+         %UserProfile{} = profile <-
+           ProfileStore.get_profile(user_id) || {:error, :profile_not_found} do
       case Map.get(attrs, "username") do
         "" -> remove_username(profile)
         username when is_binary(username) -> apply_username(profile, username)
@@ -118,7 +119,10 @@ defmodule UserService.Usernames do
 
           taken? =
             UserProfile
-            |> where([p], p.app_id == ^app_id and p.username_key == ^key and p.user_id != ^user_id)
+            |> where(
+              [p],
+              p.app_id == ^app_id and p.username_key == ^key and p.user_id != ^user_id
+            )
             |> Repo.exists?()
 
           held? = held_by_other?(app_id, key, user_id)
@@ -201,9 +205,14 @@ defmodule UserService.Usernames do
         )
 
       case result do
-        {:ok, %Postgrex.Result{num_rows: 1}} -> %{username: username, username_key: key}
-        {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} -> Repo.rollback(:username_taken)
-        _ -> Repo.rollback(:profile_invalid)
+        {:ok, %Postgrex.Result{num_rows: 1}} ->
+          %{username: username, username_key: key}
+
+        {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} ->
+          Repo.rollback(:username_taken)
+
+        _ ->
+          Repo.rollback(:profile_invalid)
       end
     end)
   end

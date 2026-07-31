@@ -16,6 +16,7 @@ defmodule ConversationService.Schemas.ConversationParticipant do
     field(:role, :string, default: "member")
     field(:joined_at, :utc_datetime_usec)
     field(:left_at, :utc_datetime_usec)
+
     # WHY the row is left (078): 'removed' = moderation removal; 'left' = voluntary leave. NULL while
     # active. The invite-link rejoin rule keys off this — removed users are refused, leavers reactivate.
     field(:left_reason, :string)

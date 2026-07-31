@@ -44,17 +44,33 @@ defmodule ApiGatewayWeb.AvatarProfileAuthTest do
 
     # App-SCOPED: a profile resolves ONLY for the matching app. Cross-tenant / unknown → :profile_not_found.
     def get_public_profile(%{"user_id" => @has_avatar, "app_id" => @app}),
-      do: {:ok, %{user_id: @has_avatar, display_name: "Has Avatar", app_id: @app, avatar_media_id: @avatar_pic}}
+      do:
+        {:ok,
+         %{
+           user_id: @has_avatar,
+           display_name: "Has Avatar",
+           app_id: @app,
+           avatar_media_id: @avatar_pic
+         }}
 
     def get_public_profile(%{"user_id" => @no_avatar, "app_id" => @app}),
-      do: {:ok, %{user_id: @no_avatar, display_name: "No Avatar", app_id: @app, avatar_media_id: nil}}
+      do:
+        {:ok,
+         %{user_id: @no_avatar, display_name: "No Avatar", app_id: @app, avatar_media_id: nil}}
 
     def get_public_profile(_), do: {:error, :profile_not_found}
 
     def get_current_profile(_), do: {:error, :user_unavailable}
+
     # Echo the stored avatar_media_id back (no app_id → with_avatar_url adds avatar_url: nil, no presign).
     def update_current_profile(attrs),
-      do: {:ok, %{user_id: attrs["user_id"], display_name: attrs["display_name"], avatar_media_id: attrs["avatar_media_id"]}}
+      do:
+        {:ok,
+         %{
+           user_id: attrs["user_id"],
+           display_name: attrs["display_name"],
+           avatar_media_id: attrs["avatar_media_id"]
+         }}
   end
 
   defmodule MediaStub do
@@ -68,8 +84,12 @@ defmodule ApiGatewayWeb.AvatarProfileAuthTest do
     @incomplete "not-yet-ready-avatar"
 
     # Presign only for the avatar pic, in the right app.
-    def get_download_url(%{"media_id" => @avatar_pic, "app_id" => @app, "purpose" => "user_avatar"}),
-      do: {:ok, %{download_url: "https://minio.local/get/avatar"}}
+    def get_download_url(%{
+          "media_id" => @avatar_pic,
+          "app_id" => @app,
+          "purpose" => "user_avatar"
+        }),
+        do: {:ok, %{download_url: "https://minio.local/get/avatar"}}
 
     def get_download_url(_), do: {:error, :not_found}
 
@@ -105,14 +125,21 @@ defmodule ApiGatewayWeb.AvatarProfileAuthTest do
     Application.put_env(:shared_infra, :auth_client_adapter, AuthStub)
     Application.put_env(:shared_infra, :user_client_adapter, UserStub)
     Application.put_env(:shared_infra, :media_client_adapter, MediaStub)
-    System.put_env("SECRET_KEY_BASE", "test_secret_key_base_deterministic_at_least_sixty_four_chars_long_x")
+
+    System.put_env(
+      "SECRET_KEY_BASE",
+      "test_secret_key_base_deterministic_at_least_sixty_four_chars_long_x"
+    )
 
     on_exit(fn ->
       Application.put_env(:user_service, :user_profile_persistence, prev.persist)
       restore(:auth_client_adapter, prev.auth)
       restore(:user_client_adapter, prev.user)
       restore(:media_client_adapter, prev.media)
-      if prev.secret, do: System.put_env("SECRET_KEY_BASE", prev.secret), else: System.delete_env("SECRET_KEY_BASE")
+
+      if prev.secret,
+        do: System.put_env("SECRET_KEY_BASE", prev.secret),
+        else: System.delete_env("SECRET_KEY_BASE")
     end)
 
     :ok
@@ -123,6 +150,7 @@ defmodule ApiGatewayWeb.AvatarProfileAuthTest do
 
   # Endpoint.call runs the full pipeline (Plug.Parsers parses the JSON body → params) then the router.
   defp call(conn), do: ApiGatewayWeb.Endpoint.call(conn, [])
+
   defp authed(method, path, body \\ nil) do
     base = if body, do: conn(method, path, Jason.encode!(body)), else: conn(method, path)
 
@@ -183,8 +211,12 @@ defmodule ApiGatewayWeb.AvatarProfileAuthTest do
     eight_days = System.os_time(:second) - 8 * 24 * 60 * 60
 
     expired =
-      Plug.Crypto.sign(System.get_env("SECRET_KEY_BASE"), "avatar-icon-capability-v1",
-        %{"u" => @has_avatar, "a" => @app, "k" => "avatar"}, signed_at: eight_days)
+      Plug.Crypto.sign(
+        System.get_env("SECRET_KEY_BASE"),
+        "avatar-icon-capability-v1",
+        %{"u" => @has_avatar, "a" => @app, "k" => "avatar"},
+        signed_at: eight_days
+      )
 
     assert push(expired).status == 404
   end
@@ -200,14 +232,17 @@ defmodule ApiGatewayWeb.AvatarProfileAuthTest do
 
   test "push avatar: a tampered signature → 404" do
     token = AvatarToken.sign(@has_avatar, @app)
-    tampered = String.slice(token, 0..-2//1) <> (if String.last(token) == "x", do: "y", else: "x")
+    tampered = String.slice(token, 0..-2//1) <> if String.last(token) == "x", do: "y", else: "x"
     assert push(tampered).status == 404
   end
 
   test "push avatar: a token with kind != avatar → 404" do
     wrong =
-      Plug.Crypto.sign(System.get_env("SECRET_KEY_BASE"), "avatar-icon-capability-v1",
-        %{"u" => @has_avatar, "a" => @app, "k" => "message"})
+      Plug.Crypto.sign(System.get_env("SECRET_KEY_BASE"), "avatar-icon-capability-v1", %{
+        "u" => @has_avatar,
+        "a" => @app,
+        "k" => "message"
+      })
 
     assert push(wrong).status == 404
   end
@@ -235,7 +270,9 @@ defmodule ApiGatewayWeb.AvatarProfileAuthTest do
   end
 
   test "PATCH /me with avatar_object_key in the body → IGNORED (not persisted), request succeeds" do
-    conn = patch_me(%{"display_name" => "New Name", "avatar_object_key" => "media/attacker/steal.png"})
+    conn =
+      patch_me(%{"display_name" => "New Name", "avatar_object_key" => "media/attacker/steal.png"})
+
     assert conn.status == 200
     assert Jason.decode!(conn.resp_body)["display_name"] == "New Name"
   end

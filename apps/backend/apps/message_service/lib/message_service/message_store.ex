@@ -555,8 +555,15 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
           {{:error, :poll_single_choice}, state}
 
         true ->
-          kept = Enum.reject(state.poll_votes, &(&1.message_id == message_id and &1.user_id == user_id))
-          added = Enum.map(option_ids, &%{message_id: message_id, user_id: user_id, option_id: &1})
+          kept =
+            Enum.reject(
+              state.poll_votes,
+              &(&1.message_id == message_id and &1.user_id == user_id)
+            )
+
+          added =
+            Enum.map(option_ids, &%{message_id: message_id, user_id: user_id, option_id: &1})
+
           votes = kept ++ added
           pairs = for v <- votes, v.message_id == message_id, do: {v.option_id, v.user_id}
 
@@ -588,8 +595,14 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
           {:error, :message_not_found}
 
         definition ->
-          pairs = for v <- state.poll_votes, v.message_id == message_id, do: {v.option_id, v.user_id}
-          {:ok, %{message_id: message_id, poll: MessageService.Polls.build_aggregate(definition, pairs, nil)}}
+          pairs =
+            for v <- state.poll_votes, v.message_id == message_id, do: {v.option_id, v.user_id}
+
+          {:ok,
+           %{
+             message_id: message_id,
+             poll: MessageService.Polls.build_aggregate(definition, pairs, nil)
+           }}
       end
     end)
   end
@@ -957,6 +970,7 @@ end
 
 defmodule MessageService.MessageStore.PostgresAdapter do
   require Logger
+
   @moduledoc """
   Postgres-backed message store adapter (durability backend).
 
@@ -1122,12 +1136,14 @@ defmodule MessageService.MessageStore.PostgresAdapter do
       |> Repo.all()
 
     message_ids = Enum.map(rows, & &1.message_id)
+
     # read_by_count already EXCLUDES readers who disabled read receipts (the reader half — a JOIN inside
     # receipt_counts, still ONE query). delivered_by_count is unaffected.
     counts = receipt_counts(conversation_id, message_ids)
     reactions = reaction_summaries(message_ids, viewer)
     starred = starred_set(message_ids, viewer)
     polls = poll_summaries(rows)
+
     # The viewer half (reciprocity): a viewer who disabled read receipts sees NO read_by_count at all. ONE
     # lookup for the whole page (not per message), applied below.
     show_read = viewer_sees_read_receipts?(viewer)
@@ -1145,7 +1161,12 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         |> hide_read_count(show_read)
       end)
 
-    {:ok, %{conversation_id: conversation_id, messages: messages, next_cursor: next_cursor(rows, limit)}}
+    {:ok,
+     %{
+       conversation_id: conversation_id,
+       messages: messages,
+       next_cursor: next_cursor(rows, limit)
+     }}
   rescue
     Ecto.Query.CastError -> {:error, :message_invalid}
   end
@@ -1173,7 +1194,13 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     query
     |> where(
       [m],
-      fragment("(?, ?) > (?::text::timestamptz, ?::text::uuid)", m.created_at, m.message_id, ^ts, ^id)
+      fragment(
+        "(?, ?) > (?::text::timestamptz, ?::text::uuid)",
+        m.created_at,
+        m.message_id,
+        ^ts,
+        ^id
+      )
     )
     |> order_by([m], asc: m.created_at, asc: m.message_id)
   end
@@ -1182,7 +1209,13 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     query
     |> where(
       [m],
-      fragment("(?, ?) < (?::text::timestamptz, ?::text::uuid)", m.created_at, m.message_id, ^ts, ^id)
+      fragment(
+        "(?, ?) < (?::text::timestamptz, ?::text::uuid)",
+        m.created_at,
+        m.message_id,
+        ^ts,
+        ^id
+      )
     )
     |> order_by([m], desc: m.created_at, desc: m.message_id)
   end
@@ -1370,6 +1403,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   end
 
   defp maybe_cleared_before(query, nil), do: query
+
   defp maybe_cleared_before(query, cleared_before),
     do: where(query, [m], m.created_at > ^cleared_before)
 
@@ -1525,7 +1559,12 @@ defmodule MessageService.MessageStore.PostgresAdapter do
       {:ok,
        %{
          message_id: message.message_id,
-         poll: MessageService.Polls.build_aggregate(definition, poll_votes_of(message.message_id), nil)
+         poll:
+           MessageService.Polls.build_aggregate(
+             definition,
+             poll_votes_of(message.message_id),
+             nil
+           )
        }}
     end
   rescue
@@ -1551,9 +1590,14 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     known = MapSet.new(definition["options"] || [], & &1["id"])
 
     cond do
-      not Enum.all?(option_ids, &MapSet.member?(known, &1)) -> {:error, :poll_invalid_option}
-      length(option_ids) > 1 and definition["allows_multiple"] != true -> {:error, :poll_single_choice}
-      true -> :ok
+      not Enum.all?(option_ids, &MapSet.member?(known, &1)) ->
+        {:error, :poll_invalid_option}
+
+      length(option_ids) > 1 and definition["allows_multiple"] != true ->
+        {:error, :poll_single_choice}
+
+      true ->
+        :ok
     end
   end
 
@@ -1592,7 +1636,10 @@ defmodule MessageService.MessageStore.PostgresAdapter do
 
       Map.new(poll_rows, fn m ->
         {m.message_id,
-         MessageService.Polls.build_aggregate(m.metadata["poll"], Map.get(votes, m.message_id, []))}
+         MessageService.Polls.build_aggregate(
+           m.metadata["poll"],
+           Map.get(votes, m.message_id, [])
+         )}
       end)
     end
   end

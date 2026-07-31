@@ -161,7 +161,11 @@ defmodule ConversationService.Blocks do
               [b]
             )
 
-          {:ok, %{blocks: Enum.map(rows, fn [uid, created_at] -> %{user_id: uid, created_at: created_at} end)}}
+          {:ok,
+           %{
+             blocks:
+               Enum.map(rows, fn [uid, created_at] -> %{user_id: uid, created_at: created_at} end)
+           }}
         else
           _ -> {:ok, %{blocks: []}}
         end

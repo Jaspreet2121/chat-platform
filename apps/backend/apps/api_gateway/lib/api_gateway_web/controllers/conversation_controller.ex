@@ -281,19 +281,33 @@ defmodule ApiGatewayWeb.ConversationController do
 
       json(conn, with_group_avatar_url(response, session.app_id))
     else
-      {:error, :session_invalid} -> session_invalid(conn)
-      {:error, :auth_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_forbidden} ->
-        ErrorResponse.forbidden(conn, "conversation.not_owner", "Only the group owner can change this")
+      {:error, :session_invalid} ->
+        session_invalid(conn)
 
-      _ -> invalid_request(conn)
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_forbidden} ->
+        ErrorResponse.forbidden(
+          conn,
+          "conversation.not_owner",
+          "Only the group owner can change this"
+        )
+
+      _ ->
+        invalid_request(conn)
     end
   end
 
   # OWNER-only: promote/demote a member (role: "admin" | "member"). The conversation service enforces
   # that the caller is the owner and the target isn't the owner.
-  def set_participant_role(conn, %{"conversation_id" => conversation_id, "user_id" => user_id} = params) do
+  def set_participant_role(
+        conn,
+        %{"conversation_id" => conversation_id, "user_id" => user_id} = params
+      ) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
@@ -306,13 +320,24 @@ defmodule ApiGatewayWeb.ConversationController do
            }) do
       json(conn, response)
     else
-      {:error, :session_invalid} -> session_invalid(conn)
-      {:error, :auth_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_unavailable} -> service_unavailable(conn)
-      {:error, :participant_forbidden} ->
-        ErrorResponse.forbidden(conn, "conversation.not_owner", "Only the group owner can manage admins")
+      {:error, :session_invalid} ->
+        session_invalid(conn)
 
-      _ -> invalid_request(conn)
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :participant_forbidden} ->
+        ErrorResponse.forbidden(
+          conn,
+          "conversation.not_owner",
+          "Only the group owner can manage admins"
+        )
+
+      _ ->
+        invalid_request(conn)
     end
   end
 
@@ -328,13 +353,24 @@ defmodule ApiGatewayWeb.ConversationController do
            ) do
       json(conn, response)
     else
-      {:error, :session_invalid} -> session_invalid(conn)
-      {:error, :auth_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_unavailable} -> service_unavailable(conn)
-      {:error, :participant_forbidden} ->
-        ErrorResponse.forbidden(conn, "conversation.not_admin", "Only an owner or admin can change this")
+      {:error, :session_invalid} ->
+        session_invalid(conn)
 
-      _ -> invalid_request(conn)
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :participant_forbidden} ->
+        ErrorResponse.forbidden(
+          conn,
+          "conversation.not_admin",
+          "Only an owner or admin can change this"
+        )
+
+      _ ->
+        invalid_request(conn)
     end
   end
 
@@ -501,13 +537,26 @@ defmodule ApiGatewayWeb.ConversationController do
 
       json(conn, response)
     else
-      {:error, :session_invalid} -> session_invalid(conn)
-      {:error, :auth_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_unavailable} -> service_unavailable(conn)
-      {:error, :not_a_group} -> ErrorResponse.invalid_request(conn, "conversation.not_a_group")
-      {:error, :participant_not_found} -> ErrorResponse.not_found(conn, "conversation.not_found", "Not found")
-      {:error, :conversation_not_found} -> ErrorResponse.not_found(conn, "conversation.not_found", "Not found")
-      _ -> invalid_request(conn)
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :not_a_group} ->
+        ErrorResponse.invalid_request(conn, "conversation.not_a_group")
+
+      {:error, :participant_not_found} ->
+        ErrorResponse.not_found(conn, "conversation.not_found", "Not found")
+
+      {:error, :conversation_not_found} ->
+        ErrorResponse.not_found(conn, "conversation.not_found", "Not found")
+
+      _ ->
+        invalid_request(conn)
     end
   end
 

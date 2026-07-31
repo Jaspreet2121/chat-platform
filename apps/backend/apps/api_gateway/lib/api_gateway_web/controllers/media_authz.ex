@@ -33,7 +33,10 @@ defmodule ApiGatewayWeb.MediaAuthz do
   end
 
   defp authorize_status_media(media_id, user_id) do
-    case MessageClient.status_media_allowed(%{"media_id" => media_id, "viewer_user_id" => user_id}) do
+    case MessageClient.status_media_allowed(%{
+           "media_id" => media_id,
+           "viewer_user_id" => user_id
+         }) do
       {:ok, result} ->
         if aget(result, :allowed) == true, do: :ok, else: {:error, :not_a_member}
 

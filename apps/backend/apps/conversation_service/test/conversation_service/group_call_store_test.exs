@@ -143,7 +143,8 @@ defmodule ConversationService.GroupCallStoreTest do
              CallStore.join_group_call(%{"call_id" => call.id, "user_id" => outsider})
 
     # Owner adds the outsider → invited row + ring metadata.
-    assert {:ok, %{added_user_id: ^outsider, room: room, type: "voice", conversation_id: ^conv_id}} =
+    assert {:ok,
+            %{added_user_id: ^outsider, room: room, type: "voice", conversation_id: ^conv_id}} =
              CallStore.add_call_participant(%{
                "call_id" => call.id,
                "actor_id" => owner,
@@ -340,7 +341,9 @@ defmodule ConversationService.GroupCallStoreTest do
   test "join_call_link: first join creates a conversation-less kind=link call + joined participant" do
     creator = new_user!()
     joiner = new_user!()
-    {:ok, %{link: link}} = CallStore.create_call_link(%{"creator_id" => creator, "type" => "voice"})
+
+    {:ok, %{link: link}} =
+      CallStore.create_call_link(%{"creator_id" => creator, "type" => "voice"})
 
     assert {:ok, result} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
 
@@ -367,7 +370,9 @@ defmodule ConversationService.GroupCallStoreTest do
     creator = new_user!()
     a = new_user!()
     b = new_user!()
-    {:ok, %{link: link}} = CallStore.create_call_link(%{"creator_id" => creator, "type" => "video"})
+
+    {:ok, %{link: link}} =
+      CallStore.create_call_link(%{"creator_id" => creator, "type" => "video"})
 
     {:ok, first} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => a})
     {:ok, second} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => b})
@@ -397,8 +402,13 @@ defmodule ConversationService.GroupCallStoreTest do
   test "approval link: host joins directly; a non-host lands pending_approval (token denied)" do
     host = new_user!()
     joiner = new_user!()
+
     {:ok, %{link: link}} =
-      CallStore.create_call_link(%{"creator_id" => host, "type" => "video", "require_approval" => true})
+      CallStore.create_call_link(%{
+        "creator_id" => host,
+        "type" => "video",
+        "require_approval" => true
+      })
 
     # Host is the FIRST joiner → joined directly (caller_id/host) + token-authorized.
     assert {:ok, %{status: "joined", is_host: true, call: hostcall}} =
@@ -422,10 +432,16 @@ defmodule ConversationService.GroupCallStoreTest do
   test "approve_link_participant: host approves → joined → token authorizes" do
     host = new_user!()
     joiner = new_user!()
+
     {:ok, %{link: link}} =
-      CallStore.create_call_link(%{"creator_id" => host, "type" => "voice", "require_approval" => true})
+      CallStore.create_call_link(%{
+        "creator_id" => host,
+        "type" => "voice",
+        "require_approval" => true
+      })
 
     {:ok, %{call: call}} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
+
     {:ok, %{status: "pending_approval"}} =
       CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
 
@@ -437,6 +453,7 @@ defmodule ConversationService.GroupCallStoreTest do
              })
 
     assert String.starts_with?(room, "call-")
+
     assert {:ok, %{authorized: true}} =
              CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
   end
@@ -445,10 +462,16 @@ defmodule ConversationService.GroupCallStoreTest do
   test "deny_link_participant: host denies → row removed → token still denies" do
     host = new_user!()
     joiner = new_user!()
+
     {:ok, %{link: link}} =
-      CallStore.create_call_link(%{"creator_id" => host, "type" => "video", "require_approval" => true})
+      CallStore.create_call_link(%{
+        "creator_id" => host,
+        "type" => "video",
+        "require_approval" => true
+      })
 
     {:ok, %{call: call}} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
+
     {:ok, %{status: "pending_approval"}} =
       CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
 
@@ -472,8 +495,13 @@ defmodule ConversationService.GroupCallStoreTest do
     host = new_user!()
     joiner = new_user!()
     stranger = new_user!()
+
     {:ok, %{link: link}} =
-      CallStore.create_call_link(%{"creator_id" => host, "type" => "voice", "require_approval" => true})
+      CallStore.create_call_link(%{
+        "creator_id" => host,
+        "type" => "voice",
+        "require_approval" => true
+      })
 
     {:ok, %{call: call}} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
     {:ok, _} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
@@ -497,8 +525,13 @@ defmodule ConversationService.GroupCallStoreTest do
   test "approval link: leave (server-aware, row 'left') → rejoin RE-GATES to pending_approval" do
     host = new_user!()
     joiner = new_user!()
+
     {:ok, %{link: link}} =
-      CallStore.create_call_link(%{"creator_id" => host, "type" => "video", "require_approval" => true})
+      CallStore.create_call_link(%{
+        "creator_id" => host,
+        "type" => "video",
+        "require_approval" => true
+      })
 
     {:ok, %{call: call}} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
 
@@ -507,7 +540,11 @@ defmodule ConversationService.GroupCallStoreTest do
       CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
 
     {:ok, %{status: "joined"}} =
-      CallStore.approve_link_participant(%{"call_id" => call.id, "actor_id" => host, "user_id" => joiner})
+      CallStore.approve_link_participant(%{
+        "call_id" => call.id,
+        "actor_id" => host,
+        "user_id" => joiner
+      })
 
     assert {:ok, %{authorized: true}} =
              CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
@@ -534,7 +571,11 @@ defmodule ConversationService.GroupCallStoreTest do
 
     # Re-approve → joined again.
     {:ok, %{status: "joined"}} =
-      CallStore.approve_link_participant(%{"call_id" => call.id, "actor_id" => host, "user_id" => joiner})
+      CallStore.approve_link_participant(%{
+        "call_id" => call.id,
+        "actor_id" => host,
+        "user_id" => joiner
+      })
 
     assert {:ok, %{authorized: true}} =
              CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
@@ -546,7 +587,9 @@ defmodule ConversationService.GroupCallStoreTest do
     {:ok, %{link: link}} = CallStore.create_call_link(%{"creator_id" => host, "type" => "voice"})
     {:ok, %{call: call}} = CallStore.join_call_link(%{"link_id" => link.id, "user_id" => host})
 
-    assert {:ok, %{call: closed}} = CallStore.leave_group_call(%{"call_id" => call.id, "user_id" => host})
+    assert {:ok, %{call: closed}} =
+             CallStore.leave_group_call(%{"call_id" => call.id, "user_id" => host})
+
     # Host was the only (joined) participant → nobody left joined → the call ends (kind="link" close works).
     assert closed.status in ["ended", "missed"]
   end
@@ -563,6 +606,7 @@ defmodule ConversationService.GroupCallStoreTest do
              CallStore.join_call_link(%{"link_id" => link.id, "user_id" => joiner})
 
     assert String.starts_with?(room, "call-")
+
     assert {:ok, %{authorized: true}} =
              CallStore.call_participant?(%{"call_id" => call.id, "user_id" => joiner})
   end
@@ -621,7 +665,10 @@ defmodule ConversationService.GroupCallStoreTest do
     start_repo!(Repo)
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
 
-    on_exit(fn -> Application.put_env(:conversation_service, :conversation_persistence, previous) end)
+    on_exit(fn ->
+      Application.put_env(:conversation_service, :conversation_persistence, previous)
+    end)
+
     :ok
   end
 

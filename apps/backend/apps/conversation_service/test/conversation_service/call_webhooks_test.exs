@@ -13,7 +13,11 @@ defmodule ConversationService.CallWebhooksTest do
   setup do
     previous = Application.get_env(:conversation_service, :conversation_persistence, false)
     Application.put_env(:conversation_service, :conversation_persistence, true)
-    on_exit(fn -> Application.put_env(:conversation_service, :conversation_persistence, previous) end)
+
+    on_exit(fn ->
+      Application.put_env(:conversation_service, :conversation_persistence, previous)
+    end)
+
     :ok
   end
 
@@ -137,7 +141,9 @@ defmodule ConversationService.CallWebhooksTest do
 
     # No new webhook, and the call is still ended (never resurrected to accepted).
     assert outbox(app_id) == before
-    assert %{rows: [["ended"]]} = Repo.query!("SELECT status FROM calls WHERE id = $1::text::uuid", [call_id])
+
+    assert %{rows: [["ended"]]} =
+             Repo.query!("SELECT status FROM calls WHERE id = $1::text::uuid", [call_id])
   end
 
   @tag :postgres_integration

@@ -15,7 +15,11 @@ defmodule ConversationService.BlocksTest do
   setup do
     previous = Application.get_env(:conversation_service, :conversation_persistence, false)
     Application.put_env(:conversation_service, :conversation_persistence, true)
-    on_exit(fn -> Application.put_env(:conversation_service, :conversation_persistence, previous) end)
+
+    on_exit(fn ->
+      Application.put_env(:conversation_service, :conversation_persistence, previous)
+    end)
+
     :ok
   end
 
@@ -81,8 +85,11 @@ defmodule ConversationService.BlocksTest do
     assert either?(b, a)
 
     # Directional blocked?: only a→b, not b→a.
-    assert {:ok, %{blocked: true}} = Blocks.blocked?(%{"blocker_user_id" => a, "blocked_user_id" => b})
-    assert {:ok, %{blocked: false}} = Blocks.blocked?(%{"blocker_user_id" => b, "blocked_user_id" => a})
+    assert {:ok, %{blocked: true}} =
+             Blocks.blocked?(%{"blocker_user_id" => a, "blocked_user_id" => b})
+
+    assert {:ok, %{blocked: false}} =
+             Blocks.blocked?(%{"blocker_user_id" => b, "blocked_user_id" => a})
 
     assert {:ok, _} = Blocks.unblock(%{"blocker_user_id" => a, "blocked_user_id" => b})
     refute either?(a, b)

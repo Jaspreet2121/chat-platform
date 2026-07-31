@@ -48,7 +48,14 @@ defmodule ApiGatewayWeb.BroadcastController do
 
   # Only these ride through to create_message — the server owns everything else (sender, conversation,
   # delivery disposition).
-  @message_fields ["message_type", "body", "media_id", "caption", "metadata", "reply_to_message_id"]
+  @message_fields [
+    "message_type",
+    "body",
+    "media_id",
+    "caption",
+    "metadata",
+    "reply_to_message_id"
+  ]
 
   # --- CRUD --------------------------------------------------------------------------------------
 
@@ -70,7 +77,9 @@ defmodule ApiGatewayWeb.BroadcastController do
   def index(conn, _params) do
     with {:ok, session} <- session(conn),
          {:ok, result} <-
-           SharedInfra.ConversationClient.list_broadcast_lists(%{"owner_user_id" => session.user_id}) do
+           SharedInfra.ConversationClient.list_broadcast_lists(%{
+             "owner_user_id" => session.user_id
+           }) do
       json(conn, result)
     else
       error -> handle_error(conn, error)
@@ -175,7 +184,11 @@ defmodule ApiGatewayWeb.BroadcastController do
       ApiGatewayWeb.ConversationBroadcast.broadcast_created(conversation)
 
       unless dropped? do
-        ApiGatewayWeb.ConversationBroadcast.broadcast_updated(conversation_id, session.user_id, :message)
+        ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+          conversation_id,
+          session.user_id,
+          :message
+        )
       end
 
       message_id = cget(message, :message_id)
@@ -185,7 +198,12 @@ defmodule ApiGatewayWeb.BroadcastController do
         "broadcast_send op=#{op_id} recipient=#{recipient} conversation=#{conversation_id} message=#{message_id} ok"
       )
 
-      %{user_id: recipient, status: "sent", conversation_id: conversation_id, message_id: message_id}
+      %{
+        user_id: recipient,
+        status: "sent",
+        conversation_id: conversation_id,
+        message_id: message_id
+      }
     else
       _ ->
         Logger.warning("broadcast_send op=#{op_id} recipient=#{recipient} failed")
@@ -279,9 +297,14 @@ defmodule ApiGatewayWeb.BroadcastController do
 
   defp handle_error(conn, {:error, :list_limit}),
     do:
-      ErrorResponse.invalid_request_with(conn, "broadcasts.list_limit", "Too many broadcast lists", %{
-        limit: @list_limit
-      })
+      ErrorResponse.invalid_request_with(
+        conn,
+        "broadcasts.list_limit",
+        "Too many broadcast lists",
+        %{
+          limit: @list_limit
+        }
+      )
 
   defp handle_error(conn, {:error, :message_invalid}),
     do: ErrorResponse.invalid_request(conn, "broadcasts.message_invalid")

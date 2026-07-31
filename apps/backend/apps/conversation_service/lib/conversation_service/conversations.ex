@@ -1,5 +1,6 @@
 defmodule ConversationService.Conversations do
   require Logger
+
   @moduledoc """
   Conversation metadata boundary.
   """
@@ -93,7 +94,8 @@ defmodule ConversationService.Conversations do
 
     case attrs["q"] || attrs[:q] do
       q when is_binary(q) and q != "" ->
-        {"WHERE c.app_id = $1 AND (c.title ILIKE $2 OR c.id::text ILIKE $2)", [app_uuid(app), "%#{q}%"]}
+        {"WHERE c.app_id = $1 AND (c.title ILIKE $2 OR c.id::text ILIKE $2)",
+         [app_uuid(app), "%#{q}%"]}
 
       _ ->
         {"WHERE c.app_id = $1", [app_uuid(app)]}
@@ -831,7 +833,11 @@ defmodule ConversationService.Conversations do
 
   # Whitelist name/avatar changes. "" on an avatar field → nil (clear); nil → omitted (unchanged).
   defp group_profile_changes(attrs) do
-    [{"name", "name"}, {"avatar_media_id", "avatar_media_id"}, {"avatar_object_key", "avatar_object_key"}]
+    [
+      {"name", "name"},
+      {"avatar_media_id", "avatar_media_id"},
+      {"avatar_object_key", "avatar_object_key"}
+    ]
     |> Enum.reduce(%{}, fn {src, dest}, acc ->
       case Map.get(attrs, src) do
         nil -> acc
@@ -846,7 +852,10 @@ defmodule ConversationService.Conversations do
     case GroupProfileStore.get_group_profile(conversation.id) do
       nil ->
         GroupProfileStore.create_group_profile(
-          Map.merge(%{"conversation_id" => conversation.id, "name" => conversation.title || "Group"}, changes)
+          Map.merge(
+            %{"conversation_id" => conversation.id, "name" => conversation.title || "Group"},
+            changes
+          )
         )
 
       profile ->
@@ -862,7 +871,10 @@ defmodule ConversationService.Conversations do
   #     are an enumeration, not attribution — a stale or first-party member shouldn't suppress the event).
   defp emit_conversation_created(conversation, participant_user_ids) do
     externals =
-      external_ids_for(conversation.app_id, Enum.uniq([conversation.created_by | participant_user_ids]))
+      external_ids_for(
+        conversation.app_id,
+        Enum.uniq([conversation.created_by | participant_user_ids])
+      )
 
     case Map.fetch(externals, conversation.created_by) do
       {:ok, creator_external_id} ->

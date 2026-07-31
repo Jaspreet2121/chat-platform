@@ -5,14 +5,18 @@ defmodule RealtimeGateway.CallSignalingMockClient do
   maps (like the in-process CallStore) which `CallSignaling.cget/2` reads. Not a full behaviour impl — the
   dispatcher resolves the adapter at runtime, so only the call functions the signaling path uses are here.
   """
-  def start_link, do: Agent.start_link(fn -> %{call: nil, group: nil, log: []} end, name: __MODULE__)
+  def start_link,
+    do: Agent.start_link(fn -> %{call: nil, group: nil, log: []} end, name: __MODULE__)
+
   def reset, do: Agent.update(__MODULE__, fn _ -> %{call: nil, group: nil, log: []} end)
   def log, do: Agent.get(__MODULE__, & &1.log) |> Enum.reverse()
   def group_call, do: Agent.get(__MODULE__, &(&1.group && &1.group.call))
 
   # Block state for the call ring + missed-pill suppression (ring_callee / write_missed_message consult this).
   def set_blocked(v), do: Agent.update(__MODULE__, &Map.put(&1, :blocked, v))
-  def either_blocked?(_attrs), do: {:ok, %{blocked: Agent.get(__MODULE__, &Map.get(&1, :blocked, false))}}
+
+  def either_blocked?(_attrs),
+    do: {:ok, %{blocked: Agent.get(__MODULE__, &Map.get(&1, :blocked, false))}}
 
   # --- group calling (Phase 3) — mirrors CallStore's {:ok, %{call, participants, member_ids}} shapes ----
   # The conversation's members are seeded by the test via :group_members (the real fn reads the DB).
@@ -247,7 +251,10 @@ defmodule RealtimeGateway.CallSignalingTest do
 
   # Fake socket: CallSignaling touches `.assigns.current_user_id`, `.assigns.app_id`, and `.endpoint`.
   defp socket(user_id),
-    do: %{assigns: %{current_user_id: user_id, app_id: @app}, endpoint: RealtimeGateway.CallCaptureEndpoint}
+    do: %{
+      assigns: %{current_user_id: user_id, app_id: @app},
+      endpoint: RealtimeGateway.CallCaptureEndpoint
+    }
 
   defp invite! do
     assert {:reply, {:ok, %{call_id: call_id, room: room}}, _} =
@@ -381,7 +388,13 @@ defmodule RealtimeGateway.CallSignalingTest do
   describe "decline writes the missed-call pill" do
     setup do
       prev = Application.get_env(:shared_infra, :message_client_adapter)
-      Application.put_env(:shared_infra, :message_client_adapter, RealtimeGateway.CallPillCaptureClient)
+
+      Application.put_env(
+        :shared_infra,
+        :message_client_adapter,
+        RealtimeGateway.CallPillCaptureClient
+      )
+
       on_exit(fn -> restore(:message_client_adapter, prev) end)
       :ok
     end
@@ -401,7 +414,11 @@ defmodule RealtimeGateway.CallSignalingTest do
       seed_dm_call()
 
       assert {:reply, {:ok, _}, _} =
-               CallSignaling.handle_event("call:reject", %{"call_id" => "call_1"}, socket(@callee))
+               CallSignaling.handle_event(
+                 "call:reject",
+                 %{"call_id" => "call_1"},
+                 socket(@callee)
+               )
 
       # The caller is told the call is off …
       assert_receive {:broadcast, "user:#{@caller}", "call:rejected", %{call_id: "call_1"}}
@@ -427,7 +444,11 @@ defmodule RealtimeGateway.CallSignalingTest do
       seed_dm_call()
 
       assert {:reply, {:ok, _}, _} =
-               CallSignaling.handle_event("call:reject", %{"call_id" => "call_1"}, socket(@callee))
+               CallSignaling.handle_event(
+                 "call:reject",
+                 %{"call_id" => "call_1"},
+                 socket(@callee)
+               )
 
       assert_receive {:pill, _}
       flush_broadcasts()
@@ -444,7 +465,11 @@ defmodule RealtimeGateway.CallSignalingTest do
       seed_dm_call()
 
       assert {:reply, {:ok, _}, _} =
-               CallSignaling.handle_event("call:cancel", %{"call_id" => "call_1"}, socket(@caller))
+               CallSignaling.handle_event(
+                 "call:cancel",
+                 %{"call_id" => "call_1"},
+                 socket(@caller)
+               )
 
       assert_receive {:pill, attrs}
       assert attrs["metadata"]["status"] == "missed"
@@ -533,22 +558,44 @@ defmodule RealtimeGateway.CallSignalingTest do
 
     test "a blocked caller ringing out leaves NO missed pill (the reject/cancel/timeout pill is suppressed)" do
       prev = Application.get_env(:shared_infra, :message_client_adapter)
-      Application.put_env(:shared_infra, :message_client_adapter, RealtimeGateway.CallPillCaptureClient)
+
+      Application.put_env(
+        :shared_infra,
+        :message_client_adapter,
+        RealtimeGateway.CallPillCaptureClient
+      )
+
       on_exit(fn -> restore(:message_client_adapter, prev) end)
       Mock.set_blocked(true)
 
       # write_missed_message is the ONE function reject/2, cancel/2 and ring_timeout all share.
-      assert :ok = CallSignaling.write_missed_message(missed_call(), RealtimeGateway.CallCaptureEndpoint)
+      assert :ok =
+               CallSignaling.write_missed_message(
+                 missed_call(),
+                 RealtimeGateway.CallCaptureEndpoint
+               )
+
       refute_receive {:pill, _}, 150
     end
 
     test "not blocked → a missed call DOES write its pill (control)" do
       prev = Application.get_env(:shared_infra, :message_client_adapter)
-      Application.put_env(:shared_infra, :message_client_adapter, RealtimeGateway.CallPillCaptureClient)
+
+      Application.put_env(
+        :shared_infra,
+        :message_client_adapter,
+        RealtimeGateway.CallPillCaptureClient
+      )
+
       on_exit(fn -> restore(:message_client_adapter, prev) end)
       Mock.set_blocked(false)
 
-      assert :ok = CallSignaling.write_missed_message(missed_call(), RealtimeGateway.CallCaptureEndpoint)
+      assert :ok =
+               CallSignaling.write_missed_message(
+                 missed_call(),
+                 RealtimeGateway.CallCaptureEndpoint
+               )
+
       assert_receive {:pill, _}, 500
     end
   end
@@ -697,9 +744,10 @@ defmodule RealtimeGateway.CallSignalingTest do
       {:ok, call_id: call_id}
     end
 
-    test "a phone in the CALLER'S tenant resolves (app_id threaded) and the added user is rung", %{
-      call_id: call_id
-    } do
+    test "a phone in the CALLER'S tenant resolves (app_id threaded) and the added user is rung",
+         %{
+           call_id: call_id
+         } do
       assert {:reply, {:ok, %{added_user_id: "u-phone"}}, _} =
                CallSignaling.handle_event(
                  "call:group_add",
@@ -708,7 +756,11 @@ defmodule RealtimeGateway.CallSignalingTest do
                )
 
       # The resolved user (not the raw phone) was seated + rung.
-      assert Enum.any?(Mock.log(), &match?({:add_call_participant, %{"user_id" => "u-phone"}}, &1))
+      assert Enum.any?(
+               Mock.log(),
+               &match?({:add_call_participant, %{"user_id" => "u-phone"}}, &1)
+             )
+
       assert_receive {:broadcast, "user:u-phone", "call:group_incoming", _}
     end
 

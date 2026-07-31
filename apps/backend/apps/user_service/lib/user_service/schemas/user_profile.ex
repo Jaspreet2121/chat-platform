@@ -14,11 +14,13 @@ defmodule UserService.Schemas.UserProfile do
     field(:avatar_media_id, :binary_id)
     field(:avatar_object_key, :string)
     field(:bio, :string)
+
     # The optional @handle (080): `username` as typed (display), `username_key` = lowercase (uniqueness +
     # lookup, per-tenant). DELIBERATELY not cast by the changesets below — every write goes through
     # UserService.Usernames (validation, holds, change budget); a generic profile update can't touch them.
     field(:username, :string)
     field(:username_key, :string)
+
     # The profile's tenant (migration 048). Read-only here — surfaced so the gateway can presign the
     # avatar scoped to the ASSET's app (the /avatar route is unauthenticated → no caller app_id).
     field(:app_id, :binary_id)

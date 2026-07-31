@@ -34,7 +34,11 @@ defmodule ApiGatewayWeb.V1.ConversationController do
         end
 
       _ ->
-        ErrorResponse.forbidden(conn, "v1.end_user_only", "This endpoint requires an end-user token")
+        ErrorResponse.forbidden(
+          conn,
+          "v1.end_user_only",
+          "This endpoint requires an end-user token"
+        )
     end
   end
 
@@ -84,10 +88,18 @@ defmodule ApiGatewayWeb.V1.ConversationController do
       json(conn, %{conversation_id: conversation_id, title: Map.get(response, :name) || title})
     else
       {:error, :end_user_only} ->
-        ErrorResponse.forbidden(conn, "v1.end_user_only", "This endpoint requires an end-user token")
+        ErrorResponse.forbidden(
+          conn,
+          "v1.end_user_only",
+          "This endpoint requires an end-user token"
+        )
 
       {:error, :invalid_title} ->
-        ErrorResponse.unprocessable_entity(conn, "v1.invalid_title", "title must be a non-empty string")
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "v1.invalid_title",
+          "title must be a non-empty string"
+        )
 
       # ensure_group/1 — a direct chat has no title to set.
       {:error, :conversation_invalid} ->
@@ -98,7 +110,11 @@ defmodule ApiGatewayWeb.V1.ConversationController do
         )
 
       {:error, :conversation_forbidden} ->
-        ErrorResponse.forbidden(conn, "v1.not_owner", "Only the group owner can rename this conversation")
+        ErrorResponse.forbidden(
+          conn,
+          "v1.not_owner",
+          "Only the group owner can rename this conversation"
+        )
 
       {:error, :conversation_unavailable} ->
         ErrorResponse.service_unavailable(conn, "v1.unavailable")

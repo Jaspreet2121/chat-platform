@@ -32,6 +32,7 @@ defmodule RealtimeGateway.CallSignaling do
   """
   def ring_timeout_ms,
     do: Application.get_env(:realtime_gateway, :call_ring_timeout_ms, @ring_timeout_ms)
+
   @call_events_topic "call.events.v1"
 
   @doc "Dispatch a `call:*` event from the user channel. Returns a `{:reply, reply, socket}` tuple."
@@ -49,7 +50,9 @@ defmodule RealtimeGateway.CallSignaling do
   def handle_event("call:group_add", payload, socket), do: group_add(payload, socket)
   def handle_event("call:promote", payload, socket), do: promote(payload, socket)
   # Call links L3a — approval gate (joiner requests, host approves/denies).
-  def handle_event("call:link_join_request", payload, socket), do: link_join_request(payload, socket)
+  def handle_event("call:link_join_request", payload, socket),
+    do: link_join_request(payload, socket)
+
   def handle_event("call:link_approve", payload, socket), do: link_approve(payload, socket)
   def handle_event("call:link_deny", payload, socket), do: link_deny(payload, socket)
   def handle_event(_event, _payload, socket), do: reply_error(socket, "call.invalid_event")
@@ -178,6 +181,7 @@ defmodule RealtimeGateway.CallSignaling do
   defp reject(%{"call_id" => call_id}, socket) do
     with_call(call_id, socket, [:callee], fn call, _role ->
       _ = ConversationClient.mark_call_declined(%{"call_id" => call_id})
+
       # WhatsApp semantics: a DECLINED call must be INDISTINGUISHABLE from a missed one in the chat — the
       # caller must never learn they were actively declined. So reject writes the SAME missed pill cancel
       # writes (identical body + metadata status: "missed"), through the same create+broadcast path. No client
@@ -238,7 +242,8 @@ defmodule RealtimeGateway.CallSignaling do
   end
 
   # The socket form (the channel's handle_info) — same logic, endpoint taken from the socket.
-  def ring_timeout(call_id, socket) when is_binary(call_id), do: ring_timeout(call_id, socket.endpoint)
+  def ring_timeout(call_id, socket) when is_binary(call_id),
+    do: ring_timeout(call_id, socket.endpoint)
 
   # ============================================================================================
   # Group calling (Phase 3). SEPARATE event set — no callee_id; membership + permission live in
@@ -337,10 +342,17 @@ defmodule RealtimeGateway.CallSignaling do
 
     case ConversationClient.decline_group_call(%{"call_id" => call_id, "user_id" => me}) do
       {:ok, result} ->
-        broadcast_group(socket, call_id, me, ["invited", "joined"], "call:participant_declined", %{
-          call_id: call_id,
-          user_id: me
-        })
+        broadcast_group(
+          socket,
+          call_id,
+          me,
+          ["invited", "joined"],
+          "call:participant_declined",
+          %{
+            call_id: call_id,
+            user_id: me
+          }
+        )
 
         maybe_broadcast_group_ended(socket, call_id, cget(result, :call))
         {:reply, {:ok, %{call_id: call_id}}, socket}
@@ -585,7 +597,10 @@ defmodule RealtimeGateway.CallSignaling do
     do: {:ok, uid}
 
   defp resolve_add_target(%{"phone" => phone}, app_id) when is_binary(phone) and phone != "" do
-    case SharedInfra.AuthClient.lookup_user_by_phone(%{"phone_number" => phone, "app_id" => app_id}) do
+    case SharedInfra.AuthClient.lookup_user_by_phone(%{
+           "phone_number" => phone,
+           "app_id" => app_id
+         }) do
       {:ok, %{user_id: uid}} when is_binary(uid) and uid != "" -> {:ok, uid}
       {:ok, %{"user_id" => uid}} when is_binary(uid) and uid != "" -> {:ok, uid}
       _ -> {:error, :user_not_found}
@@ -701,7 +716,10 @@ defmodule RealtimeGateway.CallSignaling do
               :ok
           end
         else
-          other -> Logger.warning("missed group-call chat write failed for #{call_id}: #{inspect(other)}")
+          other ->
+            Logger.warning(
+              "missed group-call chat write failed for #{call_id}: #{inspect(other)}"
+            )
         end
       end)
     end
@@ -742,7 +760,8 @@ defmodule RealtimeGateway.CallSignaling do
   defp broadcast(socket, user_id, event, payload),
     do: do_broadcast(socket.endpoint, user_id, event, payload)
 
-  defp do_broadcast(endpoint, user_id, event, payload) when is_binary(user_id) and user_id != "" do
+  defp do_broadcast(endpoint, user_id, event, payload)
+       when is_binary(user_id) and user_id != "" do
     endpoint.broadcast("user:" <> user_id, event, payload)
     :ok
   end
@@ -850,7 +869,11 @@ defmodule RealtimeGateway.CallSignaling do
         # Short human body — powers the conversation-list preview + a11y fallback; the bubble itself renders
         # from metadata. metadata carries the structured detail for the client's styled "call" pill.
         "body" => "Missed #{call_type} call",
-        "metadata" => %{"call_id" => cget(call, :id), "call_type" => call_type, "status" => "missed"}
+        "metadata" => %{
+          "call_id" => cget(call, :id),
+          "call_type" => call_type,
+          "status" => "missed"
+        }
       }
 
       Task.start(fn ->
@@ -859,11 +882,16 @@ defmodule RealtimeGateway.CallSignaling do
             # Same fan-out a live message gets: conversation topic (open clients append) + each party's user
             # topic (unread/toast when closed). The frontend already dedupes (skips own-sender / open chat).
             endpoint.broadcast("conversation:" <> conversation_id, "message_created", response)
-            if is_binary(callee_id), do: endpoint.broadcast("user:" <> callee_id, "message_created", response)
+
+            if is_binary(callee_id),
+              do: endpoint.broadcast("user:" <> callee_id, "message_created", response)
+
             endpoint.broadcast("user:" <> caller_id, "message_created", response)
 
           other ->
-            Logger.warning("missed-call chat write failed for call #{cget(call, :id)}: #{inspect(other)}")
+            Logger.warning(
+              "missed-call chat write failed for call #{cget(call, :id)}: #{inspect(other)}"
+            )
         end
       end)
     end

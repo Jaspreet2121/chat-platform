@@ -89,7 +89,8 @@ defmodule ApiGatewayWeb.StatusController do
   wins); DISCLOSURE is filtered at read, so a receipts-off viewer still records one. The owner's own
   view records nothing.
   """
-  def record_view(conn, %{"status_id" => status_id}) when is_binary(status_id) and status_id != "" do
+  def record_view(conn, %{"status_id" => status_id})
+      when is_binary(status_id) and status_id != "" do
     with {:ok, session} <- session(conn),
          {:ok, result} <-
            SharedInfra.MessageClient.record_status_view(%{
@@ -102,7 +103,8 @@ defmodule ApiGatewayWeb.StatusController do
     end
   end
 
-  def record_view(conn, _params), do: ErrorResponse.invalid_request(conn, "status.invalid_request")
+  def record_view(conn, _params),
+    do: ErrorResponse.invalid_request(conn, "status.invalid_request")
 
   @doc """
   "Seen by" — the OWNER'S viewer list for one of their posts. Owner-only (anyone else → 404, no
@@ -264,8 +266,11 @@ defmodule ApiGatewayWeb.StatusController do
       when owner == session.user_id ->
         :ok
 
-      {:error, :media_unavailable} -> {:error, :media_unavailable}
-      _ -> {:error, :invalid_media}
+      {:error, :media_unavailable} ->
+        {:error, :media_unavailable}
+
+      _ ->
+        {:error, :invalid_media}
     end
   end
 

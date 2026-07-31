@@ -78,7 +78,13 @@ defmodule RealtimeGateway.ConnectionCounter do
   # The supervised Table owns the ETS table; ensure it exists even if a test calls before boot.
   defp ensure_table do
     if :ets.whereis(@table) == :undefined do
-      :ets.new(@table, [:named_table, :public, :set, read_concurrency: true, write_concurrency: true])
+      :ets.new(@table, [
+        :named_table,
+        :public,
+        :set,
+        read_concurrency: true,
+        write_concurrency: true
+      ])
     end
 
     :ok

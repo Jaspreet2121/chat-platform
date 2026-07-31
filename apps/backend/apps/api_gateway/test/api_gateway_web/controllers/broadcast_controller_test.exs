@@ -27,7 +27,9 @@ defmodule ApiGatewayWeb.BroadcastControllerTest do
 
   defmodule AuthStub do
     @me "11111111-1111-4111-8111-111111111111"
-    def current_session(%{"authorization" => "Bearer me"}), do: {:ok, %{user_id: @me, app_id: "app1"}}
+    def current_session(%{"authorization" => "Bearer me"}),
+      do: {:ok, %{user_id: @me, app_id: "app1"}}
+
     def current_session(_), do: {:error, :session_invalid}
   end
 
@@ -39,10 +41,13 @@ defmodule ApiGatewayWeb.BroadcastControllerTest do
     def start_link, do: Agent.start_link(fn -> %{members: [], log: []} end, name: __MODULE__)
     def set_members(ids), do: Agent.update(__MODULE__, &Map.put(&1, :members, ids))
     def log, do: Agent.get(__MODULE__, & &1.log) |> Enum.reverse()
-    defp record(entry), do: Agent.update(__MODULE__, &Map.update!(&1, :log, fn l -> [entry | l] end))
+
+    defp record(entry),
+      do: Agent.update(__MODULE__, &Map.update!(&1, :log, fn l -> [entry | l] end))
 
     def get_broadcast_list(%{"owner_user_id" => o, "list_id" => l}) do
-      if o == "11111111-1111-4111-8111-111111111111" and l == "44444444-4444-4444-8444-444444444444" do
+      if o == "11111111-1111-4111-8111-111111111111" and
+           l == "44444444-4444-4444-8444-444444444444" do
         members = Agent.get(__MODULE__, & &1.members)
         {:ok, %{list_id: l, name: "Friends", member_ids: members, sendable_member_ids: members}}
       else
@@ -50,8 +55,11 @@ defmodule ApiGatewayWeb.BroadcastControllerTest do
       end
     end
 
-    def create_broadcast_list(%{"member_user_ids" => ids}) when length(ids) > 256, do: {:error, :member_limit}
-    def create_broadcast_list(_attrs), do: {:ok, %{list_id: "new-list", name: "L", member_count: 1}}
+    def create_broadcast_list(%{"member_user_ids" => ids}) when length(ids) > 256,
+      do: {:error, :member_limit}
+
+    def create_broadcast_list(_attrs),
+      do: {:ok, %{list_id: "new-list", name: "L", member_count: 1}}
 
     # The SAME entry point a normal first message uses: recipient B resolves the EXISTING conversation;
     # everyone else gets a fresh one derived from their id (distinct per recipient).
@@ -61,16 +69,26 @@ defmodule ApiGatewayWeb.BroadcastControllerTest do
       if recipient == @b do
         {:ok, %{conversation_id: @existing_conv, type: "direct", existing: true}}
       else
-        {:ok, %{conversation_id: "conv-" <> recipient, type: "direct", created: true, created_by: attrs["created_by"], participant_user_ids: [recipient]}}
+        {:ok,
+         %{
+           conversation_id: "conv-" <> recipient,
+           type: "direct",
+           created: true,
+           created_by: attrs["created_by"],
+           participant_user_ids: [recipient]
+         }}
       end
     end
 
     # Recipient C has blocked the sender → the drop disposition (b3cbd3c).
-    def authorize_send(%{"conversation_id" => "conv-" <> @c}), do: {:ok, %{authorized: true, delivery: "drop"}}
+    def authorize_send(%{"conversation_id" => "conv-" <> @c}),
+      do: {:ok, %{authorized: true, delivery: "drop"}}
+
     def authorize_send(_attrs), do: {:ok, %{authorized: true}}
 
     # Consumed by the live broadcasts.
     def get_conversation(_attrs), do: {:ok, %{participants: []}}
+
     def inbox_rows(%{"user_ids" => uids, "conversation_id" => c}),
       do: {:ok, %{rows: Enum.map(uids, &%{user_id: &1, conversation_id: c, unread_count: 0})}}
   end
@@ -84,7 +102,11 @@ defmodule ApiGatewayWeb.BroadcastControllerTest do
     def create_message(%{"conversation_id" => "conv-" <> @d}), do: {:error, :message_unavailable}
 
     def create_message(attrs) do
-      {:ok, %{message_id: "msg-for-" <> attrs["conversation_id"], conversation_id: attrs["conversation_id"]}}
+      {:ok,
+       %{
+         message_id: "msg-for-" <> attrs["conversation_id"],
+         conversation_id: attrs["conversation_id"]
+       }}
     end
   end
 
@@ -114,7 +136,13 @@ defmodule ApiGatewayWeb.BroadcastControllerTest do
     Application.put_env(:shared_infra, :auth_client_adapter, AuthStub)
     Application.put_env(:shared_infra, :conversation_client_adapter, ConvStub)
     Application.put_env(:shared_infra, :message_client_adapter, MsgStub)
-    Application.put_env(:shared_infra, :rate_limiter_adapter, SharedInfra.RateLimiter.InMemoryAdapter)
+
+    Application.put_env(
+      :shared_infra,
+      :rate_limiter_adapter,
+      SharedInfra.RateLimiter.InMemoryAdapter
+    )
+
     SharedInfra.RateLimiter.InMemoryAdapter.reset()
     :ets.delete_all_objects(:broadcast_send_locks)
 
@@ -159,6 +187,7 @@ defmodule ApiGatewayWeb.BroadcastControllerTest do
     assert ConvStub.log() == [{:create_conversation, @a, @me}, {:create_conversation, @b, @me}]
 
     results = Map.new(response["results"], &{&1["user_id"], &1})
+
     # Fresh DM: a per-recipient conversation. EXISTING DM: the pre-existing id, REUSED not duplicated.
     assert results[@a]["conversation_id"] == "conv-" <> @a
     assert results[@b]["conversation_id"] == @existing_conv
@@ -175,6 +204,7 @@ defmodule ApiGatewayWeb.BroadcastControllerTest do
     assert response["sent_count"] == 2
 
     [entry_a, entry_c] = Enum.sort_by(response["results"], & &1["user_id"])
+
     # Same status, same key set — nothing distinguishes the drop (the message_id is the synthetic ack).
     assert entry_c["status"] == "sent"
     assert Map.keys(entry_a) == Map.keys(entry_c)

@@ -20,7 +20,12 @@ defmodule MessageService.PollsTest do
   setup do
     prev = %{
       persistence: Application.get_env(:message_service, :message_persistence, false),
-      adapter: Application.get_env(:message_service, :message_store_adapter, MessageStore.QueryPlanAdapter)
+      adapter:
+        Application.get_env(
+          :message_service,
+          :message_store_adapter,
+          MessageStore.QueryPlanAdapter
+        )
     }
 
     Application.put_env(:message_service, :message_persistence, true)
@@ -37,7 +42,10 @@ defmodule MessageService.PollsTest do
   defp create_poll!(overrides \\ %{}) do
     poll =
       Map.merge(
-        %{"question" => "Lunch where?", "options" => [%{"text" => "Sushi"}, %{"text" => "Pizza"}]},
+        %{
+          "question" => "Lunch where?",
+          "options" => [%{"text" => "Sushi"}, %{"text" => "Pizza"}]
+        },
         overrides
       )
 
@@ -150,7 +158,11 @@ defmodule MessageService.PollsTest do
     # A tombstoned poll takes its votes off the wire too (404 on vote; history hides the body per the
     # delete flow — voting is simply dead).
     {:ok, _} =
-      Messages.delete_message(%{"conversation_id" => @conv, "message_id" => mid, "actor_user_id" => @sender})
+      Messages.delete_message(%{
+        "conversation_id" => @conv,
+        "message_id" => mid,
+        "actor_user_id" => @sender
+      })
 
     assert {:error, :message_not_found} = vote(mid, @bob, ["o1"])
   end

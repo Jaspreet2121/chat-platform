@@ -244,6 +244,7 @@ defmodule AuthService.Accounts do
     page = page(opts)
     page_size = 25
     offset = (page - 1) * page_size
+
     # Admin console is first-party only → always scope to the tenant (default tenant-zero when unset).
     {where, params} = list_filters(opts)
 

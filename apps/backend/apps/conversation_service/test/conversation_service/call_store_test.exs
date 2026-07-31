@@ -6,7 +6,11 @@ defmodule ConversationService.CallStoreTest do
   setup do
     previous = Application.get_env(:conversation_service, :conversation_persistence, false)
     Application.put_env(:conversation_service, :conversation_persistence, true)
-    on_exit(fn -> Application.put_env(:conversation_service, :conversation_persistence, previous) end)
+
+    on_exit(fn ->
+      Application.put_env(:conversation_service, :conversation_persistence, previous)
+    end)
+
     :ok
   end
 
@@ -60,12 +64,16 @@ defmodule ConversationService.CallStoreTest do
     caller = Ecto.UUID.generate()
     callee = Ecto.UUID.generate()
 
-    {:ok, c1} = CallStore.create_call(%{"caller_id" => caller, "callee_id" => callee, "type" => "video"})
+    {:ok, c1} =
+      CallStore.create_call(%{"caller_id" => caller, "callee_id" => callee, "type" => "video"})
+
     assert {:ok, declined} = CallStore.mark_declined(%{"call_id" => c1.id})
     assert declined.status == "declined"
     assert is_binary(declined.ended_at)
 
-    {:ok, c2} = CallStore.create_call(%{"caller_id" => caller, "callee_id" => callee, "type" => "voice"})
+    {:ok, c2} =
+      CallStore.create_call(%{"caller_id" => caller, "callee_id" => callee, "type" => "voice"})
+
     assert {:ok, missed} = CallStore.mark_missed(%{"call_id" => c2.id})
     assert missed.status == "missed"
 

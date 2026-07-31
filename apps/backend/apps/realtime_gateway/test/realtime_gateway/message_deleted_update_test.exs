@@ -46,7 +46,12 @@ defmodule RealtimeGateway.MessageDeletedUpdateTest do
 
     Application.put_env(:conversation_service, :conversation_persistence, false)
     Application.put_env(:realtime_gateway, :socket_auth_persistence, false)
-    Application.put_env(:shared_infra, :message_client_adapter, RealtimeGateway.MessageDeletedStub)
+
+    Application.put_env(
+      :shared_infra,
+      :message_client_adapter,
+      RealtimeGateway.MessageDeletedStub
+    )
 
     on_exit(fn ->
       Application.put_env(:conversation_service, :conversation_persistence, prev_conv)
@@ -63,7 +68,11 @@ defmodule RealtimeGateway.MessageDeletedUpdateTest do
   defp joined do
     {:ok, _join, socket} =
       RealtimeGateway.UserSocket
-      |> socket("user_socket:user_1", %{current_user_id: "user_1", user_id: "user_1", device_id: "d1"})
+      |> socket("user_socket:user_1", %{
+        current_user_id: "user_1",
+        user_id: "user_1",
+        device_id: "d1"
+      })
       |> subscribe_and_join(RealtimeGateway.ConversationChannel, "conversation:conv_1", %{})
 
     socket
@@ -72,7 +81,8 @@ defmodule RealtimeGateway.MessageDeletedUpdateTest do
   test "message:update on a soft-deleted message → realtime.message_deleted; socket stays alive" do
     socket = joined()
 
-    ref = push(socket, "message:update", %{"message_id" => "msg_1", "body" => "back from the dead"})
+    ref =
+      push(socket, "message:update", %{"message_id" => "msg_1", "body" => "back from the dead"})
 
     assert_reply ref, :error, reply
     assert reply.code == "realtime.message_deleted"

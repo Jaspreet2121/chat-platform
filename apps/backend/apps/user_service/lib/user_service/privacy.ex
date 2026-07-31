@@ -92,6 +92,7 @@ defmodule UserService.Privacy do
   end
 
   defp result({:ok, %UserPrivacySettings{} = row}), do: {:ok, to_map(row)}
+
   # A changeset error is ALWAYS a bad enum / non-boolean here (required-ness is satisfied by the row/defaults).
   defp result({:error, _changeset}), do: {:error, :privacy_invalid_value}
 

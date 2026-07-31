@@ -24,7 +24,12 @@ defmodule MessageService.MediaDownloadAllowedTest do
   setup do
     prev = %{
       persistence: Application.get_env(:message_service, :message_persistence, false),
-      adapter: Application.get_env(:message_service, :message_store_adapter, MessageStore.QueryPlanAdapter)
+      adapter:
+        Application.get_env(
+          :message_service,
+          :message_store_adapter,
+          MessageStore.QueryPlanAdapter
+        )
     }
 
     Application.put_env(:message_service, :message_persistence, true)
@@ -140,6 +145,7 @@ defmodule MessageService.MediaDownloadAllowedTest do
 
     # Carol sits in a conversation REFERENCING the media — but not one where the OWNER sent it.
     refute allowed?(media, @owner, @carol)
+
     # And bob's plant did not expand bob's own standing either (he was already allowed via the real DM).
     assert allowed?(media, @owner, @bob)
   end

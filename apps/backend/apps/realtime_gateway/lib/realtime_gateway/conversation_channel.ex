@@ -33,6 +33,7 @@ defmodule RealtimeGateway.ConversationChannel do
     # typing…" from someone they blocked. A mid-session block/unblock takes effect on the NEXT join — ephemeral
     # and low-stakes, not worth a per-keystroke recheck. Direct conversations only (false for groups/unknown).
     socket = assign(socket, :dm_blocked, resolve_dm_blocked(socket))
+
     # Resolve ONCE at join whether this socket's user may EMIT live read receipts here: the reader must have
     # read receipts ON, and for a DIRECT chat the PEER must too (the reciprocal rule — a reader who disabled
     # doesn't receive them either). Cached like dm_blocked; a mid-session toggle takes effect on the next join,
@@ -49,6 +50,7 @@ defmodule RealtimeGateway.ConversationChannel do
       # Bridge presence to Redis for the (separate-node) notification service. Best-effort, non-
       # blocking — never slows or breaks presence tracking; the TTL self-heals a missed cleanup.
       write_presence_marker(user_id, socket.assigns.conversation_id)
+
       # Per-conversation "viewing now": tell the OTHER members of THIS conversation that the user opened it.
       # Conversation-scoped (broadcast on this conversation's topic only) → no cross-conversation leak, and
       # every recipient is already a member (they're joined to the topic). broadcast_from excludes the opener.
@@ -77,6 +79,7 @@ defmodule RealtimeGateway.ConversationChannel do
          conversation_id when is_binary(conversation_id) <-
            Map.get(socket.assigns, :conversation_id) do
       clear_presence_marker(user_id, conversation_id)
+
       # Tell the remaining members the user stopped viewing. From terminate we can't broadcast_from (the
       # socket is going away), so broadcast on the conversation topic directly — the leaver's own channel is
       # dead, so a self-copy is harmless and the SDK dedups by (conversation, user) anyway. Suppressed for a
@@ -134,7 +137,8 @@ defmodule RealtimeGateway.ConversationChannel do
   # (error → false = don't suppress) — a check glitch must not silently swallow typing for a legitimate chat.
   defp resolve_dm_blocked(socket) do
     with {:ok, user_id} <- current_user_id(socket),
-         conversation_id when is_binary(conversation_id) <- Map.get(socket.assigns, :conversation_id),
+         conversation_id when is_binary(conversation_id) <-
+           Map.get(socket.assigns, :conversation_id),
          {:ok, result} <-
            SharedInfra.ConversationClient.direct_peer_blocked?(%{
              "conversation_id" => conversation_id,
@@ -154,7 +158,8 @@ defmodule RealtimeGateway.ConversationChannel do
   # still hides a disabled reader on reload).
   defp resolve_emit_read_receipts(socket) do
     with {:ok, me} <- current_user_id(socket),
-         conversation_id when is_binary(conversation_id) <- Map.get(socket.assigns, :conversation_id),
+         conversation_id when is_binary(conversation_id) <-
+           Map.get(socket.assigns, :conversation_id),
          true <- read_receipts_enabled?(me) do
       case dm_peer(conversation_id, me) do
         peer when is_binary(peer) -> read_receipts_enabled?(peer)
@@ -388,6 +393,7 @@ defmodule RealtimeGateway.ConversationChannel do
       unless dropped? do
         broadcast_from(socket, "message_created", response)
         notify_user_topics(socket, sender_user_id, response)
+
         # Live INBOX row (distinct from the message fan-out above: that wakes an OPEN thread, this wakes every
         # participant's conversation LIST). Per-user unread, fire-and-forget, shared with the HTTP paths.
         SharedInfra.ConversationBroadcast.broadcast_updated(
@@ -409,15 +415,21 @@ defmodule RealtimeGateway.ConversationChannel do
       {:error, :only_admins_can_send} ->
         {:reply,
          {:error,
-          %{code: "group.only_admins_can_send", message: "Only admins can send messages"}}, socket}
+          %{code: "group.only_admins_can_send", message: "Only admins can send messages"}},
+         socket}
 
       {:error, :message_unavailable} ->
         unavailable_reply(socket)
 
       # Malformed polls carry their SPECIFIC code to the socket sender too (mirror of the REST mapping).
-      {:error, poll_error} when poll_error in [:poll_invalid_question, :poll_too_few_options,
-                                               :poll_too_many_options, :poll_invalid_option,
-                                               :poll_duplicate_option] ->
+      {:error, poll_error}
+      when poll_error in [
+             :poll_invalid_question,
+             :poll_too_few_options,
+             :poll_too_many_options,
+             :poll_invalid_option,
+             :poll_duplicate_option
+           ] ->
         "poll_" <> failure = Atom.to_string(poll_error)
         {:reply, {:error, %{code: "polls." <> failure, message: "Poll is invalid"}}, socket}
 
@@ -588,7 +600,8 @@ defmodule RealtimeGateway.ConversationChannel do
   # A soft-deleted message accepts no update (body edit OR live-location metadata patch) — editing it would
   # resurrect the tombstone. The socket stays alive; the client just gets a rejected reply.
   defp deleted_reply(socket) do
-    {:reply, {:error, %{code: "realtime.message_deleted", message: "This message was deleted"}}, socket}
+    {:reply, {:error, %{code: "realtime.message_deleted", message: "This message was deleted"}},
+     socket}
   end
 
   defp invalid_event_reply(socket) do

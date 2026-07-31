@@ -118,7 +118,10 @@ defmodule ConversationService.BroadcastLists do
           )
 
           if member_ids do
-            Repo.query!("DELETE FROM broadcast_list_members WHERE list_id = $1::text::uuid", [list_id])
+            Repo.query!("DELETE FROM broadcast_list_members WHERE list_id = $1::text::uuid", [
+              list_id
+            ])
+
             insert_members(list_id, member_ids)
           end
         end)

@@ -80,7 +80,10 @@ defmodule ApiGatewayWeb.V1.CallEndNotifyTest do
 
     assert conn.status == 200
     assert Jason.decode!(conn.resp_body) == %{"status" => "ended"}
-    assert_receive %Phoenix.Socket.Broadcast{event: "call:ended", payload: %{call_id: @call_id}}, 1000
+
+    assert_receive %Phoenix.Socket.Broadcast{event: "call:ended", payload: %{call_id: @call_id}},
+                   1000
+
     # mark_call_ended is the fn whose CallStore transition emits the call.ended webhook (CallWebhooksTest).
     assert {:ended, %{"call_id" => @call_id}} in ConvStub.log()
   end
@@ -89,7 +92,9 @@ defmodule ApiGatewayWeb.V1.CallEndNotifyTest do
     Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@caller}")
 
     assert end_call(@callee).status == 200
-    assert_receive %Phoenix.Socket.Broadcast{event: "call:ended", payload: %{call_id: @call_id}}, 1000
+
+    assert_receive %Phoenix.Socket.Broadcast{event: "call:ended", payload: %{call_id: @call_id}},
+                   1000
   end
 
   test "a NON-seat user → opaque 404, no transition, no broadcast" do

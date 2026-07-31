@@ -302,7 +302,15 @@ defmodule MessageService.Messages do
          bucket_date = get_attr(attrs, "bucket_date") || bucket_date(updated_at),
          {:ok, existing} <-
            fetch_own_message(conversation_id, bucket_date, message_id, actor_user_id) do
-      apply_message_update(mode, attrs, existing, conversation_id, bucket_date, message_id, updated_at)
+      apply_message_update(
+        mode,
+        attrs,
+        existing,
+        conversation_id,
+        bucket_date,
+        message_id,
+        updated_at
+      )
     end
   end
 
@@ -322,8 +330,17 @@ defmodule MessageService.Messages do
 
   # Live-location: a metadata PATCH (latest position / live flag). Merges into the message's existing
   # metadata and leaves body/status/edited_at intact (it is not an "edit"). Author-gated above.
-  defp apply_message_update(:metadata, attrs, existing, conversation_id, bucket_date, message_id, _updated_at) do
-    merged = Map.merge(existing.metadata || %{}, stringify_metadata(get_attr(attrs, "metadata_patch")))
+  defp apply_message_update(
+         :metadata,
+         attrs,
+         existing,
+         conversation_id,
+         bucket_date,
+         message_id,
+         _updated_at
+       ) do
+    merged =
+      Map.merge(existing.metadata || %{}, stringify_metadata(get_attr(attrs, "metadata_patch")))
 
     message_attrs = %{
       "conversation_id" => conversation_id,
@@ -339,7 +356,15 @@ defmodule MessageService.Messages do
   end
 
   # Body edit (existing behavior): marks the message "edited".
-  defp apply_message_update(:body, attrs, _existing, conversation_id, bucket_date, message_id, updated_at) do
+  defp apply_message_update(
+         :body,
+         attrs,
+         _existing,
+         conversation_id,
+         bucket_date,
+         message_id,
+         updated_at
+       ) do
     message_attrs = %{
       "conversation_id" => conversation_id,
       "bucket_date" => bucket_date,

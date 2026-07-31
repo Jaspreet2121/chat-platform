@@ -76,7 +76,11 @@ defmodule MessageService.Polls do
   def normalize_definition(_raw), do: {:error, :poll_invalid_question}
 
   @doc "The zero-vote aggregate for a fresh poll (the create ack carries it — no query needed)."
-  def zero_aggregate(%{"question" => question, "allows_multiple" => multiple, "options" => options}) do
+  def zero_aggregate(%{
+        "question" => question,
+        "allows_multiple" => multiple,
+        "options" => options
+      }) do
     %{
       question: question,
       allows_multiple: multiple,
@@ -132,7 +136,8 @@ defmodule MessageService.Polls do
   option (counts stay exact); `nil` = uncapped (the view-votes screen).
   """
   def build_aggregate(definition, votes, cap \\ @voter_ids_cap) do
-    voters_by_option = Enum.group_by(votes, fn {option_id, _u} -> option_id end, fn {_o, u} -> u end)
+    voters_by_option =
+      Enum.group_by(votes, fn {option_id, _u} -> option_id end, fn {_o, u} -> u end)
 
     %{
       question: definition["question"],

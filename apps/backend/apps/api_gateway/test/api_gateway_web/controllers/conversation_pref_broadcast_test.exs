@@ -19,12 +19,16 @@ defmodule ApiGatewayWeb.ConversationPrefBroadcastTest do
 
   defmodule AuthStub do
     @me "11111111-1111-4111-8111-111111111111"
-    def current_session(%{"authorization" => "Bearer me"}), do: {:ok, %{user_id: @me, app_id: "app1"}}
+    def current_session(%{"authorization" => "Bearer me"}),
+      do: {:ok, %{user_id: @me, app_id: "app1"}}
+
     def current_session(_), do: {:error, :session_invalid}
   end
 
   defmodule ConvStub do
-    def set_mute(%{"conversation_id" => c}), do: {:ok, %{conversation_id: c, muted_until: "always"}}
+    def set_mute(%{"conversation_id" => c}),
+      do: {:ok, %{conversation_id: c, muted_until: "always"}}
+
     def clear_history(%{"conversation_id" => c}), do: {:ok, %{conversation_id: c, cleared: true}}
 
     def set_auto_delete(%{"conversation_id" => c}),
@@ -71,7 +75,9 @@ defmodule ApiGatewayWeb.ConversationPrefBroadcastTest do
   end
 
   test "MUTE → 200 + :pref to the acting user ONLY (other devices unstale; peer hears nothing)" do
-    conn = ConversationController.mute(authed(:put), %{"conversation_id" => @conv, "mode" => "always"})
+    conn =
+      ConversationController.mute(authed(:put), %{"conversation_id" => @conv, "mode" => "always"})
+
     assert conn.status == 200
     assert_pref_to_me_only()
   end

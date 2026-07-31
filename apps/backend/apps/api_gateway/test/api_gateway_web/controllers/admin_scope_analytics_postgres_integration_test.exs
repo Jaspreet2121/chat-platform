@@ -58,10 +58,13 @@ defmodule ApiGatewayWeb.AdminScopeAnalyticsPostgresIntegrationTest do
   end
 
   defp seed_app!(id) do
-    MsgRepo.query!("INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'Integrator', $2)", [
-      id,
-      "int-" <> String.slice(String.replace(id, "-", ""), 0, 12)
-    ])
+    MsgRepo.query!(
+      "INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'Integrator', $2)",
+      [
+        id,
+        "int-" <> String.slice(String.replace(id, "-", ""), 0, 12)
+      ]
+    )
   end
 
   defp seed_user!(id, app_id) do

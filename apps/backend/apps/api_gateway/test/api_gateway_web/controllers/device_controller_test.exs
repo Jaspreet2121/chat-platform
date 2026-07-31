@@ -29,8 +29,20 @@ defmodule ApiGatewayWeb.DeviceControllerTest do
       {:ok,
        %{
          devices: [
-           %{device_id: "phone-1", device_name: "Pixel 9", platform: "android", last_seen_at: "t2", created_at: "t0"},
-           %{device_id: "web-aaaa", device_name: "Chrome on macOS", platform: "web", last_seen_at: "t1", created_at: "t0"}
+           %{
+             device_id: "phone-1",
+             device_name: "Pixel 9",
+             platform: "android",
+             last_seen_at: "t2",
+             created_at: "t0"
+           },
+           %{
+             device_id: "web-aaaa",
+             device_name: "Chrome on macOS",
+             platform: "web",
+             last_seen_at: "t1",
+             created_at: "t0"
+           }
          ]
        }}
     end

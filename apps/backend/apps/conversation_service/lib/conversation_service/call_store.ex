@@ -93,12 +93,14 @@ defmodule ConversationService.CallStore do
 
       # 1-on-1 rows: matched by caller/callee EXACTLY as before. Group rows: added via a call_participants
       # membership subquery. distinct so a row can't repeat. Old 1-on-1 history is unchanged.
-      participant_calls = from(p in CallParticipant, where: p.user_id == ^user_id, select: p.call_id)
+      participant_calls =
+        from(p in CallParticipant, where: p.user_id == ^user_id, select: p.call_id)
 
       calls =
         from(c in Call,
           where:
-            c.caller_id == ^user_id or c.callee_id == ^user_id or c.id in subquery(participant_calls),
+            c.caller_id == ^user_id or c.callee_id == ^user_id or
+              c.id in subquery(participant_calls),
           distinct: true,
           order_by: [desc: c.created_at],
           limit: ^limit
@@ -144,8 +146,7 @@ defmodule ConversationService.CallStore do
       end)
       |> case do
         {:ok, call} ->
-          {:ok,
-           %{call: response(call), participants: list_participants(id), member_ids: others}}
+          {:ok, %{call: response(call), participants: list_participants(id), member_ids: others}}
 
         {:error, _reason} ->
           {:error, :call_invalid}
@@ -179,7 +180,11 @@ defmodule ConversationService.CallStore do
           call
         end
 
-      {:ok, %{call: response(call), participant: participant_response(get_participant_row(call_id, user_id))}}
+      {:ok,
+       %{
+         call: response(call),
+         participant: participant_response(get_participant_row(call_id, user_id))
+       }}
     end
   rescue
     _ -> {:error, :call_invalid}
@@ -193,7 +198,12 @@ defmodule ConversationService.CallStore do
          {:ok, call} <- fetch_group_call(call_id) do
       upsert_participant_status(call_id, user_id, %{status: "declined"})
       call = maybe_close_call(call)
-      {:ok, %{call: response(call), participant: participant_response(get_participant_row(call_id, user_id))}}
+
+      {:ok,
+       %{
+         call: response(call),
+         participant: participant_response(get_participant_row(call_id, user_id))
+       }}
     end
   rescue
     _ -> {:error, :call_invalid}
@@ -208,7 +218,12 @@ defmodule ConversationService.CallStore do
       now = DateTime.utc_now()
       upsert_participant_status(call_id, user_id, %{status: "left", left_at: now})
       call = maybe_close_call(call)
-      {:ok, %{call: response(call), participant: participant_response(get_participant_row(call_id, user_id))}}
+
+      {:ok,
+       %{
+         call: response(call),
+         participant: participant_response(get_participant_row(call_id, user_id))
+       }}
     end
   rescue
     _ -> {:error, :call_invalid}
@@ -450,8 +465,19 @@ defmodule ConversationService.CallStore do
          {:ok, user_id} <- required(attrs, "user_id"),
          {:ok, call} <- fetch_call(call_id),
          :ok <- ensure_host(call, actor_id) do
-      upsert_participant_status(call_id, user_id, %{status: "joined", joined_at: DateTime.utc_now()})
-      {:ok, %{call_id: call_id, user_id: user_id, status: "joined", room: call.room_name, type: call.type}}
+      upsert_participant_status(call_id, user_id, %{
+        status: "joined",
+        joined_at: DateTime.utc_now()
+      })
+
+      {:ok,
+       %{
+         call_id: call_id,
+         user_id: user_id,
+         status: "joined",
+         room: call.room_name,
+         type: call.type
+       }}
     end
   rescue
     _ -> {:error, :call_invalid}
@@ -521,7 +547,12 @@ defmodule ConversationService.CallStore do
   # duplicate join while still in the call → keep them, don't kick their token). A real leave marks the row
   # "left" (server-aware leave), so a leave→rejoin is NOT currently "joined" → re-gated → host must approve
   # again. Returns true = admitted (joined), false = pending.
-  defp seat_link_joiner(%Call{caller_id: caller_id, id: call_id}, %CallLink{require_approval: approval}, user_id, now) do
+  defp seat_link_joiner(
+         %Call{caller_id: caller_id, id: call_id},
+         %CallLink{require_approval: approval},
+         user_id,
+         now
+       ) do
     cond do
       user_id == caller_id or not approval ->
         upsert_participant_status(call_id, user_id, %{status: "joined", joined_at: now})
@@ -607,7 +638,13 @@ defmodule ConversationService.CallStore do
   end
 
   defp insert_participant!(call_id, user_id, status, created_at, joined_at) do
-    %{call_id: call_id, user_id: user_id, status: status, created_at: created_at, joined_at: joined_at}
+    %{
+      call_id: call_id,
+      user_id: user_id,
+      status: status,
+      created_at: created_at,
+      joined_at: joined_at
+    }
     |> CallParticipant.create_changeset()
     |> Repo.insert!()
   end
@@ -665,7 +702,9 @@ defmodule ConversationService.CallStore do
 
   # A call is promotable when it's LIVE: a direct call that's been answered ("accepted"), or an already-group
   # call that's still ringing/ongoing (idempotent re-promote). Anything else → not promotable.
-  defp ensure_promotable(%Call{kind: "group", status: status}) when status in ["ringing", "ongoing"], do: :ok
+  defp ensure_promotable(%Call{kind: "group", status: status})
+       when status in ["ringing", "ongoing"], do: :ok
+
   defp ensure_promotable(%Call{kind: "direct", status: "accepted"}), do: :ok
   defp ensure_promotable(_), do: {:error, :call_not_promotable}
 
@@ -822,7 +861,9 @@ defmodule ConversationService.CallStore do
       terminal = if anyone_but_initiator_joined?(call), do: "ended", else: "missed"
 
       {:ok, updated} =
-        call |> Call.status_changeset(%{status: terminal, ended_at: DateTime.utc_now()}) |> Repo.update()
+        call
+        |> Call.status_changeset(%{status: terminal, ended_at: DateTime.utc_now()})
+        |> Repo.update()
 
       updated
     else
@@ -983,8 +1024,11 @@ defmodule ConversationService.CallStore do
     }
   end
 
-  defp duration_seconds(%Call{answered_at: %DateTime{} = answered, ended_at: %DateTime{} = ended}),
-    do: max(DateTime.diff(ended, answered, :second), 0)
+  defp duration_seconds(%Call{
+         answered_at: %DateTime{} = answered,
+         ended_at: %DateTime{} = ended
+       }),
+       do: max(DateTime.diff(ended, answered, :second), 0)
 
   defp duration_seconds(_call), do: nil
 

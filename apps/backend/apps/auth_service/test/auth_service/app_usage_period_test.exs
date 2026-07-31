@@ -59,7 +59,14 @@ defmodule AuthService.AppUsagePeriodTest do
     Repo.query!(
       "INSERT INTO calls (id, room_name, caller_id, callee_id, type, status, created_at, answered_at, ended_at) " <>
         "VALUES (gen_random_uuid(), $1, $2::text::uuid, $3::text::uuid, 'voice', $4, now(), $5, $6)",
-      ["room-#{Ecto.UUID.generate()}", caller, callee, if(answered_at, do: "ended", else: "missed"), answered_at, ended_at]
+      [
+        "room-#{Ecto.UUID.generate()}",
+        caller,
+        callee,
+        if(answered_at, do: "ended", else: "missed"),
+        answered_at,
+        ended_at
+      ]
     )
   end
 
@@ -88,6 +95,7 @@ defmodule AuthService.AppUsagePeriodTest do
     message!(conv, u, dt("2026-06-30T23:59:59Z"), app)
     message!(conv, u, dt("2026-07-01T00:00:00Z"), app)
     message!(conv, u, dt("2026-07-15T12:00:00Z"), app)
+
     # The next-month-start boundary can't be seeded in the future (2026-08-01 > today) without lying to the
     # meter — so prove exclusivity on JUNE instead: June counts exactly the 06-30 message, not July's.
     june = usage!(app, "2026-06")
@@ -119,6 +127,7 @@ defmodule AuthService.AppUsagePeriodTest do
     message!(oconv, ou, dt("2026-07-05T10:00:00Z"), other)
 
     assert usage!(app, "2026-07").active_users_by_messages == 3
+
     # …and the twin's own meter sees ITS user — proving isolation is by app_id, not by absence of data.
     assert usage!(twin, "2026-07").active_users_by_messages == 1
   end

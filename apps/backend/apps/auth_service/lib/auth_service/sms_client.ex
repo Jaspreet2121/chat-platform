@@ -33,14 +33,21 @@ defmodule AuthService.SmsClient do
       channel: cfg[:channel],
       DCS: cfg[:dcs],
       flashsms: cfg[:flashsms],
-      number: format_number(number, cfg[:country_prefix] || "91", cfg[:strip_country_code] == true),
+      number:
+        format_number(number, cfg[:country_prefix] || "91", cfg[:strip_country_code] == true),
       text: otp_text(code),
       route: cfg[:route],
       EntityId: cfg[:entity_id],
       templateid: cfg[:template_login_id]
     ]
 
-    req = [method: http_method(cfg), url: url, params: params, receive_timeout: 5_000, retry: false]
+    req = [
+      method: http_method(cfg),
+      url: url,
+      params: params,
+      receive_timeout: 5_000,
+      retry: false
+    ]
 
     case Req.request(req ++ (cfg[:req_options] || [])) do
       {:ok, %Req.Response{status: 200, body: body}} ->

@@ -46,10 +46,17 @@ defmodule AuthService.Moderation do
 
         cond do
           # A target outside the console's tenant is indistinguishable from a missing user → 404, no action.
-          is_nil(target_user) or not in_app?(target_user, app_of(attrs)) -> {:error, :user_not_found}
-          is_nil(actor_user) -> {:error, :cannot_moderate_peer_or_superior}
-          SharedInfra.IAM.can_moderate?(actor_user.role, target_user.role) -> :ok
-          true -> {:error, :cannot_moderate_peer_or_superior}
+          is_nil(target_user) or not in_app?(target_user, app_of(attrs)) ->
+            {:error, :user_not_found}
+
+          is_nil(actor_user) ->
+            {:error, :cannot_moderate_peer_or_superior}
+
+          SharedInfra.IAM.can_moderate?(actor_user.role, target_user.role) ->
+            :ok
+
+          true ->
+            {:error, :cannot_moderate_peer_or_superior}
         end
     end
   rescue
@@ -231,9 +238,12 @@ defmodule AuthService.Moderation do
         # Lock every root row first (stable order) so concurrent demotions can't race to zero roots —
         # scoped to the console's tenant (roots are first-party admins).
         %Postgrex.Result{rows: root_rows} =
-          Repo.query!("SELECT id::text FROM users_auth WHERE role = 'root' AND app_id = $1 FOR UPDATE", [
-            uuid_param(app)
-          ])
+          Repo.query!(
+            "SELECT id::text FROM users_auth WHERE role = 'root' AND app_id = $1 FOR UPDATE",
+            [
+              uuid_param(app)
+            ]
+          )
 
         root_count = length(root_rows)
 
@@ -300,9 +310,20 @@ defmodule AuthService.Moderation do
         actor_bin = uuid_param(actor_id)
 
         # Reassign the NOT-NULL / ON DELETE NO ACTION blockers to the acting root (keeps the artifacts).
-        Repo.query!("UPDATE conversations SET created_by = $1 WHERE created_by = $2", [actor_bin, target_bin])
-        Repo.query!("UPDATE media_assets SET owner_user_id = $1 WHERE owner_user_id = $2", [actor_bin, target_bin])
-        Repo.query!("UPDATE call_sessions SET started_by = $1 WHERE started_by = $2", [actor_bin, target_bin])
+        Repo.query!("UPDATE conversations SET created_by = $1 WHERE created_by = $2", [
+          actor_bin,
+          target_bin
+        ])
+
+        Repo.query!("UPDATE media_assets SET owner_user_id = $1 WHERE owner_user_id = $2", [
+          actor_bin,
+          target_bin
+        ])
+
+        Repo.query!("UPDATE call_sessions SET started_by = $1 WHERE started_by = $2", [
+          actor_bin,
+          target_bin
+        ])
 
         # USERNAME HOLD (080): the profile row cascade-deletes below, which would FREE the handle
         # instantly — the exact claim-a-name-someone-just-vacated impersonation vector the rename hold

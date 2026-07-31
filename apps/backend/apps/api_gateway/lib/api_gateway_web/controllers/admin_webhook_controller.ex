@@ -11,7 +11,8 @@ defmodule ApiGatewayWeb.AdminWebhookController do
   # (root/admin only) — a mutation shouldn't ride a view permission.
   plug ApiGatewayWeb.Plugs.RequirePermission, "webhooks.view" when action in [:failed]
 
-  plug ApiGatewayWeb.Plugs.RequirePermission, "webhooks.manage"
+  plug ApiGatewayWeb.Plugs.RequirePermission,
+       "webhooks.manage"
        when action in [:reenqueue, :reenqueue_bulk]
 
   alias ApiGatewayWeb.ErrorResponse

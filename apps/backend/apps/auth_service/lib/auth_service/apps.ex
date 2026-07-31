@@ -271,8 +271,11 @@ defmodule AuthService.Apps do
 
     {where, params} =
       case q do
-        v when is_binary(v) and v != "" -> {"AND (a.name ILIKE $1 OR a.id::text ILIKE $1)", ["%#{v}%"]}
-        _ -> {"", []}
+        v when is_binary(v) and v != "" ->
+          {"AND (a.name ILIKE $1 OR a.id::text ILIKE $1)", ["%#{v}%"]}
+
+        _ ->
+          {"", []}
       end
 
     %{rows: app_rows} =
@@ -283,10 +286,12 @@ defmodule AuthService.Apps do
         params
       )
 
-    owners = group_first(
-      "SELECT o.app_id::text, o.owner_user_id::text, COALESCE(p.display_name, u.phone_number, u.email) " <>
-        "FROM app_owners o JOIN users_auth u ON u.id = o.owner_user_id " <>
-        "LEFT JOIN user_profiles p ON p.user_id = o.owner_user_id ORDER BY o.created_at ASC")
+    owners =
+      group_first(
+        "SELECT o.app_id::text, o.owner_user_id::text, COALESCE(p.display_name, u.phone_number, u.email) " <>
+          "FROM app_owners o JOIN users_auth u ON u.id = o.owner_user_id " <>
+          "LEFT JOIN user_profiles p ON p.user_id = o.owner_user_id ORDER BY o.created_at ASC"
+      )
 
     users = group_count("SELECT app_id::text, count(*) FROM users_auth GROUP BY app_id")
     convos = group_count("SELECT app_id::text, count(*) FROM conversations GROUP BY app_id")
@@ -366,6 +371,7 @@ defmodule AuthService.Apps do
   defp sum_keys(keys, app_ids) do
     Enum.reduce(app_ids, %{live: 0, test: 0, revoked: 0}, fn id, acc ->
       per = Map.get(keys, id, %{})
+
       %{
         live: acc.live + Map.get(per, :live, 0),
         test: acc.test + Map.get(per, :test, 0),

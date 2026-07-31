@@ -163,7 +163,11 @@ defmodule MessageService.HTTP.Router do
 
   post "/internal/analytics/timeseries" do
     days = MessageService.Analytics.normalize_days(Map.get(body(conn), "days"))
-    send_result(conn, {:ok, MessageService.Analytics.timeseries(days, Map.get(body(conn), "app_id"))})
+
+    send_result(
+      conn,
+      {:ok, MessageService.Analytics.timeseries(days, Map.get(body(conn), "app_id"))}
+    )
   end
 
   # Service health: own liveness + the dependencies this service owns (Postgres store + Kafka).

@@ -37,7 +37,8 @@ defmodule ApiGatewayWeb.V1.AuthController do
   end
 
   defp maybe_set_display_name(user_id, display_name)
-       when is_binary(user_id) and user_id != "" and is_binary(display_name) and display_name != "" do
+       when is_binary(user_id) and user_id != "" and is_binary(display_name) and
+              display_name != "" do
     SharedInfra.UserClient.update_current_profile(%{
       "user_id" => user_id,
       "display_name" => display_name

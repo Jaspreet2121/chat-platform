@@ -46,7 +46,11 @@ defmodule AuthService.LookupExternalUserTest do
     {:ok, _} = Accounts.resolve_or_create_external_user(@app_id, ext)
 
     other_app = Ecto.UUID.generate()
-    Repo.query!("INSERT INTO apps (id, name, slug, created_at, updated_at) VALUES ($1::text::uuid, 'other', $2, now(), now())", [other_app, "slug-#{other_app}"])
+
+    Repo.query!(
+      "INSERT INTO apps (id, name, slug, created_at, updated_at) VALUES ($1::text::uuid, 'other', $2, now(), now())",
+      [other_app, "slug-#{other_app}"]
+    )
 
     before = user_count()
     assert {:error, :user_not_found} = Accounts.lookup_external_user(other_app, ext)

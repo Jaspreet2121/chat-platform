@@ -18,7 +18,9 @@ defmodule ApiGatewayWeb.UserProfileBlockTest do
     @me "11111111-1111-4111-8111-111111111111"
     @app "33333333-3333-4333-8333-333333333333"
     @target "22222222-2222-4222-8222-222222222222"
-    def current_session(%{"authorization" => "Bearer me"}), do: {:ok, %{user_id: @me, app_id: @app}}
+    def current_session(%{"authorization" => "Bearer me"}),
+      do: {:ok, %{user_id: @me, app_id: @app}}
+
     def current_session(_), do: {:error, :session_invalid}
     def lookup_user_by_phone(%{"phone_number" => "+15551234567"}), do: {:ok, %{user_id: @target}}
     def lookup_user_by_phone(_), do: {:error, :not_found}
@@ -29,7 +31,14 @@ defmodule ApiGatewayWeb.UserProfileBlockTest do
     def set_photo(v), do: Agent.update(__MODULE__, fn _ -> v end)
 
     def get_public_profile(%{"user_id" => uid}),
-      do: {:ok, %{user_id: uid, display_name: "Bob", avatar_media_id: "m1", app_id: "33333333-3333-4333-8333-333333333333"}}
+      do:
+        {:ok,
+         %{
+           user_id: uid,
+           display_name: "Bob",
+           avatar_media_id: "m1",
+           app_id: "33333333-3333-4333-8333-333333333333"
+         }}
 
     def get_privacy(_attrs),
       do:
@@ -42,12 +51,16 @@ defmodule ApiGatewayWeb.UserProfileBlockTest do
   end
 
   defmodule MediaStub do
-    def get_download_url(%{"purpose" => "user_avatar"}), do: {:ok, %{download_url: "https://minio/bob.png"}}
+    def get_download_url(%{"purpose" => "user_avatar"}),
+      do: {:ok, %{download_url: "https://minio/bob.png"}}
+
     def get_download_url(_), do: {:error, :not_found}
   end
 
   defmodule ConvStub do
-    def start_link, do: Agent.start_link(fn -> %{blocked: false, shares: true} end, name: __MODULE__)
+    def start_link,
+      do: Agent.start_link(fn -> %{blocked: false, shares: true} end, name: __MODULE__)
+
     def set_blocked(v), do: Agent.update(__MODULE__, &Map.put(&1, :blocked, v))
     def set_shares(v), do: Agent.update(__MODULE__, &Map.put(&1, :shares, v))
     def either_blocked?(_attrs), do: {:ok, %{blocked: Agent.get(__MODULE__, & &1.blocked)}}
@@ -125,7 +138,10 @@ defmodule ApiGatewayWeb.UserProfileBlockTest do
 
   defp avatar_url_for(target) do
     ConvStub.set_blocked(false)
-    Jason.decode!(UserController.profile(authed(), %{"user_id" => target}).resp_body)["avatar_url"]
+
+    Jason.decode!(UserController.profile(authed(), %{"user_id" => target}).resp_body)[
+      "avatar_url"
+    ]
   end
 
   test "photo 'everyone' → avatar shown even WITHOUT a shared conversation" do

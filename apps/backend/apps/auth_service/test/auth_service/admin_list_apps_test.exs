@@ -41,7 +41,11 @@ defmodule AuthService.AdminListAppsTest do
   end
 
   defp own!(app_id, user_id),
-    do: Repo.query!("INSERT INTO app_owners (app_id, owner_user_id) VALUES ($1::text::uuid, $2::text::uuid)", [app_id, user_id])
+    do:
+      Repo.query!(
+        "INSERT INTO app_owners (app_id, owner_user_id) VALUES ($1::text::uuid, $2::text::uuid)",
+        [app_id, user_id]
+      )
 
   defp conversation!(app_id, creator) do
     id = Ecto.UUID.generate()
@@ -66,7 +70,14 @@ defmodule AuthService.AdminListAppsTest do
   defp key!(app_id, mode, opts \\ []) do
     Repo.query!(
       "INSERT INTO api_keys (id, app_id, name, key_hash, key_prefix, mode, created_at, revoked_at) VALUES ($1::text::uuid, $2::text::uuid, 'k', $3, $4, $5, now(), $6)",
-      [Ecto.UUID.generate(), app_id, "hash-#{Ecto.UUID.generate()}", "sk_#{mode}_abc", mode, Keyword.get(opts, :revoked_at)]
+      [
+        Ecto.UUID.generate(),
+        app_id,
+        "hash-#{Ecto.UUID.generate()}",
+        "sk_#{mode}_abc",
+        mode,
+        Keyword.get(opts, :revoked_at)
+      ]
     )
   end
 
@@ -91,6 +102,7 @@ defmodule AuthService.AdminListAppsTest do
     own!(app_b, ub1)
 
     conv_a = conversation!(app_a, ua)
+
     # Two messages in A's conversation — both stamped with B's app_id on the row (the trap). The count must
     # still attribute them to A via the conversation.
     message!(conv_a, ua, app_b)

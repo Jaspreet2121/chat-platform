@@ -66,12 +66,18 @@ defmodule AuthService.PushSubscriptionsTest do
 
     # Delete scoped to the CALLER: user A (not the owner) can't remove it; user B can.
     assert {:ok, _} =
-             PushSubscriptions.delete_subscription(%{"user_id" => @user_a, "endpoint" => @endpoint})
+             PushSubscriptions.delete_subscription(%{
+               "user_id" => @user_a,
+               "endpoint" => @endpoint
+             })
 
     assert count(@endpoint) == 1
 
     assert {:ok, _} =
-             PushSubscriptions.delete_subscription(%{"user_id" => @user_b, "endpoint" => @endpoint})
+             PushSubscriptions.delete_subscription(%{
+               "user_id" => @user_b,
+               "endpoint" => @endpoint
+             })
 
     assert count(@endpoint) == 0
   end
@@ -80,6 +86,7 @@ defmodule AuthService.PushSubscriptionsTest do
     assert {:error, :invalid_request} =
              PushSubscriptions.save_subscription(%{"user_id" => @user_a, "endpoint" => ""})
 
-    assert {:error, :invalid_request} = PushSubscriptions.delete_subscription(%{"user_id" => @user_a})
+    assert {:error, :invalid_request} =
+             PushSubscriptions.delete_subscription(%{"user_id" => @user_a})
   end
 end

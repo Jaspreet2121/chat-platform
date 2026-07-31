@@ -143,11 +143,18 @@ defmodule AuthService.ApiKeys do
                  "FROM apps p WHERE p.id = $1::text::uuid RETURNING id::text",
                [live_app_id]
              ) do
-          {:ok, %{rows: [[twin_id]]}} -> {:ok, twin_id}
+          {:ok, %{rows: [[twin_id]]}} ->
+            {:ok, twin_id}
+
           # Live app doesn't exist → can't allocate a twin.
-          {:ok, %{rows: []}} -> {:error, :api_key_invalid}
-          {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} -> retry_twin(live_app_id)
-          _ -> {:error, :api_key_invalid}
+          {:ok, %{rows: []}} ->
+            {:error, :api_key_invalid}
+
+          {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} ->
+            retry_twin(live_app_id)
+
+          _ ->
+            {:error, :api_key_invalid}
         end
 
       :error ->

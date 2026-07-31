@@ -19,7 +19,12 @@ defmodule MessageService.ReadReceiptReciprocityTest do
   setup do
     prev = %{
       persistence: Application.get_env(:message_service, :message_persistence, false),
-      adapter: Application.get_env(:message_service, :message_store_adapter, MessageStore.QueryPlanAdapter)
+      adapter:
+        Application.get_env(
+          :message_service,
+          :message_store_adapter,
+          MessageStore.QueryPlanAdapter
+        )
     }
 
     Application.put_env(:message_service, :message_persistence, true)
@@ -63,7 +68,9 @@ defmodule MessageService.ReadReceiptReciprocityTest do
   end
 
   defp read_by_count(mid, viewer) do
-    {:ok, timeline} = Messages.list_messages(%{"conversation_id" => @conv, "viewer_user_id" => viewer})
+    {:ok, timeline} =
+      Messages.list_messages(%{"conversation_id" => @conv, "viewer_user_id" => viewer})
+
     Enum.find(timeline.messages, &(&1.message_id == mid)).read_by_count
   end
 
@@ -75,8 +82,18 @@ defmodule MessageService.ReadReceiptReciprocityTest do
     # @reader_on has no privacy row → default enabled.
 
     mid = send_message!()
-    Receipts.mark_read(%{"conversation_id" => @conv, "message_id" => mid, "user_id" => @reader_on})
-    Receipts.mark_read(%{"conversation_id" => @conv, "message_id" => mid, "user_id" => @reader_off})
+
+    Receipts.mark_read(%{
+      "conversation_id" => @conv,
+      "message_id" => mid,
+      "user_id" => @reader_on
+    })
+
+    Receipts.mark_read(%{
+      "conversation_id" => @conv,
+      "message_id" => mid,
+      "user_id" => @reader_off
+    })
 
     # A viewer with receipts ON counts ONLY reader_on — the disabled reader is excluded (reader half).
     assert read_by_count(mid, @sender) == 1
@@ -91,9 +108,16 @@ defmodule MessageService.ReadReceiptReciprocityTest do
     privacy!(@reader_off, false)
 
     mid = send_message!()
-    Receipts.mark_delivered(%{"conversation_id" => @conv, "message_id" => mid, "user_id" => @reader_off})
 
-    {:ok, timeline} = Messages.list_messages(%{"conversation_id" => @conv, "viewer_user_id" => @sender})
+    Receipts.mark_delivered(%{
+      "conversation_id" => @conv,
+      "message_id" => mid,
+      "user_id" => @reader_off
+    })
+
+    {:ok, timeline} =
+      Messages.list_messages(%{"conversation_id" => @conv, "viewer_user_id" => @sender})
+
     msg = Enum.find(timeline.messages, &(&1.message_id == mid))
     # The disabled reader still counts toward delivered (single tick unaffected)…
     assert msg.delivered_by_count == 1

@@ -97,7 +97,8 @@ defmodule ApiGatewayWeb.V1.WebhookEndpointController do
   end
 
   defp app_only(conn),
-    do: ErrorResponse.forbidden(conn, "v1.app_only", "Only an API key may manage webhook endpoints")
+    do:
+      ErrorResponse.forbidden(conn, "v1.app_only", "Only an API key may manage webhook endpoints")
 
   defp not_found(conn),
     do: ErrorResponse.not_found(conn, "v1.not_found", "Webhook endpoint not found")

@@ -37,6 +37,7 @@ defmodule MessageService.Statuses do
   """
 
   import Ecto.Query
+
   # The reciprocity predicate's THIRD consumer — one definition, expanded here exactly as the read_by_count
   # aggregate and the per-message reader list expand it (MessageService.ReadReceipts).
   import MessageService.ReadReceipts
@@ -78,7 +79,16 @@ defmodule MessageService.Statuses do
             "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4, $5, $6::text::uuid, $7, now() + make_interval(hours => $8)) " <>
             "RETURNING to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'), " <>
             "to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')",
-          [id, owner, app_id, kind, get_attr(attrs, "body"), get_attr(attrs, "media_id"), metadata, @ttl_hours]
+          [
+            id,
+            owner,
+            app_id,
+            kind,
+            get_attr(attrs, "body"),
+            get_attr(attrs, "media_id"),
+            metadata,
+            @ttl_hours
+          ]
         )
 
       # The write-amortised sweep rides every post, off nothing critical (errors are logged, never raised).
@@ -149,7 +159,8 @@ defmodule MessageService.Statuses do
             "FROM status_posts sp " <>
             "LEFT JOIN status_views v ON v.status_id = sp.id AND v.viewer_user_id = $1::text::uuid " <>
             "WHERE sp.expires_at > now() AND sp.deleted_at IS NULL AND sp.owner_user_id <> $1::text::uuid " <>
-            "AND " <> audience_sql() <>
+            "AND " <>
+            audience_sql() <>
             "GROUP BY sp.owner_user_id ORDER BY max(sp.created_at) DESC",
           [viewer]
         )
@@ -181,7 +192,9 @@ defmodule MessageService.Statuses do
             "to_char(sp.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') " <>
             "FROM status_posts sp " <>
             "WHERE sp.owner_user_id = $2::text::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL " <>
-            "AND (sp.owner_user_id = $1::text::uuid OR (" <> audience_sql() <> ")) " <>
+            "AND (sp.owner_user_id = $1::text::uuid OR (" <>
+            audience_sql() <>
+            ")) " <>
             "ORDER BY sp.created_at ASC",
           [viewer, owner]
         )
@@ -218,7 +231,9 @@ defmodule MessageService.Statuses do
          {:ok, media_id} <- required(attrs, "media_id") do
       %{rows: rows} =
         Repo.query!(
-          "SELECT (sp.owner_user_id = $1::text::uuid) OR (" <> audience_sql() <> ") " <>
+          "SELECT (sp.owner_user_id = $1::text::uuid) OR (" <>
+            audience_sql() <>
+            ") " <>
             "FROM status_posts sp " <>
             "WHERE sp.media_id = $2::text::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL " <>
             "LIMIT 1",
@@ -249,10 +264,11 @@ defmodule MessageService.Statuses do
           [user_id]
         )
 
-      mode = case mode_rows do
-        [[mode]] -> mode
-        _ -> "contacts"
-      end
+      mode =
+        case mode_rows do
+          [[mode]] -> mode
+          _ -> "contacts"
+        end
 
       {:ok, %{mode: mode, member_user_ids: Enum.map(member_rows, &hd/1)}}
     end
@@ -279,7 +295,9 @@ defmodule MessageService.Statuses do
           )
 
           if members do
-            Repo.query!("DELETE FROM status_audience_members WHERE user_id = $1::text::uuid", [user_id])
+            Repo.query!("DELETE FROM status_audience_members WHERE user_id = $1::text::uuid", [
+              user_id
+            ])
 
             if members != [] do
               Repo.query!(
@@ -414,7 +432,9 @@ defmodule MessageService.Statuses do
           else
             "status_views"
             |> join(:inner, [v], p in "status_posts", on: p.id == v.status_id)
-            |> join(:left, [v, _p], ps in "user_privacy_settings", on: ps.user_id == v.viewer_user_id)
+            |> join(:left, [v, _p], ps in "user_privacy_settings",
+              on: ps.user_id == v.viewer_user_id
+            )
             |> where([v, p, ps], p.owner_user_id == type(^owner, :binary_id))
             |> where([v, p, _ps], p.expires_at > ^DateTime.utc_now() and is_nil(p.deleted_at))
             |> where([v, _p, ps], read_receipts_on(ps))
@@ -504,7 +524,9 @@ defmodule MessageService.Statuses do
       %{rows: rows} =
         Repo.query!(
           "SELECT sp.owner_user_id::text, sp.kind, sp.body, " <>
-            "((sp.owner_user_id = $1::text::uuid) OR (" <> audience_sql() <> ")) " <>
+            "((sp.owner_user_id = $1::text::uuid) OR (" <>
+            audience_sql() <>
+            ")) " <>
             "FROM status_posts sp " <>
             "WHERE sp.id = $2::text::uuid AND sp.expires_at > now() AND sp.deleted_at IS NULL",
           [viewer, status_id]
@@ -625,8 +647,13 @@ defmodule MessageService.Statuses do
 
   defp purge_media(status_id, media_id, app_id) do
     case SharedInfra.MediaClient.purge_asset(%{"media_id" => media_id, "app_id" => app_id}) do
-      {:ok, _} -> :ok
-      other -> Logger.warning("status media purge failed status=#{status_id} media=#{media_id}: #{inspect(other)}")
+      {:ok, _} ->
+        :ok
+
+      other ->
+        Logger.warning(
+          "status media purge failed status=#{status_id} media=#{media_id}: #{inspect(other)}"
+        )
     end
   rescue
     error -> Logger.warning("status media purge raised status=#{status_id}: #{inspect(error)}")

@@ -45,7 +45,8 @@ defmodule ApiGatewayWeb.Plugs.RequireAdmin do
   # Console access = any admin role (root/admin/moderator/support). Legacy is_admin==true is a safety
   # fallback so the existing admin never loses access even if `role` failed to propagate.
   defp session_admin?(session) do
-    SharedInfra.IAM.console_access?(Map.get(session, :role)) or Map.get(session, :is_admin) == true
+    SharedInfra.IAM.console_access?(Map.get(session, :role)) or
+      Map.get(session, :is_admin) == true
   end
 
   defp authorization_header(conn) do

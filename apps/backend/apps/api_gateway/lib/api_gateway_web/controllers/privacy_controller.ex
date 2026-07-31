@@ -35,11 +35,20 @@ defmodule ApiGatewayWeb.PrivacyController do
            |> SharedInfra.UserClient.update_privacy() do
       json(conn, present(privacy))
     else
-      {:error, :session_invalid} -> unauthorized(conn)
-      {:error, :privacy_empty} -> ErrorResponse.invalid_request(conn, "privacy.empty")
-      {:error, :privacy_invalid_value} -> ErrorResponse.invalid_request(conn, "privacy.invalid_value")
-      {:error, :privacy_unavailable} -> ErrorResponse.service_unavailable(conn, "privacy.unavailable")
-      _ -> ErrorResponse.invalid_request(conn, "privacy.invalid_request")
+      {:error, :session_invalid} ->
+        unauthorized(conn)
+
+      {:error, :privacy_empty} ->
+        ErrorResponse.invalid_request(conn, "privacy.empty")
+
+      {:error, :privacy_invalid_value} ->
+        ErrorResponse.invalid_request(conn, "privacy.invalid_value")
+
+      {:error, :privacy_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "privacy.unavailable")
+
+      _ ->
+        ErrorResponse.invalid_request(conn, "privacy.invalid_request")
     end
   end
 

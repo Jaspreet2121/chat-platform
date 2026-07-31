@@ -90,7 +90,10 @@ defmodule ApiGatewayWeb.WebhookEndpointController do
   defp encode_cursor(next) when is_map(next) do
     ts = cget(next, :created_at)
     id = cget(next, :id)
-    if is_binary(ts) and is_binary(id), do: Base.url_encode64("#{ts}|#{id}", padding: false), else: nil
+
+    if is_binary(ts) and is_binary(id),
+      do: Base.url_encode64("#{ts}|#{id}", padding: false),
+      else: nil
   end
 
   defp encode_cursor(_), do: nil

@@ -25,11 +25,20 @@ defmodule ApiGatewayWeb.BlockController do
            }) do
       send_resp(conn, :no_content, "")
     else
-      {:error, :session_invalid} -> unauthorized(conn)
-      {:error, :block_self} -> ErrorResponse.invalid_request(conn, "blocks.self")
-      {:error, :block_unknown_user} -> ErrorResponse.not_found(conn, "blocks.user_not_found", "User not found")
-      {:error, :conversation_unavailable} -> ErrorResponse.service_unavailable(conn, "blocks.unavailable")
-      _ -> ErrorResponse.invalid_request(conn, "blocks.invalid_request")
+      {:error, :session_invalid} ->
+        unauthorized(conn)
+
+      {:error, :block_self} ->
+        ErrorResponse.invalid_request(conn, "blocks.self")
+
+      {:error, :block_unknown_user} ->
+        ErrorResponse.not_found(conn, "blocks.user_not_found", "User not found")
+
+      {:error, :conversation_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "blocks.unavailable")
+
+      _ ->
+        ErrorResponse.invalid_request(conn, "blocks.invalid_request")
     end
   end
 
@@ -44,9 +53,14 @@ defmodule ApiGatewayWeb.BlockController do
            }) do
       send_resp(conn, :no_content, "")
     else
-      {:error, :session_invalid} -> unauthorized(conn)
-      {:error, :conversation_unavailable} -> ErrorResponse.service_unavailable(conn, "blocks.unavailable")
-      _ -> ErrorResponse.invalid_request(conn, "blocks.invalid_request")
+      {:error, :session_invalid} ->
+        unauthorized(conn)
+
+      {:error, :conversation_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "blocks.unavailable")
+
+      _ ->
+        ErrorResponse.invalid_request(conn, "blocks.invalid_request")
     end
   end
 
@@ -59,9 +73,14 @@ defmodule ApiGatewayWeb.BlockController do
       blocks = Map.get(result, :blocks) || Map.get(result, "blocks") || []
       json(conn, %{blocks: enrich(blocks, session_app(session))})
     else
-      {:error, :session_invalid} -> unauthorized(conn)
-      {:error, :conversation_unavailable} -> ErrorResponse.service_unavailable(conn, "blocks.unavailable")
-      _ -> json(conn, %{blocks: []})
+      {:error, :session_invalid} ->
+        unauthorized(conn)
+
+      {:error, :conversation_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "blocks.unavailable")
+
+      _ ->
+        json(conn, %{blocks: []})
     end
   end
 

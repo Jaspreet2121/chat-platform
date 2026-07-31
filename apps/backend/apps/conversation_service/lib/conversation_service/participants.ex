@@ -217,7 +217,9 @@ defmodule ConversationService.Participants do
 
     case ConversationSettingsStore.get_settings(conversation_id) do
       nil ->
-        ConversationSettingsStore.create_settings(Map.put(patch, "conversation_id", conversation_id))
+        ConversationSettingsStore.create_settings(
+          Map.put(patch, "conversation_id", conversation_id)
+        )
 
       settings ->
         ConversationSettingsStore.update_settings(settings, patch)
@@ -285,7 +287,9 @@ defmodule ConversationService.Participants do
 
       if conversation_persistence_enabled?() do
         seconds_clause =
-          if is_nil(seconds), do: "auto_delete_seconds = NULL", else: "auto_delete_seconds = #{seconds}"
+          if is_nil(seconds),
+            do: "auto_delete_seconds = NULL",
+            else: "auto_delete_seconds = #{seconds}"
 
         # seconds is a fixed integer or NULL and after_viewing? is a boolean — both compile-side
         # constants from the mode map, never interpolated user input. Enabling "after viewing" stamps
@@ -299,8 +303,11 @@ defmodule ConversationService.Participants do
         set_clause = seconds_clause <> ", " <> after_viewing_clause
 
         case scope do
-          "both" -> update_all_participants(set_clause, conversation_id, user_id, fn -> response end)
-          _ -> update_own_participant(set_clause, conversation_id, user_id, fn -> response end)
+          "both" ->
+            update_all_participants(set_clause, conversation_id, user_id, fn -> response end)
+
+          _ ->
+            update_own_participant(set_clause, conversation_id, user_id, fn -> response end)
         end
       else
         {:ok, response}

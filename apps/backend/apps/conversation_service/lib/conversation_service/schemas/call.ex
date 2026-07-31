@@ -21,6 +21,7 @@ defmodule ConversationService.Schemas.Call do
     field(:caller_id, :binary_id)
     field(:callee_id, :binary_id)
     field(:conversation_id, :binary_id)
+
     # Call-link (L1): a "link" call ties back to its call_links row here (nullable — direct/group never set).
     field(:link_id, :string)
     field(:type, :string)

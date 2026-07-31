@@ -279,7 +279,12 @@ defmodule ApiGatewayWeb.V1.MessageController do
   end
 
   defp end_user_only(conn),
-    do: ErrorResponse.forbidden(conn, "v1.end_user_only", "This endpoint requires an end-user token")
+    do:
+      ErrorResponse.forbidden(
+        conn,
+        "v1.end_user_only",
+        "This endpoint requires an end-user token"
+      )
 
   defp fetch_emoji(params) do
     case Map.get(params, "emoji") do
@@ -302,16 +307,31 @@ defmodule ApiGatewayWeb.V1.MessageController do
   # Not the author, no such message, or a cross-tenant/unknown conversation → an indistinguishable 404.
   defp mutation_error(conn, error) do
     case error do
-      {:error, :message_unavailable} -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
-      {:error, :conversation_unavailable} -> ErrorResponse.service_unavailable(conn, "v1.unavailable")
-      {:error, :message_forbidden} -> not_found(conn)
+      {:error, :message_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "v1.unavailable")
+
+      {:error, :conversation_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "v1.unavailable")
+
+      {:error, :message_forbidden} ->
+        not_found(conn)
+
       # A soft-deleted message is GONE — editing it would resurrect the tombstone. 404, same as an
       # author mismatch, so a caller can't distinguish the two.
-      {:error, :message_deleted} -> not_found(conn)
-      {:error, :not_found} -> not_found(conn)
-      {:error, :message_not_found} -> not_found(conn)
-      {:error, :invalid_request} -> ErrorResponse.invalid_request(conn, "v1.invalid_request")
-      _ -> not_found(conn)
+      {:error, :message_deleted} ->
+        not_found(conn)
+
+      {:error, :not_found} ->
+        not_found(conn)
+
+      {:error, :message_not_found} ->
+        not_found(conn)
+
+      {:error, :invalid_request} ->
+        ErrorResponse.invalid_request(conn, "v1.invalid_request")
+
+      _ ->
+        not_found(conn)
     end
   end
 
@@ -456,7 +476,12 @@ defmodule ApiGatewayWeb.V1.MessageController do
   defp fan_out(conversation_id, sender_user_id, message) do
     Task.start(fn ->
       try do
-        ApiGatewayWeb.Endpoint.broadcast("conversation:" <> conversation_id, "message_created", message)
+        ApiGatewayWeb.Endpoint.broadcast(
+          "conversation:" <> conversation_id,
+          "message_created",
+          message
+        )
+
         notify_user_topics(conversation_id, sender_user_id, message)
       rescue
         _ -> :ok
@@ -466,7 +491,11 @@ defmodule ApiGatewayWeb.V1.MessageController do
     # ...and the INBOX row (new preview, new updated_at, +1 unread for everyone but the sender — the unread
     # SQL excludes your own messages, so no special-casing here). Separate from the message fan-out above:
     # that one tells an OPEN thread about a message; this one tells every participant's INBOX.
-    ApiGatewayWeb.ConversationBroadcast.broadcast_updated(conversation_id, sender_user_id, :message)
+    ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+      conversation_id,
+      sender_user_id,
+      :message
+    )
 
     :ok
   end

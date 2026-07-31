@@ -41,7 +41,12 @@ defmodule UserService.UsernamesTest do
 
   defp app! do
     id = Ecto.UUID.generate()
-    Repo.query!("INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'T', $2)", [id, "t-#{id}"])
+
+    Repo.query!("INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'T', $2)", [
+      id,
+      "t-#{id}"
+    ])
+
     id
   end
 
@@ -53,7 +58,9 @@ defmodule UserService.UsernamesTest do
 
   defp hold_count(user_id) do
     %{rows: [[n]]} =
-      Repo.query!("SELECT count(*)::int FROM username_holds WHERE user_id = $1::text::uuid", [user_id])
+      Repo.query!("SELECT count(*)::int FROM username_holds WHERE user_id = $1::text::uuid", [
+        user_id
+      ])
 
     n
   end
@@ -151,7 +158,11 @@ defmodule UserService.UsernamesTest do
     assert {:error, :username_held} = set!(b, "Coveted")
 
     # …and after the hold expires (simulate), it frees.
-    Repo.query!("UPDATE username_holds SET held_until = now() - interval '1 day' WHERE username_key = 'coveted'", [])
+    Repo.query!(
+      "UPDATE username_holds SET held_until = now() - interval '1 day' WHERE username_key = 'coveted'",
+      []
+    )
+
     assert {:ok, _} = set!(b, "coveted")
 
     # REMOVAL ("" clears) also vacates-with-hold: no instant-release loophole.

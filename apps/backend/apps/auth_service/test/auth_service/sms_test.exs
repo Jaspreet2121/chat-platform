@@ -27,6 +27,7 @@ defmodule AuthService.SMSTest do
 
   test "SMS_PROVIDER=console returns :ok and NEVER calls the gateway" do
     test_pid = self()
+
     plug = fn conn ->
       send(test_pid, :provider_called)
       Plug.Conn.send_resp(conn, 200, "{}")
@@ -40,6 +41,7 @@ defmodule AuthService.SMSTest do
 
   test "SMS_PROVIDER=smsgatewayhub routes to the SMSGatewayHub adapter" do
     test_pid = self()
+
     plug = fn conn ->
       send(test_pid, :provider_called)
       Plug.Conn.send_resp(conn, 200, Jason.encode!(%{"ErrorCode" => "000"}))

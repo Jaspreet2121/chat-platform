@@ -185,7 +185,8 @@ defmodule ApiGatewayWeb.V1.MediaController do
     }
   end
 
-  defp complete_view(response), do: %{media_id: mget(response, :media_id), status: mget(response, :status)}
+  defp complete_view(response),
+    do: %{media_id: mget(response, :media_id), status: mget(response, :status)}
 
   defp download_view(media_id, response) do
     %{
@@ -213,6 +214,9 @@ defmodule ApiGatewayWeb.V1.MediaController do
 
   defp not_found(conn), do: ErrorResponse.not_found(conn, "v1.not_found", "Not found")
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "v1.invalid_request")
-  defp too_large(conn), do: ErrorResponse.payload_too_large(conn, "v1.media_too_large", "File is too large.")
+
+  defp too_large(conn),
+    do: ErrorResponse.payload_too_large(conn, "v1.media_too_large", "File is too large.")
+
   defp service_unavailable(conn), do: ErrorResponse.service_unavailable(conn, "v1.unavailable")
 end

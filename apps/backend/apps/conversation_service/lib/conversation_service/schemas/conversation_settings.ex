@@ -14,6 +14,7 @@ defmodule ConversationService.Schemas.ConversationSettings do
   schema "conversation_settings" do
     field(:only_admins_can_send, :boolean, default: false)
     field(:only_admins_can_add_members, :boolean, default: false)
+
     # Phase-3 group calling: who may START a group call — everyone (default) or admins/owner only.
     field(:call_start_permission, :string, default: "everyone")
     field(:message_retention_days, :integer)

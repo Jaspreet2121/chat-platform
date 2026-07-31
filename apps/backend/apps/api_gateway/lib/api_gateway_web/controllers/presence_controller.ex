@@ -16,9 +16,14 @@ defmodule ApiGatewayWeb.PresenceController do
       ids = PresenceRead.parse_ids(params["user_ids"])
       json(conn, %{presence: PresenceRead.snapshot(session.user_id, ids)})
     else
-      {:error, :session_invalid} -> ErrorResponse.unauthorized(conn, "auth.session_invalid", "Invalid session")
-      {:error, :auth_unavailable} -> ErrorResponse.service_unavailable(conn, "auth.unavailable")
-      _ -> ErrorResponse.unauthorized(conn, "auth.session_invalid", "Invalid session")
+      {:error, :session_invalid} ->
+        ErrorResponse.unauthorized(conn, "auth.session_invalid", "Invalid session")
+
+      {:error, :auth_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "auth.unavailable")
+
+      _ ->
+        ErrorResponse.unauthorized(conn, "auth.session_invalid", "Invalid session")
     end
   end
 

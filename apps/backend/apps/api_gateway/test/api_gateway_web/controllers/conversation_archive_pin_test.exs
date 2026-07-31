@@ -18,7 +18,9 @@ defmodule ApiGatewayWeb.ConversationArchivePinTest do
 
   defmodule AuthStub do
     @me "11111111-1111-4111-8111-111111111111"
-    def current_session(%{"authorization" => "Bearer me"}), do: {:ok, %{user_id: @me, app_id: "app1"}}
+    def current_session(%{"authorization" => "Bearer me"}),
+      do: {:ok, %{user_id: @me, app_id: "app1"}}
+
     def current_session(_), do: {:error, :session_invalid}
   end
 
@@ -37,7 +39,12 @@ defmodule ApiGatewayWeb.ConversationArchivePinTest do
 
     # The :pref broadcast (only: [me]) reads inbox_rows for the caller's row.
     def inbox_rows(%{"conversation_id" => c, "user_ids" => uids}) do
-      rows = Enum.map(uids, &%{user_id: &1, conversation_id: c, pinned: true, archived: false, unread_count: 0})
+      rows =
+        Enum.map(
+          uids,
+          &%{user_id: &1, conversation_id: c, pinned: true, archived: false, unread_count: 0}
+        )
+
       {:ok, %{rows: rows}}
     end
 
@@ -73,7 +80,8 @@ defmodule ApiGatewayWeb.ConversationArchivePinTest do
   test "PUT archive → 200 {archived} + a conversation_updated frame to the CALLER only" do
     Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@me}")
 
-    conn = ConversationController.archive(authed(), %{"conversation_id" => @conv, "archived" => true})
+    conn =
+      ConversationController.archive(authed(), %{"conversation_id" => @conv, "archived" => true})
 
     assert conn.status == 200
     assert Jason.decode!(conn.resp_body) == %{"conversation_id" => @conv, "archived" => true}
@@ -100,7 +108,12 @@ defmodule ApiGatewayWeb.ConversationArchivePinTest do
   end
 
   test "no session → 401" do
-    conn = ConversationController.archive(authed("nobody"), %{"conversation_id" => @conv, "archived" => true})
+    conn =
+      ConversationController.archive(authed("nobody"), %{
+        "conversation_id" => @conv,
+        "archived" => true
+      })
+
     assert conn.status == 401
   end
 end

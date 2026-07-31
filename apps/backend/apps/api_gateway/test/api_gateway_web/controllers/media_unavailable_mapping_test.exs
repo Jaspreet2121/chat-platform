@@ -48,6 +48,7 @@ defmodule ApiGatewayWeb.MediaUnavailableMappingTest.MediaUnavailableStub do
   def complete_upload(_attrs), do: {:error, :media_unavailable}
   @impl true
   def get_download_url(_attrs), do: {:error, :media_unavailable}
+
   # The download path calls get_asset FIRST; an unreachable media service surfaces here → still 503.
   @impl true
   def get_asset(_attrs), do: {:error, :media_unavailable}

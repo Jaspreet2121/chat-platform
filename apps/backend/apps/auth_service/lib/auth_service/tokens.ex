@@ -73,8 +73,11 @@ defmodule AuthService.Tokens do
     refresh_token_id = Ecto.UUID.generate()
     refresh_token = random_token()
     refresh_token_hash = hash_token(refresh_token, secret)
+
     # The login path passes :access_ttl_seconds (remember-me aware); other callers use the global default.
-    access_token_ttl_seconds = Keyword.get(opts, :access_ttl_seconds) || access_token_ttl_seconds()
+    access_token_ttl_seconds =
+      Keyword.get(opts, :access_ttl_seconds) || access_token_ttl_seconds()
+
     refresh_token_ttl_seconds = refresh_token_ttl_seconds()
     access_expires_at = DateTime.add(now, access_token_ttl_seconds, :second)
     refresh_expires_at = DateTime.add(now, refresh_token_ttl_seconds, :second)

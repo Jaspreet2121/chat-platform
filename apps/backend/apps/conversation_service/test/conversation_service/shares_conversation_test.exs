@@ -20,11 +20,29 @@ defmodule ConversationService.SharesConversationTest do
     :ok
   end
 
-  defp user!, do: with(id <- Ecto.UUID.generate(), do: (Repo.query!("INSERT INTO users_auth (id, app_id, external_id, password_hash, created_at, updated_at) VALUES ($1::text::uuid,$2::text::uuid,$3,'x',now(),now())", [id, @app_id, "ext-#{id}"]); id))
+  defp user!,
+    do:
+      with(
+        id <- Ecto.UUID.generate(),
+        do:
+          (
+            Repo.query!(
+              "INSERT INTO users_auth (id, app_id, external_id, password_hash, created_at, updated_at) VALUES ($1::text::uuid,$2::text::uuid,$3,'x',now(),now())",
+              [id, @app_id, "ext-#{id}"]
+            )
+
+            id
+          )
+      )
 
   defp conversation!(creator) do
     id = Ecto.UUID.generate()
-    Repo.query!("INSERT INTO conversations (id, type, created_by, status, app_id, created_at, updated_at) VALUES ($1::text::uuid,'group',$2::text::uuid,'active',$3::text::uuid,now(),now())", [id, creator, @app_id])
+
+    Repo.query!(
+      "INSERT INTO conversations (id, type, created_by, status, app_id, created_at, updated_at) VALUES ($1::text::uuid,'group',$2::text::uuid,'active',$3::text::uuid,now(),now())",
+      [id, creator, @app_id]
+    )
+
     id
   end
 
@@ -79,6 +97,9 @@ defmodule ConversationService.SharesConversationTest do
 
   test "invalid uuids are rejected, not crashed" do
     assert {:error, :conversation_invalid} =
-             Conversations.shares_conversation?(%{"user_a" => "nope", "user_b" => Ecto.UUID.generate()})
+             Conversations.shares_conversation?(%{
+               "user_a" => "nope",
+               "user_b" => Ecto.UUID.generate()
+             })
   end
 end

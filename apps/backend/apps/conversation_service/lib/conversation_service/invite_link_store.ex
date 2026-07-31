@@ -75,7 +75,9 @@ defmodule ConversationService.InviteLinkStore do
   def revoke_active(conversation_id) do
     {count, _} =
       Repo.update_all(
-        from(l in GroupInviteLink, where: l.conversation_id == ^conversation_id and l.active == true),
+        from(l in GroupInviteLink,
+          where: l.conversation_id == ^conversation_id and l.active == true
+        ),
         set: [active: false]
       )
 
@@ -111,5 +113,6 @@ defmodule ConversationService.InviteLinkStore do
     end
   end
 
-  defp generate_code, do: :crypto.strong_rand_bytes(@code_bytes) |> Base.url_encode64(padding: false)
+  defp generate_code,
+    do: :crypto.strong_rand_bytes(@code_bytes) |> Base.url_encode64(padding: false)
 end

@@ -82,7 +82,10 @@ defmodule RealtimeGateway.UserPresence do
     audience = presence_audience(socket)
 
     requested =
-      user_ids |> Enum.filter(&(is_binary(&1) and &1 != "")) |> Enum.uniq() |> Enum.take(@max_targets)
+      user_ids
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+      |> Enum.uniq()
+      |> Enum.take(@max_targets)
 
     {socket, authorized} =
       Enum.reduce(requested, {socket, []}, fn requested_id, {sock, acc} ->
@@ -97,14 +100,19 @@ defmodule RealtimeGateway.UserPresence do
             # internal-keyed); a first-party client already sends the internal id → use it directly (resolving
             # it as an external id is exactly why first-party subscribe returned []). An id that doesn't
             # resolve, or that the viewer may not see, is dropped silently (no existence/visibility reveal).
-            with {:ok, internal} when is_binary(internal) <- resolve_target(requested_id, app_id, audience),
+            with {:ok, internal} when is_binary(internal) <-
+                   resolve_target(requested_id, app_id, audience),
                  true <- PresenceAuthz.can_see?(me, internal) do
               # endpoint.subscribe runs in the CHANNEL process (called from handle_in), so the channel
               # receives presence:<internal> broadcasts and forwards them (user_channel handle_info).
               sock.endpoint.subscribe(topic(internal))
 
               sock =
-                assign(sock, :presence_subs, Map.put(sock.assigns.presence_subs, requested_id, internal))
+                assign(
+                  sock,
+                  :presence_subs,
+                  Map.put(sock.assigns.presence_subs, requested_id, internal)
+                )
 
               snapshot(internal, requested_id, audience)
               {sock, [requested_id | acc]}
@@ -149,13 +157,15 @@ defmodule RealtimeGateway.UserPresence do
   def forward_if_authorized(socket, event, payload) do
     me = current_user(socket)
     audience = presence_audience(socket)
+
     # The re-auth runs on the INTERNAL id (the payload carries it alongside any external one). What the client
     # ultimately sees depends on its AUDIENCE — see client_payload/2.
     target_internal = Map.get(payload, "internal_id") || Map.get(payload, :internal_id)
     channel_pid = self()
 
     Task.start(fn ->
-      if is_binary(me) and is_binary(target_internal) and PresenceAuthz.can_see?(me, target_internal) do
+      if is_binary(me) and is_binary(target_internal) and
+           PresenceAuthz.can_see?(me, target_internal) do
         send(channel_pid, {:presence_forward, event, client_payload(payload, audience)})
       end
     end)
@@ -208,7 +218,11 @@ defmodule RealtimeGateway.UserPresence do
     Task.start(fn ->
       online = Store.online?(internal)
       last_seen = if online, do: nil, else: Store.last_seen(internal)
-      send(channel_pid, {:presence_snapshot, snapshot_frame(internal, requested_id, audience, online, last_seen)})
+
+      send(
+        channel_pid,
+        {:presence_snapshot, snapshot_frame(internal, requested_id, audience, online, last_seen)}
+      )
     end)
 
     :ok
@@ -233,7 +247,10 @@ defmodule RealtimeGateway.UserPresence do
   # Resolve-ONLY (the "cleaner future primitive" the old note here wished for): a subscribe is a REFERENCE,
   # so a bogus external id is simply dropped — no orphan user row is ever created.
   defp resolve_internal(external, app_id) when is_binary(app_id) and app_id != "" do
-    case SharedInfra.AuthClient.lookup_external_user(%{"app_id" => app_id, "external_id" => external}) do
+    case SharedInfra.AuthClient.lookup_external_user(%{
+           "app_id" => app_id,
+           "external_id" => external
+         }) do
       {:ok, res} -> {:ok, Map.get(res, :user_id) || Map.get(res, "user_id")}
       _ -> :error
     end
@@ -245,7 +262,10 @@ defmodule RealtimeGateway.UserPresence do
 
   # internal → external within the app (never creates). nil for a first-party user with no external id.
   defp resolve_external(internal, app_id) when is_binary(app_id) and app_id != "" do
-    case SharedInfra.AuthClient.resolve_user_external_id(%{"app_id" => app_id, "user_id" => internal}) do
+    case SharedInfra.AuthClient.resolve_user_external_id(%{
+           "app_id" => app_id,
+           "user_id" => internal
+         }) do
       {:ok, res} -> Map.get(res, :external_id) || Map.get(res, "external_id")
       _ -> nil
     end
@@ -279,6 +299,7 @@ defmodule RealtimeGateway.UserPresence do
     do: Map.get(socket.assigns, :current_user_id) || Map.get(socket.assigns, :topic_user_id)
 
   defp iso8601(nil), do: nil
-  defp iso8601(unix) when is_integer(unix), do: unix |> DateTime.from_unix!() |> DateTime.to_iso8601()
 
+  defp iso8601(unix) when is_integer(unix),
+    do: unix |> DateTime.from_unix!() |> DateTime.to_iso8601()
 end

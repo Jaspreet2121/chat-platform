@@ -71,7 +71,8 @@ defmodule ApiGatewayWeb.InviteLinkController do
            }) do
       json(conn, %{
         name: cget(result, :name),
-        avatar_url: preview_avatar_url(cget(result, :group_avatar_media_id), session_app(session)),
+        avatar_url:
+          preview_avatar_url(cget(result, :group_avatar_media_id), session_app(session)),
         member_count: cget(result, :member_count)
       })
     else
@@ -79,7 +80,8 @@ defmodule ApiGatewayWeb.InviteLinkController do
     end
   end
 
-  def preview(conn, _params), do: ErrorResponse.invalid_request(conn, "invite_link.invalid_request")
+  def preview(conn, _params),
+    do: ErrorResponse.invalid_request(conn, "invite_link.invalid_request")
 
   # POST /invite-links/:code/join
   def join(conn, %{"code" => code}) when is_binary(code) and code != "" do
@@ -163,7 +165,12 @@ defmodule ApiGatewayWeb.InviteLinkController do
     do: ErrorResponse.unauthorized(conn, "auth.session_invalid", "Invalid or missing session")
 
   defp handle_error(conn, {:error, :not_owner}),
-    do: ErrorResponse.forbidden(conn, "conversation.not_owner", "Only the group owner can manage the invite link")
+    do:
+      ErrorResponse.forbidden(
+        conn,
+        "conversation.not_owner",
+        "Only the group owner can manage the invite link"
+      )
 
   defp handle_error(conn, {:error, :removed}),
     do:
@@ -177,8 +184,9 @@ defmodule ApiGatewayWeb.InviteLinkController do
     do: ErrorResponse.not_found(conn, "invite_link.not_found", "Invite link not found")
 
   # A non-group / unknown conversation for the management ops → 404 (nothing revealed about the id).
-  defp handle_error(conn, {:error, reason}) when reason in [:not_a_group, :conversation_not_found],
-    do: ErrorResponse.not_found(conn, "conversation.not_found", "Not found")
+  defp handle_error(conn, {:error, reason})
+       when reason in [:not_a_group, :conversation_not_found],
+       do: ErrorResponse.not_found(conn, "conversation.not_found", "Not found")
 
   defp handle_error(conn, {:error, :conversation_unavailable}),
     do: ErrorResponse.service_unavailable(conn, "invite_link.unavailable")

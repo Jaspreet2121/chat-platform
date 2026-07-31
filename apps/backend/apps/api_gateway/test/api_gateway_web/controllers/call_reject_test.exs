@@ -62,6 +62,7 @@ defmodule ApiGatewayWeb.CallRejectTest do
 
     def set_status(status), do: Agent.update(__MODULE__, &Map.put(&1, :status, status))
     def set_kind(kind), do: Agent.update(__MODULE__, &Map.put(&1, :kind, kind))
+
     # Simulate the atomic race: the fast-path read "ringing", but the row-locked transition finds it moved.
     def set_conflict(v), do: Agent.update(__MODULE__, &Map.put(&1, :conflict, v))
     def transitions, do: Agent.get(__MODULE__, & &1.transitions)
@@ -90,7 +91,10 @@ defmodule ApiGatewayWeb.CallRejectTest do
       if Agent.get(__MODULE__, & &1.conflict) do
         {:error, :call_conflict}
       else
-        Agent.update(__MODULE__, fn s -> %{s | transitions: s.transitions ++ [{:declined, call_id}]} end)
+        Agent.update(__MODULE__, fn s ->
+          %{s | transitions: s.transitions ++ [{:declined, call_id}]}
+        end)
+
         {:ok, %{id: call_id, status: "declined"}}
       end
     end

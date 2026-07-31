@@ -72,7 +72,8 @@ defmodule ConversationService.InviteLinks do
          {:ok, conversation} <- fetch_active_group(conversation_id),
          :ok <- require_owner(conversation_id, actor_user_id),
          {:ok, _count} <- InviteLinkStore.revoke_active(conversation_id),
-         {:ok, link} <- InviteLinkStore.create(conversation_id, conversation.app_id, actor_user_id) do
+         {:ok, link} <-
+           InviteLinkStore.create(conversation_id, conversation.app_id, actor_user_id) do
       {:ok, link_result(link.code, conversation_id)}
     end
   rescue

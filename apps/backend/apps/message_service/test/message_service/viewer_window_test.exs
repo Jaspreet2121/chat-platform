@@ -182,6 +182,7 @@ defmodule MessageService.ViewerWindowTest do
         "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
       [@conversation_id, @viewer_user_id]
     )
+
     send_message!("after off")
 
     viewer_bodies = user_list() |> Enum.map(& &1.body) |> Enum.sort()
@@ -216,9 +217,12 @@ defmodule MessageService.ViewerWindowTest do
     )
 
     # NEW messages (created now — after the cutoff):
-    new_peer_read = send_message!("new peer (read after enabling)") # peer + read  → hidden
-    _new_own = send_from!(@viewer_user_id, "new own (I sent it)") #   own          → seen → hidden (Bug 2)
-    send_message!("new peer (unread)") #                              peer + unread → stays
+    # peer + read  → hidden
+    new_peer_read = send_message!("new peer (read after enabling)")
+    #   own          → seen → hidden (Bug 2)
+    _new_own = send_from!(@viewer_user_id, "new own (I sent it)")
+    #                              peer + unread → stays
+    send_message!("new peer (unread)")
     mark_read!(new_peer_read)
 
     rows_before = messages_row_count()
@@ -239,6 +243,7 @@ defmodule MessageService.ViewerWindowTest do
         "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
       [@conversation_id, @viewer_user_id]
     )
+
     send_message!("after off")
 
     viewer_bodies2 = user_list() |> Enum.map(& &1.body) |> Enum.sort()

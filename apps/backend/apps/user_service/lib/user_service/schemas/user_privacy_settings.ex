@@ -15,6 +15,7 @@ defmodule UserService.Schemas.UserPrivacySettings do
     field(:last_seen_visibility, :string, default: "contacts")
     field(:profile_photo_visibility, :string, default: "contacts")
     field(:read_receipts_enabled, :boolean, default: true)
+
     # "Who can find me by phone number" (084) — a BOOLEAN, deliberately not the visibility vocabulary
     # (phone discovery is performed by non-contacts, so a "contacts" tier would be a no-op).
     field(:discoverable_by_phone, :boolean, default: true)

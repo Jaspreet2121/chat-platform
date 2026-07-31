@@ -23,11 +23,19 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
     prev_persist = Application.get_env(:media_service, :media_persistence, false)
 
     prev_adapter =
-      Application.get_env(:media_service, :media_storage_adapter, MediaService.Storage.QueryPlanAdapter)
+      Application.get_env(
+        :media_service,
+        :media_storage_adapter,
+        MediaService.Storage.QueryPlanAdapter
+      )
 
     Application.put_env(:media_service, :media_persistence, true)
     # A non-networked adapter that returns a fake upload_url so create_upload succeeds end-to-end.
-    Application.put_env(:media_service, :media_storage_adapter, MediaService.Storage.InMemoryAdapter)
+    Application.put_env(
+      :media_service,
+      :media_storage_adapter,
+      MediaService.Storage.InMemoryAdapter
+    )
 
     start_repo!(MediaRepo)
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(MediaRepo)
@@ -70,6 +78,7 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
     assert asset.conversation_id == conversation
     assert asset.purpose == "message"
     assert asset.status == "created"
+
     # object_key is SERVER-generated (media/<owner>/<media_id>/<safe filename>), never client-supplied.
     assert asset.object_key == "media/#{owner}/#{media_id}/photo.png"
   end
@@ -78,7 +87,11 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
     media_id = create!(owner)
 
     assert {:ok, %{status: "ready"}} =
-             Media.complete_upload(%{"media_id" => media_id, "owner_user_id" => owner, "app_id" => @app})
+             Media.complete_upload(%{
+               "media_id" => media_id,
+               "owner_user_id" => owner,
+               "app_id" => @app
+             })
 
     assert MediaRepo.get(MediaAsset, media_id).status == "ready"
   end
@@ -88,7 +101,11 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
     media_id = create!(owner)
 
     assert {:error, :not_found} =
-             Media.complete_upload(%{"media_id" => media_id, "owner_user_id" => other, "app_id" => @app})
+             Media.complete_upload(%{
+               "media_id" => media_id,
+               "owner_user_id" => other,
+               "app_id" => @app
+             })
 
     # The foreign completion did NOT flip it — the asset is untouched.
     assert MediaRepo.get(MediaAsset, media_id).status == "created"
@@ -116,14 +133,24 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
              })
   end
 
-  test "complete_upload is idempotent (completing an already-ready asset succeeds)", %{owner: owner} do
+  test "complete_upload is idempotent (completing an already-ready asset succeeds)", %{
+    owner: owner
+  } do
     media_id = create!(owner)
 
     assert {:ok, %{status: "ready"}} =
-             Media.complete_upload(%{"media_id" => media_id, "owner_user_id" => owner, "app_id" => @app})
+             Media.complete_upload(%{
+               "media_id" => media_id,
+               "owner_user_id" => owner,
+               "app_id" => @app
+             })
 
     assert {:ok, %{status: "ready"}} =
-             Media.complete_upload(%{"media_id" => media_id, "owner_user_id" => owner, "app_id" => @app})
+             Media.complete_upload(%{
+               "media_id" => media_id,
+               "owner_user_id" => owner,
+               "app_id" => @app
+             })
   end
 
   test "get_asset returns purpose/owner/conversation scoped to app_id; another tenant → not_found",
@@ -136,7 +163,8 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
     assert asset.conversation_id == conversation
     refute Map.has_key?(asset, :object_key)
 
-    assert {:error, :not_found} = Media.get_asset(%{"media_id" => media_id, "app_id" => other_app})
+    assert {:error, :not_found} =
+             Media.get_asset(%{"media_id" => media_id, "app_id" => other_app})
   end
 
   test "get_download_url resolves object_key FROM THE ROW (ignores a client object_key), no object_key returned",
@@ -152,6 +180,7 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
              })
 
     assert is_binary(resp.download_url)
+
     # The URL is signed for the ROW's server key (media/<owner>/<media_id>/a.png), not the client's.
     assert resp.download_url =~ "media/#{owner}"
     refute resp.download_url =~ "victim"
@@ -162,16 +191,26 @@ defmodule ApiGatewayWeb.MediaPersistencePostgresIntegrationTest do
              Media.get_download_url(%{"media_id" => media_id, "app_id" => Ecto.UUID.generate()})
   end
 
-  test "get_download_url asserts an expected purpose when given one (poisoning narrowing)", %{owner: owner} do
+  test "get_download_url asserts an expected purpose when given one (poisoning narrowing)", %{
+    owner: owner
+  } do
     media_id = create!(owner)
 
     # Correct expected purpose → presigns.
     assert {:ok, _} =
-             Media.get_download_url(%{"media_id" => media_id, "app_id" => @app, "purpose" => "user_avatar"})
+             Media.get_download_url(%{
+               "media_id" => media_id,
+               "app_id" => @app,
+               "purpose" => "user_avatar"
+             })
 
     # A mismatched expected purpose → refuses (an avatar call-site can't presign a non-avatar asset).
     assert {:error, :not_found} =
-             Media.get_download_url(%{"media_id" => media_id, "app_id" => @app, "purpose" => "message"})
+             Media.get_download_url(%{
+               "media_id" => media_id,
+               "app_id" => @app,
+               "purpose" => "message"
+             })
 
     # No expected purpose → no assertion (the media_controller.download path, which already authorized).
     assert {:ok, _} = Media.get_download_url(%{"media_id" => media_id, "app_id" => @app})

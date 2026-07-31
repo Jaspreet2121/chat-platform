@@ -19,7 +19,13 @@ defmodule ApiGatewayWeb.ProfilePresenter do
       # Skip the presign entirely and drop the raw avatar id (so the client can't resolve it itself) + the
       # internal app_id; avatar_url: nil is the same shape a genuinely-avatarless profile returns.
       profile
-      |> Map.drop([:avatar_media_id, "avatar_media_id", :avatar_object_key, "avatar_object_key", :app_id])
+      |> Map.drop([
+        :avatar_media_id,
+        "avatar_media_id",
+        :avatar_object_key,
+        "avatar_object_key",
+        :app_id
+      ])
       |> Map.put(:avatar_url, nil)
     else
       with_avatar_url(profile)
@@ -87,7 +93,8 @@ defmodule ApiGatewayWeb.ProfilePresenter do
   defp profile_photo_visibility(target_id) when is_binary(target_id) do
     case SharedInfra.UserClient.get_privacy(%{"user_id" => target_id}) do
       {:ok, privacy} ->
-        Map.get(privacy, :profile_photo_visibility) || Map.get(privacy, "profile_photo_visibility")
+        Map.get(privacy, :profile_photo_visibility) ||
+          Map.get(privacy, "profile_photo_visibility")
 
       _ ->
         nil
@@ -98,7 +105,8 @@ defmodule ApiGatewayWeb.ProfilePresenter do
 
   defp profile_photo_visibility(_target_id), do: nil
 
-  defp shares_conversation?(caller_id, target_id) when is_binary(caller_id) and is_binary(target_id) do
+  defp shares_conversation?(caller_id, target_id)
+       when is_binary(caller_id) and is_binary(target_id) do
     case SharedInfra.ConversationClient.shares_conversation?(%{
            "user_a" => caller_id,
            "user_b" => target_id

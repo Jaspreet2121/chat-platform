@@ -21,7 +21,9 @@ defmodule ApiGatewayWeb.ConversationLeaveTest do
 
   defmodule AuthStub do
     @me "11111111-1111-4111-8111-111111111111"
-    def current_session(%{"authorization" => "Bearer me"}), do: {:ok, %{user_id: @me, app_id: "app1"}}
+    def current_session(%{"authorization" => "Bearer me"}),
+      do: {:ok, %{user_id: @me, app_id: "app1"}}
+
     def current_session(_), do: {:error, :session_invalid}
   end
 
@@ -29,14 +31,22 @@ defmodule ApiGatewayWeb.ConversationLeaveTest do
     def start_link, do: Agent.start_link(fn -> %{calls: [], mode: :plain} end, name: __MODULE__)
     def set_mode(mode), do: Agent.update(__MODULE__, &Map.put(&1, :mode, mode))
     def calls, do: Agent.get(__MODULE__, & &1.calls)
-    defp record(call), do: Agent.update(__MODULE__, &Map.update!(&1, :calls, fn c -> c ++ [call] end))
+
+    defp record(call),
+      do: Agent.update(__MODULE__, &Map.update!(&1, :calls, fn c -> c ++ [call] end))
 
     def leave_conversation(%{"conversation_id" => c, "user_id" => u}) do
       record({:leave_conversation, u})
 
       case Agent.get(__MODULE__, & &1.mode) do
         :transfer ->
-          {:ok, %{conversation_id: c, left: true, conversation_archived: false, new_owner_user_id: "u-next"}}
+          {:ok,
+           %{
+             conversation_id: c,
+             left: true,
+             conversation_archived: false,
+             new_owner_user_id: "u-next"
+           }}
 
         :direct ->
           {:error, :not_a_group}
@@ -70,6 +80,7 @@ defmodule ApiGatewayWeb.ConversationLeaveTest do
 
     Application.put_env(:shared_infra, :auth_client_adapter, AuthStub)
     Application.put_env(:shared_infra, :conversation_client_adapter, ConvStub)
+
     # The DELETE action branches on persistence; force the DB-backed path so the shim is exercised.
     Application.put_env(:conversation_service, :conversation_persistence, true)
 
@@ -97,7 +108,12 @@ defmodule ApiGatewayWeb.ConversationLeaveTest do
     conn = ConversationController.leave(authed(:post), %{"conversation_id" => @conv})
 
     assert conn.status == 200
-    assert body(conn) == %{"conversation_id" => @conv, "left" => true, "conversation_archived" => false}
+
+    assert body(conn) == %{
+             "conversation_id" => @conv,
+             "left" => true,
+             "conversation_archived" => false
+           }
 
     # The leaver's final frame: removed:true (clears their inbox row without a refetch).
     assert_receive %Phoenix.Socket.Broadcast{
@@ -152,7 +168,8 @@ defmodule ApiGatewayWeb.ConversationLeaveTest do
   end
 
   test "no session → 401 (both the canonical route and the shim)" do
-    assert ConversationController.leave(authed(:post, "nobody"), %{"conversation_id" => @conv}).status == 401
+    assert ConversationController.leave(authed(:post, "nobody"), %{"conversation_id" => @conv}).status ==
+             401
 
     assert ConversationController.remove_participant(authed(:delete, "nobody"), %{
              "conversation_id" => @conv,

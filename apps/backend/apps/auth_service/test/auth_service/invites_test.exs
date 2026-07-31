@@ -19,7 +19,9 @@ defmodule AuthService.InvitesTest do
   test "create_invite requires inviter and phone" do
     assert {:error, :invalid_request} = Invites.create_invite(%{"invited_phone" => "+91987"})
     assert {:error, :invalid_request} = Invites.create_invite(%{"inviter_user_id" => "u"})
-    assert {:error, :invalid_request} = Invites.create_invite(%{"inviter_user_id" => "", "invited_phone" => ""})
+
+    assert {:error, :invalid_request} =
+             Invites.create_invite(%{"inviter_user_id" => "", "invited_phone" => ""})
   end
 
   test "codes are unique per call (stateless path)" do

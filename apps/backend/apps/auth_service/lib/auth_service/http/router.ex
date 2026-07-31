@@ -49,7 +49,10 @@ defmodule AuthService.HTTP.Router do
 
     send_result(
       conn,
-      AuthService.Accounts.lookup_active_by_phone(Map.get(b, "phone_number"), Map.get(b, "app_id"))
+      AuthService.Accounts.lookup_active_by_phone(
+        Map.get(b, "phone_number"),
+        Map.get(b, "app_id")
+      )
     )
   end
 
@@ -60,7 +63,10 @@ defmodule AuthService.HTTP.Router do
 
     send_result(
       conn,
-      AuthService.Accounts.lookup_active_by_phones(Map.get(b, "phone_numbers") || [], Map.get(b, "app_id"))
+      AuthService.Accounts.lookup_active_by_phones(
+        Map.get(b, "phone_numbers") || [],
+        Map.get(b, "app_id")
+      )
     )
   end
 

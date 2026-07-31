@@ -26,7 +26,11 @@ defmodule AuthService.AuthClientInProcess do
 
   @impl true
   def lookup_users_by_phones(attrs),
-    do: Accounts.lookup_active_by_phones(Map.get(attrs, "phone_numbers") || [], Map.get(attrs, "app_id"))
+    do:
+      Accounts.lookup_active_by_phones(
+        Map.get(attrs, "phone_numbers") || [],
+        Map.get(attrs, "app_id")
+      )
 
   @impl true
   def create_api_key(attrs), do: ApiKeys.create_api_key(attrs)
@@ -157,7 +161,8 @@ defmodule AuthService.AuthClientInProcess do
   def save_push_subscription(attrs), do: AuthService.PushSubscriptions.save_subscription(attrs)
 
   @impl true
-  def delete_push_subscription(attrs), do: AuthService.PushSubscriptions.delete_subscription(attrs)
+  def delete_push_subscription(attrs),
+    do: AuthService.PushSubscriptions.delete_subscription(attrs)
 
   @impl true
   def save_fcm_token(attrs), do: AuthService.FcmTokens.upsert_token(attrs)

@@ -16,7 +16,11 @@ defmodule ConversationService.LeaveConversationTest do
   setup do
     previous = Application.get_env(:conversation_service, :conversation_persistence, false)
     Application.put_env(:conversation_service, :conversation_persistence, true)
-    on_exit(fn -> Application.put_env(:conversation_service, :conversation_persistence, previous) end)
+
+    on_exit(fn ->
+      Application.put_env(:conversation_service, :conversation_persistence, previous)
+    end)
+
     :ok
   end
 
@@ -75,10 +79,16 @@ defmodule ConversationService.LeaveConversationTest do
   end
 
   defp leave(conversation_id, user_id),
-    do: Participants.leave_conversation(%{"conversation_id" => conversation_id, "user_id" => user_id})
+    do:
+      Participants.leave_conversation(%{
+        "conversation_id" => conversation_id,
+        "user_id" => user_id
+      })
 
   defp inbox_ids(user_id) do
-    {:ok, %{conversations: conversations}} = Conversations.list_conversations(%{"user_id" => user_id})
+    {:ok, %{conversations: conversations}} =
+      Conversations.list_conversations(%{"user_id" => user_id})
+
     Enum.map(conversations, & &1.conversation_id)
   end
 

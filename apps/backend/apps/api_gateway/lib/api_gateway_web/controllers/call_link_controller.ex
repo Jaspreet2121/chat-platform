@@ -23,10 +23,17 @@ defmodule ApiGatewayWeb.CallLinkController do
            }) do
       json(conn, %{link: present_link(link)})
     else
-      {:error, :invalid_type} -> ErrorResponse.invalid_request(conn, "call_link.invalid_type")
-      {:error, :session_invalid} -> session_invalid(conn)
-      {:error, :conversation_unavailable} -> ErrorResponse.service_unavailable(conn, "call_link.unavailable")
-      _ -> ErrorResponse.invalid_request(conn, "call_link.create_failed")
+      {:error, :invalid_type} ->
+        ErrorResponse.invalid_request(conn, "call_link.invalid_type")
+
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :conversation_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "call_link.unavailable")
+
+      _ ->
+        ErrorResponse.invalid_request(conn, "call_link.create_failed")
     end
   end
 
@@ -36,9 +43,14 @@ defmodule ApiGatewayWeb.CallLinkController do
          {:ok, %{link: link}} <- SharedInfra.ConversationClient.get_call_link(%{"link_id" => id}) do
       json(conn, %{link: present_link(link)})
     else
-      {:error, :session_invalid} -> session_invalid(conn)
-      {:error, :link_not_found} -> ErrorResponse.not_found(conn, "call_link.not_found", "Link not found")
-      _ -> ErrorResponse.not_found(conn, "call_link.not_found", "Link not found")
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :link_not_found} ->
+        ErrorResponse.not_found(conn, "call_link.not_found", "Link not found")
+
+      _ ->
+        ErrorResponse.not_found(conn, "call_link.not_found", "Link not found")
     end
   end
 
@@ -65,10 +77,17 @@ defmodule ApiGatewayWeb.CallLinkController do
         is_host: cget(result, :is_host)
       })
     else
-      {:error, :session_invalid} -> session_invalid(conn)
-      {:error, :link_not_found} -> ErrorResponse.not_found(conn, "call_link.not_found", "Link not found")
-      {:error, :conversation_unavailable} -> ErrorResponse.service_unavailable(conn, "call_link.unavailable")
-      _ -> ErrorResponse.invalid_request(conn, "call_link.join_failed")
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :link_not_found} ->
+        ErrorResponse.not_found(conn, "call_link.not_found", "Link not found")
+
+      {:error, :conversation_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "call_link.unavailable")
+
+      _ ->
+        ErrorResponse.invalid_request(conn, "call_link.join_failed")
     end
   end
 

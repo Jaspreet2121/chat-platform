@@ -33,7 +33,9 @@ defmodule RealtimeGateway.UserPresenceAuthzTest do
   end
 
   defmodule ConvStub do
-    def start_link, do: Agent.start_link(fn -> %{shares: true, blocked: false} end, name: __MODULE__)
+    def start_link,
+      do: Agent.start_link(fn -> %{shares: true, blocked: false} end, name: __MODULE__)
+
     def set(v), do: Agent.update(__MODULE__, &Map.put(&1, :shares, v))
     def set_blocked(v), do: Agent.update(__MODULE__, &Map.put(&1, :blocked, v))
     def shares_conversation?(_), do: {:ok, %{shares: Agent.get(__MODULE__, & &1.shares)}}
@@ -76,6 +78,7 @@ defmodule RealtimeGateway.UserPresenceAuthzTest do
     Process.register(self(), :user_presence_test)
     start_supervised!(%{id: ConvStub, start: {ConvStub, :start_link, []}})
     start_supervised!(%{id: UserStub, start: {UserStub, :start_link, []}})
+
     prev = %{
       a: Application.get_env(:shared_infra, :auth_client_adapter),
       c: Application.get_env(:shared_infra, :conversation_client_adapter),
@@ -104,7 +107,12 @@ defmodule RealtimeGateway.UserPresenceAuthzTest do
   # The /v1 tests default to the :v1 audience (they speak EXTERNAL ids); the first-party tests pass :first_party.
   defp socket(audience \\ :v1, endpoint \\ FakeEndpoint),
     do: %Phoenix.Socket{
-      assigns: %{current_user_id: @me, app_id: @app, presence_subs: %{}, presence_audience: audience},
+      assigns: %{
+        current_user_id: @me,
+        app_id: @app,
+        presence_subs: %{},
+        presence_audience: audience
+      },
       endpoint: endpoint
     }
 
@@ -118,6 +126,7 @@ defmodule RealtimeGateway.UserPresenceAuthzTest do
 
     # Was []; now the external id is resolved to internal, authorized, and returned under the EXTERNAL id.
     assert authorized == [@target_external]
+
     # Subscribed to the INTERNAL-keyed topic (so the internal-keyed broadcast actually reaches it).
     assert_received {:subscribed, "presence:22222222-2222-4222-8222-222222222222"}
     # presence_subs maps external → internal.
@@ -196,6 +205,7 @@ defmodule RealtimeGateway.UserPresenceAuthzTest do
     {socket, authorized} = UserPresence.subscribe(socket(:first_party), [@target_internal])
 
     assert authorized == [@target_internal]
+
     # Subscribed to the internal-keyed topic directly; presence_subs maps the internal id to itself.
     assert_received {:subscribed, "presence:22222222-2222-4222-8222-222222222222"}
     assert socket.assigns.presence_subs == %{@target_internal => @target_internal}
@@ -205,7 +215,11 @@ defmodule RealtimeGateway.UserPresenceAuthzTest do
     ConvStub.set(true)
     UserStub.set("contacts")
 
-    UserPresence.forward_if_authorized(socket(:first_party), "presence_updated", broadcast_payload())
+    UserPresence.forward_if_authorized(
+      socket(:first_party),
+      "presence_updated",
+      broadcast_payload()
+    )
 
     assert_receive {:presence_forward, "presence_updated", pushed}, 1000
     assert pushed["internal_id"] == @target_internal
@@ -216,7 +230,12 @@ defmodule RealtimeGateway.UserPresenceAuthzTest do
     UserStub.set("contacts")
     ConvStub.set_blocked(true)
 
-    UserPresence.forward_if_authorized(socket(:first_party), "presence_updated", broadcast_payload())
+    UserPresence.forward_if_authorized(
+      socket(:first_party),
+      "presence_updated",
+      broadcast_payload()
+    )
+
     refute_receive {:presence_forward, _, _}, 300
   end
 
@@ -226,7 +245,12 @@ defmodule RealtimeGateway.UserPresenceAuthzTest do
 
   defp fp_target_socket,
     do: %Phoenix.Socket{
-      assigns: %{current_user_id: @fp_target, app_id: @app, presence_subs: %{}, presence_audience: :first_party},
+      assigns: %{
+        current_user_id: @fp_target,
+        app_id: @app,
+        presence_subs: %{},
+        presence_audience: :first_party
+      },
       endpoint: CaptureEndpoint
     }
 

@@ -15,7 +15,11 @@ defmodule ConversationService.InviteLinksTest do
   setup do
     previous = Application.get_env(:conversation_service, :conversation_persistence, false)
     Application.put_env(:conversation_service, :conversation_persistence, true)
-    on_exit(fn -> Application.put_env(:conversation_service, :conversation_persistence, previous) end)
+
+    on_exit(fn ->
+      Application.put_env(:conversation_service, :conversation_persistence, previous)
+    end)
+
     :ok
   end
 
@@ -54,7 +58,8 @@ defmodule ConversationService.InviteLinksTest do
   end
 
   # A row REMOVED by moderation (left_reason='removed', 078) — refused by a live link.
-  defp removed_participant!(conversation_id, user_id), do: left_participant!(conversation_id, user_id, "removed")
+  defp removed_participant!(conversation_id, user_id),
+    do: left_participant!(conversation_id, user_id, "removed")
 
   # A row that LEFT voluntarily (left_reason='left', 078) — a live link reactivates it.
   defp left_participant!(conversation_id, user_id, reason) do
@@ -116,19 +121,25 @@ defmodule ConversationService.InviteLinksTest do
     assert {:ok, %{code: code}} = create(g, owner)
 
     # Reset → a NEW code; the OLD one no longer resolves.
-    assert {:ok, %{code: code2}} = InviteLinks.reset_link(%{"conversation_id" => g, "actor_user_id" => owner})
+    assert {:ok, %{code: code2}} =
+             InviteLinks.reset_link(%{"conversation_id" => g, "actor_user_id" => owner})
+
     assert code2 != code
     assert {:error, :link_not_found} = join(code, joiner)
 
     # Revoke the new one → it too stops resolving.
-    assert {:ok, %{revoked: true}} = InviteLinks.revoke_link(%{"conversation_id" => g, "actor_user_id" => owner})
+    assert {:ok, %{revoked: true}} =
+             InviteLinks.revoke_link(%{"conversation_id" => g, "actor_user_id" => owner})
+
     assert {:error, :link_not_found} = join(code2, joiner)
     assert InviteLinkStore.get_active_by_conversation(g) == nil
 
     # Revoke is owner-only too.
     assert {:ok, %{code: _}} = create(g, owner)
     stranger = user!("stranger")
-    assert {:error, :not_owner} = InviteLinks.revoke_link(%{"conversation_id" => g, "actor_user_id" => stranger})
+
+    assert {:error, :not_owner} =
+             InviteLinks.revoke_link(%{"conversation_id" => g, "actor_user_id" => stranger})
   end
 
   @tag :postgres_integration
@@ -161,14 +172,17 @@ defmodule ConversationService.InviteLinksTest do
     owner = user!("owner")
     leaver = user!("leaver")
     g = group!(owner)
+
     # An ex-ADMIN who left voluntarily: reactivation must demote to member (roles aren't retained).
     left_participant!(g, leaver, "left")
+
     Repo.query!(
       "UPDATE conversation_participants SET role = 'admin' WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
       [g, leaver]
     )
 
-    assert {:ok, %{code: code}} = InviteLinks.create_link(%{"conversation_id" => g, "actor_user_id" => owner})
+    assert {:ok, %{code: code}} =
+             InviteLinks.create_link(%{"conversation_id" => g, "actor_user_id" => owner})
 
     assert {:ok, %{status: "joined", conversation_id: ^g, role: "member"}} = join(code, leaver)
     # One row, active again, as MEMBER (role + left markers reset).
@@ -193,7 +207,9 @@ defmodule ConversationService.InviteLinksTest do
     assert {:error, :link_not_found} = join("totally-unknown-code", joiner)
     # A valid code, wrong tenant → invisible (app-scoped).
     assert {:error, :link_not_found} = join(code, joiner, @other_app)
-    assert {:error, :link_not_found} = InviteLinks.preview_link(%{"code" => code, "app_id" => @other_app})
+
+    assert {:error, :link_not_found} =
+             InviteLinks.preview_link(%{"code" => code, "app_id" => @other_app})
   end
 
   @tag :postgres_integration
@@ -208,6 +224,7 @@ defmodule ConversationService.InviteLinksTest do
     assert {:ok, preview} = InviteLinks.preview_link(%{"code" => code, "app_id" => @app_id})
     assert preview.name == "Design Team"
     assert preview.member_count == 2
+
     # The shape is exactly the three preview fields (avatar id is nil here; the gateway presigns it).
     assert Map.keys(preview) |> Enum.sort() == [:group_avatar_media_id, :member_count, :name]
   end

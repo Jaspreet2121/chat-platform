@@ -89,8 +89,11 @@ defmodule ApiGatewayWeb.V1.ConversationCreatedBroadcastTest do
 
     assert conn.status == 201
 
-    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_created", payload: bob_row}, 1000
-    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_created", payload: carol_row}, 1000
+    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_created", payload: bob_row},
+                   1000
+
+    assert_receive %Phoenix.Socket.Broadcast{event: "conversation_created", payload: carol_row},
+                   1000
 
     # The inbox-row shape for a brand-new conversation.
     assert bob_row == %{
@@ -165,6 +168,7 @@ defmodule ApiGatewayWeb.V1.ConversationCreatedBroadcastTest do
              created_at: "t"
            }) == :ok
   end
+
   # ---- HTTP round-trip: prove `created` (a MAP FIELD, per conversation_response/2 + create_conversation_in_db's
   # Map.put) survives the real encode_result → JSON → decode_result path prod uses (ConversationClientHttp),
   # and that broadcast_created then fires. This is the guard the earlier stub couldn't be: it drives the REAL
@@ -220,5 +224,4 @@ defmodule ApiGatewayWeb.V1.ConversationCreatedBroadcastTest do
     ConversationBroadcast.broadcast_created(decoded)
     refute_receive %Phoenix.Socket.Broadcast{event: "conversation_created"}, 300
   end
-
 end

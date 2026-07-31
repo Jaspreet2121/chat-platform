@@ -52,7 +52,9 @@ defmodule ApiGatewayWeb.Plugs.AppsViewGatingTest do
   end
 
   test "a refusal is a 403 with the standard envelope" do
-    conn = RequirePermission.call(conn_with_role("moderator"), RequirePermission.init("apps.view"))
+    conn =
+      RequirePermission.call(conn_with_role("moderator"), RequirePermission.init("apps.view"))
+
     assert conn.halted
     assert conn.status == 403
   end

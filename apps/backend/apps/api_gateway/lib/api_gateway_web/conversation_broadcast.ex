@@ -75,7 +75,9 @@ defmodule ApiGatewayWeb.ConversationBroadcast do
   defdelegate unread_before(conversation_id, user_id), to: SharedInfra.ConversationBroadcast
 
   @doc "Drop the internal `:created` flag before the response is rendered to the client (kept API-stable)."
-  def strip_internal(response) when is_map(response), do: Map.drop(response, [:created, "created"])
+  def strip_internal(response) when is_map(response),
+    do: Map.drop(response, [:created, "created"])
+
   def strip_internal(response), do: response
 
   # The present_list inbox-row SHAPE, filled for a brand-new conversation (no last message yet). Not reusable

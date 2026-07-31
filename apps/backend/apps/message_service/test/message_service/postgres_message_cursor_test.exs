@@ -76,8 +76,15 @@ defmodule MessageService.PostgresMessageCursorTest do
   defp two_same_timestamp_messages do
     a = create!("A")
     b = create!("B")
-    Repo.update_all(from(m in Message, where: m.message_id == ^a.message_id), set: [created_at: @shared_ts])
-    Repo.update_all(from(m in Message, where: m.message_id == ^b.message_id), set: [created_at: @shared_ts])
+
+    Repo.update_all(from(m in Message, where: m.message_id == ^a.message_id),
+      set: [created_at: @shared_ts]
+    )
+
+    Repo.update_all(from(m in Message, where: m.message_id == ^b.message_id),
+      set: [created_at: @shared_ts]
+    )
+
     Enum.sort([a.message_id, b.message_id])
   end
 

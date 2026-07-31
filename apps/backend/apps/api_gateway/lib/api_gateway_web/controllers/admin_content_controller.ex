@@ -145,7 +145,8 @@ defmodule ApiGatewayWeb.AdminContentController do
   # admin viewer can show WHO sent it instead of a raw id. Best-effort: a lookup failure leaves ids only.
   # Applied to both masked and unmasked responses (the sender id is already exposed in both).
   defp with_sender_identities(messages) do
-    ids = messages |> Enum.map(&mget(&1, :sender_user_id)) |> Enum.filter(&is_binary/1) |> Enum.uniq()
+    ids =
+      messages |> Enum.map(&mget(&1, :sender_user_id)) |> Enum.filter(&is_binary/1) |> Enum.uniq()
 
     lookup =
       case SharedInfra.AuthClient.list_user_summaries(%{"user_ids" => ids}) do
@@ -233,7 +234,11 @@ defmodule ApiGatewayWeb.AdminContentController do
              "purpose" => "message"
            }) do
         {:ok, download} ->
-          Map.put(m, :download_url, Map.get(download, :download_url) || Map.get(download, "download_url"))
+          Map.put(
+            m,
+            :download_url,
+            Map.get(download, :download_url) || Map.get(download, "download_url")
+          )
 
         {:error, _reason} ->
           m
@@ -258,7 +263,9 @@ defmodule ApiGatewayWeb.AdminContentController do
   # The conversation's tenant, WITHOUT a membership check (admin oversight). Best-effort: audit still
   # fires even if the tenant lookup is unavailable.
   defp tenant_app_id(conversation_id) do
-    case SharedInfra.ConversationClient.get_conversation_app(%{"conversation_id" => conversation_id}) do
+    case SharedInfra.ConversationClient.get_conversation_app(%{
+           "conversation_id" => conversation_id
+         }) do
       {:ok, %{app_id: app_id}} -> app_id
       {:ok, map} when is_map(map) -> Map.get(map, "app_id")
       _ -> nil

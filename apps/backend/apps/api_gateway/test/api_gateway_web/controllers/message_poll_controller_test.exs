@@ -81,6 +81,7 @@ defmodule ApiGatewayWeb.MessagePollControllerTest do
     Application.put_env(:shared_infra, :auth_client_adapter, AuthStub)
     Application.put_env(:shared_infra, :conversation_client_adapter, ConvStub)
     Application.put_env(:shared_infra, :message_client_adapter, MsgStub)
+
     # The create action branches on persistence; force the DB path (create_message + the poll codes).
     Application.put_env(:message_service, :message_persistence, true)
 

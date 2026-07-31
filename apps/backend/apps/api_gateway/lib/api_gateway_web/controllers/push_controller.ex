@@ -16,7 +16,10 @@ defmodule ApiGatewayWeb.PushController do
 
   alias ApiGatewayWeb.ErrorResponse
 
-  def create(conn, %{"endpoint" => endpoint, "keys" => %{"p256dh" => p256dh, "auth" => auth}} = params)
+  def create(
+        conn,
+        %{"endpoint" => endpoint, "keys" => %{"p256dh" => p256dh, "auth" => auth}} = params
+      )
       when is_binary(endpoint) and endpoint != "" do
     with_session(conn, fn user_id ->
       SharedInfra.AuthClient.save_push_subscription(%{

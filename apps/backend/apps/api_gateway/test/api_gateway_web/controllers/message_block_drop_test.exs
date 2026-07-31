@@ -23,7 +23,9 @@ defmodule ApiGatewayWeb.MessageBlockDropTest do
   defmodule AuthStub do
     @me "11111111-1111-4111-8111-111111111111"
     @app "33333333-3333-4333-8333-333333333333"
-    def current_session(%{"authorization" => "Bearer me"}), do: {:ok, %{user_id: @me, app_id: @app}}
+    def current_session(%{"authorization" => "Bearer me"}),
+      do: {:ok, %{user_id: @me, app_id: @app}}
+
     def current_session(_), do: {:error, :session_invalid}
   end
 
@@ -69,6 +71,7 @@ defmodule ApiGatewayWeb.MessageBlockDropTest do
     Application.put_env(:shared_infra, :auth_client_adapter, AuthStub)
     Application.put_env(:shared_infra, :conversation_client_adapter, ConvStub)
     Application.put_env(:shared_infra, :message_client_adapter, MsgStub)
+
     # Force the DB-backed controller path (create_message_from_store) — MessageClient is stubbed, so no DB.
     Application.put_env(:message_service, :message_persistence, true)
 
@@ -89,7 +92,11 @@ defmodule ApiGatewayWeb.MessageBlockDropTest do
     :post
     |> conn("/x", %{})
     |> put_req_header("authorization", "Bearer me")
-    |> MessageController.create(%{"conversation_id" => @conv, "message_type" => "text", "body" => "hi"})
+    |> MessageController.create(%{
+      "conversation_id" => @conv,
+      "message_type" => "text",
+      "body" => "hi"
+    })
   end
 
   test "BLOCKED: the send is flagged drop, sender gets 201, and the blocker's inbox is NOT woken" do

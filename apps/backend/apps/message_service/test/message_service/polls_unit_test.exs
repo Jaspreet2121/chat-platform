@@ -9,7 +9,10 @@ defmodule MessageService.PollsUnitTest do
 
   alias MessageService.Polls
 
-  @valid %{"question" => "Lunch where?", "options" => [%{"text" => "Sushi"}, %{"text" => "Pizza"}]}
+  @valid %{
+    "question" => "Lunch where?",
+    "options" => [%{"text" => "Sushi"}, %{"text" => "Pizza"}]
+  }
 
   test "a valid poll normalizes: server-generated stable ids o1..oN, trimmed text, extras discarded" do
     raw =
@@ -36,20 +39,31 @@ defmodule MessageService.PollsUnitTest do
   end
 
   test "each validation failure has its SPECIFIC code" do
-    assert {:error, :poll_invalid_question} = Polls.normalize_definition(Map.delete(@valid, "question"))
-    assert {:error, :poll_invalid_question} = Polls.normalize_definition(%{@valid | "question" => "  "})
+    assert {:error, :poll_invalid_question} =
+             Polls.normalize_definition(Map.delete(@valid, "question"))
+
+    assert {:error, :poll_invalid_question} =
+             Polls.normalize_definition(%{@valid | "question" => "  "})
 
     assert {:error, :poll_invalid_question} =
              Polls.normalize_definition(%{@valid | "question" => String.duplicate("q", 301)})
 
-    assert {:error, :poll_too_few_options} = Polls.normalize_definition(%{@valid | "options" => [%{"text" => "One"}]})
-    assert {:error, :poll_too_few_options} = Polls.normalize_definition(Map.delete(@valid, "options"))
+    assert {:error, :poll_too_few_options} =
+             Polls.normalize_definition(%{@valid | "options" => [%{"text" => "One"}]})
+
+    assert {:error, :poll_too_few_options} =
+             Polls.normalize_definition(Map.delete(@valid, "options"))
 
     thirteen = Enum.map(1..13, &%{"text" => "Option #{&1}"})
-    assert {:error, :poll_too_many_options} = Polls.normalize_definition(%{@valid | "options" => thirteen})
+
+    assert {:error, :poll_too_many_options} =
+             Polls.normalize_definition(%{@valid | "options" => thirteen})
 
     assert {:error, :poll_invalid_option} =
-             Polls.normalize_definition(%{@valid | "options" => [%{"text" => "Ok"}, %{"text" => ""}]})
+             Polls.normalize_definition(%{
+               @valid
+               | "options" => [%{"text" => "Ok"}, %{"text" => ""}]
+             })
 
     assert {:error, :poll_invalid_option} =
              Polls.normalize_definition(%{
@@ -59,7 +73,10 @@ defmodule MessageService.PollsUnitTest do
 
     # Duplicate TEXT (case-insensitive, trimmed) — ids can't collide (server-generated).
     assert {:error, :poll_duplicate_option} =
-             Polls.normalize_definition(%{@valid | "options" => [%{"text" => "Sushi"}, %{"text" => " sushi "}]})
+             Polls.normalize_definition(%{
+               @valid
+               | "options" => [%{"text" => "Sushi"}, %{"text" => " sushi "}]
+             })
   end
 
   test "build_aggregate: exact counts, capped voter_ids, distinct total_voters; nil cap = uncapped" do

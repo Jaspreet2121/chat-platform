@@ -73,7 +73,9 @@ defmodule ApiGatewayWeb.Router do
     # both broadcast the socket path's exact events: reaction_updated / receipt_updated.
     put "/conversations/:id/messages/:message_id/reactions", MessageController, :set_reaction
 
-    delete "/conversations/:id/messages/:message_id/reactions", MessageController, :remove_reaction
+    delete "/conversations/:id/messages/:message_id/reactions",
+           MessageController,
+           :remove_reaction
 
     post "/conversations/:id/messages/:message_id/receipts", MessageController, :receipt
 
@@ -155,6 +157,7 @@ defmodule ApiGatewayWeb.Router do
     # Phone → profile lookup for direct chat (session-gated in the controller). A literal one-segment
     # path, so it never collides with the two-segment "/:user_id/profile" below.
     get "/by-phone", UserController, :by_phone
+
     # Handle → profile card (080): same card + redaction as by-phone; per-tenant namespace, active-only.
     get "/by-username/:username", UserController, :by_username
     get "/:user_id/profile", UserController, :profile
@@ -175,6 +178,7 @@ defmodule ApiGatewayWeb.Router do
     # Audience settings (commit 2) — literal path, so it must precede "/:owner_user_id".
     get "/audience", StatusController, :get_audience
     put "/audience", StatusController, :set_audience
+
     # View recording + the owner's "seen by" list (two-segment paths never collide with the one-segment
     # owner list below).
     post "/:status_id/view", StatusController, :record_view
@@ -324,6 +328,7 @@ defmodule ApiGatewayWeb.Router do
     get "/:conversation_id/media", MessageController, :media
     put "/:conversation_id/auto-delete", ConversationController, :auto_delete
     put "/:conversation_id/mute", ConversationController, :mute
+
     # Per-user inbox prefs: archive (excluded from the default list; GET /conversations?archived=true fetches
     # them) + pin (sorts above; server-capped at 3 → 400 conversations.pin_limit). Broadcast :pref to the caller.
     put "/:conversation_id/archive", ConversationController, :archive
@@ -332,7 +337,9 @@ defmodule ApiGatewayWeb.Router do
     put "/:conversation_id/group-profile", ConversationController, :group_profile
     delete "/:conversation_id/participants/:user_id", ConversationController, :remove_participant
     # Group admin: promote/demote (owner-only) + only-admins-can-send toggle (owner/admin).
-    put "/:conversation_id/participants/:user_id/role", ConversationController, :set_participant_role
+    put "/:conversation_id/participants/:user_id/role",
+        ConversationController,
+        :set_participant_role
 
     put "/:conversation_id/settings", ConversationController, :set_group_settings
 
@@ -356,6 +363,7 @@ defmodule ApiGatewayWeb.Router do
     delete "/:message_id", MessageController, :delete
     post "/:message_id/read", MessageController, :read
     post "/:message_id/delivered", MessageController, :delivered
+
     # Message info (sender-only): per-user delivered/read state, privacy-filtered like read_by_count.
     get "/:message_id/info", MessageController, :info
     # Polls: replace-the-set vote (broadcasts poll_updated) + the uncapped voter lists.

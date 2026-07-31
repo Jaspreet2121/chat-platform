@@ -44,10 +44,20 @@ defmodule ApiGatewayWeb.UserByUsernameTest do
     end
 
     def get_public_profile(%{"user_id" => @target}),
-      do: {:ok, %{user_id: @target, display_name: "Famous", username: "Famous", avatar_media_id: nil, bio: nil}}
+      do:
+        {:ok,
+         %{
+           user_id: @target,
+           display_name: "Famous",
+           username: "Famous",
+           avatar_media_id: nil,
+           bio: nil
+         }}
 
     def get_public_profile(%{"user_id" => @bare}),
-      do: {:ok, %{user_id: @bare, display_name: "Bare", username: nil, avatar_media_id: nil, bio: nil}}
+      do:
+        {:ok,
+         %{user_id: @bare, display_name: "Bare", username: nil, avatar_media_id: nil, bio: nil}}
 
     def get_public_profile(_), do: {:error, :profile_not_found}
 
@@ -55,12 +65,16 @@ defmodule ApiGatewayWeb.UserByUsernameTest do
     def get_privacy(%{"user_id" => @target}), do: {:ok, %{profile_photo_visibility: "nobody"}}
     def get_privacy(_), do: {:ok, %{profile_photo_visibility: "everyone"}}
 
-    def check_username(%{"username" => "taken_name"}), do: {:ok, %{available: false, code: "username_taken"}}
+    def check_username(%{"username" => "taken_name"}),
+      do: {:ok, %{available: false, code: "username_taken"}}
+
     def check_username(_attrs), do: {:ok, %{available: true, code: nil}}
 
     def update_current_profile(%{"username" => "collide"}), do: {:error, :username_taken}
     def update_current_profile(%{"username" => "toooften"}), do: {:error, :username_change_limit}
-    def update_current_profile(attrs), do: {:ok, %{user_id: attrs["user_id"], display_name: "X", username: attrs["username"]}}
+
+    def update_current_profile(attrs),
+      do: {:ok, %{user_id: attrs["user_id"], display_name: "X", username: attrs["username"]}}
   end
 
   defmodule ConvStub do
@@ -80,7 +94,13 @@ defmodule ApiGatewayWeb.UserByUsernameTest do
     Application.put_env(:shared_infra, :auth_client_adapter, AuthStub)
     Application.put_env(:shared_infra, :user_client_adapter, UserStub)
     Application.put_env(:shared_infra, :conversation_client_adapter, ConvStub)
-    Application.put_env(:shared_infra, :rate_limiter_adapter, SharedInfra.RateLimiter.InMemoryAdapter)
+
+    Application.put_env(
+      :shared_infra,
+      :rate_limiter_adapter,
+      SharedInfra.RateLimiter.InMemoryAdapter
+    )
+
     # PATCH /me must take the DB-backed path so the username error mapping is exercised.
     Application.put_env(:user_service, :user_profile_persistence, true)
     SharedInfra.RateLimiter.InMemoryAdapter.reset()
@@ -113,6 +133,7 @@ defmodule ApiGatewayWeb.UserByUsernameTest do
 
     assert by_username.status == 200
     assert by_phone.status == 200
+
     # Byte-identical: same ProfilePresenter, same redaction (the target hides their photo — both cards
     # carry avatar_url: null and NO avatar_media_id), same username passthrough.
     assert body(by_username) == body(by_phone)
@@ -147,7 +168,8 @@ defmodule ApiGatewayWeb.UserByUsernameTest do
 
     # Exhaust the 30/hour budget (2 used above) → the 31st call is 429 with retry-after.
     for _ <- 1..28 do
-      assert UserController.username_availability(authed(:get), %{"username" => "fresh"}).status == 200
+      assert UserController.username_availability(authed(:get), %{"username" => "fresh"}).status ==
+               200
     end
 
     limited = UserController.username_availability(authed(:get), %{"username" => "fresh"})
@@ -155,7 +177,8 @@ defmodule ApiGatewayWeb.UserByUsernameTest do
     assert body(limited)["error"]["code"] == "usernames.rate_limited"
     assert get_resp_header(limited, "retry-after") != []
 
-    assert UserController.username_availability(authed(:get, "nobody"), %{"username" => "x"}).status == 401
+    assert UserController.username_availability(authed(:get, "nobody"), %{"username" => "x"}).status ==
+             401
   end
 
   test "PATCH /me maps username failures to their usernames.* codes" do
