@@ -142,8 +142,11 @@ defmodule AuthService.Apps do
        }}
     end
   rescue
-    Ecto.Query.CastError -> {:error, :app_invalid}
-    Postgrex.Error -> {:error, :app_invalid}
+    Ecto.Query.CastError ->
+      {:error, :app_invalid}
+
+    error in Postgrex.Error ->
+      SharedInfra.SqlFault.classify(error, __STACKTRACE__, "Apps.create", {:error, :app_invalid})
   end
 
   @doc """
@@ -219,8 +222,11 @@ defmodule AuthService.Apps do
        }}
     end
   rescue
-    Ecto.Query.CastError -> {:error, :app_invalid}
-    Postgrex.Error -> {:error, :app_invalid}
+    Ecto.Query.CastError ->
+      {:error, :app_invalid}
+
+    error in Postgrex.Error ->
+      SharedInfra.SqlFault.classify(error, __STACKTRACE__, "Apps.update", {:error, :app_invalid})
   end
 
   # "YYYY-MM" → {start_of_month, start_of_next_month} in UTC. The CURRENT (partial) month is allowed; a

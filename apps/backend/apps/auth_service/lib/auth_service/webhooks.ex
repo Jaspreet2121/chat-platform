@@ -147,8 +147,16 @@ defmodule AuthService.Webhooks do
 
     {:ok, result}
   rescue
-    Ecto.Query.CastError -> {:error, :webhook_invalid}
-    Postgrex.Error -> {:error, :webhook_invalid}
+    Ecto.Query.CastError ->
+      {:error, :webhook_invalid}
+
+    error in Postgrex.Error ->
+      SharedInfra.SqlFault.classify(
+        error,
+        __STACKTRACE__,
+        "Webhooks.write",
+        {:error, :webhook_invalid}
+      )
   end
 
   def reenqueue_delivery(attrs) do

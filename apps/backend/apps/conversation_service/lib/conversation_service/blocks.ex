@@ -40,7 +40,13 @@ defmodule ConversationService.Blocks do
     end
   rescue
     # FK violation (blocked_user_id isn't a real account) → not-found, never a 500.
-    Postgrex.Error -> {:error, :block_unknown_user}
+    error in Postgrex.Error ->
+      SharedInfra.SqlFault.classify(
+        error,
+        __STACKTRACE__,
+        "Blocks.create",
+        {:error, :block_unknown_user}
+      )
   end
 
   @doc "Remove a block. Idempotent (deleting a non-existent block is still `:ok`)."
@@ -57,7 +63,13 @@ defmodule ConversationService.Blocks do
       {:ok, %{blocker_user_id: blocker, blocked_user_id: blocked}}
     end
   rescue
-    Postgrex.Error -> {:error, :block_invalid}
+    error in Postgrex.Error ->
+      SharedInfra.SqlFault.classify(
+        error,
+        __STACKTRACE__,
+        "Blocks.delete",
+        {:error, :block_invalid}
+      )
   end
 
   @doc "Does `blocker_user_id` block `blocked_user_id`? (directional). Fail-open → false."

@@ -1,6 +1,11 @@
 defmodule UserService.PostgresIntegrationTest do
   use UserService.DataCase, async: false
 
+  # The public profile read is TENANT-SCOPED (get_public_profile_from_db requires app_id), so a
+  # call without it returns :profile_invalid before touching the database. user_profiles.app_id
+  # defaults to tenant zero, which is what these fixtures get.
+  @tenant_zero "00000000-0000-0000-0000-000000000001"
+
   alias UserService.Schemas.UserProfile
   alias UserService.Profiles
 
@@ -86,13 +91,13 @@ defmodule UserService.PostgresIntegrationTest do
         "avatar_object_key" => "media/ana/photo.png"
       })
 
-    {:ok, set} = Profiles.get_public_profile(%{"user_id" => user_id})
+    {:ok, set} = Profiles.get_public_profile(%{"user_id" => user_id, "app_id" => @tenant_zero})
     assert is_binary(set.avatar_media_id)
     assert is_binary(set.avatar_object_key)
 
     # A display-name-only update (nil avatars) must NOT wipe the photo.
     {:ok, _} = Profiles.update_current_profile(%{"user_id" => user_id, "display_name" => "Ana B"})
-    {:ok, kept} = Profiles.get_public_profile(%{"user_id" => user_id})
+    {:ok, kept} = Profiles.get_public_profile(%{"user_id" => user_id, "app_id" => @tenant_zero})
     assert is_binary(kept.avatar_media_id)
 
     # Empty-string avatars = explicit REMOVE → columns cleared, name preserved.
@@ -103,7 +108,9 @@ defmodule UserService.PostgresIntegrationTest do
         "avatar_object_key" => ""
       })
 
-    {:ok, cleared} = Profiles.get_public_profile(%{"user_id" => user_id})
+    {:ok, cleared} =
+      Profiles.get_public_profile(%{"user_id" => user_id, "app_id" => @tenant_zero})
+
     assert cleared.avatar_media_id == nil
     assert cleared.avatar_object_key == nil
     assert cleared.display_name == "Ana B"
@@ -133,7 +140,8 @@ defmodule UserService.PostgresIntegrationTest do
 
     assert {:ok, public_profile} =
              Profiles.get_public_profile(%{
-               "user_id" => user_id
+               "user_id" => user_id,
+               "app_id" => @tenant_zero
              })
 
     assert public_profile.user_id == user_id

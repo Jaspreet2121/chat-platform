@@ -277,8 +277,14 @@ defmodule ConversationService.InboxRowsTest do
     conv = conversation!("group", "Shared", a)
     participant!(conv, a, role: "owner")
     participant!(conv, b)
-    message!(conv, a, "hello")
-    message!(conv, a, "again")
+
+    # These two MUST be backdated. clear_history stamps `cleared_before = now()`, and `now()` is the
+    # TRANSACTION timestamp — frozen at the sandbox transaction's start, which is EARLIER than the
+    # `DateTime.utc_now()` message!/4 defaults to. Left at the default, cleared_before lands before
+    # both messages and clears nothing, so this test could never pass against a real database. The
+    # ordering has to be stated, not assumed from statement order.
+    message!(conv, a, "hello", at: DateTime.add(DateTime.utc_now(), -3600, :second))
+    message!(conv, a, "again", at: DateTime.add(DateTime.utc_now(), -1800, :second))
 
     # Pre-clear sanity: bob's row shows the preview + 2 unread.
     {:ok, %{rows: [before]}} =

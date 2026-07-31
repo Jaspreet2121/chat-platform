@@ -174,7 +174,13 @@ defmodule AuthService.Moderation do
     end
   rescue
     # FK violation (reported user / conversation doesn't exist) → invalid, never a 500.
-    Postgrex.Error -> {:error, :report_invalid}
+    error in Postgrex.Error ->
+      SharedInfra.SqlFault.classify(
+        error,
+        __STACKTRACE__,
+        "Moderation.create_report",
+        {:error, :report_invalid}
+      )
   end
 
   @report_statuses ~w(open reviewing resolved dismissed)
@@ -201,7 +207,13 @@ defmodule AuthService.Moderation do
       end
     end
   rescue
-    Postgrex.Error -> {:error, :report_not_found}
+    error in Postgrex.Error ->
+      SharedInfra.SqlFault.classify(
+        error,
+        __STACKTRACE__,
+        "Moderation.update_report_status",
+        {:error, :report_not_found}
+      )
   end
 
   # --- Audit log ----------------------------------------------------------------------------------
@@ -433,8 +445,16 @@ defmodule AuthService.Moderation do
        }}
     end
   rescue
-    Postgrex.Error -> {:error, :user_not_found}
-    Ecto.Query.CastError -> {:error, :user_not_found}
+    error in Postgrex.Error ->
+      SharedInfra.SqlFault.classify(
+        error,
+        __STACKTRACE__,
+        "Moderation.user_write",
+        {:error, :user_not_found}
+      )
+
+    Ecto.Query.CastError ->
+      {:error, :user_not_found}
   end
 
   defp fetch_auth(user_id, app) do
