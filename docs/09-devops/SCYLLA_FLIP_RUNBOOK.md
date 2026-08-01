@@ -9,7 +9,7 @@ them — that is what makes rollback instant and lossless). It is an OPERATIONAL
 deliberately — never something a deploy or merge does. All adapters deploy inert; production runs
 `MESSAGE_STORE_ADAPTER=postgres` until step 4 of this document.
 
-## Preconditions — all four, no exceptions
+## Preconditions — all five, no exceptions
 
 1. **The C7 verification gate has passed:** `MessageService.ScyllaBackfill.report()` showed
    `stale_diff_total: 0` AND `unresolved_failures: 0` on TWO consecutive reports ≥ 10 minutes apart,
@@ -23,6 +23,13 @@ deliberately — never something a deploy or merge does. All adapters deploy ine
 4. **The rollback drill is green on this codebase:** `./scripts/rollback-drill.sh` ends with
    `ZERO LOSS: PROVEN`. Last executed 2026-08-01: flip 0 ms, outage behaviour verified
    (writes succeed / reads 503 loudly), rollback 17 ms in-BEAM, 17/17 messages zero loss.
+5. **The scylla gate is green, INCLUDING the HTTP-boundary suite**
+   (`./scripts/test-scylla.sh` — ScyllaHttpBoundaryTest must be among the listed suites and passing).
+   Provenance: the C8 drill flips adapters in-BEAM and therefore cannot meet a string `limit`, which
+   is exactly how a crash-on-every-chat-open passed every precondition above and reached production
+   on the first flip attempt (2026-08-01, rolled back). A precondition that can't see the failure
+   class it exists to prevent needs the failure class named next to it — that class is
+   HTTP-boundary typing, and only the wire-path suite sees it.
 
 **Known product change at flip:** cross-conversation message search on web STOPS WORKING — 503
 `search.unavailable`, by recorded decision (DECISION_LOG 2026-08-01). If external users exist, that
