@@ -43,7 +43,7 @@ defmodule SharedInfra.AvatarTokenTest do
 
   test "a tampered token → :error" do
     token = AvatarToken.sign("user-a", "app-x")
-    tampered = String.slice(token, 0..-2//1) <> if String.last(token) == "a", do: "b", else: "a"
+    tampered = tamper(token)
     assert AvatarToken.verify(tampered) == :error
   end
 
@@ -80,5 +80,17 @@ defmodule SharedInfra.AvatarTokenTest do
     assert AvatarToken.verify("not-a-token") == :error
     assert AvatarToken.verify("") == :error
     assert AvatarToken.verify(nil) == :error
+  end
+
+  # TAMPER A MIDDLE BYTE — NEVER THE LAST ONE. The token's trailing base64 character encodes only
+  # the final 2-4 significant bits plus SLACK: several distinct characters decode to the same bytes,
+  # so flipping the last character often produces a byte-identical payload that verifies as GENUINE.
+  # Measured on this codebase: 19/300 last-character flips verified successfully, 0/300 for a middle
+  # character. A security test that intermittently passes a forgery is worse than no test — do not
+  # move this back to String.last/1.
+  defp tamper(token) do
+    index = div(String.length(token), 2)
+    replacement = if String.at(token, index) == "a", do: "b", else: "a"
+    String.slice(token, 0, index) <> replacement <> String.slice(token, (index + 1)..-1//1)
   end
 end

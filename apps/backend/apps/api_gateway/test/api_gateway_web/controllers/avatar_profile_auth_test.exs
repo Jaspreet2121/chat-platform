@@ -237,7 +237,7 @@ defmodule ApiGatewayWeb.AvatarProfileAuthTest do
 
   test "push avatar: a tampered signature → 404" do
     token = AvatarToken.sign(@has_avatar, @app)
-    tampered = String.slice(token, 0..-2//1) <> if String.last(token) == "x", do: "y", else: "x"
+    tampered = tamper(token)
     assert push(tampered).status == 404
   end
 
@@ -284,5 +284,17 @@ defmodule ApiGatewayWeb.AvatarProfileAuthTest do
 
   test "PATCH /me with avatar_media_id = null → avatar removed (200)" do
     assert patch_me(%{"avatar_media_id" => nil}).status == 200
+  end
+
+  # TAMPER A MIDDLE BYTE — NEVER THE LAST ONE. The token's trailing base64 character encodes only
+  # the final 2-4 significant bits plus SLACK: several distinct characters decode to the same bytes,
+  # so flipping the last character often produces a byte-identical payload that verifies as GENUINE.
+  # Measured on this codebase: 19/300 last-character flips verified successfully, 0/300 for a middle
+  # character. A security test that intermittently passes a forgery is worse than no test — do not
+  # move this back to String.last/1.
+  defp tamper(token) do
+    index = div(String.length(token), 2)
+    replacement = if String.at(token, index) == "a", do: "b", else: "a"
+    String.slice(token, 0, index) <> replacement <> String.slice(token, (index + 1)..-1//1)
   end
 end
