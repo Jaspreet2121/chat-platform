@@ -36,7 +36,10 @@ export type CreateMessageInput = {
   replyToMessageId?: string;
 };
 
-export type MediaUploadPurpose = "message" | "user_avatar" | "group_avatar";
+// The REAL server-side whitelist (media.ex fetch_purpose + MediaAsset @purposes + the 089 CHECK,
+// all three agreeing since e58c642). "status" is accepted by the backend; web has no status
+// upload today, but the type reflects the server rather than a stale subset of it.
+export type MediaUploadPurpose = "message" | "user_avatar" | "group_avatar" | "status";
 
 export type CreateMediaUploadInput = {
   filename: string;

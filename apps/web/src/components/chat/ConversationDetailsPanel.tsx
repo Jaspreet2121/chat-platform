@@ -29,10 +29,9 @@ import type {
   Message,
   MuteMode
 } from "@/lib/api";
+import { uploadMediaBlob } from "@/lib/upload";
 import {
   clearConversation,
-  completeMediaUpload,
-  createMediaUpload,
   getMediaDownloadUrl,
   getPeerContact,
   listConversationMedia,
@@ -277,23 +276,17 @@ export function ConversationDetailsPanel({
         useWebWorker: true
       }).catch(() => file);
       const contentType = compressed.type || file.type || "image/jpeg";
-      const upload = await createMediaUpload({
+      const { mediaId, objectKey } = await uploadMediaBlob({
+        blob: compressed,
         filename: file.name,
-        content_type: contentType,
-        size_bytes: compressed.size,
+        contentType,
         purpose: "group_avatar",
-        conversation_id: conversationId
+        conversationId,
+        uploadErrorMessage: (status) => `Upload failed (${status})`
       });
-      const put = await fetch(upload.upload_url, {
-        method: "PUT",
-        body: compressed,
-        headers: { "Content-Type": contentType }
-      });
-      if (!put.ok) throw new Error(`Upload failed (${put.status})`);
-      await completeMediaUpload(upload.media_id, upload.object_key);
       const result = await setGroupProfile(conversationId, {
-        avatar_media_id: upload.media_id,
-        avatar_object_key: upload.object_key
+        avatar_media_id: mediaId,
+        avatar_object_key: objectKey
       });
       setGroupAvatarUrl(result.group_avatar_url ?? URL.createObjectURL(compressed));
       onGroupUpdated?.();

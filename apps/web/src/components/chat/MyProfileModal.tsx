@@ -5,10 +5,9 @@ import { Camera, Loader2, X } from "lucide-react";
 import imageCompression from "browser-image-compression";
 import {
   UserProfile,
-  completeMediaUpload,
-  createMediaUpload,
   updateMe
 } from "@/lib/api";
+import { uploadMediaBlob } from "@/lib/upload";
 import { Avatar, Button, Card } from "@/components";
 import { ImageCropModal } from "./ImageCropModal";
 
@@ -75,24 +74,16 @@ export function MyProfileModal({ onClose, profile, userId, onSaved }: MyProfileM
       }).catch(() => file);
 
       const contentType = compressed.type || file.type || "image/jpeg";
-      const upload = await createMediaUpload({
+      const { mediaId, objectKey } = await uploadMediaBlob({
+        blob: compressed,
         filename: file.name,
-        content_type: contentType,
-        size_bytes: compressed.size,
-        purpose: "user_avatar"
+        contentType,
+        purpose: "user_avatar",
+        uploadErrorMessage: (status) => `Upload failed (${status})`
       });
-
-      const put = await fetch(upload.upload_url, {
-        method: "PUT",
-        body: compressed,
-        headers: { "Content-Type": contentType }
-      });
-      if (!put.ok) throw new Error(`Upload failed (${put.status})`);
-
-      await completeMediaUpload(upload.media_id, upload.object_key);
       setPending({
-        mediaId: upload.media_id,
-        objectKey: upload.object_key,
+        mediaId,
+        objectKey,
         previewUrl: URL.createObjectURL(compressed)
       });
     } catch (uploadError) {

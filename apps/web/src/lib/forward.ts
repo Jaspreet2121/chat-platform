@@ -1,11 +1,10 @@
 import {
-  completeMediaUpload,
-  createMediaUpload,
   createMessage,
   getMediaDownloadUrl,
   type ConversationListItem,
   type Message
 } from "@/lib/api";
+import { uploadMediaBlob } from "@/lib/upload";
 
 // EXTRACTED VERBATIM from chat/page.tsx (it carried no React state or JSX — pure wire logic) so the
 // forward invariant is machine-checked instead of held only by an early return: forwarding RECEIVED
@@ -13,18 +12,11 @@ import {
 // server's owner-anchored download rule a reused id delivers NOTHING to the recipient, silently.
 // Covered by src/lib/__tests__/forward.test.ts.
 //
-// FOLLOW-UP (scoped, NOT a tidy-up): the describe → PUT → complete sequence below is DUPLICATED in
-// four other places, and this is the ONLY copy any test covers. "A failed PUT must never call
-// complete" is load-bearing — completing after a failed PUT marks an asset `ready` with no bytes
-// behind it — so each of the four can independently acquire the exact bug the test here now
-// prevents. They are:
-//   1. src/app/chat/page.tsx            (the attachment send path)
-//   2. src/app/chat/page.tsx            (the second upload call site in the same file)
-//   3. src/app/login/OnboardingStep.tsx (first avatar)
-//   4. src/components/chat/MyProfileModal.tsx      (avatar change)
-//   5. src/components/chat/ConversationDetailsPanel.tsx (group avatar)
-// Consolidating them into one `uploadMediaBlob()` here would put all five behind these tests, but it
-// is behaviour-carrying across four components and belongs in its own commit — not a test slice.
+// The describe → PUT → complete sequence this function used to carry inline now lives in ONE place,
+// src/lib/upload.ts (uploadMediaBlob), shared by all five former copies — this one, the chat
+// attachment send, both avatar paths and the group photo. "A failed PUT must never call complete" is
+// asserted once, against the helper, and mutation-proven (deleting the guard turns that exact test
+// red). The follow-up recorded here is DONE.
 
 // Re-upload a forwarded media asset into `target` as a NEW asset (fresh media_id, owned by the forwarder),
 // then send the forwarded message referencing ONLY that fresh id — source.media_id never reaches the
@@ -55,31 +47,23 @@ export async function reuploadMediaForForward(
     blob.type ||
     "application/octet-stream";
 
-  const upload = await createMediaUpload({
+  const { mediaId, objectKey: uploadedObjectKey } = await uploadMediaBlob({
+    blob,
     filename,
-    content_type: contentType,
-    size_bytes: blob.size,
+    contentType,
     purpose: "message",
-    conversation_id: target.conversation_id
+    conversationId: target.conversation_id,
+    uploadErrorMessage: (status) => `Forward upload failed with ${status}.`
   });
-
-  const putResponse = await fetch(upload.upload_url, {
-    method: "PUT",
-    body: blob,
-    headers: { "Content-Type": contentType }
-  });
-  if (!putResponse.ok) throw new Error(`Forward upload failed with ${putResponse.status}.`);
-
-  await completeMediaUpload(upload.media_id, upload.object_key);
 
   await createMessage({
     conversationId: target.conversation_id,
     messageType: "media",
-    mediaId: upload.media_id,
+    mediaId,
     caption: source.caption ?? undefined,
     metadata: {
       ...metadata,
-      object_key: upload.object_key,
+      object_key: uploadedObjectKey,
       filename,
       content_type: contentType,
       size_bytes: blob.size

@@ -10,9 +10,7 @@ import {
   ReactionCount,
   Session,
   UserProfile,
-  completeMediaUpload,
   createConversation,
-  createMediaUpload,
   createMessage,
   deleteMessage,
   editMessage,
@@ -60,6 +58,7 @@ import { pickDirectPeer, primeConversationDetail } from "@/components/chat/useDi
 import { cn } from "@/lib/cn";
 import imageCompression from "browser-image-compression";
 import { reuploadMediaForForward } from "@/lib/forward";
+import { uploadMediaBlob } from "@/lib/upload";
 import { ForwardPicker } from "./ForwardPicker";
 import { LocationShareSheet } from "@/components/chat/LocationShareSheet";
 
@@ -1085,34 +1084,25 @@ export default function ChatPage() {
 
     const contentType = uploadFile.type || file.type || "application/octet-stream";
 
-    setMediaStatus("Preparing upload...");
-    const upload = await createMediaUpload({
+    const { mediaId, objectKey } = await uploadMediaBlob({
+      blob: uploadFile,
       filename: file.name,
-      content_type: contentType,
-      size_bytes: uploadFile.size,
+      contentType,
       purpose: "message",
-      conversation_id: selectedConversationId
+      conversationId: selectedConversationId,
+      onStage: (stage) =>
+        setMediaStatus(
+          stage === "describing"
+            ? "Preparing upload..."
+            : stage === "uploading"
+              ? "Uploading..."
+              : "Completing upload..."
+        )
     });
-
-    setMediaStatus("Uploading...");
-    const uploadResponse = await fetch(upload.upload_url, {
-      method: "PUT",
-      body: uploadFile,
-      headers: {
-        "Content-Type": contentType
-      }
-    });
-
-    if (!uploadResponse.ok) {
-      throw new Error(`Upload failed with ${uploadResponse.status}`);
-    }
-
-    setMediaStatus("Completing upload...");
-    await completeMediaUpload(upload.media_id, upload.object_key);
 
     setMediaStatus("Sending media message...");
     const mediaMetadata = {
-      object_key: upload.object_key,
+      object_key: objectKey,
       filename: file.name,
       content_type: contentType,
       size_bytes: uploadFile.size
@@ -1121,7 +1111,7 @@ export default function ChatPage() {
     const message = await sendCreate({
       conversationId: selectedConversationId,
       messageType: "media",
-      mediaId: upload.media_id,
+      mediaId,
       caption,
       metadata: mediaMetadata,
       replyToMessageId
