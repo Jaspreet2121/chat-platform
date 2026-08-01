@@ -45,7 +45,7 @@ event is pure noise.
 | Socket `join` | 30 | 60s | user, and app ×100 | OPEN | `RT_JOIN_LIMIT`. |
 | Socket `ephemeral` (typing, receipts, presence) | 300 | 60s | user, and app ×100 | OPEN | `RT_EPHEMERAL_LIMIT`. Dropped silently over the limit. |
 | Socket concurrent connections | 5/user, 1000/app | — | user, app | OPEN | `RT_MAX_SOCKETS_PER_USER`. |
-| `POST /media/uploads` | 60 / **500** | 60s / **86400s** | user | OPEN | Two windows. The DAILY one bounds accumulation; the per-minute one stops a runaway client spending it in seconds. 60/min clears two 30-image batches back to back. Daily is checked FIRST so its Retry-After is what a client sees when both trip. |
+| `POST /media/uploads` | 60 / **500** | 60s / **86400s** | user | OPEN | Two windows. The DAILY one bounds accumulation; the per-minute one stops a runaway client spending it in seconds. A multi-image send creates one upload per image and the batch cap is **10** (`MediaConstraints.MAX_BATCH_ITEMS`, exway-android `core/media/MediaConstraints.kt`), so 60/min clears **six full batches** — comfortably above real usage. Daily is checked FIRST so its Retry-After is what a client sees when both trip. |
 | `POST /invite-links/:code/join` | 10 | 3600s | user | **CLOSED** | Stops one account joining every link it finds. |
 | `POST /invite-links/:code/join` | **60** | 3600s | **invite code** (per-resource) | **CLOSED** | Stops MANY accounts draining ONE leaked link, which the per-user limit cannot see. Generous on purpose: a viral group and an attack look identical from here. |
 | `POST /contacts/sync` | 10 | 3600s | user | **CLOSED** | The enumeration oracle. 10 × 2000 numbers = 20k/hour/account. The limiter *is* the control. |
