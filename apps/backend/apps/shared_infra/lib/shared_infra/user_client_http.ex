@@ -46,4 +46,16 @@ defmodule SharedInfra.UserClientHttp do
     Application.get_env(:shared_infra, :user_service_url) ||
       System.get_env("USER_SERVICE_URL") || "http://localhost:4103"
   end
+
+  @impl true
+  def list_favourites(attrs), do: post("/internal/favourites/list", attrs)
+
+  @impl true
+  def add_favourite(attrs), do: post("/internal/favourites/add", attrs)
+
+  @impl true
+  def remove_favourite(attrs), do: post("/internal/favourites/remove", attrs)
+
+  @impl true
+  def reorder_favourites(attrs), do: post("/internal/favourites/reorder", attrs)
 end

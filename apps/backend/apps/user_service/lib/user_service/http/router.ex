@@ -38,6 +38,22 @@ defmodule UserService.HTTP.Router do
   end
 
   # Usernames (080) — app-scoped resolution + availability (session + rate limit live in the gateway).
+  post "/internal/favourites/list" do
+    send_result(conn, UserService.FavouriteContacts.list(body(conn)))
+  end
+
+  post "/internal/favourites/add" do
+    send_result(conn, UserService.FavouriteContacts.add(body(conn)))
+  end
+
+  post "/internal/favourites/remove" do
+    send_result(conn, UserService.FavouriteContacts.remove(body(conn)))
+  end
+
+  post "/internal/favourites/reorder" do
+    send_result(conn, UserService.FavouriteContacts.reorder(body(conn)))
+  end
+
   post "/internal/usernames/lookup" do
     send_result(conn, UserService.Usernames.lookup(body(conn)))
   end

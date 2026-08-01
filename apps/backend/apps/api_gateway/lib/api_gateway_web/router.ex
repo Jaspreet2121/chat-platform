@@ -233,6 +233,12 @@ defmodule ApiGatewayWeb.Router do
     pipe_through :api
 
     post "/sync", ContactController, :sync
+
+    # FAVOURITE CONTACTS (090) — the Calls tab's favourites, session-owned, presenter-enriched.
+    get "/favourites", FavouriteController, :index
+    post "/favourites", FavouriteController, :create
+    delete "/favourites/:user_id", FavouriteController, :delete
+    put "/favourites/order", FavouriteController, :reorder
   end
 
   # User blocking (safety; session-authed — the blocker is always the session user). Enforcement is

@@ -33,4 +33,16 @@ defmodule UserService.UserClientInProcess do
 
   @impl true
   def update_privacy(attrs), do: UserService.Privacy.update_privacy(attrs)
+
+  @impl true
+  def list_favourites(attrs), do: UserService.FavouriteContacts.list(attrs)
+
+  @impl true
+  def add_favourite(attrs), do: UserService.FavouriteContacts.add(attrs)
+
+  @impl true
+  def remove_favourite(attrs), do: UserService.FavouriteContacts.remove(attrs)
+
+  @impl true
+  def reorder_favourites(attrs), do: UserService.FavouriteContacts.reorder(attrs)
 end

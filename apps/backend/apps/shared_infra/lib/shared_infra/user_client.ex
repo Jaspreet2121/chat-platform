@@ -22,6 +22,11 @@ defmodule SharedInfra.UserClient do
   @callback get_privacy(attrs()) :: result()
   @callback update_privacy(attrs()) :: result()
   # Usernames (080): app-scoped handle → user_id resolution + the availability probe.
+  # FAVOURITE CONTACTS (090) — the Calls tab's favourites, owner-scoped per-user state.
+  @callback list_favourites(attrs()) :: result()
+  @callback add_favourite(attrs()) :: result()
+  @callback remove_favourite(attrs()) :: result()
+  @callback reorder_favourites(attrs()) :: result()
   @callback lookup_by_username(attrs()) :: result()
   @callback check_username(attrs()) :: result()
 
@@ -29,6 +34,10 @@ defmodule SharedInfra.UserClient do
   @optional_callbacks get_privacy: 1, update_privacy: 1, lookup_by_username: 1, check_username: 1
 
   def get_current_profile(attrs), do: adapter().get_current_profile(attrs)
+  def list_favourites(attrs), do: adapter().list_favourites(attrs)
+  def add_favourite(attrs), do: adapter().add_favourite(attrs)
+  def remove_favourite(attrs), do: adapter().remove_favourite(attrs)
+  def reorder_favourites(attrs), do: adapter().reorder_favourites(attrs)
   def get_public_profile(attrs), do: adapter().get_public_profile(attrs)
   def update_current_profile(attrs), do: adapter().update_current_profile(attrs)
 
