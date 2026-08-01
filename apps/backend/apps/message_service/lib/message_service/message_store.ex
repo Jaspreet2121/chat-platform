@@ -1584,6 +1584,7 @@ defmodule MessageService.MessageStore.ScyllaReadAdapter do
   @behaviour MessageService.MessageStore
 
   alias MessageService.MessageStore.DualWriteAdapter
+  alias MessageService.MessageStore.PostgresAdapter
   alias MessageService.MessageStore.ScyllaAdapter
 
   # Writes: dual, Postgres authoritative — the rollback insurance.
@@ -1625,8 +1626,14 @@ defmodule MessageService.MessageStore.ScyllaReadAdapter do
   defdelegate list_poll_votes(attrs), to: ScyllaAdapter
   @impl true
   defdelegate media_download_allowed(attrs), to: ScyllaAdapter
+  # SEARCH IS SERVED BY POSTGRES, not Scylla — and that is not an oversight.
+  #
+  # Scylla has no honest search answer (ILIKE over a participant join needs a body index). Postgres
+  # DOES have the data, right now, because writes above are still dual — the same rollback insurance
+  # that makes this adapter safe is what keeps `messages` complete. See
+  # PostgresAdapter.search_messages/1 for the expiry: this dies when dual-write ends.
   @impl true
-  defdelegate search_messages(attrs), to: ScyllaAdapter
+  defdelegate search_messages(attrs), to: PostgresAdapter
 end
 
 defmodule MessageService.MessageStore.InMemoryAdapter do
@@ -2269,6 +2276,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   alias MessageService.Schemas.MessageReceipt
   alias MessageService.Schemas.PollVote
   alias MessageService.Schemas.StarredMessage
+  alias MessageService.VisibilityWindow
 
   @impl true
   def put_message(attrs) do
@@ -3177,34 +3185,101 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     Ecto.Query.CastError -> {:error, :message_invalid}
   end
 
+  @doc """
+  Message search — ILIKE over bodies, scoped to the caller and to what the caller can actually SEE.
+
+  ## THIS PATH DIES WHEN DUAL-WRITE ENDS. READ THIS BEFORE TURNING DUAL-WRITE OFF.
+
+  Under `MESSAGE_STORE_ADAPTER=scylla_read`, reads come from Scylla but WRITES ARE STILL DUAL —
+  Postgres receives every message, which is what makes rollback lossless. That is the ONLY reason
+  this query has bodies to search. The moment writes stop going to Postgres, `messages` decays and
+  this silently returns fewer and fewer results until it returns none — a silent wrongness, not an
+  error, because the query keeps succeeding.
+
+  So whoever ends dual-write owns one of these, and must pick deliberately:
+
+    1. ship the search index first (DECISION_LOG: it is a tsvector index derived from Scylla — and
+       note that a tsvector is a lossy but READABLE copy of message content, so shipping it means
+       deciding on the record that message text lives in Postgres), or
+    2. re-stub search and restore the honest `search.unavailable` capability error.
+
+  What is NOT acceptable is leaving this query pointed at a decaying table.
+
+  ## Visibility
+
+  A message can be alive and still invisible to a given user. Every mechanism is applied here, all
+  composed from `MessageService.VisibilityWindow` so there is ONE definition of the predicate:
+  participation (`left_at`), `cleared_before`, rolling `auto_delete_seconds`, permanent
+  `user_hidden_messages` markers, and disappear-after-viewing evaluated inline.
+
+  AUTHORIZATION IS A JOIN PREDICATE, NOT A POST-FILTER. Filtering after the fetch would mean reading
+  rows the caller may not see (one refactor from leaking them) and would break LIMIT, since the page
+  would shrink after paging. Search is the surface where a leak returns other people's messages in
+  BULK, so the check is structural.
+  """
   @impl true
   def search_messages(attrs) do
     user_id = attr(attrs, "user_id")
     pattern = "%" <> escape_like(attr(attrs, "query") || "") <> "%"
     {limit, offset} = page_window(attrs)
 
-    # Privacy scoping: only messages in conversations the caller still participates in (left_at IS NULL).
-    # NOTE: a leading-% ILIKE can't use a btree index → sequential scan; fine at this scale. The scale
-    # upgrade is a pg_trgm GIN index on messages.body (intentionally NOT added now).
-    rows =
-      Message
-      |> join(:inner, [m], p in "conversation_participants",
-        on: p.conversation_id == m.conversation_id
-      )
-      # `conversation_participants` is a schemaless source here, so Ecto can't infer the column type —
-      # cast the bound user_id to :binary_id explicitly (else Postgrex rejects the raw uuid string).
-      |> where([m, p], p.user_id == type(^user_id, :binary_id) and is_nil(p.left_at))
-      |> where([m], m.status != "deleted")
-      |> where([m], ilike(m.body, ^pattern))
-      |> order_by([m], desc: m.created_at)
-      |> limit(^limit)
-      |> offset(^offset)
-      |> select([m], m)
-      |> Repo.all()
+    # Raw SQL rather than Ecto: the visibility predicate is shared as SQL text with InboxProjection
+    # (see VisibilityWindow for why), and a paraphrase here is exactly the drift being prevented.
+    # NOTE: a leading-% ILIKE can't use a btree index -> sequential scan; acceptable at current scale,
+    # and the tsvector index is the recorded upgrade.
+    sql =
+      "SELECT m.message_id::text, m.conversation_id::text, m.sender_user_id::text, m.message_type, " <>
+        "m.body, m.media_id::text, m.metadata, m.status, m.created_at, " <>
+        "m.reply_to_message_id::text, m.edited_at, m.deleted_at " <>
+        "FROM messages m " <>
+        "JOIN conversation_participants cp " <>
+        "  ON cp.conversation_id = m.conversation_id " <>
+        "  AND cp.user_id = $1::text::uuid " <>
+        "  AND cp.left_at IS NULL " <>
+        "WHERE m.status <> 'deleted' " <>
+        "AND m.body ILIKE $2 " <>
+        "AND " <> VisibilityWindow.participant_window_sql("cp", "m.created_at") <> " " <>
+        "AND " <> VisibilityWindow.not_hidden_sql("m.message_id", "$1") <> " " <>
+        "AND " <> VisibilityWindow.seen_under_after_viewing_sql("m", "cp", "$1") <> " " <>
+        "ORDER BY m.created_at DESC LIMIT $3 OFFSET $4"
 
-    {:ok, %{messages: Enum.map(rows, &message_response/1), next_cursor: nil}}
+    %{rows: rows} = Repo.query!(sql, [user_id, pattern, limit, offset])
+
+    {:ok, %{messages: Enum.map(rows, &search_row_response/1), next_cursor: nil}}
   rescue
     Ecto.Query.CastError -> {:error, :message_invalid}
+    Postgrex.Error -> {:error, :message_invalid}
+  end
+
+  # Raw-row -> the same response shape message_response/1 produces for an %Message{}.
+  defp search_row_response([
+         message_id,
+         conversation_id,
+         sender_user_id,
+         message_type,
+         body,
+         media_id,
+         metadata,
+         status,
+         created_at,
+         reply_to_message_id,
+         edited_at,
+         deleted_at
+       ]) do
+    message_response(%Message{
+      message_id: message_id,
+      conversation_id: conversation_id,
+      sender_user_id: sender_user_id,
+      message_type: message_type,
+      body: body,
+      media_id: media_id,
+      metadata: metadata,
+      status: status,
+      created_at: created_at,
+      reply_to_message_id: reply_to_message_id,
+      edited_at: edited_at,
+      deleted_at: deleted_at
+    })
   end
 
   # Escape LIKE/ILIKE metacharacters so a user's query is matched literally (default backslash escape).

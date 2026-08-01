@@ -28,6 +28,8 @@ defmodule MessageService.InboxProjection do
 
   alias MessageService.Repo
 
+  alias MessageService.VisibilityWindow
+
   @doc """
   A new message: refresh the conversation's preview columns and increment every OTHER active
   participant's unread. A new message is inside every window by definition (newer than any
@@ -90,8 +92,7 @@ defmodule MessageService.InboxProjection do
         "oldest_unread_at = CASE WHEN GREATEST(cp.unread_count - 1, 0) = 0 THEN NULL ELSE cp.oldest_unread_at END " <>
         "WHERE cp.conversation_id = $1::text::uuid AND cp.left_at IS NULL " <>
         "AND cp.user_id <> $2::text::uuid " <>
-        "AND (cp.cleared_before IS NULL OR $4 > cp.cleared_before) " <>
-        "AND (cp.auto_delete_seconds IS NULL OR $4 > now() - make_interval(secs => cp.auto_delete_seconds)) " <>
+        "AND " <> VisibilityWindow.participant_window_sql("cp", "$4") <> " " <>
         "AND NOT EXISTS (SELECT 1 FROM message_receipts r " <>
         "  WHERE r.conversation_id = cp.conversation_id AND r.message_id = $3::text::uuid " <>
         "  AND r.user_id = cp.user_id AND (r.status = 'read' OR r.read_at IS NOT NULL))",
@@ -115,8 +116,7 @@ defmodule MessageService.InboxProjection do
           "unread_count = GREATEST(cp.unread_count - 1, 0), " <>
           "oldest_unread_at = CASE WHEN GREATEST(cp.unread_count - 1, 0) = 0 THEN NULL ELSE cp.oldest_unread_at END " <>
           "WHERE cp.conversation_id = $1::text::uuid AND cp.user_id = $2::text::uuid AND cp.left_at IS NULL " <>
-          "AND (cp.cleared_before IS NULL OR $3 > cp.cleared_before) " <>
-          "AND (cp.auto_delete_seconds IS NULL OR $3 > now() - make_interval(secs => cp.auto_delete_seconds))",
+          "AND " <> VisibilityWindow.participant_window_sql("cp", "$3"),
         [conversation_id, reader_user_id, message.created_at]
       )
     end

@@ -2,6 +2,43 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-02] Search restored — and "an index, not a shadow" retired as a framing
+
+- **A tsvector is a lossy but READABLE copy of message content, and calling it an index does not make
+  it not-a-copy.** The flip decision named a "rebuildable tsvector INDEX (an index, not a shadow
+  store)" as the way back to search. Measured before building on it, and the framing did not survive:
+  `to_tsvector('english', 'Meet me at the Hilton on Baker Street at 7pm, bring the passport')` stores
+  `'7pm':10 'baker':7 'bring':11 'hilton':5 'meet':1 'passport':13 'street':8` — every content word in
+  plaintext, WITH POSITIONS, so word order is recoverable, and `ts_stat` enumerates them straight back
+  out. What is lost is stopwords, casing and punctuation. The honest claim we would have to stand
+  behind is **"the index contains the words but not the message" — and the words are enough**.
+- **It also costs MORE than the text it derives from:** on realistic chat prose, 200k messages →
+  bodies 6,982 kB, tsvector column 10,010 kB (**1.43×**), plus the GIN index. There is no version of
+  this where the derived structure is the lightweight option.
+- **The operational properties are real and worth having** — rebuildable from Scylla, never
+  authoritative — and they are what distinguish it from a body shadow OPERATIONALLY. They are not a
+  privacy argument, and must not be used as one.
+- **Therefore commits 3 (tsvector column + GIN) and 4 (rebuild from Scylla) STAY UNBUILT.** They wait
+  on an explicit, recorded decision that MESSAGE TEXT LIVES IN POSTGRES. **The honest trigger for
+  making that decision is dual-write ending — not a calendar.**
+- **What shipped instead, and why it works today:** under `scylla_read`, reads come from Scylla but
+  WRITES ARE STILL DUAL — the rollback insurance keeps `messages` complete and current. So search is
+  served from Postgres with no new store, no new write path and no index. **This dies when dual-write
+  ends**, and that expiry is recorded in `PostgresAdapter.search_messages/1` itself, where whoever
+  turns dual-write off will read it — not only here.
+- **It is a PRIVACY FIX, not a restoration.** The old search filtered on participation and
+  `status <> 'deleted'` and nothing else: it returned hits for messages the searcher had CLEARED, that
+  had aged out of their auto-delete window, or that carried a permanent hidden marker. Turning the old
+  query back on would have restored a privacy bug. Every visibility mechanism is now applied, composed
+  from ONE definition (`MessageService.VisibilityWindow`) that `InboxProjection` — which carried the
+  predicate longhand twice — now shares.
+- **Also found and fixed en route (see 79cfdeb):** the capability error this log promised was never
+  delivered. `:message_store_unavailable` (what the store returns) and `:message_unavailable` (what
+  ~35 gateway clauses match) were near-synonyms with nothing mapping between them, so search returned
+  **400** and the web client rendered it as "No results" — the exact silent empty list this log
+  forbade. The same mismatch meant a live Scylla outage returned 400 on every message endpoint,
+  defeating the rollback drill's own normalization fix. Measured, not reasoned.
+
 ## [2026-08-01] C6 — webhook outbox write-ahead intent: the promise, restated precisely
 
 - **What the old guarantee actually was (verified in code before writing this):** the same-transaction
