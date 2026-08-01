@@ -187,6 +187,28 @@ export type ApiError = {
   };
 };
 
+/**
+ * A failed API response, carrying the server's STATUS and error CODE alongside the message.
+ *
+ * Before this, `request()` threw a bare Error with only the message text, so a caller could not tell
+ * "the server is degraded" from "you sent something invalid" without string-matching. Message search
+ * paid for that: it caught every error identically and rendered "No results" — showing a user zero
+ * results for a query that was never actually run.
+ *
+ * Extends Error, so existing `error.message` handling is unchanged.
+ */
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
 function apiBaseUrl() {
   return process.env.NEXT_PUBLIC_API_BASE_URL ?? defaultApiBaseUrl;
 }
@@ -225,7 +247,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   if (!response.ok) {
     const apiError = data as ApiError;
     const message = apiError.error?.message ?? `Request failed with ${response.status}`;
-    throw new Error(message);
+    throw new ApiRequestError(message, response.status, apiError.error?.code);
   }
 
   return data as T;

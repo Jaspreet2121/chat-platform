@@ -3,12 +3,23 @@
 import { Fragment, useEffect, useState } from "react";
 import { Loader2, Search, X } from "lucide-react";
 import type { ConversationListItem, Message } from "@/lib/api";
-import { searchMessages } from "@/lib/api";
+import { ApiRequestError, searchMessages } from "@/lib/api";
 import { Input } from "@/components";
 import { formatTime } from "./format";
 
 const MIN_QUERY = 2;
 const DEBOUNCE_MS = 300;
+
+// `search.unavailable` (503) is the server saying the search CAPABILITY is down — currently because
+// the message store cannot answer a search. It is not an empty result set and must never read like
+// one. Any other failure gets an honest generic message for the same reason.
+function searchErrorMessage(cause: unknown): string {
+  if (cause instanceof ApiRequestError && cause.code === "search.unavailable") {
+    return "Search is temporarily unavailable. Your messages are safe — try again shortly.";
+  }
+
+  return "Search couldn't run just now. Try again.";
+}
 
 export type MessageSearchProps = {
   conversations: ConversationListItem[];
@@ -34,6 +45,10 @@ export function MessageSearch({
   const [results, setResults] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searched, setSearched] = useState(false);
+  // A FAILED search is not an empty one. Kept separate from `results` so a failure can never render
+  // as "No results" — telling a user their query matched nothing when it never ran is a lie the
+  // server's capability error was specifically added to prevent.
+  const [error, setError] = useState<string | null>(null);
 
   const trimmed = query.trim();
   const active = trimmed.length >= MIN_QUERY;
@@ -48,6 +63,7 @@ export function MessageSearch({
         if (cancelled) return;
         setResults([]);
         setSearched(false);
+        setError(null);
         setIsLoading(false);
       }, 0);
       return () => {
@@ -62,12 +78,14 @@ export function MessageSearch({
         .then((res) => {
           if (cancelled) return;
           setResults(res.messages ?? []);
+          setError(null);
           setSearched(true);
         })
-        .catch(() => {
+        .catch((cause) => {
           if (cancelled) return;
           setResults([]);
           setSearched(true);
+          setError(searchErrorMessage(cause));
         })
         .finally(() => {
           if (!cancelled) setIsLoading(false);
@@ -123,6 +141,10 @@ export function MessageSearch({
             <div className="flex justify-center py-4 text-faint">
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
             </div>
+          ) : error ? (
+            <p className="py-4 text-center text-xs text-muted" role="status">
+              {error}
+            </p>
           ) : results.length === 0 ? (
             searched ? <p className="py-4 text-center text-xs text-muted">No results</p> : null
           ) : (
