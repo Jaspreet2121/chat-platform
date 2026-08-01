@@ -18,6 +18,19 @@ defmodule AuthService.HTTP.Router do
   plug(Plug.Parsers, parsers: [:json], pass: ["application/json"], json_decoder: Jason)
   plug(:dispatch)
 
+  post "/internal/users/email" do
+    body = body(conn)
+
+    send_result(
+      conn,
+      AuthService.Accounts.update_email(
+        Map.get(body, "app_id"),
+        Map.get(body, "user_id"),
+        Map.get(body, "email")
+      )
+    )
+  end
+
   post "/internal/sessions/current" do
     send_result(conn, AuthService.Sessions.current_session(body(conn)))
   end

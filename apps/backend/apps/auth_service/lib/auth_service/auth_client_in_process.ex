@@ -196,4 +196,13 @@ defmodule AuthService.AuthClientInProcess do
   rescue
     _ -> {:error, :not_found}
   end
+
+  @impl true
+  def update_email(attrs) do
+    AuthService.Accounts.update_email(
+      Map.get(attrs, "app_id"),
+      Map.get(attrs, "user_id"),
+      Map.get(attrs, "email")
+    )
+  end
 end

@@ -212,9 +212,102 @@ defmodule AuthService.Accounts do
   defp get_external_user(app_id, external_id),
     do: Repo.get_by(UserAuth, app_id: app_id, external_id: external_id)
 
-  def get_by_email(email) do
-    Repo.get_by(UserAuth, email: email)
+  # APP-SCOPED, and case-folded to match users_auth_email_key (091). The previous 1-arity version was
+  # APP-BLIND — and since 048 made email per-tenant unique, two tenants may legitimately hold one
+  # address, at which point `Repo.get_by` raises Ecto.MultipleResultsError. So the old function
+  # returned another tenant's user OR crashed; neither is a login. Its only caller was the email-OTP
+  # branch, which now refuses outright (see AuthService.OTP) because email here is an UNVERIFIED
+  # contact detail, not an identity.
+  def get_by_email(app_id, email) when is_binary(app_id) and is_binary(email) do
+    normalized = email |> String.trim() |> String.downcase()
+
+    case Repo.query(
+           "SELECT id::text FROM users_auth " <>
+             "WHERE app_id = $1::text::uuid AND lower(email) = $2 LIMIT 1",
+           [app_id, normalized]
+         ) do
+      {:ok, %{rows: [[id]]}} -> Repo.get(UserAuth, id)
+      _ -> nil
+    end
   end
+
+  @email_max_length 254
+
+  @doc """
+  Set or clear the caller's email — an UNVERIFIED CONTACT DETAIL, never an identity: it does not log
+  anyone in, does not recover an account, and is not discoverable. See DECISION_LOG.
+
+  Normalised to lowercase (one canonical form; the 091 index folds too, so a case variant of an
+  address already in this tenant is `:email_taken`). Clearing is allowed ONLY while another
+  identifier remains — the users_auth_identity_check requires phone OR email OR external_id, and a
+  user must not be able to strip their last one (that would be an unrecoverable account, enforced
+  here with a clean code instead of a raw constraint error).
+  """
+  # app_id is not a query parameter here: the row is fetched by its own id and tenanted uniqueness is
+  # enforced by the 091 index, not by a WHERE. It stays in the signature so callers must pass the
+  # session's tenant — a future per-tenant policy has it without a signature change.
+  def update_email(_app_id, user_id, email) do
+    with {:ok, user} <- fetch_user(user_id),
+         {:ok, normalized} <- normalize_email(email),
+         :ok <- keeps_an_identifier(user, normalized) do
+      user
+      |> UserAuth.changeset(%{"email" => normalized})
+      |> Repo.update()
+      |> case do
+        {:ok, updated} ->
+          {:ok, %{user_id: updated.id, email: updated.email}}
+
+        {:error, %Ecto.Changeset{}} ->
+          {:error, :email_invalid}
+      end
+    end
+  rescue
+    # The 091 index is the race-safe authority: a duplicate inside this tenant surfaces here, and it
+    # is a TAKEN address, not an invalid one. Ecto raises ConstraintError for an index violation with
+    # no matching unique_constraint/3 on the changeset; Postgrex.Error is the raw-SQL shape. Both
+    # mean the same thing — caught together rather than relying on which layer reports it.
+    Ecto.ConstraintError -> {:error, :email_taken}
+    Postgrex.Error -> {:error, :email_taken}
+    Ecto.Query.CastError -> {:error, :email_invalid}
+  end
+
+  defp fetch_user(user_id) do
+    case Repo.get(UserAuth, user_id) do
+      %UserAuth{} = user -> {:ok, user}
+      _ -> {:error, :user_not_found}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :user_not_found}
+  end
+
+  # Deliberately PRAGMATIC, not RFC 5322: one @, a non-empty local part, a dotted domain, no
+  # whitespace, <= 254 bytes (RFC 5321's path limit). Full RFC validation rejects addresses that
+  # work and accepts ones that don't — the real check is whether mail arrives, which we do not do.
+  defp normalize_email(nil), do: {:ok, nil}
+  defp normalize_email(""), do: {:ok, nil}
+
+  defp normalize_email(email) when is_binary(email) do
+    normalized = email |> String.trim() |> String.downcase()
+
+    cond do
+      normalized == "" -> {:ok, nil}
+      String.length(normalized) > @email_max_length -> {:error, :email_invalid}
+      not Regex.match?(~r/^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/u, normalized) -> {:error, :email_invalid}
+      true -> {:ok, normalized}
+    end
+  end
+
+  defp normalize_email(_), do: {:error, :email_invalid}
+
+  defp keeps_an_identifier(_user, email) when is_binary(email), do: :ok
+
+  defp keeps_an_identifier(%UserAuth{} = user, nil) do
+    if present?(user.phone_number) or present?(user.external_id),
+      do: :ok,
+      else: {:error, :email_last_identifier}
+  end
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
   @doc """
   Sets a user's `status` (active | suspended | deleted) via the validated changeset. Used by admin

@@ -138,6 +138,11 @@ defmodule AuthService.Sessions do
       # The app (tenant) this session belongs to. Old tokens (minted before multi-tenancy) carry no
       # "app" claim → resolve to tenant zero, so existing sessions keep working without re-login.
       app_id: SharedInfra.Tenancy.app_id_or_default(claims["app"]),
+      # The caller's OWN email — an UNVERIFIED contact detail (never identity; see
+      # Accounts.update_email). It rides the session because GET /users/me composes the owner's own
+      # record and this avoids a second auth call per profile read. It is the caller's own address
+      # only: no other user's session is ever read, so this cannot leak someone else's.
+      email: user.email,
       issued_at: unix_to_iso8601(claims["iat"]),
       expires_at: unix_to_iso8601(claims["exp"])
     }

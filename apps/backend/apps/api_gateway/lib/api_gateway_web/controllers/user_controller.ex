@@ -7,7 +7,7 @@ defmodule ApiGatewayWeb.UserController do
   # avatar_object_key is NO LONGER accepted — the server resolves object_key from the media_assets row
   # (bee9562). It is tolerated in the body but stripped + ignored (never persisted). avatar_media_id is
   # accepted but VALIDATED for ownership before it is stored (see validate_avatar_media_id/2).
-  @allowed_update_fields ["display_name", "bio", "avatar_media_id", "username"]
+  @allowed_update_fields ["display_name", "bio", "avatar_media_id", "username", "email"]
   @ignored_update_fields ["avatar_object_key"]
 
   def me(conn, params) do
@@ -347,7 +347,16 @@ defmodule ApiGatewayWeb.UserController do
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          {:ok, response} <-
            SharedInfra.UserClient.get_current_profile(%{"user_id" => session.user_id}) do
-      json(conn, ProfilePresenter.with_avatar_url(response))
+      # EMAIL IS PRIVATE — it appears HERE and nowhere else. The public profile card, by-phone,
+      # by-username and contacts sync all go through get_public_profile/ProfilePresenter, which never
+      # sees users_auth; this composes it onto the OWNER's own record only. Sharing it later would
+      # need a visibility setting + presenter redaction + a discoverability decision, deliberately.
+      json(
+        conn,
+        response
+        |> ProfilePresenter.with_avatar_url()
+        |> put_email(session_email(session))
+      )
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
@@ -376,14 +385,29 @@ defmodule ApiGatewayWeb.UserController do
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
          :ok <- validate_avatar_media_id(params, session),
+         {:ok, email} <- update_email_if_present(params, session),
          {:ok, response} <-
            SharedInfra.UserClient.update_current_profile(
-             Map.put(params, "user_id", session.user_id)
+             Map.put(Map.drop(params, ["email"]), "user_id", session.user_id)
            ) do
-      json(conn, ProfilePresenter.with_avatar_url(response))
+      json(conn, response |> ProfilePresenter.with_avatar_url() |> put_email(email))
     else
       {:error, :session_invalid} ->
         session_invalid(conn)
+
+      {:error, :email_taken} ->
+        ErrorResponse.invalid_request_with(conn, "users.email_taken", "That email is already in use", %{})
+
+      {:error, :email_invalid} ->
+        ErrorResponse.invalid_request(conn, "users.email_invalid")
+
+      {:error, :email_last_identifier} ->
+        ErrorResponse.invalid_request_with(
+          conn,
+          "users.email_last_identifier",
+          "You can't remove your only sign-in identifier",
+          %{}
+        )
 
       {:error, :auth_unavailable} ->
         service_unavailable(conn)
@@ -453,6 +477,35 @@ defmodule ApiGatewayWeb.UserController do
 
   # Validate on the params AFTER ignored fields (avatar_object_key) are stripped. An unknown field (e.g.
   # email) still 400s; a lone avatar_object_key (nothing left after stripping) is an empty payload → 400.
+  # EMAIL RIDES THE SAME PATCH the client already uses for every other profile field — one client
+  # path — but the WRITE goes to auth_service, which owns users_auth. user_service never sees it, so
+  # the service boundary holds; only the gateway knows the field spans two owners. Email is applied
+  # FIRST: if it is taken or invalid the whole PATCH fails without a partial profile write.
+  defp update_email_if_present(params, session) do
+    case Map.fetch(params, "email") do
+      :error ->
+        {:ok, :unchanged}
+
+      {:ok, email} ->
+        case SharedInfra.AuthClient.update_email(%{
+               "app_id" => session_app(session),
+               "user_id" => session.user_id,
+               "email" => email
+             }) do
+          {:ok, %{email: stored}} -> {:ok, stored}
+          {:ok, result} when is_map(result) -> {:ok, Map.get(result, "email")}
+          error -> error
+        end
+    end
+  end
+
+  # The session already carries the caller's own auth row's email — no extra service call.
+  defp session_email(session), do: Map.get(session, :email) || Map.get(session, "email")
+
+  defp put_email(response, :unchanged), do: response
+  defp put_email(response, email) when is_map(response), do: Map.put(response, :email, email)
+  defp put_email(response, _email), do: response
+
   defp validate_update_payload(params) do
     keys = params |> Map.drop(@ignored_update_fields) |> Map.keys() |> Enum.map(&to_string/1)
 

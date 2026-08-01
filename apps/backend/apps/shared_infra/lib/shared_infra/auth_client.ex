@@ -20,6 +20,8 @@ defmodule SharedInfra.AuthClient do
   @type result :: {:ok, map()} | {:error, term()}
 
   @callback current_session(attrs()) :: result()
+  # Email — an UNVERIFIED contact detail on users_auth (never identity; see DECISION_LOG).
+  @callback update_email(attrs()) :: result()
   @callback persistence_enabled?() :: boolean()
   @callback lookup_user_by_phone(attrs()) :: result()
   # Bulk phone → users for CONTACTS SYNC (one app-scoped query); result is `{:ok, [%{user_id, phone_number}]}`.
@@ -116,6 +118,7 @@ defmodule SharedInfra.AuthClient do
                       session_active?: 1
 
   def current_session(attrs), do: adapter().current_session(attrs)
+  def update_email(attrs), do: adapter().update_email(attrs)
   def persistence_enabled?, do: adapter().persistence_enabled?()
   def lookup_user_by_phone(attrs), do: adapter().lookup_user_by_phone(attrs)
   def lookup_users_by_phones(attrs), do: adapter().lookup_users_by_phones(attrs)

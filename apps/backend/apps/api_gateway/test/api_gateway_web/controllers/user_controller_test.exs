@@ -54,9 +54,12 @@ defmodule ApiGatewayWeb.UserControllerTest do
   end
 
   test "PATCH /api/v1/users/me rejects invalid update payload" do
+    # "email" USED to be the unsupported field here — it is now a real profile field (091), so the
+    # allow-list rule is pinned with a field that genuinely isn't one. `role` is deliberate: it is a
+    # column on users_auth that a client must never be able to set through the profile patch.
     conn =
       json_request(:patch, "/api/v1/users/me", %{
-        "email" => "not-supported@example.com"
+        "role" => "admin"
       })
 
     assert conn.status == 400

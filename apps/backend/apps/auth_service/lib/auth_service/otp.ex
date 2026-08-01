@@ -268,19 +268,16 @@ defmodule AuthService.OTP do
     end
   end
 
-  defp find_or_create_user(destination, "email") do
-    case Accounts.get_by_email(destination) do
-      nil ->
-        Accounts.create_user(%{
-          "id" => Ecto.UUID.generate(),
-          "email" => destination,
-          "status" => "active"
-        })
-
-      user ->
-        {:ok, user}
-    end
-  end
+  # EMAIL IS NOT A LOGIN METHOD. Refused explicitly rather than left as a latent path:
+  #   * `users_auth.email` is now settable by users as an UNVERIFIED contact detail (see
+  #     AuthService.Accounts.update_email) — nobody proves they own it, so accepting it as an OTP
+  #     destination would let anyone claim a stranger's address and receive a session for it;
+  #   * this flow carries NO app_id (the whole OTP path is app-blind), while email is per-tenant
+  #     unique since 048 — so a lookup here cannot even name which tenant's account it means.
+  # Making email a login method requires a verification flow AND a tenanted OTP path. Until both
+  # exist, this fails closed. Unreachable from every public surface today (the gateway mandates
+  # phone_number on otp/request and otp/verify) — this is defence in depth, not a live regression.
+  defp find_or_create_user(_destination, "email"), do: {:error, :email_login_unsupported}
 
   defp create_or_update_device_session(nil, session_id, token_pair) do
     token_pair.device_session_attrs

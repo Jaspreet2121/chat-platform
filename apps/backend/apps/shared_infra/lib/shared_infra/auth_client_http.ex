@@ -198,4 +198,7 @@ defmodule SharedInfra.AuthClientHttp do
     Application.get_env(:shared_infra, :auth_service_url) ||
       System.get_env("AUTH_SERVICE_URL") || "http://localhost:4101"
   end
+
+  @impl true
+  def update_email(attrs), do: post("/internal/users/email", attrs)
 end
