@@ -95,13 +95,34 @@ Architecture decisions, newest first. Each entry: context → decision → ratio
   drill.
 - **SEARCH — a product regression accepted with eyes open:** at flip, cross-conversation message
   search on web STOPS WORKING and returns a capability error (`search.unavailable`, never a silent
-  empty list). Android is unaffected (searches Room locally); web is the only caller of
-  `/api/v1/search/messages`. **This is a feature users can currently use, disappearing.** It is
+  empty list). ~~Android is unaffected (searches Room locally); web is the only caller of
+  `/api/v1/search/messages`.~~ **← FALSE WHEN WRITTEN. See the correction below.**
+  **This is a feature users can currently use, disappearing.** It is
   acceptable because there are no external users yet — **and that reason EXPIRES the moment there
   are.** A capability error is a fine engineering answer and a poor product one: if external users
   exist before the flip, a rebuildable non-authoritative Postgres search INDEX (tsvector, derivable
   from Scylla at any time — an index, not a shadow store) must ship first. Whoever schedules the flip
   needs both halves of this.
+  - **CORRECTION [2026-08-02] — the blast radius was twice what this entry claimed.**
+    - **What was believed:** Android searched its local Room copy for everything, so web was the only
+      caller of `/api/v1/search/messages` and the only client that would lose search at the flip.
+    - **What was actually true:** Android's GLOBAL search screen was **REST-only** — a Retrofit
+      binding straight to that endpoint, with no Room involvement at all. Only IN-CHAT search was
+      local. So after the flip, global search was broken on **BOTH** clients, not one.
+    - **Found:** the exway-android audit (slice-71), after the flip had already shipped. This entry
+      is why nobody looked: the claim was specific and confident enough to close the question.
+    - **Status now:** Android's global search is genuinely local as of exway-android `46f5c00`, which
+      also deleted the Retrofit binding — so the struck sentence is true going forward. It was not
+      true when it was written, and it must not be read as though it were.
+    - **The pattern — third instance, and the reason it is worth a line of its own:** a claim that
+      nothing tested, believed because it was written down. The other two: "the gateway maps it to
+      503 `search.unavailable` (verified wiring)", where the mapping was never exercised and in fact
+      returned 400 (fixed in 79cfdeb); and the OTP-plug fail-direction cross-references, accurate when
+      written and silently false after the plug flipped to fail-closed (fixed in 87d6a04). All three
+      share a shape: **a statement about behaviour living somewhere no test can reach.** A claim about
+      another codebase — as this one was — is the worst case of it, because nothing in THIS repo could
+      ever have caught it. When an entry asserts what a client does, either point at the code that
+      proves it or write the claim as an assumption to be checked.
 
 ## [2026-08-01] Scylla full port (Option A): design accepted, commit 1 built, the rest deliberately unbuilt
 
