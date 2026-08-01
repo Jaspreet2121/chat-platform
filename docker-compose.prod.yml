@@ -581,6 +581,9 @@ services:
       - "443:443"
     volumes:
       - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Android app-link verification: served by the file_server handler in the web.growblic.com
+      # block. Mounted at the request path Caddy serves from `root * /srv`, read-only.
+      - ./infra/caddy/assetlinks.json:/srv/.well-known/assetlinks.json:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

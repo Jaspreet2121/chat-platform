@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.growblic.exway",
+      "sha256_cert_fingerprints": [
+        "A3:CE:01:F7:CA:AB:A8:A0:E7:E3:28:FB:DD:36:92:17:32:79:15:12:7B:A9:07:F0:27:80:D6:1F:12:44:2B:BC"
+      ]
+    }
+  }
+]

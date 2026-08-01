@@ -21,8 +21,34 @@ media.growblic.com {
 }
 
 # --- Web frontend (Next.js `web` service) — one app serves both: chat at /, admin at /admin ---
+#
+# ANDROID APP-LINK VERIFICATION (/.well-known/assetlinks.json). Read this before changing it — this
+# exact block has taken production down TWICE:
+#   1. A SECOND `web.growblic.com { }` block → "ambiguous site definition" → Caddy restart-looped.
+#      api/web/media ALL proxy through this Caddy, so the whole site went down. There must be exactly
+#      ONE block per site name; the handler below lives INSIDE the existing one.
+#   2. `web.growblic.com.` (trailing dot) as an additional site name → "subject does not qualify for
+#      certificate" → same outcome.
+# And it is a `file_server`, NOT `respond`, for a third reason: `respond` with a backtick-quoted JSON
+# body returned HTTP 200 with content-length: 0 — the body never survived Caddyfile quoting, so the
+# endpoint looked healthy and served nothing. DO NOT "simplify" this back into a respond.
+#
+# THE FINGERPRINT IN assetlinks.json BELONGS TO THE RELEASE KEYSTORE. If the app is ever re-signed
+# (new keystore, Play App Signing enrolment, or a key rotation), that SHA-256 changes and this file
+# MUST be updated in the same change — otherwise Android silently stops verifying and every deep link
+# reverts to the chooser dialog, with no server-side error to notice.
 web.growblic.com {
-	reverse_proxy web:3000
+	# First matching `handle` wins; the second is the catch-all. Explicit handles (rather than a bare
+	# reverse_proxy alongside a matcher) keep the precedence obvious to the next reader.
+	handle /.well-known/assetlinks.json {
+		root * /srv
+		header Content-Type application/json
+		file_server
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
 }
 
 admin.growblic.com {
