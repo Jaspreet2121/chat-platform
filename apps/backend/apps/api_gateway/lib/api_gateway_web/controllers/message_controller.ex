@@ -3,6 +3,19 @@ defmodule ApiGatewayWeb.MessageController do
 
   alias ApiGatewayWeb.ErrorResponse
 
+  # SEND RATE LIMIT — 60/minute per USER. Matches RT_WRITE_LIMIT, the realtime socket's write bucket,
+  # deliberately: the same user sending the same messages must not get a different answer depending on
+  # whether their socket happened to be up. Before this, the socket path was limited and the REST path
+  # was not, so the limit was bypassable by falling back to HTTP.
+  #
+  # PER-USER, NOT PER-CONVERSATION. A per-conversation limit is trivially defeated by rotating
+  # conversations, which is also the harassment shape we care most about.
+  #
+  # 60/min is ~2x a fast typist in a heated exchange, so no human reaches it; a reconnect/outbox flush
+  # of up to 60 queued messages passes in one burst because the window is fixed, not a leaky bucket.
+  @send_rate_limit 60
+  @send_rate_window_seconds 60
+
   def create(conn, %{"conversation_id" => conversation_id} = params) do
     if message_persistence_enabled?() do
       create_message_from_store(conn, conversation_id, params)
@@ -31,6 +44,9 @@ defmodule ApiGatewayWeb.MessageController do
          {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         # Charged BEFORE the membership/authorize_send round-trips, so a flood is turned away without
+         # paying for the checks it was going to fail anyway.
+         :ok <- send_rate_limit(session.user_id),
          :ok <- authorize_membership(conversation_id, session.user_id),
          # SERVER-SIDE only-admins-can-send enforcement (a member can't bypass via the API). This SAME call
          # also carries the BLOCK disposition: for a DIRECT chat the recipient has blocked, delivery: "drop".
@@ -63,6 +79,11 @@ defmodule ApiGatewayWeb.MessageController do
     else
       {:error, :session_invalid} ->
         unauthorized(conn)
+
+      {:error, :rate_limited, retry_after_seconds} ->
+        conn
+        |> put_resp_header("retry-after", Integer.to_string(retry_after_seconds))
+        |> ErrorResponse.rate_limited("message.rate_limited")
 
       {:error, :auth_unavailable} ->
         service_unavailable(conn)
@@ -655,6 +676,23 @@ defmodule ApiGatewayWeb.MessageController do
   # able to force the synthesize path).
   defp put_delivery(params, true), do: Map.put(params, "delivery_disposition", "drop")
   defp put_delivery(params, false), do: Map.delete(params, "delivery_disposition")
+
+  # FAIL-OPEN, unlike contacts sync and broadcast send. This limiter is an abuse and cost guard, not
+  # the security control on this endpoint -- membership and authorize_send are, and they are unaffected
+  # by a limiter outage. By the rule "fail closed when the limiter IS the security control", losing a
+  # Redis blip must not stop every user in the system from sending messages: the damage from blocking
+  # the core product function exceeds the damage from briefly skipping an abuse guard.
+  defp send_rate_limit(user_id) do
+    case SharedInfra.RateLimiter.check_rate(%{
+           "key" => "message_send:" <> user_id,
+           "limit" => @send_rate_limit,
+           "window_seconds" => @send_rate_window_seconds
+         }) do
+      :ok -> :ok
+      {:error, :rate_limited, _retry} = limited -> limited
+      _ -> :ok
+    end
+  end
 
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "message.invalid_request")
 
