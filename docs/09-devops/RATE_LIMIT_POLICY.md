@@ -45,6 +45,9 @@ event is pure noise.
 | Socket `join` | 30 | 60s | user, and app ×100 | OPEN | `RT_JOIN_LIMIT`. |
 | Socket `ephemeral` (typing, receipts, presence) | 300 | 60s | user, and app ×100 | OPEN | `RT_EPHEMERAL_LIMIT`. Dropped silently over the limit. |
 | Socket concurrent connections | 5/user, 1000/app | — | user, app | OPEN | `RT_MAX_SOCKETS_PER_USER`. |
+| `POST /media/uploads` | 60 / **500** | 60s / **86400s** | user | OPEN | Two windows. The DAILY one bounds accumulation; the per-minute one stops a runaway client spending it in seconds. 60/min clears two 30-image batches back to back. Daily is checked FIRST so its Retry-After is what a client sees when both trip. |
+| `POST /invite-links/:code/join` | 10 | 3600s | user | **CLOSED** | Stops one account joining every link it finds. |
+| `POST /invite-links/:code/join` | **60** | 3600s | **invite code** (per-resource) | **CLOSED** | Stops MANY accounts draining ONE leaked link, which the per-user limit cannot see. Generous on purpose: a viral group and an attack look identical from here. |
 | `POST /contacts/sync` | 10 | 3600s | user | **CLOSED** | The enumeration oracle. 10 × 2000 numbers = 20k/hour/account. The limiter *is* the control. |
 | `POST /broadcasts/:id/send` | 20 | 3600s | user | **CLOSED** | The spam amplifier — 20 sends × 256 recipients = 5,120 messages/hour. A limiter outage must not open that gate. |
 | `POST /reports` | 5 | 3600s | user | OPEN | A legitimate safety report must not be lost to a Redis blip. |
@@ -62,17 +65,45 @@ oversight. Numbers are the audit's recommendation, not settled fact.
 
 | Endpoint | Abuse | Suggested | Fail |
 |---|---|---|---|
-| `POST /media/uploads` | Unbounded objects; MinIO fills and takes the platform down | 30/min + 500/day per user | open |
 | `POST /status` | Media storage + fan-out to every contact | 10/hour per user | open |
 | `POST /conversations` | Unbounded rows; DM-spamming strangers | 20/hour per user | open |
-| `POST /invite-links/:code/join` | Leaked link + script = mass join | 10/hour per user **and a per-code cap** | closed |
 | `POST /auth/refresh` | Token grinding; a DB hit per call | 60/hour per token family | open |
 | `vote` / `reactions` / `read` / `delivered` | Cheap each, real in a tight loop; reactions broadcast | one shared 300/min "cheap writes" bucket | open |
 | `PATCH /users/me`, `/privacy`, email PATCH | Churn; the email PATCH writes across services | 30/hour per user | open |
 | `GET /users/by-phone`, `/by-username/:u` | Single-shot enumeration — the oracle contacts sync closes | 60/hour per user | closed |
 
-`POST /invite-links/:code/join` is the one that needs a **per-resource** key, not a per-user one: a
-per-user limit does nothing against 500 accounts draining one leaked code.
+## The per-resource key shape
+
+Most limits key on the ACTOR. That axis is blind to many well-behaved actors converging on one
+object — 500 accounts draining one leaked invite code are each inside their own budget, and the code
+is drained anyway. `SharedInfra.ResourceLimit` is the other axis: the budget belongs to the resource,
+and every actor touching it spends from the same pot.
+
+    res:<resource_type>:<resource_id>:<action>
+
+The `res:` prefix is load-bearing. Actor-keyed limits are `<action>:<subject_id>`, so without a
+separate namespace a resource id and a user id could collide in one keyspace — and since both are
+opaque strings here, the collision would be **silent**, surfacing as one user mysteriously consuming
+a group's join budget. `<action>` is last so one resource can carry several independent budgets
+without sharing a counter.
+
+**Use it alongside a per-actor limit, not instead of one**, and check the per-actor limit FIRST: it
+is the cheaper signal, and it bounds how much of a resource's budget any single caller can burn.
+That last part matters because the resource is charged before the outcome is known — an
+already-a-member re-join still spends a unit. Charging only on success would need a peek-then-commit
+that the INCR-based limiter does not offer; the per-actor limit is what makes the residual
+acceptable.
+
+**Pass `fail_open` explicitly** — the module has no default. A per-resource limit is usually the
+security control for its endpoint, but "usually" is not "always", and the trade has to be answered
+where it is visible.
+
+**What happens at the cap is a design decision, not a detail.** For invite joins the link stays alive
+and the joiner gets a 429; the window drains on its own. Putting the link *dormant* until the owner
+resets it was rejected: it hands anyone who can see a link the power to permanently disable it,
+turning the limiter into a griefing tool aimed at the owner. Prefer the self-healing option whenever
+a legitimate spike and an attack are indistinguishable — which, for anything per-resource, they
+usually are. `reset_link` remains the owner's escalation when a code has genuinely leaked.
 
 ## Named defects and follow-ups
 
@@ -83,6 +114,15 @@ client from `X-Forwarded-For`, taking the **last** entry — Caddy appends the a
 the rightmost value is the one a client cannot forge (`Plug.RewriteOn` takes the leftmost, which is
 spoofable). This is sound only because there is exactly **one** trusted proxy and the gateway port is
 not published. **If either changes, or if you add a per-IP limit anywhere else, revisit this first.**
+
+**Media uploads are capped by OBJECT COUNT, not bytes — the disk is still not tightly defended.**
+At the 100 MB per-object cap, a full daily budget is ~50 GB per account. 500/day turns "unbounded"
+into "bounded" and stops runaway clients, which is worth having, but it is not disk safety. The
+honest fix is a **byte quota charged at complete-time against the VERIFIED size** — create-time
+`size_bytes` is client-declared and advisory, and `Media.verify_uploaded_size/1` already HEADs the
+object for its real length, so the number needed is already being computed. Note it cannot prevent
+the bytes landing (the PUT has already happened); it bounds accumulation and lets the account be cut
+off. Pair it with MinIO capacity alerting.
 
 **Redis connection-per-check — pooling follow-up.**
 `SharedInfra.RateLimiter.RedisAdapter` opens and closes a fresh TCP connection on **every** check. At
