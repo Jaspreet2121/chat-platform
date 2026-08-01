@@ -489,6 +489,14 @@ services:
       KAFKA_PRODUCER_ADAPTER: brod
       KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
       V1_RATE_LIMIT: "3000"
+      # THE PRE-SESSION AUTH LIMITERS (ApiGatewayWeb.Plugs.RateLimit): OTP request 3/60s and OTP
+      # verify 20/300s, both keyed on (client IP, phone) and both FAIL-CLOSED.
+      #
+      # This plug defaults to DISABLED, and this variable was never set here -- so the only
+      # pre-session rate limit in the system was inert in production: unbounded SMS spend,
+      # unbounded SMS bombing of any phone number, and the unbounded /otp/request calls that
+      # feed the OTP brute-force path. It is the switch, so it must be ON.
+      API_RATE_LIMITING_ENABLED: "true"
       # Allowed browser CORS origin(s), comma-separated. Read at runtime by the gateway endpoint
       # (cors_origins/0). Defaults to the local frontend dev server; override via .env for a real host.
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
