@@ -85,6 +85,47 @@ defmodule MediaService.MediaTest do
              })
   end
 
+  # THE WHITELIST TEST — the one that would have caught the status gap and will catch the next
+  # purpose someone adds. "status" was authorized downstream (presign TTL, the status authz arm)
+  # months before it was uploadable: the upload whitelist was never told, every status test
+  # fabricated media ids, and photo/video status 400'd in production while text status worked.
+  # Rule: a purpose that exists ANYWHERE downstream must be creatable HERE, through the REAL path.
+  @valid_purposes ["message", "user_avatar", "group_avatar", "status"]
+
+  test "EVERY valid purpose uploads through the real create path; an unknown one is rejected" do
+    for purpose <- @valid_purposes do
+      assert {:ok, upload} =
+               Media.create_upload(%{
+                 "owner_user_id" => @owner_user_id,
+                 "app_id" => @app,
+                 "purpose" => purpose,
+                 "filename" => "asset.png",
+                 "content_type" => "image/png",
+                 "size_bytes" => 123
+               }),
+             "purpose #{purpose} must be uploadable — it exists downstream (authz/presign)"
+
+      # And the PERSISTED row carries the purpose — the value the download-side assertions gate on.
+      %{rows: [[stored]]} =
+        MediaRepo.query!(
+          "SELECT purpose FROM media_assets WHERE id = $1::text::uuid",
+          [upload.media_id]
+        )
+
+      assert stored == purpose
+    end
+
+    assert {:error, :media_invalid} =
+             Media.create_upload(%{
+               "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
+               "purpose" => "not_a_purpose",
+               "filename" => "asset.png",
+               "content_type" => "image/png",
+               "size_bytes" => 123
+             })
+  end
+
   test "create_upload rejects unsupported content type" do
     assert {:error, :media_invalid} =
              Media.create_upload(%{

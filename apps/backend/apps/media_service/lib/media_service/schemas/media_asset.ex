@@ -14,7 +14,11 @@ defmodule MediaService.Schemas.MediaAsset do
   @foreign_key_type :binary_id
 
   @statuses ~w(created uploading uploaded processing ready failed deleted)
-  @purposes ~w(message user_avatar group_avatar)
+  # Layer 2 of 3 for the purpose set (service whitelist -> THIS changeset -> DB CHECK). All three
+  # must agree; the whitelist-enumeration test in MediaService.MediaTest creates through the real
+  # path per purpose, so a purpose missing at ANY layer fails the gate. "status" was missing at all
+  # three while its authz arm shipped — photo/video status never worked.
+  @purposes ~w(message user_avatar group_avatar status)
   @providers ~w(s3 minio)
 
   schema "media_assets" do
