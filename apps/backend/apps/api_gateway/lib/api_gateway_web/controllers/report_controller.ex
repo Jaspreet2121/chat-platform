@@ -82,8 +82,14 @@ defmodule ApiGatewayWeb.ReportController do
   defp validate_details(%{"details" => _}), do: {:error, :details_too_long}
   defp validate_details(_params), do: {:ok, nil}
 
-  # Per-reporter throttle. A limiter OUTAGE fails OPEN (a legit report must not be lost because Redis blipped),
-  # exactly like the OTP-request plug.
+  # Per-reporter throttle. A limiter OUTAGE fails OPEN (a legit safety report must not be lost because
+  # Redis blipped) — the policy rule is "fail closed when the limiter IS the security control", and here
+  # it is not: it is politeness on a report volume nobody profits from inflating.
+  #
+  # This used to say "exactly like the OTP-request plug". That stopped being true when the OTP plug flipped
+  # to fail-CLOSED (it became the anti-SMS-fraud and anti-brute-force control), and the stale comparison
+  # would have told a reader the opposite of the truth. Stating the RULE instead of pointing at another
+  # call site is what stops that recurring — see docs/09-devops/RATE_LIMIT_POLICY.md for the full table.
   defp rate_limit(user_id) do
     case SharedInfra.RateLimiter.check_rate(%{
            "key" => "report:" <> user_id,

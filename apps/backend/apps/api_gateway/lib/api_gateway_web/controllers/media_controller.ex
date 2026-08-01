@@ -14,10 +14,12 @@ defmodule ApiGatewayWeb.MediaController do
   # (a retry loop with no backoff) from spending the daily budget in seconds.
   #
   # 60/min, not the 30/min the policy doc suggested. A multi-image send creates one upload PER image,
-  # and the common cap for that in this class of app is 30 per batch — so 30/min would be exactly at
-  # the boundary, with a second batch failing. 60 clears two full batches back to back. (The web
-  # client is strictly one file at a time; the multi-select path is Android's, which is not in this
-  # repo, so this is sized from the plausible worst case rather than a verified number.)
+  # and the batch cap is 10 — MediaConstraints.MAX_BATCH_ITEMS, exway-android
+  # core/media/MediaConstraints.kt. So 60/min clears SIX full batches, comfortably above real usage.
+  # (The web client is strictly one file at a time; the multi-select path is Android's.)
+  #
+  # If MAX_BATCH_ITEMS ever rises, re-check this: the floor that matters is one batch per request
+  # round, and 60 stops being generous somewhere above a cap of ~20.
   @upload_burst_limit 60
   @upload_burst_window_seconds 60
   @upload_daily_limit 500

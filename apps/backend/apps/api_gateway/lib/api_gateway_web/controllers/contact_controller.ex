@@ -137,9 +137,14 @@ defmodule ApiGatewayWeb.ContactController do
     if length(phone_numbers) > @max_batch, do: {:error, :batch_too_large}, else: :ok
   end
 
-  # Per-user throttle, FAIL-CLOSED (unlike reports/OTP): the limit is a security control here, so a limiter
+  # Per-user throttle, FAIL-CLOSED (unlike reports): the limit is a security control here, so a limiter
   # outage rejects rather than opening the enumeration oracle. `fail_open: false` makes the limiter surface
   # the outage instead of silently allowing.
+  #
+  # This used to read "unlike reports/OTP". The OTP half stopped being true when that plug flipped to
+  # fail-CLOSED, so the comment was quietly claiming a contrast that no longer existed. The fail direction
+  # of every limiter lives in docs/09-devops/RATE_LIMIT_POLICY.md — check there rather than inferring it
+  # from a neighbouring call site.
   defp rate_limit(user_id) do
     case SharedInfra.RateLimiter.check_rate(%{
            "key" => "contacts_sync:" <> user_id,
