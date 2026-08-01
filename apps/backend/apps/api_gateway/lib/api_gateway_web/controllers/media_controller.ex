@@ -3,6 +3,26 @@ defmodule ApiGatewayWeb.MediaController do
 
   alias ApiGatewayWeb.ErrorResponse
 
+  # UPLOAD CREATION LIMITS — two windows, per user.
+  #
+  # Each create issues a presigned PUT, and the bytes go straight to storage without passing through
+  # this app. So the thing being limited is HOW MANY presigned URLs a user can obtain: unbounded
+  # before this, which meant one session in a loop could fill MinIO, and a full disk takes the
+  # platform down for everyone rather than only the abuser.
+  #
+  # DAILY (500) is the one that bounds accumulation; PER-MINUTE (60) mostly stops a runaway client
+  # (a retry loop with no backoff) from spending the daily budget in seconds.
+  #
+  # 60/min, not the 30/min the policy doc suggested. A multi-image send creates one upload PER image,
+  # and the common cap for that in this class of app is 30 per batch — so 30/min would be exactly at
+  # the boundary, with a second batch failing. 60 clears two full batches back to back. (The web
+  # client is strictly one file at a time; the multi-select path is Android's, which is not in this
+  # repo, so this is sized from the plausible worst case rather than a verified number.)
+  @upload_burst_limit 60
+  @upload_burst_window_seconds 60
+  @upload_daily_limit 500
+  @upload_daily_window_seconds 86_400
+
   def create_upload(conn, params) do
     if media_persistence_enabled?() do
       create_upload_with_session(conn, params)
@@ -31,6 +51,7 @@ defmodule ApiGatewayWeb.MediaController do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- upload_rate_limit(session.user_id),
          # Membership (message) / owner-admin (group_avatar) is enforced HERE — the gateway can reach
          # conversation_service; the media service can't. Only enforced when a conversation_id is present
          # (the current frontend sends none; Phase 5 will) — see the module note.
@@ -46,6 +67,7 @@ defmodule ApiGatewayWeb.MediaController do
       |> json(response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :rate_limited, retry_after_seconds} -> rate_limited(conn, retry_after_seconds)
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :media_unavailable} -> service_unavailable(conn)
       {:error, :media_too_large} -> too_large(conn)
@@ -56,6 +78,39 @@ defmodule ApiGatewayWeb.MediaController do
       {:error, :not_group_admin} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
+  end
+
+  # FAIL-OPEN, per the policy rule: losing an upload costs a user their photo, and a limiter outage
+  # must not do that. Argued the other way and rejected: failing CLOSED would only be worth the
+  # breakage if this limiter were tight disk protection, and it is not — at the 100 MB per-object cap
+  # a full daily budget is still ~50 GB per account (see RATE_LIMIT_POLICY.md, byte-quota follow-up).
+  # It converts "unbounded" into "bounded", which is the win; the disk is properly defended by a byte
+  # quota and capacity alerting, not by refusing uploads whenever Redis blinks.
+  #
+  # The DAILY window is checked FIRST so the limit that actually bounds accumulation is the one that
+  # gets charged when both would trip, and so its Retry-After (the long one) is what the client sees.
+  defp upload_rate_limit(user_id) do
+    with :ok <- check_window("media_upload_day:", user_id, @upload_daily_limit, @upload_daily_window_seconds) do
+      check_window("media_upload:", user_id, @upload_burst_limit, @upload_burst_window_seconds)
+    end
+  end
+
+  defp check_window(prefix, user_id, limit, window_seconds) do
+    case SharedInfra.RateLimiter.check_rate(%{
+           "key" => prefix <> user_id,
+           "limit" => limit,
+           "window_seconds" => window_seconds
+         }) do
+      :ok -> :ok
+      {:error, :rate_limited, _retry} = limited -> limited
+      _ -> :ok
+    end
+  end
+
+  defp rate_limited(conn, retry_after_seconds) do
+    conn
+    |> put_resp_header("retry-after", Integer.to_string(retry_after_seconds))
+    |> ErrorResponse.rate_limited("media.rate_limited")
   end
 
   # Enforce the upload's authorization by purpose. Only checks when a conversation_id is supplied (the
