@@ -17,6 +17,10 @@ defmodule AuthService.OTP do
   @default_code_digits 6
   @default_ttl_seconds 300
   @default_retry_after_seconds 60
+  # Verify attempts allowed per otp_request_id before the code is burned. 5 is the standard
+  # trade: invisible to a user typing a code they were sent, and it turns the 10^6 search space
+  # into 5 guesses per SMS — so the attacker's real cost becomes the /otp/request limit, not this.
+  @max_verify_attempts 5
 
   @type request_attrs :: map()
   @type verify_attrs :: map()
@@ -167,22 +171,71 @@ defmodule AuthService.OTP do
          purpose <- get_attr(attrs, :purpose) || "login",
          {:ok, verification_code} <-
            get_verification_code(otp_request_id, destination, purpose, now),
-         true <-
-           valid_code?(
-             verification_code.destination,
-             verification_code.purpose,
-             otp_code,
-             verification_code.code_hash
-           ),
+         # CHARGED BEFORE THE CODE IS CHECKED, so a wrong guess always costs an attempt. Checking
+         # first and charging only on failure looks equivalent but isn't: it makes the cost of a
+         # guess conditional on losing, and any early return between the two (a crash, a timeout)
+         # becomes a free guess.
+         {:ok, attempt} <- charge_attempt(verification_code),
+         :ok <- check_code(verification_code, otp_code, attempt, now),
          {:ok, response} <-
            persist_verified_otp(attrs, destination, delivery_method, verification_code, now) do
       {:ok, response}
     else
+      # `check_code/4` now returns a tagged result, so the bare `false` that valid_code?/4 used to
+      # produce here is gone — as is the catch-all, which the compiler proves unreachable.
       {:repo, false} -> {:error, :repo_not_started}
-      false -> {:error, :otp_invalid}
-      {:error, :otp_invalid} -> {:error, :otp_invalid}
       {:error, _reason} = error -> error
-      _ -> {:error, :invalid_request}
+    end
+  end
+
+  @doc """
+  Attempts allowed per `otp_request_id` before the code is burned. Exposed so the gateway's
+  per-(IP, phone) verify limit can be reasoned about against it — see the rate-limit policy doc.
+  """
+  def max_verify_attempts, do: @max_verify_attempts
+
+  # THE BRUTE-FORCE CAP. Before this existed, `attempts` was written as 0 at creation and never read:
+  # a 6-digit code (10^6) with a 300s TTL could be exhausted by anyone holding the `otp_request_id`,
+  # and the REQUEST response hands that id to whoever asked — including someone requesting a code for
+  # a phone they do not own. That was an account-takeover path, not a nuisance.
+  #
+  # When the LAST allowed attempt is spent on a WRONG code the row is BURNED (consumed_at set), so the
+  # cap is a real invalidation and not a counter that resets when the attacker waits: only a fresh
+  # /otp/request can produce a working code. `:otp_attempts_exhausted` is deliberately DISTINCT from
+  # `:otp_invalid` so the client can tell a user the code is dead rather than leaving them retyping a
+  # corpse.
+  defp charge_attempt(verification_code) do
+    case VerificationCodes.charge_attempt(verification_code.id) do
+      # The Nth attempt is ALLOWED to be checked — `<=`, not `<`. A user who fat-fingers four times
+      # and types it correctly on the fifth must succeed; rejecting the last attempt unchecked would
+      # make the cap 4 while claiming to be 5.
+      {:ok, attempt} when attempt <= @max_verify_attempts -> {:ok, attempt}
+      {:ok, _over} -> {:error, :otp_attempts_exhausted}
+      {:error, _reason} -> {:error, :otp_invalid}
+    end
+  end
+
+  # The code check, with the exhaustion verdict attached. A wrong code on the final attempt burns the
+  # row and reports exhaustion; a wrong code before that is an ordinary `:otp_invalid`.
+  defp check_code(verification_code, otp_code, attempt, now) do
+    valid? =
+      valid_code?(
+        verification_code.destination,
+        verification_code.purpose,
+        otp_code,
+        verification_code.code_hash
+      )
+
+    cond do
+      valid? ->
+        :ok
+
+      attempt >= @max_verify_attempts ->
+        VerificationCodes.burn_verification_code(verification_code.id, now)
+        {:error, :otp_attempts_exhausted}
+
+      true ->
+        {:error, :otp_invalid}
     end
   end
 

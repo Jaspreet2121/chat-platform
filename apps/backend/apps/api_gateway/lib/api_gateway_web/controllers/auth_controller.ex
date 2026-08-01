@@ -22,6 +22,7 @@ defmodule ApiGatewayWeb.AuthController do
       json(conn, response)
     else
       {:error, :otp_invalid} -> otp_invalid(conn)
+      {:error, :otp_attempts_exhausted} -> otp_attempts_exhausted(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
     end
@@ -96,6 +97,19 @@ defmodule ApiGatewayWeb.AuthController do
 
   defp otp_invalid(conn),
     do: ErrorResponse.unauthorized(conn, "auth.otp_invalid", "OTP is wrong or expired")
+
+  # DISTINCT from otp_invalid on purpose. The first four failures say "wrong or expired" and the user
+  # should try again; the fifth BURNS the code, so the same message would leave them retyping digits
+  # that can never work. This one says the code is dead and a new one is needed — the only actionable
+  # thing left. It does NOT leak whether any guess was close: every wrong guess is identical until the
+  # cap, and the cap is a property of the request, not of the code they typed.
+  defp otp_attempts_exhausted(conn),
+    do:
+      ErrorResponse.unauthorized(
+        conn,
+        "auth.otp_attempts_exhausted",
+        "Too many incorrect attempts. This code is no longer valid — request a new one."
+      )
 
   # Terminate every transport for this (user, device) — Phoenix's built-in socket-id broadcast. The
   # revoked tab goes DEAD immediately (channels close, reconnect fails auth) instead of streaming

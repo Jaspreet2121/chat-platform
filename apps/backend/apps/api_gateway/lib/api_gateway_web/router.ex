@@ -6,7 +6,22 @@ defmodule ApiGatewayWeb.Router do
   end
 
   pipeline :otp_request_rate_limited do
-    plug ApiGatewayWeb.Plugs.RateLimit, limit: 3, window_seconds: 60
+    plug ApiGatewayWeb.Plugs.RateLimit,
+      limit: 3,
+      window_seconds: 60,
+      key_prefix: "auth:otp_request",
+      fail_open: false
+  end
+
+  # OTP VERIFY. The per-otp_request_id attempts cap (5, in auth_service) is the primary defence; this
+  # bounds an attacker who sidesteps it by requesting a fresh id per burst. 20/5min is ~4 codes' worth
+  # of legitimate attempts — unreachable by a user typing a code they were sent.
+  pipeline :otp_verify_rate_limited do
+    plug ApiGatewayWeb.Plugs.RateLimit,
+      limit: 20,
+      window_seconds: 300,
+      key_prefix: "auth:otp_verify",
+      fail_open: false
   end
 
   pipeline :admin_required do
@@ -30,9 +45,14 @@ defmodule ApiGatewayWeb.Router do
   end
 
   scope "/api/v1/auth", ApiGatewayWeb do
-    pipe_through :api
+    pipe_through [:api, :otp_verify_rate_limited]
 
     post "/otp/verify", AuthController, :verify_otp
+  end
+
+  scope "/api/v1/auth", ApiGatewayWeb do
+    pipe_through :api
+
     post "/refresh", AuthController, :refresh
     post "/logout", AuthController, :logout
     get "/session", AuthController, :session
