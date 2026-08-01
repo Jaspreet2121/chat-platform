@@ -367,7 +367,7 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   @impl true
   def list_messages(attrs) do
     conversation_id = attr(attrs, "conversation_id")
-    limit = attr(attrs, "limit") || @default_limit
+    limit = int_attr(attrs, "limit", @default_limit)
 
     with {:ok, client} <- client_adapter(),
          {:ok, rows, next_cursor} <- walk_buckets(client, conversation_id, cursor(attrs), limit) do
@@ -565,8 +565,8 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   @impl true
   def list_starred(attrs) do
     user_id = attr(attrs, "user_id")
-    page = max(attr(attrs, "page") || 1, 1)
-    limit = attr(attrs, "limit") || 50
+    page = max(int_attr(attrs, "page", 1), 1)
+    limit = int_attr(attrs, "limit", 50)
     offset = (page - 1) * limit
 
     with {:ok, client} <- client_adapter() do
@@ -807,7 +807,7 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   def list_media(attrs) do
     conversation_id = attr(attrs, "conversation_id")
     viewer = attr(attrs, "viewer_user_id")
-    limit = min(attr(attrs, "limit") || 50, 100)
+    limit = min(int_attr(attrs, "limit", 50), 100)
 
     with {:ok, client} <- client_adapter(),
          {:ok, result} <-
@@ -1240,6 +1240,29 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
   defp attr(attrs, key) do
     Map.get(attrs, key) || Map.get(attrs, String.to_atom(key))
+  end
+
+  # THE HTTP-BOUNDARY COERCION (production flip finding, 2026-08-01). Numeric params cross the
+  # internal HTTP API as JSON STRINGS — the gateway forwards raw query params ("50"), Plug.Parsers
+  # hands them over verbatim, and this adapter did ARITHMETIC on them where Postgres/Ecto silently
+  # cast; every chat open crashed with ArithmeticError. Every numeric parameter is coerced HERE,
+  # once, at the adapter's entry — never at call sites. The remaining HTTP-borne params are
+  # string-typed BY DESIGN and already handled: ids and cursors are strings; ScyllaCodec accepts ISO
+  # strings for timestamps and dates; option_ids is a string list; metadata is a map.
+  defp int_attr(attrs, key, default) do
+    case attr(attrs, key) do
+      value when is_integer(value) and value > 0 ->
+        value
+
+      value when is_binary(value) ->
+        case Integer.parse(value) do
+          {parsed, ""} when parsed > 0 -> parsed
+          _ -> default
+        end
+
+      _ ->
+        default
+    end
   end
 end
 
