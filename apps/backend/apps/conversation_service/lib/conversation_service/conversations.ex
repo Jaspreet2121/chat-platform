@@ -844,7 +844,7 @@ defmodule ConversationService.Conversations do
     with {:ok, conversation} <- fetch_active_conversation(conversation_id),
          :ok <- ensure_group(conversation),
          {:ok, participant} <- fetch_active_participant(conversation_id, user_id),
-         :ok <- ensure_owner(participant),
+         :ok <- ensure_owner_or_admin(participant),
          changes when changes != %{} <- group_profile_changes(attrs),
          {:ok, profile} <- upsert_group_profile(conversation, changes) do
       {:ok,
@@ -865,8 +865,13 @@ defmodule ConversationService.Conversations do
   defp ensure_group(%{type: "group"}), do: :ok
   defp ensure_group(_), do: {:error, :conversation_invalid}
 
-  defp ensure_owner(%{role: role}) when role in ["owner", "admin"], do: :ok
-  defp ensure_owner(_), do: {:error, :conversation_forbidden}
+  # RENAMED from `ensure_owner`, which asserted the opposite of what it does: it accepts ADMINS too.
+  # Someone mirroring "the ensure_owner rule" by name would have got the wrong tier — the same shape of
+  # mistake as reusing a trigger by name without reading its scope. The genuinely owner-only gate is
+  # `Participants.require_owner/2` (used by add_participant); this is the owner+admin tier, matching
+  # `Participants.require_owner_or_admin/2`.
+  defp ensure_owner_or_admin(%{role: role}) when role in ["owner", "admin"], do: :ok
+  defp ensure_owner_or_admin(_), do: {:error, :conversation_forbidden}
 
   # Whitelist name/avatar changes. "" on an avatar field → nil (clear); nil → omitted (unchanged).
   defp group_profile_changes(attrs) do

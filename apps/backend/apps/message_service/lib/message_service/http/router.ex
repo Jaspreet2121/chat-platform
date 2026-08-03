@@ -75,6 +75,18 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Stars.list_starred(body(conn)))
   end
 
+  post "/internal/messages/pin" do
+    send_result(conn, MessageService.Pins.pin_message(body(conn)))
+  end
+
+  post "/internal/messages/unpin" do
+    send_result(conn, MessageService.Pins.unpin_message(body(conn)))
+  end
+
+  post "/internal/messages/pins" do
+    send_result(conn, MessageService.Pins.list_pins(body(conn)))
+  end
+
   post "/internal/search/messages" do
     send_result(conn, MessageService.Search.search_messages(body(conn)))
   end

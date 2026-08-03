@@ -355,6 +355,7 @@ defmodule ApiGatewayWeb.Router do
     get "/:conversation_id", ConversationController, :show
     # Ongoing group call (for the "join call" banner) — membership-gated (Slice C1).
     get "/:conversation_id/ongoing-call", ConversationController, :ongoing_call
+    get "/:conversation_id/pins", PinController, :index
     post "/:conversation_id/participants", ConversationController, :add_participant
     # User-scoped soft-hides (nothing deleted; admin content viewer unaffected).
     post "/:conversation_id/clear", ConversationController, :clear
@@ -410,6 +411,11 @@ defmodule ApiGatewayWeb.Router do
     get "/:message_id/poll-votes", MessageController, :poll_votes
     post "/:message_id/reactions", MessageController, :react
     delete "/:message_id/reactions", MessageController, :unreact
+    # PINNED MESSAGES (092). Owner/admin in groups, either party in a direct chat; the LIST is masked
+    # per viewer (a pin never overrides cleared_before / auto-delete / hidden markers).
+    put "/:message_id/pin", PinController, :create
+    delete "/:message_id/pin", PinController, :delete
+
     post "/:message_id/star", MessageController, :star
     delete "/:message_id/star", MessageController, :unstar
   end

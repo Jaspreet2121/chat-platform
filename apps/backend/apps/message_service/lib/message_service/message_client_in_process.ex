@@ -122,6 +122,15 @@ defmodule MessageService.MessageClientInProcess do
   def search_messages(attrs), do: Search.search_messages(attrs)
 
   @impl true
+  def pin_message(attrs), do: MessageService.Pins.pin_message(attrs)
+
+  @impl true
+  def unpin_message(attrs), do: MessageService.Pins.unpin_message(attrs)
+
+  @impl true
+  def list_pins(attrs), do: MessageService.Pins.list_pins(attrs)
+
+  @impl true
   def list_media(attrs), do: MessageService.MessageStore.list_media(attrs)
 
   @impl true

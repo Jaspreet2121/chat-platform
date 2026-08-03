@@ -118,6 +118,15 @@ defmodule SharedInfra.MessageClientHttp do
   def search_messages(attrs), do: post("/internal/search/messages", attrs)
 
   @impl true
+  def pin_message(attrs), do: post("/internal/messages/pin", attrs)
+
+  @impl true
+  def unpin_message(attrs), do: post("/internal/messages/unpin", attrs)
+
+  @impl true
+  def list_pins(attrs), do: post("/internal/messages/pins", attrs)
+
+  @impl true
   def list_media(attrs), do: post("/internal/messages/list_media", attrs)
 
   @impl true

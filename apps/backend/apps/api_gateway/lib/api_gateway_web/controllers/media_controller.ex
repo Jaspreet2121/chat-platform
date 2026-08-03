@@ -75,7 +75,7 @@ defmodule ApiGatewayWeb.MediaController do
       {:error, :media_too_large} -> too_large(conn)
       {:error, :conversation_unavailable} -> service_unavailable(conn)
       # A non-participant (message) → 404, no existence reveal. A member-but-not-admin (group_avatar) →
-      # 403, mirroring the existing group-profile behaviour (conversation_service ensure_owner → 403).
+      # 403, mirroring the existing group-profile behaviour (conversation_service ensure_owner_or_admin → 403).
       {:error, :not_a_member} -> not_found(conn)
       {:error, :not_group_admin} -> forbidden(conn)
       _ -> invalid_request(conn)
@@ -142,7 +142,7 @@ defmodule ApiGatewayWeb.MediaController do
     end
   end
 
-  # group_avatar: reuse the ensure_owner predicate (role ∈ owner/admin). A non-member and a
+  # group_avatar: reuse the ensure_owner_or_admin predicate (role ∈ owner/admin). A non-member and a
   # member-but-not-admin both fail as :not_group_admin → 403 (matches conversation_service's group-profile).
   defp group_admin(conversation_id, user_id) do
     case SharedInfra.ConversationClient.get_conversation(%{

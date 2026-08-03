@@ -36,6 +36,9 @@ defmodule SharedInfra.MessageClient do
   @callback unstar_message(attrs()) :: result()
   @callback list_starred(attrs()) :: result()
   @callback search_messages(attrs()) :: result()
+  @callback pin_message(attrs()) :: result()
+  @callback unpin_message(attrs()) :: result()
+  @callback list_pins(attrs()) :: result()
   @callback list_media(attrs()) :: result()
   @callback get_by_media_id(attrs()) :: result()
   # Message info (per-user delivery/read state; sender-only). Optional so existing stubs don't all need it.
@@ -108,6 +111,9 @@ defmodule SharedInfra.MessageClient do
   def unstar_message(attrs), do: normalize(adapter().unstar_message(attrs))
   def list_starred(attrs), do: normalize(adapter().list_starred(attrs))
   def search_messages(attrs), do: normalize(adapter().search_messages(attrs))
+  def pin_message(attrs), do: normalize(adapter().pin_message(attrs))
+  def unpin_message(attrs), do: normalize(adapter().unpin_message(attrs))
+  def list_pins(attrs), do: normalize(adapter().list_pins(attrs))
   def list_media(attrs), do: normalize(adapter().list_media(attrs))
   # The conversation a media_id was sent to — read-path authorization for message media.
   def get_by_media_id(attrs), do: normalize(adapter().get_by_media_id(attrs))

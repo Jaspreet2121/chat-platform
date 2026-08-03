@@ -143,3 +143,42 @@ Response `200`:
   "removed": true
 }
 ```
+
+## Pinned messages (092)
+
+Up to 3 per conversation, visible to every participant. **Not** the same as pinning a *conversation*
+(`conversation_participants.pinned_at`, 076), which is a per-user inbox preference.
+
+```
+PUT    /api/v1/conversations/:conversation_id/messages/:message_id/pin
+DELETE /api/v1/conversations/:conversation_id/messages/:message_id/pin
+  -> 200 { "conversation_id": "...", "message_id": "...", "pinned": true|false }
+
+GET    /api/v1/conversations/:conversation_id/pins
+  -> 200 { "pinned_messages": [
+             { "message_id": "...", "pinned_by": "...", "pinned_at": "2026-08-03T10:00:00Z" }
+           ] }
+```
+
+Ids only, newest pin first — the client already holds the bodies from the transcript, and a body can
+be edited or deleted underneath a cached copy.
+
+**Who can pin:** groups — owner and admin (the tier that owns group profile and settings, because
+pinning mutates a shared view). Direct chats — either participant. It is deliberately *not* the
+owner-only tier, which is reserved for membership changes.
+
+**Errors:** `conversation.pin_forbidden` (403, not an admin), `message.pin_limit` (409, cap reached),
+`message.not_found` (404 — unknown message, deleted message, a message belonging to another
+conversation, or the caller not being a participant; the same code for all four so the endpoint
+cannot be used to probe).
+
+**Realtime:** a pin change fans `conversation_updated` to every active participant with trigger
+`"pin"`. It does not reuse the `pref` trigger, which is scoped to the acting user only.
+
+### THE PINNED LIST IS MASKED PER USER
+
+**Two people in the same group can legitimately see different pinned bars.** A pin is
+per-conversation, but `cleared_before`, the rolling `auto_delete_seconds` window and per-user
+delete-for-me markers are per-user, and a pin overrides none of them. A client must not assume the
+pinned set is identical across participants, and must not cache one user's pinned list as the
+conversation's.

@@ -433,8 +433,15 @@ defmodule MessageService.Messages do
       }
 
       case MessageStore.delete_message(message_attrs) do
-        {:ok, message} -> {:ok, deleted_message_response(message)}
-        {:error, reason} -> {:error, reason}
+        {:ok, message} ->
+          # A deleted message must stop occupying pin budget (092). The pin READ already filters
+          # status='deleted', so this is about the CAP, not about hiding the tombstone — which is why
+          # it is best-effort and never fails the delete.
+          MessageService.Pins.unpin_deleted(message_id)
+          {:ok, deleted_message_response(message)}
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
   end
