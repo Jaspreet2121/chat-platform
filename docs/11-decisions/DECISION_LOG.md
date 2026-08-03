@@ -2,6 +2,33 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-03] Edit history: NO — recorded so it is not re-asked
+
+- **Decision: we do not store previous message bodies. `edited_at` plus an "edited" marker is the
+  whole feature, and that is the correct amount of honesty** — the reader knows the text changed and
+  can weigh it accordingly.
+- **The argument is about what this product is, not about cost.** Every distinguishing decision here
+  has the same shape: THE USER KEEPS CONTROL OF THEIR OWN CONTENT. Delete-for-everyone genuinely
+  removes. Disappearing messages genuinely disappear. A block is invisible to the blocked. A declined
+  call is hidden from the caller. This codebase has paid real cost for each of those.
+- **Storing every prior body contradicts all of it.** Someone who fixes a typo expects the typo gone;
+  someone who edits out a sentence they regret expects it GONE. Keeping versions **silently redefines
+  "edit" as "append"**, and the UI would be telling a comfortable lie.
+- Telegram keeps history because Telegram has channels and public broadcast, where provenance is the
+  point. That is a different product. WhatsApp does not, and WhatsApp is what this is.
+- **It is also not free.** Edit history would have to interact correctly with delete (history must die
+  with the message, or "delete for everyone" becomes a lie), with auto-delete windows, with
+  `cleared_before`, with the Scylla port, and with search (are old bodies searchable? if yes, deleted
+  text is searchable). Each is a fresh chance to get privacy wrong, for a feature nobody has asked
+  for.
+- **THE GUARDRAIL, recorded in advance because the failure mode is incremental:** if a moderation or
+  abuse requirement later demands retained bodies, the answer is a **MODERATION-ONLY AUDIT TRAIL WITH
+  EXPLICIT RETENTION** — different feature, different name, different access rules. It is NOT
+  user-visible edit history. The way this goes wrong is that *"we need it for abuse reports"* becomes
+  a public diff view by increments, each of which looks small. Naming that in advance is what stops
+  it: anyone proposing to widen the audit trail's audience is proposing a different feature and should
+  have to say so.
+
 ## [2026-08-03] Call pills: the Calls tab was the leak, and two 08-02 findings were wrong
 
 - **CORRECTION FIRST — two claims recorded on 2026-08-02 from an incomplete sample, both DISPROVED by
