@@ -228,3 +228,42 @@ affordance on this code.
 This is a recorded product regression with an expiry condition (DECISION_LOG 2026-08-01): acceptable
 only while there are no external users; if external users exist before the flip, a rebuildable
 non-authoritative Postgres search index (tsvector, derivable from Scylla) must ship first.
+
+## Forward depth
+
+Misinformation friction, **not** a statistic. The signal is *distance from the origin*, not how many
+copies exist.
+
+```
+POST /api/v1/conversations/:id/messages
+  { …,
+    "forwarded_from_message_id":      "<uuid>",   // the message being forwarded
+    "forwarded_from_conversation_id": "<uuid>" }  // its conversation (needed to resolve the row)
+
+message.metadata gains:
+  "forward_depth": 3     // SERVER-SET, 1..5. Absent on an original message.
+```
+
+**Clients never write `forward_depth`.** Any value supplied in metadata is discarded and recomputed
+from the source message row. A friction signal a client can reset to zero is worthless, and the
+client most motivated to reset it is the one spreading the message.
+
+**Display thresholds:** `>= 1` → "Forwarded". `>= 5` → "Forwarded many times". Capped at 5 so the
+value stays a signal rather than a tracking number.
+
+**Absent, not 0, on an original.** An original message is not "forwarded zero times"; clients should
+not have to distinguish those.
+
+**An untraceable source yields depth 1, not an error.** Unknown id, deleted source, or a conversation
+the forwarder has since left — a forward we cannot trace is still a forward, and failing the send
+would be far worse than a slightly low badge.
+
+**It rides the MESSAGE, not the media.** Forwarding media re-uploads the bytes as a new asset with a
+new `media_id`; the depth is resolved from the source *message*, so the chain survives that.
+
+### HONEST LIMITATION: depth undercounts breadth
+
+A message blasted directly to 100 chats is **depth 1 for every recipient**. Depth measures how FAR
+content has travelled from its source, not how WIDELY it was sent. WhatsApp has the same property and
+it is the right trade — the thing worth flagging is content that has moved far from where it started.
+Do not present `forward_depth` as a reach or popularity number; it is not one.

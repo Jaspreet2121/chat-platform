@@ -10,6 +10,10 @@ defmodule MessageService.Messages do
   require Logger
 
   alias MessageService.MessageStore
+
+  # Bounded so the value is a SIGNAL, not a tracking number. Client display: >=1 "Forwarded",
+  # >=5 "Forwarded many times".
+  @forward_depth_cap 5
   alias SharedInfra.Events.Envelope
   alias SharedInfra.Kafka.Producer
 
@@ -153,6 +157,69 @@ defmodule MessageService.Messages do
      }}
   end
 
+  # --- FORWARD DEPTH (misinformation friction, not a statistic) -----------------------------------
+
+  # WhatsApp's "Forwarded many times" is friction, not a count of copies. That framing is the design:
+  # what matters is DISTANCE from the origin, and a bounded hop depth measures that honestly. A true
+  # lineage count needs a graph or a contended counter on a root message, and it would answer a
+  # different question (how many copies exist) than the one the badge asks.
+  #
+  # SERVER-COMPUTED, NEVER CLIENT-ASSERTED. Any `forward_depth` a client puts in metadata is DISCARDED
+  # before this runs. A friction signal a client can reset to 0 is worthless, and the client that most
+  # wants to reset it is the one spreading the message.
+  #
+  # Depth is read from the SOURCE MESSAGE ROW, which is why the client sends
+  # `forwarded_from_message_id`. It rides the MESSAGE, not the media — so it survives Android
+  # re-uploading media on forward (a new media_id, a new message, but the client still knows which
+  # message it forwarded).
+  #
+  # An untraceable source (unknown id, deleted, a conversation the forwarder has since left) yields
+  # depth 1, not an error: a forward we cannot trace is still a forward, and failing the send would be
+  # a far worse outcome than a slightly low badge.
+  #
+  # HONEST LIMITATION, also stated in the contract: depth undercounts BREADTH. A message blasted
+  # directly to 100 chats is depth 1 for every recipient. WhatsApp has the same property; the signal
+  # is meant to flag content that has travelled FAR from its source, not content sent widely once.
+  defp apply_forward_depth(metadata, attrs) do
+    # Strip first, unconditionally — this is what makes the value non-forgeable.
+    metadata = Map.delete(metadata, "forward_depth")
+
+    case get_attr(attrs, "forwarded_from_message_id") do
+      source_id when is_binary(source_id) and source_id != "" ->
+        depth = min(source_forward_depth(attrs, source_id) + 1, @forward_depth_cap)
+        Map.put(metadata, "forward_depth", depth)
+
+      _ ->
+        metadata
+    end
+  end
+
+  defp source_forward_depth(attrs, source_id) do
+    conversation_id =
+      get_attr(attrs, "forwarded_from_conversation_id") || get_attr(attrs, "conversation_id")
+
+    case MessageStore.get_message(%{
+           "conversation_id" => conversation_id,
+           "message_id" => source_id
+         }) do
+      {:ok, message} -> depth_of(message)
+      _ -> 0
+    end
+  rescue
+    _ -> 0
+  end
+
+  # Clamped on READ as well as on write: a row written before the cap existed, or by a path that
+  # somehow stored a larger value, must not produce an out-of-range badge.
+  defp depth_of(message) do
+    metadata = Map.get(message, :metadata) || Map.get(message, "metadata") || %{}
+
+    case Map.get(metadata, "forward_depth") || Map.get(metadata, :forward_depth) do
+      n when is_integer(n) and n > 0 -> min(n, @forward_depth_cap)
+      _ -> 0
+    end
+  end
+
   defp create_message_in_store(attrs) do
     with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
          {:ok, sender_user_id} <- required_attr(attrs, "sender_user_id"),
@@ -162,6 +229,7 @@ defmodule MessageService.Messages do
          {:ok, body} <- message_body(attrs, message_type, caption),
          {:ok, metadata} <- metadata(attrs, message_type, media_id, caption) do
       created_at = now()
+      metadata = apply_forward_depth(metadata, attrs)
 
       message_attrs = %{
         "conversation_id" => conversation_id,

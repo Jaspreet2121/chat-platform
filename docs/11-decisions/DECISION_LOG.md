@@ -2,6 +2,24 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-03] FILED, NOT FIXED: `forwarded_from` exposes the original sender's user id
+
+- **Found while designing forward depth; deliberately NOT folded into that slice.**
+- **The shape:** `metadata.forwarded_from` is set CLIENT-SIDE to the source message's
+  `sender_user_id` (`apps/web/src/app/chat/page.tsx`, and the Android forward path mirrors it), and
+  the client spreads source metadata into the forwarded copy — so **the original sender's user id
+  travels to a recipient who may share no conversation with that person, and may not know them at
+  all.**
+- **WhatsApp names nobody.** Its forwarded badge says "Forwarded", not who from. The identity is not
+  needed for the feature; it is an accident of how the convention was built client-side.
+- **Why it is worth a slice of its own:** it is client-set today, so removing it server-side is not
+  enough — a client that keeps sending it keeps leaking it to any client that renders it. The fix
+  needs a server-side strip on write PLUS a client change, and a decision about whether anything
+  currently reads it (a "Forwarded from Alice" affordance would have to go).
+- **Not urgent, not invisible:** the id alone is not directly resolvable to a profile by a stranger
+  (profile reads are membership-gated), which is why this is filed rather than treated as a live
+  incident. It is still a user identifier crossing a boundary it has no reason to cross.
+
 ## [2026-08-03] Edit history: NO — recorded so it is not re-asked
 
 - **Decision: we do not store previous message bodies. `edited_at` plus an "edited" marker is the
