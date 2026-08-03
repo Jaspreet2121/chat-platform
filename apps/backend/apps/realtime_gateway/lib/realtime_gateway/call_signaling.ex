@@ -184,8 +184,17 @@ defmodule RealtimeGateway.CallSignaling do
 
       # WhatsApp semantics: a DECLINED call must be INDISTINGUISHABLE from a missed one in the chat — the
       # caller must never learn they were actively declined. So reject writes the SAME missed pill cancel
-      # writes (identical body + metadata status: "missed"), through the same create+broadcast path. No client
-      # change. 1-on-1 only; group decline/leave writes no pill (a separate follow-up).
+      # writes (identical body + metadata status: "missed"), through the same create+broadcast path.
+      # 1-on-1 only; group decline/leave writes no pill (a separate follow-up).
+      #
+      # THE RULE HAS THREE SURFACES, and for a while only this one honoured it — a device run on
+      # 2026-08-03 found the same call reading "No answer" in the transcript and "Declined" in the
+      # Calls tab. All three are now masked for the CALLER; change one and change them together:
+      #   1. this pill                      metadata.status "missed"  (here)
+      #   2. the Calls tab row              CallController.viewer_status/3
+      #   3. the live call UI               CallProvider "call:rejected" -> "No answer"
+      # NOT masked on /v1: that answers to the INTEGRATOR, a different audience, and `call.declined`
+      # exists to tell them. The rule is "the caller must not learn", not "the fact is secret".
       write_missed_message(call, socket.endpoint)
       broadcast(socket, cget(call, :caller_id), "call:rejected", %{call_id: call_id})
       {:reply, {:ok, %{call_id: call_id}}, socket}

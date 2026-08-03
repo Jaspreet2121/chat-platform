@@ -2,6 +2,43 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-03] Call pills: the Calls tab was the leak, and two 08-02 findings were wrong
+
+- **CORRECTION FIRST — two claims recorded on 2026-08-02 from an incomplete sample, both DISPROVED by
+  a device run on 08-03 against real data. Neither was fixed, because neither was broken:**
+  - ~~"the decline path writes no pill"~~ — **false.** `CallSignaling.reject/2` calls
+    `write_missed_message/2` on every decline, and call `cd1785be` produced exactly one
+    `message_created` / `message_type: "call"` row.
+  - ~~"timeout-then-decline double-writes the pill"~~ — **false, and prevented by construction.** The
+    REST decline transitions with `expected_status: "ringing"`, so a decline losing the race to the
+    35s timeout returns `:call_conflict` → idempotent 200, no second pill. A ring-timeout wrote
+    exactly one pill.
+  - **This is the same pattern the log already carries a rule about** (see the 2026-08-02 Android
+    correction): a confident claim that nothing tested. The difference worth noting is the failure
+    mode — the earlier ones were claims believed because they were written down; these were claims
+    believed because a SAMPLE was mistaken for the behaviour. Both end the same way, and the remedy is
+    the same: reproduce it, or write it as a suspicion.
+- **THE ACTUAL DEFECT, and which surface was wrong:** the pill's `metadata.status` is `"missed"` for
+  both decline and timeout, while the call row carries the true status. The same call read
+  `"Voice call · No answer"` in the transcript and `"Outgoing · Declined"` in the Calls tab. Both
+  clients rendered their own source faithfully.
+- **The pill is CORRECT BY DESIGN — the Calls tab was leaking.** The intent was already written down
+  in `CallSignaling.reject/2`: *"a DECLINED call must be INDISTINGUISHABLE from a missed one in the
+  chat — the caller must never learn they were actively declined"* (WhatsApp semantics). So this was
+  never a metadata bug; it was a privacy decision applied to ONE surface and never to the others.
+  `metadata.status` therefore stays `"missed"` and NO new key was added — changing it would have
+  broken the very property it exists to provide.
+- **Three surfaces, not two.** Investigating turned up a third, and the worst of them: the web client
+  rendered the `call:rejected` socket event to the caller as **"Call declined"**, outright. Now "No
+  answer", identical to the ring-timeout wording. The event itself is unchanged — the caller's UI must
+  still stop ringing immediately rather than waiting out 35s, which is what WhatsApp does too.
+- **Masked for the CALLER ONLY.** The callee performed the decline; showing them their own action
+  reveals nothing and is useful history. Mutation-proven in both directions: removing the mask
+  reproduces `"declined"` vs `"missed"`, and masking both parties fails the asymmetry test.
+- **`/v1` is deliberately NOT masked.** It answers to the integrator, a different audience from the
+  end user placing the call, and the `call.declined` webhook exists to tell them. The rule is "the
+  caller must not learn", not "the fact is secret".
+
 ## [2026-08-02] Search restored — and "an index, not a shadow" retired as a framing
 
 - **A tsvector is a lossy but READABLE copy of message content, and calling it an index does not make

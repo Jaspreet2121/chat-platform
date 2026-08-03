@@ -215,6 +215,28 @@ defmodule ApiGatewayWeb.CallController do
 
   # Normalize each call to a stable string-keyed shape + the counterpart id, then batch-enrich names
   # (one profile lookup per UNIQUE counterpart, not per row).
+  # THE DECLINE IS NEVER REVEALED TO THE CALLER — the Calls tab is masked the same way the chat pill is.
+  #
+  # `CallSignaling.reject/2` deliberately writes a pill whose metadata.status is "missed", not
+  # "declined": "a DECLINED call must be INDISTINGUISHABLE from a missed one in the chat — the caller
+  # must never learn they were actively declined" (WhatsApp semantics). That decision was made for the
+  # transcript and never applied here, so the SAME call read two different ways in two places in the
+  # same app: the pill said "No answer" while this row said "Declined". The pill was right; this was
+  # the leak.
+  #
+  # Masked for the CALLER ONLY. The callee performed the decline, so showing them their own action
+  # reveals nothing and is genuinely useful history — hiding it from them would lose information for
+  # no privacy gain.
+  #
+  # NOT masked on `/v1`: that surface answers to the INTEGRATOR (the app owner), a different audience
+  # from the end user placing the call, and the `call.declined` webhook exists precisely to tell them.
+  # The rule is "the caller must not learn", not "the fact is secret".
+  defp viewer_status("declined", caller_id, me)
+       when is_binary(me) and caller_id == me,
+       do: "missed"
+
+  defp viewer_status(status, _caller_id, _me), do: status
+
   defp enrich(calls, me, app_id) do
     rows = Enum.map(calls, &present_call(&1, me))
 
@@ -248,7 +270,7 @@ defmodule ApiGatewayWeb.CallController do
       "callee_id" => callee_id,
       "conversation_id" => cget(call, :conversation_id),
       "type" => cget(call, :type),
-      "status" => cget(call, :status),
+      "status" => viewer_status(cget(call, :status), caller_id, me),
       "created_at" => cget(call, :created_at),
       "answered_at" => cget(call, :answered_at),
       "ended_at" => cget(call, :ended_at),

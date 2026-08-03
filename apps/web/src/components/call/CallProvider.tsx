@@ -711,7 +711,13 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       userChannel.onCall("call:accepted", (p) => {
         if (statusRef.current === "outgoing" && matches(p) && callRef.current) connect(callRef.current);
       }),
-      userChannel.onCall("call:rejected", (p) => matches(p) && reset("peer-rejected", "Call declined")),
+      // "No answer", NOT "Call declined" — this handler runs on the CALLER's client, and a decline must
+      // never be revealed to them. The server already hides it in both the chat pill and the Calls tab
+      // (metadata.status "missed"; CallController.viewer_status/3); this was the third surface, and the
+      // only one where the caller was told outright. The event stays `call:rejected` so the caller's
+      // UI can stop ringing immediately instead of waiting out the 35s timeout — same wording as that
+      // timeout, so the two are indistinguishable.
+      userChannel.onCall("call:rejected", (p) => matches(p) && reset("peer-rejected", "No answer")),
       userChannel.onCall("call:cancelled", (p) => matches(p) && reset("peer-cancelled")),
       userChannel.onCall("call:ended", (p) => matches(p) && reset("peer-ended")),
       userChannel.onCall("call:missed", (p) => matches(p) && reset("peer-missed", "Missed call")),
