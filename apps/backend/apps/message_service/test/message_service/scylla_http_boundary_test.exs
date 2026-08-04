@@ -13,8 +13,6 @@ defmodule MessageService.ScyllaHttpBoundaryTest do
   """
   use ExUnit.Case, async: false
 
-  import ExUnit.CaptureLog
-
   alias MessageService.HTTP.Router
   alias MessageService.Repo
   alias SharedInfra.Scylla.XandraAdapter
@@ -337,24 +335,47 @@ defmodule MessageService.ScyllaHttpBoundaryTest do
     assert Enum.find(votes["poll"]["options"], &(&1["id"] == "o1"))["count"] == 1
   end
 
-  test "SEARCH over HTTP surfaces the recorded degradation, never a silent empty list",
-       %{sender: sender} do
-    response =
-      capture_log(fn ->
-        result =
-          post!("/internal/search/messages", %{
-            "user_id" => sender,
-            "query" => "anything",
-            "page" => "1"
-          })
+  test "SEARCH over HTTP returns REAL results — never a silent empty list",
+       %{conversation: conversation, sender: sender} do
+    # WHAT THIS USED TO ASSERT, AND WHY IT CHANGED. It pinned the STUB:
+    # `result["error"] =~ "unavailable"`. Commit 000ac22 pointed scylla_read's search at
+    # PostgresAdapter, so the call now genuinely succeeds, `result["error"]` is nil, and
+    # `nil =~ "unavailable"` raised FunctionClauseError — this suite has been red since. The
+    # ASSERTION was wrong; the PROPERTY it protected is not, so the property moved rather than
+    # disappeared (see the note below this test).
+    #
+    # Under scylla_read, reads come from Scylla but WRITES ARE STILL DUAL, so Postgres holds every
+    # message and search is served from there. This seeds the row dual-write would have written.
+    # Without it the search would legitimately match nothing, and asserting an empty list would
+    # re-enshrine precisely the bug the original test existed to prevent.
+    message_id = Ecto.UUID.generate()
 
-        send(self(), {:response, result})
-      end)
+    Repo.query!(
+      "INSERT INTO messages " <>
+        "(message_id, conversation_id, app_id, sender_user_id, message_type, body, status, created_at) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, " <>
+        "'text', 'a findable needle', 'active', now())",
+      [message_id, conversation, @tenant_zero, sender]
+    )
 
-    assert_received {:response, result}
+    # `page` as the STRING "1" — the calling convention this whole suite exists to hold.
+    %{"ok" => search} =
+      post!("/internal/search/messages", %{
+        "user_id" => sender,
+        "query" => "needle",
+        "page" => "1"
+      })
 
-    # The stub answers unavailable; the gateway maps it to 503 search.unavailable (verified wiring).
-    assert result["error"] =~ "unavailable"
-    _ = response
+    # NOT an empty list. A search that silently returns nothing tells the user their query matched
+    # nothing, which is a different and false statement from "search could not answer".
+    assert search["messages"] != []
+    assert Enum.any?(search["messages"], &(&1["message_id"] == message_id))
   end
+
+  # WHERE THE DEGRADATION PROPERTY LIVES NOW: a store answering `:message_store_unavailable` must
+  # surface as 503 `search.unavailable` and NEVER as a 200 with an empty list. That is asserted at the
+  # gateway by ApiGatewayWeb.StoreUnavailableMappingTest — "SEARCH: a store that cannot answer is 503
+  # search.unavailable — never 400, never empty" — which runs in the DEFAULT suite and needs no
+  # Scylla. That is a strictly better home than a Scylla-gated boundary test: the property holds
+  # whichever store is selected, so the test that guards it should not require one.
 end
