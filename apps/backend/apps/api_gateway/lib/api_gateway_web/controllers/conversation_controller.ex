@@ -1,6 +1,8 @@
 defmodule ApiGatewayWeb.ConversationController do
   use ApiGatewayWeb, :controller
 
+  require Logger
+
   alias ApiGatewayWeb.ErrorResponse
 
   def create(conn, params) do
@@ -106,7 +108,12 @@ defmodule ApiGatewayWeb.ConversationController do
            |> Map.put("conversation_id", conversation_id)
            |> Map.put("user_id", session.user_id)
            |> SharedInfra.ConversationClient.get_conversation() do
-      json(conn, with_group_avatar_url(response, session.app_id))
+      json(
+        conn,
+        response
+        |> with_group_avatar_url(session.app_id)
+        |> with_pinned_messages(conversation_id, session.user_id)
+      )
     else
       {:error, :session_invalid} -> session_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
@@ -413,6 +420,72 @@ defmodule ApiGatewayWeb.ConversationController do
   end
 
   defp with_group_avatar_url(other, _app_id), do: other
+
+  # PINNED MESSAGES on the conversation detail response (092).
+  #
+  # The pin/unpin endpoints and the dedicated GET /pins shipped in b6a79d9, but pins were never wired
+  # into :show — so the documented detail-response key simply never appeared, and every client reading
+  # `pinned_messages` here saw nothing while the rows existed server-side.
+  #
+  # REUSES the dedicated endpoint's read path (`MessageClient.list_pins/1`, the same call
+  # PinController.index/2 makes) rather than restating the query. That is not tidiness: the pins read
+  # is PER-VIEWER MASKED, and a second implementation would be a second thing to forget to mask.
+  #
+  # THE VIEWER GUARD IS LOAD-BEARING, NOT DEFENSIVE. `Pins.list_pins/1` has two clauses: with a viewer
+  # it applies the mask (cleared_before, the rolling auto-delete window, per-user hidden markers,
+  # disappear-after-viewing); with a nil/empty viewer it returns the conversation's pins UNMASKED, for
+  # admin/system reads. Calling this without a real viewer would therefore resurrect messages the
+  # caller cleared or that auto-deleted for them — so an absent viewer omits the key rather than
+  # falling through to the unmasked clause.
+  #
+  # ON FAILURE THE KEY IS OMITTED, never fabricated as `[]`, and the response never fails:
+  #   * chat open is the hottest path in the app, and it must not die because a decorative bar could
+  #     not be read;
+  #   * `[]` would assert "this conversation has no pins", which is a different and possibly false
+  #     statement — exactly the silent-empty class of bug this codebase keeps paying for;
+  #   * absent is at least distinguishable ON THE WIRE from empty, so a client that cares can tell.
+  #     Android today cannot (its DTO defaults to emptyList), so for Android the visible behaviour is
+  #     identical — the distinction is preserved for the web client and for anyone reading a response.
+  #   * it self-heals: clients re-read the detail after every pin/unpin and on the next open.
+  # The failure is logged so a systemic outage is visible to us even though it is invisible to Android.
+  #
+  # This mirrors `with_group_avatar_url/2` directly above: a decoration that cannot be resolved is
+  # left out, not faked, and never takes the response down with it.
+  defp with_pinned_messages(map, conversation_id, viewer)
+       when is_map(map) and is_binary(viewer) and viewer != "" do
+    case SharedInfra.MessageClient.list_pins(%{
+           "conversation_id" => conversation_id,
+           "user_id" => viewer
+         }) do
+      {:ok, %{pins: pins}} when is_list(pins) ->
+        Map.put(map, :pinned_messages, pins)
+
+      other ->
+        pins_unavailable(map, conversation_id, other)
+    end
+  rescue
+    # `Pins.list_pins/1` reaches Postgres via `Repo.query!`, which RAISES — an unstarted repo, a
+    # connection error, a malformed id. A `case` on the return value never sees those, so an
+    # exception here would propagate and take down the whole detail response: chat open dying for a
+    # decorative bar, which is the one outcome this function exists to prevent. Caught by the wider
+    # suite, not by the error-tuple test above — that test only proved the tuple path.
+    error -> pins_unavailable(map, conversation_id, error)
+  catch
+    # Same reasoning for a timeout on the HTTP boundary (prod runs the client over HTTP).
+    :exit, reason -> pins_unavailable(map, conversation_id, {:exit, reason})
+  end
+
+  defp with_pinned_messages(map, _conversation_id, _viewer), do: map
+
+  # One place to decide what an unreadable pins list means, so the tuple, raise and exit paths cannot
+  # drift apart: OMIT the key, log loudly, return the conversation.
+  defp pins_unavailable(map, conversation_id, reason) do
+    Logger.warning(
+      "conversation :show pinned_messages lookup failed conv=#{conversation_id}: #{inspect(reason)}"
+    )
+
+    map
+  end
 
   # Presign group avatars for the LIST concurrently (only group rows with a photo). Bounded fan-out;
   # a failed presign just leaves that row without a group_avatar_url (client falls back to initials).
