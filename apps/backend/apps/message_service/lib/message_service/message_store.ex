@@ -703,9 +703,14 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     known = MapSet.new(definition["options"] || [], & &1["id"])
 
     cond do
-      not Enum.all?(option_ids, &MapSet.member?(known, &1)) -> {:error, :poll_invalid_option}
-      length(option_ids) > 1 and definition["allows_multiple"] != true -> {:error, :poll_single_choice}
-      true -> :ok
+      not Enum.all?(option_ids, &MapSet.member?(known, &1)) ->
+        {:error, :poll_invalid_option}
+
+      length(option_ids) > 1 and definition["allows_multiple"] != true ->
+        {:error, :poll_single_choice}
+
+      true ->
+        :ok
     end
   end
 
@@ -724,7 +729,11 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     case attr(attrs, "media_id") do
       media_id when is_binary(media_id) and media_id != "" ->
         with {:ok, client} <- client_adapter(),
-             {:ok, result} <- execute(client, MediaProjections.earliest_reference_plan(%{"media_id" => media_id})) do
+             {:ok, result} <-
+               execute(
+                 client,
+                 MediaProjections.earliest_reference_plan(%{"media_id" => media_id})
+               ) do
           case rows(result) do
             [row | _] -> {:ok, %{conversation_id: attr(row, "conversation_id")}}
             [] -> {:error, :not_found}
@@ -756,7 +765,8 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
          owner when is_binary(owner) and owner != "" <- attr(attrs, "owner_user_id"),
          viewer when is_binary(viewer) and viewer != "" <- attr(attrs, "viewer_user_id"),
          {:ok, client} <- client_adapter(),
-         {:ok, result} <- execute(client, MediaProjections.list_references_plan(%{"media_id" => media_id})) do
+         {:ok, result} <-
+           execute(client, MediaProjections.list_references_plan(%{"media_id" => media_id})) do
       references = rows(result)
 
       if references == [] do
@@ -843,9 +853,14 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
       next_cursor =
         case List.last(raw) do
-          nil -> nil
-          last when length(raw) >= limit * 2 -> ScyllaCodec.decode_timestamp(attr(last, "created_at"))
-          _ -> nil
+          nil ->
+            nil
+
+          last when length(raw) >= limit * 2 ->
+            ScyllaCodec.decode_timestamp(attr(last, "created_at"))
+
+          _ ->
+            nil
         end
 
       {:ok, %{conversation_id: conversation_id, items: items, next_cursor: next_cursor}}
@@ -890,7 +905,10 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
     inside_auto =
       is_nil(window.auto_delete_seconds) or
-        DateTime.compare(created_at, DateTime.add(DateTime.utc_now(), -window.auto_delete_seconds, :second)) == :gt
+        DateTime.compare(
+          created_at,
+          DateTime.add(DateTime.utc_now(), -window.auto_delete_seconds, :second)
+        ) == :gt
 
     inside_cleared and inside_auto
   end
@@ -954,7 +972,12 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
           (attr(row, "delivered_at") || attr(row, "read_at")) &&
             not MapSet.member?(read_ids, attr(row, "user_id"))
         end)
-        |> Enum.map(&%{user_id: attr(&1, "user_id"), delivered_at: attr(&1, "delivered_at") || attr(&1, "read_at")})
+        |> Enum.map(
+          &%{
+            user_id: attr(&1, "user_id"),
+            delivered_at: attr(&1, "delivered_at") || attr(&1, "read_at")
+          }
+        )
         |> Enum.sort_by(& &1.delivered_at, {:desc, DateTime})
 
       {:ok,
@@ -1173,7 +1196,10 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
       {:error, %{__struct__: struct} = error}
       when struct in [Xandra.ConnectionError, Xandra.Error] ->
-        Logger.warning("scylla #{plan.operation}: #{Exception.message(error)} -> store unavailable")
+        Logger.warning(
+          "scylla #{plan.operation}: #{Exception.message(error)} -> store unavailable"
+        )
+
         {:error, :message_store_unavailable}
 
       result ->
@@ -1545,7 +1571,9 @@ defmodule MessageService.MessageStore.ShadowReadAdapter do
     pg_ids = Enum.map(pg.messages, & &1.message_id)
     sc_ids = Enum.map(sc.messages, & &1.message_id)
 
-    if pg_ids == sc_ids, do: nil, else: "page ids diverged (pg=#{length(pg_ids)} sc=#{length(sc_ids)})"
+    if pg_ids == sc_ids,
+      do: nil,
+      else: "page ids diverged (pg=#{length(pg_ids)} sc=#{length(sc_ids)})"
   end
 
   defp record_diff(op, attrs, reason) do
@@ -2355,7 +2383,6 @@ defmodule MessageService.MessageStore.PostgresAdapter do
       created_at: message.created_at
     })
   end
-
 
   @impl true
   def get_message(attrs) do
@@ -3238,9 +3265,15 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         "  AND cp.left_at IS NULL " <>
         "WHERE m.status <> 'deleted' " <>
         "AND m.body ILIKE $2 " <>
-        "AND " <> VisibilityWindow.participant_window_sql("cp", "m.created_at") <> " " <>
-        "AND " <> VisibilityWindow.not_hidden_sql("m.message_id", "$1") <> " " <>
-        "AND " <> VisibilityWindow.seen_under_after_viewing_sql("m", "cp", "$1") <> " " <>
+        "AND " <>
+        VisibilityWindow.participant_window_sql("cp", "m.created_at") <>
+        " " <>
+        "AND " <>
+        VisibilityWindow.not_hidden_sql("m.message_id", "$1") <>
+        " " <>
+        "AND " <>
+        VisibilityWindow.seen_under_after_viewing_sql("m", "cp", "$1") <>
+        " " <>
         "ORDER BY m.created_at DESC LIMIT $3 OFFSET $4"
 
     %{rows: rows} = Repo.query!(sql, [user_id, pattern, limit, offset])

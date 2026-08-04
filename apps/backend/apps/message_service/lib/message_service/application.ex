@@ -45,7 +45,10 @@ defmodule MessageService.Application do
     projection_consumer =
       if kafka_projection_consumer_enabled?(), do: [conversation_summary_child_spec()], else: []
 
-    repo ++ sweeper ++ shadow ++ client ++ log_consumer ++ projection_consumer ++ scylla_children() ++ http_children()
+    repo ++
+      sweeper ++
+      shadow ++
+      client ++ log_consumer ++ projection_consumer ++ scylla_children() ++ http_children()
   end
 
   # ScyllaDB driver (Phase B) — DRIVER ONLY: this starts a connection pool, it does NOT make Scylla

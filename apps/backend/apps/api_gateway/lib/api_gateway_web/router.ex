@@ -411,6 +411,7 @@ defmodule ApiGatewayWeb.Router do
     get "/:message_id/poll-votes", MessageController, :poll_votes
     post "/:message_id/reactions", MessageController, :react
     delete "/:message_id/reactions", MessageController, :unreact
+
     # PINNED MESSAGES (092). Owner/admin in groups, either party in a direct chat; the LIST is masked
     # per viewer (a pin never overrides cleared_before / auto-delete / hidden markers).
     put "/:message_id/pin", PinController, :create

@@ -112,7 +112,9 @@ defmodule UserService.FavouriteContactsTest do
 
     # They favourite the same target: two independent rows, independently ordered and removed.
     add!(them, shared_target)
-    {:ok, _} = FavouriteContacts.remove(%{"owner_user_id" => them, "favourite_user_id" => shared_target})
+
+    {:ok, _} =
+      FavouriteContacts.remove(%{"owner_user_id" => them, "favourite_user_id" => shared_target})
 
     assert ids(them) == []
     assert ids(me) == [shared_target]
@@ -130,7 +132,10 @@ defmodule UserService.FavouriteContactsTest do
     add!(owner, keeper)
 
     Repo.query!("DELETE FROM users_auth WHERE id = $1::text::uuid", [deleted])
-    Repo.query!("UPDATE users_auth SET status = 'suspended' WHERE id = $1::text::uuid", [suspended])
+
+    Repo.query!("UPDATE users_auth SET status = 'suspended' WHERE id = $1::text::uuid", [
+      suspended
+    ])
 
     # Deleted: pruned by CASCADE. Suspended: absent from the READ...
     assert ids(owner) == [keeper]

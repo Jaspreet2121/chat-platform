@@ -92,7 +92,9 @@ defmodule MessageService.InboxProjection do
         "oldest_unread_at = CASE WHEN GREATEST(cp.unread_count - 1, 0) = 0 THEN NULL ELSE cp.oldest_unread_at END " <>
         "WHERE cp.conversation_id = $1::text::uuid AND cp.left_at IS NULL " <>
         "AND cp.user_id <> $2::text::uuid " <>
-        "AND " <> VisibilityWindow.participant_window_sql("cp", "$4") <> " " <>
+        "AND " <>
+        VisibilityWindow.participant_window_sql("cp", "$4") <>
+        " " <>
         "AND NOT EXISTS (SELECT 1 FROM message_receipts r " <>
         "  WHERE r.conversation_id = cp.conversation_id AND r.message_id = $3::text::uuid " <>
         "  AND r.user_id = cp.user_id AND (r.status = 'read' OR r.read_at IS NOT NULL))",

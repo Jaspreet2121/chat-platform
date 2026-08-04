@@ -11,7 +11,13 @@ defmodule MessageService.WebhookEvents do
   alias MessageService.Repo
 
   @doc "Same-transaction emit (the Postgres adapter path — unchanged semantics)."
-  def emit(app_id, message), do: with_event(app_id, message, &SharedInfra.WebhookOutbox.emit(Repo, app_id, "message.created", &1))
+  def emit(app_id, message),
+    do:
+      with_event(
+        app_id,
+        message,
+        &SharedInfra.WebhookOutbox.emit(Repo, app_id, "message.created", &1)
+      )
 
   @doc "Write-ahead stage (the Scylla adapter path). Returns {:ok, staged_ids}."
   def stage(app_id, message) do
@@ -25,7 +31,8 @@ defmodule MessageService.WebhookEvents do
   end
 
   @doc "The message's authoritative tenant — its conversation's app_id (Postgres, the enduring authority)."
-  def conversation_app_id(conversation_id) when is_binary(conversation_id) and conversation_id != "" do
+  def conversation_app_id(conversation_id)
+      when is_binary(conversation_id) and conversation_id != "" do
     case Repo.query(
            "SELECT app_id::text FROM conversations WHERE id = $1::text::uuid",
            [conversation_id]

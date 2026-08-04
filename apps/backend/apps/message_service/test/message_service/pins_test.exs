@@ -178,7 +178,9 @@ defmodule MessageService.PinsTest do
 
     # And the write path frees the budget so a deleted message does not hold a slot forever.
     assert :ok = Pins.unpin_deleted(message)
-    for _ <- 1..Pins.max_pins(), do: assert({:ok, _} = pin!(conversation, message!(conversation), user))
+
+    for _ <- 1..Pins.max_pins(),
+        do: assert({:ok, _} = pin!(conversation, message!(conversation), user))
   end
 
   @tag :postgres_integration

@@ -399,7 +399,10 @@ defmodule MessageService.ScyllaMediaOracleTest do
 
     # The uncapped voter list endpoint reads the same truth.
     assert {:ok, %{poll: listed}} =
-             ScyllaAdapter.list_poll_votes(%{"conversation_id" => conv, "message_id" => message_id})
+             ScyllaAdapter.list_poll_votes(%{
+               "conversation_id" => conv,
+               "message_id" => message_id
+             })
 
     assert Enum.find(listed.options, &(&1.id == "o2")).count == 1
   end

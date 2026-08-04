@@ -396,7 +396,12 @@ defmodule ApiGatewayWeb.UserController do
         session_invalid(conn)
 
       {:error, :email_taken} ->
-        ErrorResponse.invalid_request_with(conn, "users.email_taken", "That email is already in use", %{})
+        ErrorResponse.invalid_request_with(
+          conn,
+          "users.email_taken",
+          "That email is already in use",
+          %{}
+        )
 
       {:error, :email_invalid} ->
         ErrorResponse.invalid_request(conn, "users.email_invalid")

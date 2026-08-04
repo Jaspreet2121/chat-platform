@@ -152,7 +152,8 @@ defmodule MessageService.ForwardDepthTest do
     laundered =
       forward!(deep, conversation!(), %{"metadata" => %{"forward_depth" => 0}})
 
-    assert depth(laundered) == 3, "depth must be recomputed from the source, not taken from metadata"
+    assert depth(laundered) == 3,
+           "depth must be recomputed from the source, not taken from metadata"
   end
 
   @tag :postgres_integration

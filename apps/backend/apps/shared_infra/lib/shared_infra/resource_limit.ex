@@ -41,7 +41,8 @@ defmodule SharedInfra.ResourceLimit do
   answered at the call site where the trade is visible. See docs/09-devops/RATE_LIMIT_POLICY.md.
   """
 
-  @type result :: :ok | {:error, :rate_limited, non_neg_integer()} | {:error, :rate_limiter_unavailable}
+  @type result ::
+          :ok | {:error, :rate_limited, non_neg_integer()} | {:error, :rate_limiter_unavailable}
 
   @doc """
   Charge one unit against `resource_id`'s budget for `action`.

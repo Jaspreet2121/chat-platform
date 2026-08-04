@@ -109,6 +109,7 @@ defmodule MessageService.Pins do
   end
 
   defp list_query(conversation_id, viewer) do
+    # THE MASK. See the moduledoc above this function before touching these three lines.
     sql =
       "SELECT p.message_id::text, p.pinned_by::text, p.pinned_at " <>
         "FROM message_pins p " <>
@@ -119,10 +120,15 @@ defmodule MessageService.Pins do
         "  AND cp.left_at IS NULL " <>
         "WHERE p.conversation_id = $1::text::uuid " <>
         "AND m.status <> 'deleted' " <>
-        # THE MASK. See the moduledoc above this function before touching these three lines.
-        "AND " <> VisibilityWindow.participant_window_sql("cp", "m.created_at") <> " " <>
-        "AND " <> VisibilityWindow.not_hidden_sql("m.message_id", "$2") <> " " <>
-        "AND " <> VisibilityWindow.seen_under_after_viewing_sql("m", "cp", "$2") <> " " <>
+        "AND " <>
+        VisibilityWindow.participant_window_sql("cp", "m.created_at") <>
+        " " <>
+        "AND " <>
+        VisibilityWindow.not_hidden_sql("m.message_id", "$2") <>
+        " " <>
+        "AND " <>
+        VisibilityWindow.seen_under_after_viewing_sql("m", "cp", "$2") <>
+        " " <>
         "ORDER BY p.pinned_at DESC"
 
     {sql, [conversation_id, viewer]}
@@ -181,7 +187,9 @@ defmodule MessageService.Pins do
     end
   end
 
-  defp get(attrs, key) when is_map(attrs), do: Map.get(attrs, key) || Map.get(attrs, safe_atom(key))
+  defp get(attrs, key) when is_map(attrs),
+    do: Map.get(attrs, key) || Map.get(attrs, safe_atom(key))
+
   defp get(_attrs, _key), do: nil
 
   defp safe_atom(key) do

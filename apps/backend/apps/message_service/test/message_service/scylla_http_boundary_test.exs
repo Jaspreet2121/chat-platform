@@ -352,6 +352,7 @@ defmodule MessageService.ScyllaHttpBoundaryTest do
       end)
 
     assert_received {:response, result}
+
     # The stub answers unavailable; the gateway maps it to 503 search.unavailable (verified wiring).
     assert result["error"] =~ "unavailable"
     _ = response

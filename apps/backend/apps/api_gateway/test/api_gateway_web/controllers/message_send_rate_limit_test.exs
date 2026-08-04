@@ -70,7 +70,9 @@ defmodule ApiGatewayWeb.MessageSendRateLimitTest do
       RateLimiter.InMemoryAdapter.reset()
 
       for {k, v} <- prev do
-        if v, do: Application.put_env(:shared_infra, k, v), else: Application.delete_env(:shared_infra, k)
+        if v,
+          do: Application.put_env(:shared_infra, k, v),
+          else: Application.delete_env(:shared_infra, k)
       end
 
       if prev_persist,

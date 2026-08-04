@@ -350,15 +350,22 @@ defmodule MediaService.Media do
 
   defp fetch_purpose(attrs) do
     case get_attr(attrs, "purpose") do
-      nil -> {:ok, "message"}
-      "" -> {:ok, "message"}
+      nil ->
+        {:ok, "message"}
+
+      "" ->
+        {:ok, "message"}
+
       # "status" was authorized (download presign + the status authz arm, e4189ce) MONTHS before it
       # was uploadable — this list was never told the purpose existed, so photo/video status 400'd at
       # create while every status test fabricated media ids. Adding a purpose ANYWHERE downstream
       # (authz, presign TTL, gateway assertion) requires adding it here AND to the upload-path
       # purpose test in MediaService.MediaTest, which now enumerates this list.
-      purpose when purpose in ["message", "user_avatar", "group_avatar", "status"] -> {:ok, purpose}
-      _ -> {:error, :media_invalid}
+      purpose when purpose in ["message", "user_avatar", "group_avatar", "status"] ->
+        {:ok, purpose}
+
+      _ ->
+        {:error, :media_invalid}
     end
   end
 

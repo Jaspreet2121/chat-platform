@@ -150,14 +150,22 @@ defmodule MessageService.ScyllaWebhookOutboxTest do
   # `now()` is transaction-frozen in the sandbox (the raw-sql memory rule): a row created "now" is
   # never `created_at < now()`, so staleness must be STATED, not waited for.
   defp age_staged! do
-    Repo.query!("UPDATE webhook_outbox SET created_at = now() - interval '2 seconds' WHERE status = 'staged'", [])
+    Repo.query!(
+      "UPDATE webhook_outbox SET created_at = now() - interval '2 seconds' WHERE status = 'staged'",
+      []
+    )
   end
 
   defp outbox_rows do
     %{rows: rows} =
-      Repo.query!("SELECT id::text, status, last_error FROM webhook_outbox ORDER BY created_at", [])
+      Repo.query!(
+        "SELECT id::text, status, last_error FROM webhook_outbox ORDER BY created_at",
+        []
+      )
 
-    Enum.map(rows, fn [id, status, last_error] -> %{id: id, status: status, last_error: last_error} end)
+    Enum.map(rows, fn [id, status, last_error] ->
+      %{id: id, status: status, last_error: last_error}
+    end)
   end
 
   test "HAPPY PATH: put stages then promotes — exactly one pending row, claimable exactly once",
@@ -228,7 +236,11 @@ defmodule MessageService.ScyllaWebhookOutboxTest do
     age_staged!()
 
     # Point the sweeper's store check at the unavailable stub — the store cannot ANSWER.
-    Application.put_env(:message_service, :scylla_client_adapter, SharedInfra.Scylla.UnavailableClient)
+    Application.put_env(
+      :message_service,
+      :scylla_client_adapter,
+      SharedInfra.Scylla.UnavailableClient
+    )
 
     try do
       assert %{promoted: 0, aborted: 0, left: 1} = WebhookOutboxSweeper.sweep(0)
@@ -240,7 +252,11 @@ defmodule MessageService.ScyllaWebhookOutboxTest do
 
   test "SYNCHRONOUS FAILURE: a put that errors aborts its staged rows immediately, with the reason",
        %{sender: sender, conversation: conversation} do
-    Application.put_env(:message_service, :scylla_client_adapter, SharedInfra.Scylla.UnavailableClient)
+    Application.put_env(
+      :message_service,
+      :scylla_client_adapter,
+      SharedInfra.Scylla.UnavailableClient
+    )
 
     try do
       assert {:error, :message_store_unavailable} =

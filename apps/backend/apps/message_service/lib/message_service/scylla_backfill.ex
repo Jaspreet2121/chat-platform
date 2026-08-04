@@ -55,7 +55,10 @@ defmodule MessageService.ScyllaBackfill do
         %{conversations: acc.conversations + 1, messages: acc.messages + copied}
       end)
 
-    Logger.info("scylla backfill: #{totals.conversations} conversations, #{totals.messages} messages")
+    Logger.info(
+      "scylla backfill: #{totals.conversations} conversations, #{totals.messages} messages"
+    )
+
     totals
   end
 
@@ -164,7 +167,8 @@ defmodule MessageService.ScyllaBackfill do
         []
       )
 
-    Enum.reduce(rows, %{repaired: 0, gone: 0}, fn [failure_id, conversation_id, message_id], acc ->
+    Enum.reduce(rows, %{repaired: 0, gone: 0}, fn [failure_id, conversation_id, message_id],
+                                                  acc ->
       case authority_row(conversation_id, message_id) do
         nil ->
           # The message no longer exists in the authority (should not happen — deletes are soft).

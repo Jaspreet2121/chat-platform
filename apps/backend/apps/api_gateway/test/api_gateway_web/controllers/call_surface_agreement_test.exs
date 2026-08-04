@@ -111,7 +111,11 @@ defmodule ApiGatewayWeb.CallSurfaceAgreementTest do
 
   # What the Calls tab shows `viewer` for a call whose ROW status is `call_status`.
   defp calls_tab_status(call_status, viewer) do
-    Application.put_env(:shared_infra, :conversation_client_adapter, conversation_stub(call_status))
+    Application.put_env(
+      :shared_infra,
+      :conversation_client_adapter,
+      conversation_stub(call_status)
+    )
 
     conn =
       :get

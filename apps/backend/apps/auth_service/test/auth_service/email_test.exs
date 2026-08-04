@@ -131,7 +131,8 @@ defmodule AuthService.EmailTest do
           "dots.in.local@sub.example.com",
           "digits123@example.io"
         ] do
-      assert {:ok, _} = Accounts.update_email(@tenant_zero, owner, good), "#{good} should be accepted"
+      assert {:ok, _} = Accounts.update_email(@tenant_zero, owner, good),
+             "#{good} should be accepted"
     end
   end
 

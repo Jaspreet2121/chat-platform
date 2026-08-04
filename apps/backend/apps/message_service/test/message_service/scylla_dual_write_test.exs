@@ -64,6 +64,7 @@ defmodule MessageService.ScyllaDualWriteTest do
     end
 
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+
     # SHARED mode: the race test's writer/backfill TASKS must see this test's uncommitted fixtures —
     # in the default :auto mode a task checks out a FRESH connection and the conversation row is
     # invisible (every put fails :message_invalid). Shared serializes them onto this one connection.
@@ -260,7 +261,11 @@ defmodule MessageService.ScyllaDualWriteTest do
 
   test "SHADOW ISOLATION: an unavailable Scylla never fails the write — and the failure is a ROW",
        %{conversation: conversation, sender: sender} do
-    Application.put_env(:message_service, :scylla_client_adapter, SharedInfra.Scylla.UnavailableClient)
+    Application.put_env(
+      :message_service,
+      :scylla_client_adapter,
+      SharedInfra.Scylla.UnavailableClient
+    )
 
     message =
       try do

@@ -1,5 +1,4 @@
 defmodule ApiGatewayWeb.InviteLinkController do
-
   # JOIN LIMITS — two axes, and both are needed because they stop different attacks.
   #
   # PER USER (10/hour): stops one account joining every link it can find.

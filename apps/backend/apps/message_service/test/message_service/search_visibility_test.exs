@@ -137,7 +137,9 @@ defmodule MessageService.SearchVisibilityTest do
     conversation = conversation!()
     cutoff = DateTime.utc_now()
 
-    older = message!(conversation, "needle before the clear", created_at: DateTime.add(cutoff, -60))
+    older =
+      message!(conversation, "needle before the clear", created_at: DateTime.add(cutoff, -60))
+
     newer = message!(conversation, "needle after the clear", created_at: DateTime.add(cutoff, 60))
 
     participant!(conversation, user, cleared_before: cutoff)
@@ -153,7 +155,11 @@ defmodule MessageService.SearchVisibilityTest do
     user = user!()
     conversation = conversation!()
 
-    aged = message!(conversation, "needle long gone", created_at: DateTime.add(DateTime.utc_now(), -3600))
+    aged =
+      message!(conversation, "needle long gone",
+        created_at: DateTime.add(DateTime.utc_now(), -3600)
+      )
+
     fresh = message!(conversation, "needle still here")
 
     # 10-minute window: `aged` is an hour old and has disappeared for this user.
@@ -203,7 +209,9 @@ defmodule MessageService.SearchVisibilityTest do
     )
 
     refute message_id in search(hider, "needle")
-    assert message_id in search(other, "needle"), "one user's hide must not affect another's search"
+
+    assert message_id in search(other, "needle"),
+           "one user's hide must not affect another's search"
   end
 
   @tag :postgres_integration

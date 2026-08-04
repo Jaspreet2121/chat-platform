@@ -290,10 +290,17 @@ defmodule AuthService.Accounts do
     normalized = email |> String.trim() |> String.downcase()
 
     cond do
-      normalized == "" -> {:ok, nil}
-      String.length(normalized) > @email_max_length -> {:error, :email_invalid}
-      not Regex.match?(~r/^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/u, normalized) -> {:error, :email_invalid}
-      true -> {:ok, normalized}
+      normalized == "" ->
+        {:ok, nil}
+
+      String.length(normalized) > @email_max_length ->
+        {:error, :email_invalid}
+
+      not Regex.match?(~r/^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/u, normalized) ->
+        {:error, :email_invalid}
+
+      true ->
+        {:ok, normalized}
     end
   end
 

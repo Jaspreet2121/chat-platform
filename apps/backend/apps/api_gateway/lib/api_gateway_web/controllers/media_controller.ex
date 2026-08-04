@@ -92,7 +92,13 @@ defmodule ApiGatewayWeb.MediaController do
   # The DAILY window is checked FIRST so the limit that actually bounds accumulation is the one that
   # gets charged when both would trip, and so its Retry-After (the long one) is what the client sees.
   defp upload_rate_limit(user_id) do
-    with :ok <- check_window("media_upload_day:", user_id, @upload_daily_limit, @upload_daily_window_seconds) do
+    with :ok <-
+           check_window(
+             "media_upload_day:",
+             user_id,
+             @upload_daily_limit,
+             @upload_daily_window_seconds
+           ) do
       check_window("media_upload:", user_id, @upload_burst_limit, @upload_burst_window_seconds)
     end
   end
