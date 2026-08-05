@@ -47,6 +47,143 @@ Architecture decisions, newest first. Each entry: context → decision → ratio
   it: anyone proposing to widen the audit trail's audience is proposing a different feature and should
   have to say so.
 
+## [2026-08-05] Scylla ladder — ACTUAL state, and the rollback command that silently no-ops
+
+Written because a handoff document asserted this ladder was flipped and running in production, and
+someone planned from it. Every line below is labelled with how it was established.
+
+### Where the ladder actually is
+
+[VERIFIED] Production runs **`MESSAGE_STORE_ADAPTER=postgres`**
+([docker-compose.prod.yml:153](../../docker-compose.prod.yml#L153)). Evidence, not inference:
+
+- `git log -S 'scylla_read' -- docker-compose.prod.yml` returns **NOTHING**. That string has never
+  been in that file.
+- `git log -S 'MESSAGE_STORE_ADAPTER' -- docker-compose.prod.yml` returns exactly **two** commits:
+  the first bring-up, and `0249c1c` — whose own subject reads *"adapter unchanged"*.
+- The compose comment at ~:374 says *"Phase A — CONTAINER + SCHEMA ONLY. The message store is STILL
+  Postgres."*
+
+| Rung | State | Provenance |
+|---|---|---|
+| 0 — CI green | **DONE** (`52fa60e`) | VERIFIED |
+| 1 — capacity | **PASS** — 4.1 GiB available, scylla container 44 MiB / 1.465 GiB | VERIFIED |
+| 2 — migrations applied | **DONE** | VERIFIED |
+| 3 — scylla up, keyspace loaded | **DONE** | VERIFIED |
+| 4 — `dual_write` | **NOT STARTED** — next rung | VERIFIED |
+| 5 — backfill | not started | — |
+| 6 — `shadow_read` (≥48h clean) | not started | — |
+| 7 — `scylla_read` (THE FLIP) | not started, **and blocked** — see below | — |
+
+**THE CORRECTION IS "BUILT, CI-TESTED, NEVER RUN IN PRODUCTION" — NOT "NOT REAL".** C1–C8 exist, the
+adapters are complete, and the scylla gate (7 suites, 0 excluded, including the HTTP-boundary suite)
+passes in CI on every push. Rungs 0–3 are genuinely done. What never happened is the flip.
+
+[VERIFIED] Postgres holds **1876** messages. Any Scylla row-count figure quoted from earlier sessions
+(e.g. "25 rows") came from the **dev** container (`infra/docker/docker-compose.yml`), not production,
+and must not be repeated as a production number.
+
+### Rung 7 is blocked on the read-after-write race
+
+[VERIFIED] `DualWriteAdapter.put_message/1` commits to Postgres FIRST, then calls
+`ShadowMirror.mirror_put/1`, which dispatches a **detached async task**
+(`Task.Supervisor.start_child`, `scylla_shadow_async` defaults `true`). Under `scylla_read`, reads
+are served from a store written asynchronously — a client can send a message, receive 201, and
+immediately read a timeline that lacks it.
+
+[VERIFIED] **`scylla_shadow_async` has no env knob.** It appears in no config file; it is read only
+via `Application.get_env/3`. There is no way to make the mirror synchronous from compose — it needs a
+remote-console `Application.put_env` or a code change. Decide this BEFORE rung 7, not during it.
+
+### The rollback command in the handoff doc is a NO-OP
+
+[VERIFIED] The documented rollback is:
+
+```
+sed -i '153s/scylla_read/dual_write/' docker-compose.prod.yml
+```
+
+**Line 153 reads `postgres`.** `sed` matches nothing, changes nothing, and **exits 0**. An operator
+running it mid-incident sees a successful command and believes they have rolled back. Nothing has
+happened.
+
+**`sed`'s exit code is not proof of anything here** — it succeeds when its pattern is absent. That is
+the entire failure: the command *ran*, and running it is what was mistaken for working.
+
+**The real rollback, at every rung.** The adapter is selected at boot from the compose env, so:
+
+```
+# 1. change the value in docker-compose.prod.yml (edit, do not sed-on-a-guess)
+#    rung 7 -> rung 6/4:  scylla_read  -> shadow_read | dual_write
+#    rung 6/4 -> rung 0:  shadow_read | dual_write -> postgres
+# 2. recreate the service
+docker compose -f docker-compose.prod.yml up -d message
+
+# 3. VERIFY — this step is the point. Never trust step 1's exit code.
+docker inspect chat-platform-prod-message-1 \
+  --format '{{range .Config.Env}}{{println .}}{{end}}' | grep MESSAGE_STORE_ADAPTER
+```
+
+For an INSTANT in-BEAM rollback (the runbook's step 3 path), `Application.put_env/3` from a remote
+console takes effect on the next request — but the compose file must still be corrected, or the next
+container restart silently re-applies the old value.
+
+[VERIFIED] Still true and worth keeping from the handoff's §15: `MESSAGE_STORE_ADAPTER` is
+**hardcoded in `docker-compose.prod.yml`, not in `.env`** — so it cannot be changed by editing `.env`
+and restarting, which is what an operator would try first.
+
+### The 17ms rollback-drill figure
+
+[VERIFIED] `scripts/rollback-drill.sh` exists and the measurement is real — but it was taken
+`MIX_ENV=test`, in-BEAM, against the **dev** containers in `infra/docker/docker-compose.yml`. It is
+evidence that the adapter switch is fast and lossless **in a test harness**. It is NOT a production
+drill, and no production rollback drill has ever been executed. The runbook's own precondition 5
+already records why an in-BEAM drill cannot see HTTP-boundary failures.
+
+## [2026-08-05] Named follow-ups — written down because they existed only in chat
+
+None of these is scheduled. They are recorded so they are not rediscovered from scratch.
+
+- **`runtime.exs:170` — the silent adapter fallback.** [VERIFIED] The `case` selecting the message
+  store ends `_ -> MessageService.MessageStore.QueryPlanAdapter`, the "everything unavailable"
+  placeholder. A TYPO in `MESSAGE_STORE_ADAPTER` (`sylla_read`, `postgress`) therefore selects total
+  unavailability **with no error and no log line** — message send/list fail with
+  `:message_store_unavailable` and nothing says why. Highest-value fix of this list: it is one log
+  statement, and it is on the exact path an operator uses under pressure.
+- **`AuthControllerRateLimitTest:34` — a wall-clock flake.** [VERIFIED] Asserts
+  `get_resp_header(conn, "retry-after") == ["60"]`; intermittently gets `["59"]` when the requests
+  straddle a second boundary (the in-memory limiter computes `max(window - (now - window_start), 1)`).
+  Observed failing once, then passing 6/6 on re-run. Dates to `25ab346`, long predating the sessions
+  that found it. **It will redden CI at random** — check it before assuming a new regression.
+- **`compose-integration` is skipped on push.** [VERIFIED] It runs only on `schedule`,
+  `workflow_dispatch`, or a `ci:compose` label. `52fa60e` proved compose can now *interpolate and
+  start*; whether the gateway→auth differential PASSES is still unknown. The next scheduled run is
+  the first real signal — a green push run says nothing about it.
+- **`with_group_avatar_url/2` has the raise-inside-`with` exposure** that was fixed one function
+  down. [VERIFIED] It calls `MediaClient.get_download_url/1` inside a `with`; a raising media client
+  would propagate and take down the whole `:show` response, exactly as the pins lookup did before
+  `6daa632` added `rescue`/`catch`. Same bug, same file, one function up, still present.
+
+## [2026-08-05] CI was red for three separate reasons, and one of them was a verification that could not fail
+
+Recorded because this is precisely the class this log exists for: not a bug, but a **check that
+reported success while checking nothing**.
+
+- [VERIFIED] **`mix format --check-formatted` returned 0 with 24 unformatted files in the tree.** The
+  root `.formatter.exs` used `subdirectories: ["apps/*"]`, and that traversal was not happening for
+  ANY app — including the six that have their own `.formatter.exs`. The command had only ever checked
+  `mix.exs` and `config/`. Proven by planting an unformatted file in `apps/message_service` (has a
+  config) and `apps/shared_infra` (has none): the bare command reported **0 of 2**.
+- [VERIFIED] **The exit code was also being read through a pipe** — `cmd | head -8; echo "exit=$?"`
+  reports `head`'s status, which is always 0. Two independent errors, either of which alone would
+  have hidden the other.
+- **The lesson, stated as a rule:** a gate that has never failed has not been shown to work. Prove a
+  check can FAIL — plant a violation and read the exit code directly, never through a pipe — before
+  trusting a green from it. Fixed in `66031ea`; the reasoning lives in `.formatter.exs` itself.
+- [VERIFIED] The other two reds: `ScyllaHttpBoundaryTest` pinned a stub that `000ac22` had removed
+  (fixed in `5a3353d`), and `compose-integration` had been failing at its first step on **five**
+  missing interpolation variables, not one — each hiding the next (fixed in `52fa60e`).
+
 ## [2026-08-03] Call pills: the Calls tab was the leak, and two 08-02 findings were wrong
 
 - **CORRECTION FIRST — two claims recorded on 2026-08-02 from an incomplete sample, both DISPROVED by
@@ -108,6 +245,19 @@ Architecture decisions, newest first. Each entry: context → decision → ratio
   served from Postgres with no new store, no new write path and no index. **This dies when dual-write
   ends**, and that expiry is recorded in `PostgresAdapter.search_messages/1` itself, where whoever
   turns dual-write off will read it — not only here.
+  - **CORRECTION [2026-08-05] — the sentence above describes the ADAPTER, not production.**
+    [VERIFIED] Production runs `MESSAGE_STORE_ADAPTER=postgres`
+    ([docker-compose.prod.yml:153](../../docker-compose.prod.yml#L153)). `git log -S 'scylla_read' --
+    docker-compose.prod.yml` returns **nothing** — that string has never been in that file. So
+    "under `scylla_read`" is a statement about a code path that exists and is CI-tested, not about
+    what is serving traffic. Read it as "when `scylla_read` is selected", which has not yet happened.
+  - **CORRECTION [2026-08-05] — search has NEVER been degraded in production.** [VERIFIED] This
+    entry's premise was that the flip broke cross-conversation search and that restoring it was
+    repairing live damage. There was no flip, so there was no damage: the 400-vs-503 bug fixed in
+    `79cfdeb` was **real but only reachable under an adapter production does not run** (the stub
+    answers `:message_store_unavailable`, which only the Scylla-backed adapters return). The fix was
+    worth making — the same atom mismatch would have hit every message endpoint during a real Scylla
+    outage — but it repaired a latent defect, not an outage users experienced.
 - **It is a PRIVACY FIX, not a restoration.** The old search filtered on participation and
   `status <> 'deleted'` and nothing else: it returned hits for messages the searcher had CLEARED, that
   had aged out of their auto-delete window, or that carried a permanent hidden marker. Turning the old
@@ -191,7 +341,10 @@ Architecture decisions, newest first. Each entry: context → decision → ratio
     - **What was actually true:** Android's GLOBAL search screen was **REST-only** — a Retrofit
       binding straight to that endpoint, with no Room involvement at all. Only IN-CHAT search was
       local. So after the flip, global search was broken on **BOTH** clients, not one.
-    - **Found:** the exway-android audit (slice-71), after the flip had already shipped. This entry
+    - **Found:** the exway-android audit (slice-71). [CORRECTED 2026-08-05: this line originally read
+      "after the flip had already shipped". THE FLIP NEVER SHIPPED — production has always run
+      `MESSAGE_STORE_ADAPTER=postgres`. The Android finding stands exactly as written; only the
+      timeline framing was wrong.] This entry
       is why nobody looked: the claim was specific and confident enough to close the question.
     - **Status now:** Android's global search is genuinely local as of exway-android `46f5c00`, which
       also deleted the Retrofit binding — so the struck sentence is true going forward. It was not
