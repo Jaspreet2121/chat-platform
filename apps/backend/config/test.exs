@@ -60,3 +60,11 @@ config :realtime_gateway, connection_counter_backend: :ets
 
 config :media_service,
   media_storage_adapter: MediaService.Storage.QueryPlanAdapter
+
+# The inbox recount/reconcile SQL reads the Postgres `messages` table directly, so it is only correct
+# while Postgres is the authoritative store — `ConversationService.InboxCounters` refuses to run
+# otherwise, and treats an UNKNOWN backend as "not Postgres" (see its moduledoc). The inbox tests seed
+# and assert against Postgres `messages`, so for them Postgres genuinely IS the store. Stated here
+# rather than defaulted in code: the whole point of the interlock is that it must be declared, and a
+# test that silently no-ops would prove nothing while looking green.
+config :shared_infra, message_store_backend: "postgres"

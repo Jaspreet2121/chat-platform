@@ -26,6 +26,8 @@ defmodule MessageService.InboxProjection do
   adapter (when it becomes the store) calls the same functions as separate Postgres writes.
   """
 
+  require Logger
+
   alias MessageService.Repo
 
   alias MessageService.VisibilityWindow
@@ -40,21 +42,43 @@ defmodule MessageService.InboxProjection do
   def record_message(%{} = message) do
     created_at = message.created_at
 
-    Repo.query!(
-      "UPDATE conversations SET " <>
-        "last_message_id = $2::text::uuid, last_message_at = $3, last_message_body = $4, " <>
-        "last_message_type = $5, last_message_content_type = $6, last_message_sender_id = $7::text::uuid " <>
-        "WHERE id = $1::text::uuid AND (last_message_at IS NULL OR last_message_at <= $3)",
-      [
-        message.conversation_id,
-        message.message_id,
-        created_at,
-        message.body,
-        message.message_type,
-        content_type(message),
-        message.sender_user_id
-      ]
-    )
+    %{num_rows: preview_rows} =
+      Repo.query!(
+        "UPDATE conversations SET " <>
+          "last_message_id = $2::text::uuid, last_message_at = $3, last_message_body = $4, " <>
+          "last_message_type = $5, last_message_content_type = $6, last_message_sender_id = $7::text::uuid " <>
+          "WHERE id = $1::text::uuid AND (last_message_at IS NULL OR last_message_at <= $3)",
+        [
+          message.conversation_id,
+          message.message_id,
+          created_at,
+          message.body,
+          message.message_type,
+          content_type(message),
+          message.sender_user_id
+        ]
+      )
+
+    # A ZERO-ROW UPDATE IS A SUCCESSFUL UPDATE. `Repo.query!` raises only on a SQL error, so a write
+    # rejected by the `last_message_at <= $3` guard is indistinguishable from one that landed, and the
+    # preview silently stops tracking the conversation. Nothing downstream can tell either: the
+    # consumer commits on `{:ok, _}` and the ledger row looks identical.
+    #
+    # This is not a "maybe out-of-order replay" false alarm. Events are keyed by `conversation_id`
+    # with a `:hash` partitioner, so every event for a conversation lands on ONE partition and is
+    # consumed in order; and a redelivery is stopped by the ledger before it reaches this function.
+    # Within a conversation, an older `created_at` arriving after a newer one should not happen — so
+    # zero rows here means either that assumption broke or the conversation row is gone. Log, do not
+    # raise: this runs inside the consumer's transaction on a live path, and a stale preview is not
+    # worth failing an event over.
+    if preview_rows == 0 do
+      Logger.warning(
+        "inbox preview write matched ZERO rows — preview NOT updated. " <>
+          "conversation=#{message.conversation_id} message=#{message.message_id} " <>
+          "created_at=#{inspect(created_at)}. Either conversations.last_message_at is NEWER than " <>
+          "this message (something else is writing it) or the conversation row is missing."
+      )
+    end
 
     Repo.query!(
       "UPDATE conversation_participants SET " <>

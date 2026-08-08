@@ -14,6 +14,8 @@ defmodule MessageService.InboxProjectionTest do
   """
   use MessageService.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias MessageService.MessageStore.PostgresAdapter
 
   @tenant_zero "00000000-0000-0000-0000-000000000001"
@@ -334,5 +336,80 @@ defmodule MessageService.InboxProjectionTest do
     assert type == "media"
     assert content_type == "image/png"
     assert_equivalent!(conv, [a, b])
+  end
+
+  # --- the SILENT half: a preview write that matches nothing ---------------------------------------
+
+  describe "zero-row preview write" do
+    @tag :postgres_integration
+    test "logs a warning naming the conversation and message instead of passing silently" do
+      sender = user!()
+      peer = user!()
+      conversation = conversation!([sender, peer])
+
+      # `last_message_at` NEWER than the message being recorded: the out-of-order guard rejects the
+      # UPDATE, it matches zero rows, and `Repo.query!` still succeeds. This is exactly the shape
+      # that hid a week of reverted previews in production — the write "worked" and wrote nothing.
+      Repo.query!(
+        "UPDATE conversations SET last_message_at = now() + interval '1 day', " <>
+          "last_message_body = 'a newer preview' WHERE id = $1::text::uuid",
+        [conversation]
+      )
+
+      message = %{
+        conversation_id: conversation,
+        message_id: Ecto.UUID.generate(),
+        sender_user_id: sender,
+        message_type: "text",
+        body: "this preview will not land",
+        created_at: DateTime.utc_now(),
+        metadata: %{}
+      }
+
+      log = capture_log(fn -> MessageService.InboxProjection.record_message(message) end)
+
+      assert log =~ "matched ZERO rows"
+      assert log =~ conversation
+      assert log =~ message.message_id
+
+      # And the point of the warning: the preview really did not change...
+      %{rows: [[body]]} =
+        Repo.query!("SELECT last_message_body FROM conversations WHERE id = $1::text::uuid", [
+          conversation
+        ])
+
+      assert body == "a newer preview"
+
+      # ...while the UNREAD update, which carries no such guard, DID apply. The two halves of
+      # record_message/1 diverge silently, which is why the preview half has to say so.
+      %{rows: [[unread]]} =
+        Repo.query!(
+          "SELECT unread_count FROM conversation_participants " <>
+            "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+          [conversation, peer]
+        )
+
+      assert unread == 1
+    end
+
+    @tag :postgres_integration
+    test "a preview write that DOES land stays quiet" do
+      sender = user!()
+      peer = user!()
+      conversation = conversation!([sender, peer])
+
+      message = %{
+        conversation_id: conversation,
+        message_id: Ecto.UUID.generate(),
+        sender_user_id: sender,
+        message_type: "text",
+        body: "this one lands",
+        created_at: DateTime.utc_now(),
+        metadata: %{}
+      }
+
+      log = capture_log(fn -> MessageService.InboxProjection.record_message(message) end)
+      refute log =~ "matched ZERO rows"
+    end
   end
 end

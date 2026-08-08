@@ -14,6 +14,15 @@ defmodule ConversationService.InboxReconciler do
   Off in :test at boot (persistence is flipped per-test, after supervision); tests call
   `InboxCounters.reconcile_conversation/1` directly. In dev/prod it runs whenever the conversation
   store is DB-backed. This same comparator becomes C7's dual-write verification tool.
+
+  ## IT STILL TICKS UNDER SCYLLA, AND THAT IS DELIBERATE
+
+  The store interlock is NOT here. This process keeps its timer and keeps calling
+  `InboxCounters.reconcile_recent/2`, which refuses the work itself and logs why. The gate lives on
+  the InboxCounters functions because this reconciler is only one of four callers of the same
+  store-bound SQL — the inbox read-repair, `set_auto_delete` and a participant rejoin reach it
+  without passing through here. Gating the child spec or the timer would have looked like a fix and
+  left three live paths recounting from a frozen table.
   """
 
   use GenServer

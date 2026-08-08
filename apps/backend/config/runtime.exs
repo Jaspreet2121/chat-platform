@@ -169,6 +169,20 @@ if config_env() == :prod do
            "in_memory" -> MessageService.MessageStore.InMemoryAdapter
            _ -> MessageService.MessageStore.QueryPlanAdapter
          end)
+
+    # THE SAME FACT, WHERE OTHER SERVICES CAN SEE IT. `:message_service` config is meaningless
+    # outside the message container: the conversation release is [shared_infra, conversation_service],
+    # so `Application.get_env(:message_service, :message_store_adapter)` there returns whatever
+    # config.exs baked at BUILD time, not what this deployment is running. Reading it to decide
+    # anything would be a check that can never fire — protection that looks real and is not.
+    #
+    # `:shared_infra` IS in every release, so this key travels. It is consumed by
+    # `ConversationService.InboxCounters`, whose recount/reconcile SQL reads the Postgres `messages`
+    # table directly and is therefore only correct while Postgres is the authoritative store.
+    #
+    # NOTE: it is only set for containers that actually receive MESSAGE_STORE_ADAPTER. A container
+    # without it gets NO value, and the consumer treats "unknown" as "not Postgres" and stays inert.
+    config :shared_infra, message_store_backend: adapter
   end
 
   if System.get_env("MEDIA_CLIENT_ADAPTER") == "http" do
