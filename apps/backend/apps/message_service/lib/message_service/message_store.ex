@@ -204,12 +204,13 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
       star_message     VERIFIED   Postgres satellite write (starred_messages stays relational by design)
       unstar_message   VERIFIED   Postgres satellite delete
       list_starred     VERIFIED   Postgres id page (<=50) hydrated by BOUNDED-CONCURRENCY Scylla point reads
-      search_messages  STUB       DELIBERATE + PERMANENT-until-decided: no honest Scylla answer exists
-                                  (ILIKE over a participant join needs a body index). At flip the
-                                  endpoint returns capability error `search.unavailable` — never a
-                                  silent empty list. Product regression + its expiry condition are
-                                  recorded in DECISION_LOG 2026-08-01: acceptable only while there are
-                                  no external users; a rebuildable tsvector INDEX must ship first
+      search_messages  VERIFIED   ILIKE over the SEARCH-ONLY COPY (message_search, DECISION_LOG
+                                  2026-08-08) + this store's point reads for hydration. Was a
+                                  deliberate `search.unavailable` stub from 2026-08-01 until the
+                                  copy decision was recorded; the raw-body copy shipped instead of
+                                  the tsvector the old entry sketched (substring contract). Masking
+                                  is at query time via VisibilityWindow; hydration drift-drops
+                                  deleted/absent hits so deleted content never renders
                                   otherwise. Do not implement casually — read that entry.
 
   The six optional callbacks (C4), all VERIFIED live in ScyllaMediaOracleTest:
@@ -258,6 +259,7 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   alias MessageService.Persistence.MessageTimelineReads
   alias MessageService.Persistence.MessageTimelineWrites
   alias MessageService.Persistence.ScyllaCodec
+  alias MessageService.VisibilityWindow
   alias MessageService.Repo
   alias MessageService.Schemas.PollVote
   alias MessageService.Schemas.StarredMessage
@@ -391,12 +393,29 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     end)
     |> case do
       {:ok, row} ->
+        refresh_search_text(attr(attrs, "message_id"), attr(attrs, "body"))
         {:ok, Map.merge(response_from_row(row), %{status: "edited", body: attr(attrs, "body")})}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  # Edits publish no Kafka event, so the search-only copy (message_search) is refreshed HERE,
+  # synchronously and best-effort — without this, edited-out text stays matchable forever (the user
+  # who edited a phone number out would still be findable by it). Best-effort like maintain_unread:
+  # the edit is the user-visible outcome and must not fail on an index hiccup. A body-less update
+  # (metadata patch / live-location) refreshes nothing; an edit racing ahead of its create needs no
+  # handling because the create consumer's read-back indexes the post-edit body.
+  defp refresh_search_text(message_id, body) when is_binary(message_id) and is_binary(body) do
+    MessageService.Projections.SearchIndex.refresh_text(message_id, body, nil)
+  rescue
+    error ->
+      Logger.warning("search-index edit refresh skipped (edit still applied): #{inspect(error)}")
+      :ok
+  end
+
+  defp refresh_search_text(_message_id, _body), do: :ok
 
   @impl true
   def delete_message(attrs) do
@@ -657,10 +676,91 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     Ecto.Query.CastError -> {:error, :message_invalid}
   end
 
-  # See the moduledoc table: DELIBERATE stub with a recorded product consequence — read
-  # DECISION_LOG 2026-08-01 before implementing anything here.
+  @doc false
+  # Search under the Scylla store: filter on the SEARCH-ONLY COPY (`message_search`, DECISION_LOG
+  # 2026-08-08), hydrate results from THIS store. The Postgres adapter's contract, reproduced
+  # exactly: substring ILIKE, the same four VisibilityWindow predicates as JOIN/WHERE (masking at
+  # QUERY time — an index row is conversation-global, the windows are per-viewer), recency order,
+  # page/offset.
+  #
+  # HYDRATION IS THE DELETION BACKSTOP, not a convenience. Each hit is point-read from the
+  # authoritative store; anything absent or tombstoned is DROPPED (the list_starred drift-drop
+  # precedent). So even if the index consumer is down for an hour, a deleted message can linger only
+  # as an unmatchable-in-results ROW — its content never renders. Cost: a page can come back shorter
+  # than `limit` during that lag window; accepted, same trade list_starred made.
   @impl true
-  def search_messages(_attrs), do: {:error, :message_store_unavailable}
+  def search_messages(attrs) do
+    if search_index_maintained?() do
+      search_index(attrs)
+    else
+      # The index is only SERVED while its maintainer runs. Without this gate, a deploy where the
+      # consumer flag is still off would answer with an empty (or decaying) index as 200 [] — the
+      # silent-empty-indistinguishable-from-no-matches shape message-service.md explicitly forbids
+      # for this endpoint. 503 search.unavailable stays the honest answer until the operator
+      # enables the consumer, at which point this becomes live in the same breath.
+      {:error, :message_store_unavailable}
+    end
+  end
+
+  defp search_index_maintained? do
+    Application.get_env(:message_service, :kafka_search_consumer_enabled, false) ||
+      System.get_env("KAFKA_SEARCH_CONSUMER_ENABLED") in ["true", "1", "yes"]
+  end
+
+  defp search_index(attrs) do
+    user_id = attr(attrs, "user_id")
+    pattern = "%" <> escape_like(attr(attrs, "query") || "") <> "%"
+    {limit, offset} = page_window(attrs)
+
+    sql =
+      "SELECT s.message_id::text, s.conversation_id::text FROM message_search s " <>
+        "JOIN conversation_participants cp " <>
+        "  ON cp.conversation_id = s.conversation_id " <>
+        "  AND cp.user_id = $1::text::uuid " <>
+        "  AND cp.left_at IS NULL " <>
+        "WHERE s.search_text ILIKE $2 " <>
+        "AND " <>
+        VisibilityWindow.participant_window_sql("cp", "s.created_at") <>
+        " " <>
+        "AND " <>
+        VisibilityWindow.not_hidden_sql("s.message_id", "$1") <>
+        " " <>
+        "AND " <>
+        VisibilityWindow.seen_under_after_viewing_sql("s", "cp", "$1") <>
+        " " <>
+        "ORDER BY s.created_at DESC LIMIT $3 OFFSET $4"
+
+    %{rows: rows} = MessageService.Repo.query!(sql, [user_id, pattern, limit, offset])
+
+    {:ok, %{messages: hydrate_search_hits(rows), next_cursor: nil}}
+  rescue
+    Ecto.Query.CastError -> {:error, :message_invalid}
+    Postgrex.Error -> {:error, :message_invalid}
+  end
+
+  defp hydrate_search_hits(rows) do
+    rows
+    |> Enum.map(fn [message_id, conversation_id] ->
+      case get_message(%{"conversation_id" => conversation_id, "message_id" => message_id}) do
+        {:ok, %{deleted_at: nil, status: status} = message} when status != "deleted" -> message
+        _ -> nil
+      end
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp escape_like(value) do
+    value
+    |> String.replace("\\", "\\\\")
+    |> String.replace("%", "\\%")
+    |> String.replace("_", "\\_")
+  end
+
+  defp page_window(attrs) do
+    page = max(attr(attrs, "page") || 1, 1)
+    limit = attr(attrs, "limit") || 50
+    {limit, (page - 1) * limit}
+  end
 
   # --- the six optional callbacks (C4), in classification order ------------------------------------
 

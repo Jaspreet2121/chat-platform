@@ -53,12 +53,19 @@ defmodule MessageService.Application do
     inbox_consumer =
       if kafka_inbox_consumer_enabled?(), do: [inbox_projection_child_spec()], else: []
 
+    # The search-only copy of message text (DECISION_LOG 2026-08-08). Own flag, own group. Unlike the
+    # inbox projection it needs no adapter self-gate — nothing else writes message_search rows with
+    # different semantics, and running under the Postgres adapter just keeps the index warm.
+    search_consumer =
+      if kafka_search_consumer_enabled?(), do: [search_index_child_spec()], else: []
+
     repo ++
       sweeper ++
       shadow ++
       client ++
       log_consumer ++
-      projection_consumer ++ inbox_consumer ++ scylla_children() ++ http_children()
+      projection_consumer ++
+      inbox_consumer ++ search_consumer ++ scylla_children() ++ http_children()
   end
 
   # ScyllaDB driver (Phase B) — DRIVER ONLY: this starts a connection pool, it does NOT make Scylla
@@ -115,7 +122,7 @@ defmodule MessageService.Application do
   # inbox consumer shipped in a1de1cb: reachable only by running it against a real broker.
   defp kafka_client_needed? do
     brod_producer_selected?() or kafka_consumer_enabled?() or kafka_projection_consumer_enabled?() or
-      kafka_inbox_consumer_enabled?()
+      kafka_inbox_consumer_enabled?() or kafka_search_consumer_enabled?()
   end
 
   defp brod_producer_selected? do
@@ -136,6 +143,34 @@ defmodule MessageService.Application do
   defp kafka_inbox_consumer_enabled? do
     Application.get_env(:message_service, :kafka_inbox_consumer_enabled, false) ||
       System.get_env("KAFKA_INBOX_CONSUMER_ENABLED") in ["true", "1", "yes"]
+  end
+
+  defp kafka_search_consumer_enabled? do
+    Application.get_env(:message_service, :kafka_search_consumer_enabled, false) ||
+      System.get_env("KAFKA_SEARCH_CONSUMER_ENABLED") in ["true", "1", "yes"]
+  end
+
+  defp search_index_child_spec do
+    %{
+      id: MessageService.Events.SearchIndexConsumer,
+      start:
+        {:brod, :start_link_group_subscriber_v2,
+         [
+           %{
+             client: SharedInfra.Kafka.BrodProducer.client_name(),
+             group_id: "message-service-search-index",
+             topics: ["message.events.v1"],
+             cb_module: MessageService.Events.SearchIndexConsumer,
+             # :earliest for the inbox consumer's recorded reason: a first enable must index the
+             # retained backlog, not skip it. Replay is ledger-idempotent, and an old create can
+             # never resurrect deleted text — the read-back finds the tombstone.
+             consumer_config: [begin_offset: :earliest],
+             message_type: :message
+           }
+         ]},
+      restart: :permanent,
+      type: :worker
+    }
   end
 
   defp inbox_projection_child_spec do

@@ -228,4 +228,38 @@ defmodule MessageService.SearchVisibilityTest do
     assert kept in found
     refute deleted in found
   end
+
+  @tag :postgres_integration
+  test "AFTER-VIEWING accepts inbox_read_marks as seen-evidence — the Scylla-era receipt record" do
+    # Under the Scylla store, read receipts are CQL writes and the Postgres message_receipts table is
+    # FROZEN — with receipts as the only evidence, this predicate fails open and an after-viewing
+    # message the user already read keeps surfacing in global reads. inbox_read_marks is written by
+    # record_read_once/4 (exactly "first-time reads under Scylla", in Postgres), so it is the second
+    # evidence source. One definition in VisibilityWindow; this test guards the second source.
+    searcher = user!()
+    conversation = conversation!()
+
+    Repo.query!(
+      "INSERT INTO conversation_participants " <>
+        "(conversation_id, user_id, role, joined_at, disappear_after_viewing_since) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, 'member', now(), now() - interval '1 hour')",
+      [conversation, searcher]
+    )
+
+    seen = message!(conversation, "vanishing seen needle")
+    unseen = message!(conversation, "vanishing unseen needle")
+
+    # The read happened under the SCYLLA store: no message_receipts row, only a read mark.
+    Repo.query!(
+      "INSERT INTO inbox_read_marks (conversation_id, message_id, user_id) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)",
+      [conversation, seen, searcher]
+    )
+
+    results = search(searcher, "vanishing")
+
+    # The unseen message still surfaces; the seen one is gone — evidenced by the mark alone.
+    assert unseen in results
+    refute seen in results
+  end
 end

@@ -326,9 +326,12 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
     assert row["status"] == "read"
   end
 
-  test "search is the ONLY remaining stub — deliberate, with its consequence recorded" do
-    assert ScyllaAdapter.search_messages(%{}) == {:error, :message_store_unavailable}
-  end
+  # HISTORY NOTE, replacing the test that stood here: "search is the ONLY remaining stub" asserted
+  # search_messages returned :message_store_unavailable — a DELIBERATE stub from 2026-08-01, pinned
+  # so nobody could un-stub it casually. DECISION_LOG [2026-08-08] retired it on the record (message
+  # text lives in Postgres as a search-only copy), so what that test proved is deliberately no
+  # longer true. Its replacement is the index+hydration test at the end of this file, which proves
+  # the behaviour that superseded the stub rather than re-pinning either.
 
   test "codec self-check: bucket_candidates inverts the generator for arbitrary instants" do
     for iso <- [
@@ -554,5 +557,119 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
     # The SENDER marking their own message read must not touch their counter.
     assert {:ok, _} = ScyllaAdapter.mark_read(%{attrs | "user_id" => sender})
     assert unread.(sender) == 0
+  end
+
+  # --- SEARCH OVER THE INDEX, END TO END THROUGH THE REAL ADAPTER ----------------------------------
+  #
+  # SearchIndexTest proves the projection; this proves the ADAPTER's query + hydration against a
+  # live keyspace: real Scylla rows, real index rows, the real VisibilityWindow masking SQL, and the
+  # drift-drop that guarantees deleted content never renders even when the index row survives.
+
+  test "search: index filter -> Scylla hydration; masking applies; a stale index row NEVER renders" do
+    # Flag OFF -> still the honest 503, never a silent empty list (the message-service.md contract).
+    # The index is served only while its maintainer runs.
+    prev_flag = Application.get_env(:message_service, :kafka_search_consumer_enabled)
+
+    assert ScyllaAdapter.search_messages(%{"user_id" => Ecto.UUID.generate(), "query" => "x"}) ==
+             {:error, :message_store_unavailable}
+
+    Application.put_env(:message_service, :kafka_search_consumer_enabled, true)
+
+    on_exit(fn ->
+      if prev_flag,
+        do: Application.put_env(:message_service, :kafka_search_consumer_enabled, prev_flag),
+        else: Application.delete_env(:message_service, :kafka_search_consumer_enabled)
+    end)
+
+    case MessageService.Repo.start_link() do
+      {:ok, pid} -> Process.unlink(pid)
+      {:error, {:already_started, _}} -> :ok
+    end
+
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(MessageService.Repo)
+
+    tenant = "00000000-0000-0000-0000-000000000001"
+    conversation_id = Ecto.UUID.generate()
+    searcher = Ecto.UUID.generate()
+    outsider = Ecto.UUID.generate()
+    sender = Ecto.UUID.generate()
+    now = DateTime.utc_now()
+
+    for u <- [searcher, outsider, sender] do
+      MessageService.Repo.query!(
+        "INSERT INTO users_auth (id, app_id, phone_number, status) " <>
+          "VALUES ($1::text::uuid, $2::text::uuid, $3, 'active')",
+        [u, tenant, "+1555#{System.unique_integer([:positive])}"]
+      )
+    end
+
+    MessageService.Repo.query!(
+      "INSERT INTO conversations (id, app_id, type, created_by) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, 'group', $3::text::uuid)",
+      [conversation_id, tenant, sender]
+    )
+
+    # searcher + sender are members; outsider is NOT — the oracle case.
+    for u <- [searcher, sender] do
+      MessageService.Repo.query!(
+        "INSERT INTO conversation_participants (conversation_id, user_id, role, joined_at) " <>
+          "VALUES ($1::text::uuid, $2::text::uuid, 'member', now())",
+        [conversation_id, u]
+      )
+    end
+
+    # Two REAL Scylla rows...
+    {hit_id, _} =
+      put!(conversation_id, DateTime.add(now, -60, :second), %{
+        "sender_user_id" => sender,
+        "body" => "the searchable needle body"
+      })
+
+    {other_id, _} =
+      put!(conversation_id, DateTime.add(now, -120, :second), %{
+        "sender_user_id" => sender,
+        "body" => "nothing relevant here"
+      })
+
+    # ...indexed the way the consumer would index them.
+    index = fn id, at, text ->
+      MessageService.Repo.query!(
+        "INSERT INTO message_search (message_id, conversation_id, sender_user_id, created_at, search_text) " <>
+          "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4, $5)",
+        [id, conversation_id, sender, at, text]
+      )
+    end
+
+    index.(hit_id, DateTime.add(now, -60, :second), "the searchable needle body")
+    index.(other_id, DateTime.add(now, -120, :second), "nothing relevant here")
+
+    # A STALE index row: indexed text but NO Scylla row (the missed-delete shape). It matches the
+    # query; hydration must drop it, because the store is the only truth about existence.
+    stale_id = timeuuid_at(DateTime.add(now, -30, :second))
+    index.(stale_id, DateTime.add(now, -30, :second), "needle in a deleted message")
+
+    search = fn user ->
+      {:ok, %{messages: messages}} =
+        ScyllaAdapter.search_messages(%{"user_id" => user, "query" => "needle", "page" => 1})
+
+      Enum.map(messages, & &1.message_id)
+    end
+
+    # The member finds exactly the live hit: substring match, the non-matching row excluded, the
+    # stale row DROPPED BY HYDRATION not by luck.
+    assert search.(searcher) == [hit_id]
+
+    # THE ORACLE CASE: a non-member finds nothing, structurally (join predicate, not post-filter).
+    assert search.(outsider) == []
+
+    # cleared_before masks at QUERY time: clear history after the messages -> nothing findable,
+    # index rows untouched.
+    MessageService.Repo.query!(
+      "UPDATE conversation_participants SET cleared_before = now() " <>
+        "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+      [conversation_id, searcher]
+    )
+
+    assert search.(searcher) == []
   end
 end

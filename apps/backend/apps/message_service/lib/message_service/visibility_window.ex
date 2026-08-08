@@ -64,6 +64,18 @@ defmodule MessageService.VisibilityWindow do
 
   The marker still gets written later, by the conversation read path, exactly as before. This only
   ensures a global read does not surface something the conversation view would hide.
+
+  "Already seen" has TWO evidence sources, and both are required:
+
+    * `message_receipts` — authoritative under the Postgres store. FROZEN under the Scylla store
+      (receipts are CQL writes there; the Postgres table stopped growing at the cutover), so alone
+      it FAILS OPEN for every read since the cutover: after-viewing messages the user has already
+      seen would keep surfacing in global reads.
+    * `inbox_read_marks` — written by `InboxProjection.record_read_once/4`, which is exactly
+      "first-time reads under the Scylla store", in Postgres. Empty before the cutover.
+
+  Between them every read is covered regardless of which store was authoritative when it happened.
+  This is the ONE definition of the predicate; do not fork it at a call site.
   """
   @spec seen_under_after_viewing_sql(String.t(), String.t(), String.t()) :: String.t()
   def seen_under_after_viewing_sql(message_alias, cp_alias, user_param) do
@@ -73,6 +85,9 @@ defmodule MessageService.VisibilityWindow do
       "OR EXISTS (SELECT 1 FROM message_receipts r " <>
       "WHERE r.message_id = #{message_alias}.message_id " <>
       "AND r.user_id = #{user_param}::text::uuid " <>
-      "AND (r.status = 'read' OR r.read_at IS NOT NULL))))"
+      "AND (r.status = 'read' OR r.read_at IS NOT NULL)) " <>
+      "OR EXISTS (SELECT 1 FROM inbox_read_marks irm " <>
+      "WHERE irm.message_id = #{message_alias}.message_id " <>
+      "AND irm.user_id = #{user_param}::text::uuid)))"
   end
 end
