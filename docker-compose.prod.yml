@@ -177,6 +177,15 @@ services:
       # longer Postgres — the in-transaction writers in MessageStore.PostgresAdapter never run. Read
       # via System.get_env in MessageService.Application, so it needs no runtime.exs entry.
       KAFKA_INBOX_CONSUMER_ENABLED: "true"
+      # The search-index consumer (group `message-service-search-index`, begin_offset :earliest) —
+      # maintains message_search, the search-only copy of message text (DECISION_LOG 2026-08-08).
+      # Enabled BY HAND ON THE EC2 HOST on 2026-08-08, after migration 094 and the one-off
+      # SearchBackfill.run(); this line records that edit, it is not the moment of enablement.
+      # SEARCH IS SERVED ONLY WHILE THIS CONSUMER RUNS: with the flag off, the endpoint answers 503
+      # search.unavailable rather than reading a decaying index — so removing this line silently
+      # turns search OFF for both clients at the next recreate. Read via System.get_env in
+      # MessageService.Application, so it needs no runtime.exs entry.
+      KAFKA_SEARCH_CONSUMER_ENABLED: "true"
     expose: ["4104"]
 
   media:
