@@ -1,9 +1,12 @@
 defmodule MessageService.InboxRepair do
   @moduledoc """
-  ONE-OFF repair of the inbox rows the reconciler froze. By the time this lands on main it has
-  already been executed once against production (2026-08-08); it stays in the repo as the record of
-  what was run, not as a tool. IT MUST NEVER GROW A SCHEDULE OR A SWEEP — a recurring recount is
-  exactly the thing `ConversationService.InboxCounters`' interlock exists to prevent.
+  ONE-OFF repair of the inbox rows the reconciler froze. EXECUTED against production on 2026-08-08
+  (audit file `inbox_repair_20260808_184656`): 335 previews cleared, 5 rewritten from the store,
+  0 drift skips, 356 unread rows zeroed; the post-run verify query found 0 stale unread rows and
+  only the 5 rewritten conversations still pre-boundary — correctly, see below. It stays in the
+  repo as the record of what was run, not as a tool. IT MUST NEVER GROW A SCHEDULE OR A SWEEP — a
+  recurring recount is exactly the thing `ConversationService.InboxCounters`' interlock exists to
+  prevent.
 
   ## What it repairs, and why the damage exists
 
@@ -54,9 +57,19 @@ defmodule MessageService.InboxRepair do
       MessageService.InboxRepair.run(dry_run: false)    # executes
 
   Stdout gets summary counts only; the full before/after audit (one line per row, bodies truncated)
-  goes to a timestamped file — `path:` overrides, default under `System.tmp_dir/`. Idempotent: the
-  updates re-check the stale predicate, and a second run finds the repaired rows post-boundary or
-  NULL and reports zero changes.
+  goes to a timestamped file — `path:` overrides, default under `System.tmp_dir/`.
+
+  ## Idempotency — how each path converges to zero
+
+  Clears and unread zeroes leave the stale predicate (NULLed columns), so a re-run plans none.
+  Rewrites CANNOT leave it that way: a correct preview whose newest live message predates the
+  boundary keeps a pre-boundary `last_message_at` forever — the production run's five dual-write-era
+  conversations are exactly this shape, and the first version of this module re-planned them on
+  every run (harmless same-value writes, but the claim of zero was false; caught by the operator's
+  second dry run, 2026-08-08). The rewrite planner therefore carries a no-op detector: a
+  conversation whose `last_message_id` already points at the store's newest indexed message plans
+  nothing. Safe because the reconciler wrote all six columns from the SAME message the store holds
+  (dual-write era rows exist identically in both stores), so id-equality implies value-equality.
   """
 
   alias MessageService.MessageStore
@@ -150,18 +163,32 @@ defmodule MessageService.InboxRepair do
   # one point read per such conversation — a handful at the measured blast radius (Scylla holds ~36
   # messages total against 340 stale previews), worst case 340 × ~5ms ≈ seconds.
   defp rewrite_from_store(boundary, dry_run) do
+    # The inner query picks each stale conversation's NEWEST index row; the OUTER filter is the
+    # no-op detector: a preview already pointing at that newest message is already correct, so it
+    # plans nothing and a re-run converges to zero. The filter must sit OUTSIDE the DISTINCT ON —
+    # inside the WHERE it would drop the newest row and let the second-newest through, planning a
+    # backwards rewrite for exactly the rows that need none.
     %{rows: candidates} =
       Repo.query!(
-        "SELECT DISTINCT ON (s.conversation_id) " <>
-          "s.conversation_id::text, s.message_id::text, c.last_message_at, " <>
-          "left(c.last_message_body, 30) " <>
+        "SELECT * FROM (" <>
+          "SELECT DISTINCT ON (s.conversation_id) " <>
+          "s.conversation_id::text AS conversation_id, s.message_id::text AS message_id, " <>
+          "c.last_message_id::text AS current_id, c.last_message_at, " <>
+          "left(c.last_message_body, 30) AS body " <>
           "FROM message_search s JOIN conversations c ON c.id = s.conversation_id " <>
           "WHERE c.last_message_at IS NOT NULL AND c.last_message_at <= $1 " <>
-          "ORDER BY s.conversation_id, s.created_at DESC",
+          "ORDER BY s.conversation_id, s.created_at DESC" <>
+          ") newest WHERE newest.current_id IS DISTINCT FROM newest.message_id",
         [boundary]
       )
 
-    Enum.reduce(candidates, {[], []}, fn [conversation_id, message_id, before_at, before_body],
+    Enum.reduce(candidates, {[], []}, fn [
+                                           conversation_id,
+                                           message_id,
+                                           _current_id,
+                                           before_at,
+                                           before_body
+                                         ],
                                          {rewrites, skips} ->
       case live_store_message(conversation_id, message_id) do
         {:ok, message} ->

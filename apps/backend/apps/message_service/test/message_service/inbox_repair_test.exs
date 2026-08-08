@@ -267,20 +267,85 @@ defmodule MessageService.InboxRepairTest do
   end
 
   @tag :postgres_integration
-  test "IDEMPOTENT: the second run finds nothing to do" do
+  test "IDEMPOTENT: the second run finds nothing to do — INCLUDING the rewrite path" do
     boundary = freeze_boundary!()
     stale_at = DateTime.add(boundary, -3600, :second)
     conversation = conversation!(last_message_at: stale_at, last_message_body: "frozen once")
     participant!(conversation, unread_count: 2, oldest_unread_at: stale_at)
 
+    # A rewrite-path conversation whose newest live message PREDATES the boundary — the production
+    # shape that broke the original idempotency claim: its correct preview keeps a pre-boundary
+    # timestamp forever, so the stale predicate matches it on every run and only the no-op detector
+    # (last_message_id already = the store's newest) stops it re-planning.
+    live_at = DateTime.add(boundary, -600, :second)
+    rewritten = conversation!(last_message_at: stale_at, last_message_body: "frozen old")
+    message_id = Ecto.UUID.generate()
+    index!(rewritten, message_id, live_at)
+
+    StoreStub.put(%{
+      conversation_id: rewritten,
+      message_id: message_id,
+      sender_user_id: user!(),
+      message_type: "text",
+      body: "pre-boundary but correct",
+      metadata: %{},
+      status: "active",
+      created_at: live_at,
+      deleted_at: nil
+    })
+
     first = run!()
     assert first.previews_cleared == 1
+    assert first.previews_rewritten == 1
     assert first.unread_zeroed == 1
+    assert {^live_at, "pre-boundary but correct"} = preview(rewritten)
 
     second = run!()
     assert second.previews_cleared == 0
     assert second.previews_rewritten == 0
     assert second.unread_zeroed == 0
+  end
+
+  @tag :postgres_integration
+  test "the no-op detector must not fall through to an OLDER index row" do
+    # The near-bug the detector's placement avoids: filtering `current_id <> message_id` INSIDE the
+    # DISTINCT ON's WHERE would drop the newest row and let the second-newest through — planning a
+    # BACKWARDS rewrite for exactly the conversations that need none. The filter sits outside.
+    boundary = freeze_boundary!()
+    live_at = DateTime.add(boundary, -600, :second)
+    older_at = DateTime.add(boundary, -1200, :second)
+
+    newest_id = Ecto.UUID.generate()
+    older_id = Ecto.UUID.generate()
+
+    conversation = conversation!(last_message_at: live_at, last_message_body: "already correct")
+
+    Repo.query!(
+      "UPDATE conversations SET last_message_id = $2::text::uuid WHERE id = $1::text::uuid",
+      [conversation, newest_id]
+    )
+
+    index!(conversation, newest_id, live_at)
+    index!(conversation, older_id, older_at)
+
+    # The OLDER message exists in the store too — without this the fall-through would dead-end in
+    # the drift skip and the test would pass even with the detector misplaced, proving nothing.
+    StoreStub.put(%{
+      conversation_id: conversation,
+      message_id: older_id,
+      sender_user_id: user!(),
+      message_type: "text",
+      body: "the OLDER body a backwards rewrite would install",
+      metadata: %{},
+      status: "active",
+      created_at: older_at,
+      deleted_at: nil
+    })
+
+    summary = run!()
+
+    assert summary.previews_rewritten == 0
+    assert {^live_at, "already correct"} = preview(conversation)
   end
 
   @tag :postgres_integration
