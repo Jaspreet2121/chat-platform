@@ -201,18 +201,22 @@ Response `200`:
 }
 ```
 
-## Search (`GET /api/v1/search/messages`) — and its planned degradation
+## Search (`GET /api/v1/search/messages`)
 
-Cross-conversation body search, scoped to conversations the caller still participates in. Today it is
-served by a Postgres `ILIKE` over the caller's conversations. BOTH clients call it: web, and
-Android's GLOBAL search screen, which is REST-only against this endpoint (the exway-android audit,
-slice-71 — recorded in DECISION_LOG [2026-08-02]'s correction; only Android's in-chat search is
-local Room). An earlier revision of this paragraph claimed web was the only client; that was the
-belief the audit corrected, and losing this endpoint breaks search on both clients.
+Cross-conversation body search, scoped to conversations the caller still participates in. BOTH
+clients call it: web, and Android's GLOBAL search screen, which is REST-only against this endpoint
+(the exway-android audit, slice-71 — recorded in DECISION_LOG [2026-08-02]'s correction; only
+Android's in-chat search is local Room). An earlier revision claimed web was the only client; that
+was the belief the audit corrected, and losing this endpoint breaks search on both clients.
 
-**AT THE SCYLLA FLIP THIS ENDPOINT STOPS WORKING** — deliberately, not silently. Message bodies leave
-Postgres and no honest Scylla answer exists (no trigram/body index over a participant join). From the
-flip onward the endpoint answers:
+**Since 2026-08-08 it is served from the `message_search` copy** (DECISION_LOG [2026-08-08]:
+message text lives in Postgres as a non-authoritative, rebuildable, deletion-propagated search
+copy), with results hydrated from the authoritative store so deleted content never renders. Same
+contract as it always had: substring `ILIKE`, recency order, `page`/50 pagination, min query
+length 2.
+
+The degradation contract below is NOT history — it is the live behaviour whenever the search-index
+consumer is off (`KAFKA_SEARCH_CONSUMER_ENABLED`, host `.env`): the endpoint answers
 
 ```json
 {
@@ -226,11 +230,8 @@ flip onward the endpoint answers:
 
 with HTTP 503. **Never a silent empty result list** — an empty list is indistinguishable from "no
 matches" and would hide the degradation from both users and monitoring. Web should hide the search
-affordance on this code.
-
-This is a recorded product regression with an expiry condition (DECISION_LOG 2026-08-01): acceptable
-only while there are no external users; if external users exist before the flip, a rebuildable
-non-authoritative Postgres search index (tsvector, derivable from Scylla) must ship first.
+affordance on this code. (The 2026-08-01 "acceptable while no external users" regression window
+this section used to describe was real from the flip until the index shipped, later the same day.)
 
 ## Forward depth
 

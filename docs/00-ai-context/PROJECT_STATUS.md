@@ -6,13 +6,16 @@
 > (gateway + auth/conversation/user/message/media/notification over `chatnet`), Postgres-backed,
 > with Android and web clients live against it.
 >
-> **Message store:** PostgreSQL. `MESSAGE_STORE_ADAPTER=postgres`
-> ([docker-compose.prod.yml:153](../../docker-compose.prod.yml#L153)). The ScyllaDB adapters are
-> **built and CI-tested but have never run in production** — `git log -S 'scylla_read' --
-> docker-compose.prod.yml` returns nothing. **The ladder's live rung state and the rollback
-> procedure live in [SCYLLA_FLIP_RUNBOOK.md](../09-devops/SCYLLA_FLIP_RUNBOOK.md) and are
-> deliberately NOT restated here** — two copies of that state is what produced the contradiction
-> this file existed in for seven weeks.
+> **Message store: ScyllaDB, since 2026-08-08.** `MESSAGE_STORE_ADAPTER=scylla`, sourced from the
+> host `.env` (the compose file requires it via `${VAR:?}`). Writes AND reads are Scylla; the
+> Postgres `messages` table is FROZEN — anything reading it reads a pre-cutover snapshot, which is
+> how the inbox reconciler silently reverted live previews on cutover day (now interlocked; see
+> DECISION_LOG 2026-08-08 entries). The inbox is maintained by the Kafka inbox-projection consumer,
+> search by the search-index consumer over the `message_search` copy — both live, both required.
+> **The rollback procedure lives in [SCYLLA_FLIP_RUNBOOK.md](../09-devops/SCYLLA_FLIP_RUNBOOK.md)
+> and is deliberately NOT restated here** — two copies of that state is what produced the
+> contradiction this file existed in for seven weeks. (This banner previously said `postgres` with
+> "never run in production" — true when verified on 2026-08-05, false from the cutover on.)
 >
 > ### Do not read numbers from this file. Run the command.
 >
@@ -180,6 +183,12 @@ Note: prior runs cited "48 excluded"; true current is **50** (the socket-auth sl
 
 ## 7. The two completion numbers (explicit)
 
+> **[STALE AS OF 2026-08-08 — the two sections below are a pre-cutover snapshot.]** "No live
+> ScyllaDB driver" and "Kafka entirely unwired" were true when written and are now FALSE: production
+> serves messages from Scylla, and six Kafka consumers run live (notification fan-out, conversation
+> summary, inbox projection, search index among them). Kept as-written because the percentages and
+> subtractions describe that era's audit; the READ THIS FIRST banner is the current state.
+
 ### MVP completion: **~80%**
 The core chat loop works end-to-end in the flag-on + local-infra configuration: OTP login → create/list conversations → send/list/edit/delete text+media messages → realtime fan-out → typing → media preview. Subtractions: (a) message persistence proven only in-memory, not against live Scylla; (b) **HTTP message create/list lack membership authz**; (c) presence is single-node; (d) **no automated web tests** (the live-messaging fan-out is manual-check only); (e) receipts use single-status CQL.
 
@@ -193,7 +202,7 @@ Real blockers to shipping: insecure default secrets + flags default-off (unenfor
 1. ~~**HTTP message create/list have no membership authorization (HIGH).**~~ **RESOLVED 2026-06-18** — `message_controller.ex` `authorize_membership/2` now gates HTTP create/list on conversation participation (`403 message.forbidden`), reusing the WS channel-join check; flag-gated on `CONVERSATION_DB_BACKED`, tested (2 pg-integration negative tests). Remaining: block-state/tenant authz for messaging still TODO.
 2. **Insecure default secrets + flags default-OFF (HIGH).** Prod safety depends entirely on env/config the code never enforces; a misconfigured deploy is silently insecure (OTP/token signing + unauthenticated sockets/authz).
 3. ~~**No live message persistence (HIGH).**~~ **RESOLVED 2026-06-18** — durability implemented on Postgres (`PostgresAdapter`, `MESSAGE_STORE_ADAPTER=postgres`), pg-integration tested. ScyllaDB (high-write backend) deferred to Phase 8 (ecto/decimal conflict). **[STALE 2026-08-05: conflict resolved; adapters built + CI-tested; see the banner and the runbook.]** Remaining: messages still need the Repo started + flag set in prod (not auto-started, same as other services).
-4. **Kafka 0% wired (HIGH for the stated architecture).** Notifications, audit, search, presence fanout, analytics all depend on it.
+4. ~~**Kafka 0% wired (HIGH for the stated architecture).**~~ **RESOLVED across 2026-07/08** — producer + six consumer groups live in production (message events, notification fan-out, participants read-model, conversation summary, inbox projection 2026-08-08, search index 2026-08-08). Audit/analytics fanout still absent.
 5. **No automated web tests (MEDIUM).** The entire web client + the live realtime loop rest on lint/typecheck/build only.
 6. **[STALE 2026-08-05 — see the banner: 4 services lack an APP DIR, but all four capabilities are implemented; this item as written would cause a rebuild.]** **4 services + most Postgres tables documented but unimplemented (MEDIUM).** UPDATE 2026-06-18: **notification-service is now built** (first of the 5) — a flag-gated idempotent `message.created.v1` consumer that writes one notification record per event (`notifications` + `notification_processed_events` tables); recipient fan-out/delivery deferred. Still unimplemented: tenant/call-signaling/moderation/audit; tenancy/calls/moderation tables have no schema.
 7. **Receipts single-status CQL (LOW/MEDIUM).** read can overwrite delivered; needs delivered_at/read_at columns.

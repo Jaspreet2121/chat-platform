@@ -1,6 +1,8 @@
 defmodule MessageService.HTTP.Router do
   @moduledoc """
-  Internal HTTP API for message-service (Plug, not Phoenix) — the heaviest (9 routes). Routes map
+  Internal HTTP API for message-service (Plug, not Phoenix) — the heaviest internal surface by route
+  count (no number here on purpose: a comment that needs manual maintenance to stay true should not
+  contain one — the last one said "9 routes" while carrying ~41). Routes map
   1:1 to `SharedInfra.MessageClient`'s contract; each calls the in-process
   `MessageService.{Messages,Timeline,Receipts}` function and serializes via
   `SharedInfra.InternalApi.encode_result/1` (preserving error atoms `:message_invalid`,

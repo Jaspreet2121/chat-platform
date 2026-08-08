@@ -1,21 +1,27 @@
 # Scylla ladder runbook — rung 4 (dual_write) and rung 7 (the read flip)
 
-> ## STATE CHECK [VERIFIED 2026-08-05] — THE FLIP HAS NEVER BEEN PERFORMED
+> ## STATE CHECK [UPDATED 2026-08-09] — THE FLIP HAPPENED ON 2026-08-08. THIS IS NOW HISTORY.
 >
-> Production runs **`MESSAGE_STORE_ADAPTER=postgres`**
-> ([docker-compose.prod.yml:153](../../docker-compose.prod.yml#L153)).
-> `git log -S 'scylla_read' -- docker-compose.prod.yml` returns **nothing** — that string has never
-> been in that file. Ladder position: rungs 0–3 done (CI green, capacity PASS, migrations applied,
-> scylla up with keyspace loaded); **rung 4 `dual_write` is next and unstarted.**
+> Production runs **`MESSAGE_STORE_ADAPTER=scylla`** (writes AND reads), sourced from the host
+> `.env` — the compose file requires it via `${VAR:?}` and the conversation container reads the
+> same variable for its reconciler interlock. The ladder below was CLIMBED: the cutover went
+> direct to the plain `scylla` adapter on 2026-08-08 (~11:01 UTC), skipping the staged
+> `dual_write`/`scylla_read` rungs this runbook was written for. What this document describes is
+> therefore a PLAN that history took a shortcut past — keep it for the procedure patterns and the
+> abort criteria, but do not read the rung state as current.
 >
-> This runbook describes step 4 of a sequence that has not reached step 1. It is a plan, not a record.
-> Do not read any statement here as describing current production behaviour.
+> **If you are here to ROLL BACK:** the old sed command in the handoff doc still silently no-ops,
+> and rollback is NO LONGER LOSSLESS: rows written to Scylla since the cutover were never written
+> to Postgres, so `MESSAGE_STORE_ADAPTER=postgres` makes every post-cutover message invisible.
+> Edit `.env` (not the compose file — see the 2026-08-08 compose commits for why hand-edits
+> diverge), and expect the frozen-table consequences recorded in DECISION_LOG 2026-08-08: the
+> inbox projection self-gates back off, InboxCounters' recount interlock re-opens, and search
+> reverts to the live-Postgres path only if the table is still populated.
 >
-> **Rung 7 is additionally blocked** on the read-after-write race: the Scylla mirror is a DETACHED
-> ASYNC task and `scylla_shadow_async` has no env knob. See DECISION_LOG [2026-08-05].
->
-> If you are here to ROLL BACK: the command in the handoff doc (`sed -i '153s/scylla_read/...'`)
-> **silently no-ops** — line 153 says `postgres`, so sed matches nothing and exits 0. See ROLLBACK below.
+> Post-cutover state that lives elsewhere, deliberately not restated: the inbox/search consumers
+> ([docker-compose.prod.yml] message block), the reconciler interlock and repair
+> (DECISION_LOG 2026-08-08, `MessageService.InboxRepair`), the search copy decision
+> (DECISION_LOG 2026-08-08).
 
 Written to be executed by someone who didn't write it, at 2am, under pressure. Every step has the
 exact command, the expected output, and the ABORT criterion. If any observation matches an abort
