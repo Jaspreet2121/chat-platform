@@ -297,6 +297,55 @@ defmodule MessageService.Messages do
   # error, producer error, exception, or exit here is caught and logged — never
   # propagated. Disabled by default (KAFKA_PUBLISH_ENABLED); the default producer
   # adapter is the non-connecting NoopProducer, so nothing connects.
+  # Mirrors publish_message_created/1 exactly — unlinked Task, correlation id captured in the CALLER
+  # process, every failure logged and swallowed. A delete must never fail because a broker is down.
+  defp publish_message_deleted(response) do
+    if kafka_publish_enabled?() do
+      correlation_id = SharedInfra.Correlation.get_or_generate()
+      Task.start(fn -> do_publish_message_deleted(response, correlation_id) end)
+    end
+
+    :ok
+  end
+
+  defp do_publish_message_deleted(response, correlation_id) do
+    envelope =
+      Envelope.build(%{
+        event_id: Ecto.UUID.generate(),
+        event_type: "message.deleted.v1",
+        event_version: 1,
+        producer: "message-service",
+        occurred_at: response.deleted_at || DateTime.utc_now(),
+        correlation_id: correlation_id,
+        actor_user_id: response.sender_user_id,
+        # THIN, like message.created: ids only. There is deliberately no body here — a delete event
+        # carrying the deleted text would be the copy this whole design avoids.
+        payload: %{
+          "conversation_id" => response.conversation_id,
+          "message_id" => response.message_id,
+          "sender_user_id" => response.sender_user_id,
+          "deleted_at" => response.deleted_at
+        }
+      })
+
+    case envelope do
+      {:ok, built} ->
+        # SAME KEY as message.created — conversation_id — so a create and its delete land on one
+        # partition and are consumed in order. Any other key would let a delete overtake its create.
+        case Producer.produce(@message_topic, response.conversation_id, built) do
+          {:ok, _} -> :ok
+          {:error, reason} -> Logger.warning("message.deleted publish failed: #{inspect(reason)}")
+        end
+
+      {:error, reason} ->
+        Logger.warning("message.deleted envelope invalid, skipping publish: #{inspect(reason)}")
+    end
+  rescue
+    error -> Logger.warning("message.deleted publish raised, ignored: #{inspect(error)}")
+  catch
+    kind, value -> Logger.warning("message.deleted publish #{kind}, ignored: #{inspect(value)}")
+  end
+
   defp publish_message_created(response) do
     if kafka_publish_enabled?() do
       # Capture the correlation id SYNCHRONOUSLY in THIS (caller) process — Logger metadata is
@@ -506,6 +555,13 @@ defmodule MessageService.Messages do
           # status='deleted', so this is about the CAP, not about hiding the tombstone — which is why
           # it is best-effort and never fails the delete.
           MessageService.Pins.unpin_deleted(message_id)
+
+          # NET-NEW EVENT (message.deleted.v1). Required, not optional: the inbox preview is
+          # maintained from this topic once messages live in Scylla, and a preview fed by creates
+          # alone keeps showing a deleted message's TEXT in the chat list forever. That is deleted
+          # content on screen, not a stale counter. Same fire-and-forget shape as the create publish.
+          publish_message_deleted(deleted_message_response(message))
+
           {:ok, deleted_message_response(message)}
 
         {:error, reason} ->

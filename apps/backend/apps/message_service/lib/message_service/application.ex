@@ -45,10 +45,20 @@ defmodule MessageService.Application do
     projection_consumer =
       if kafka_projection_consumer_enabled?(), do: [conversation_summary_child_spec()], else: []
 
+    # The inbox projection (086) fed from the topic. Its own flag and its own group, so it can be
+    # enabled and rolled back independently of the summary projection on the same topic. Safe to
+    # enable before the store cutover: the projection self-gates while PostgresAdapter is selected,
+    # because that adapter maintains the same columns in-transaction and two writers would
+    # double-count every unread.
+    inbox_consumer =
+      if kafka_inbox_consumer_enabled?(), do: [inbox_projection_child_spec()], else: []
+
     repo ++
       sweeper ++
       shadow ++
-      client ++ log_consumer ++ projection_consumer ++ scylla_children() ++ http_children()
+      client ++
+      log_consumer ++
+      projection_consumer ++ inbox_consumer ++ scylla_children() ++ http_children()
   end
 
   # ScyllaDB driver (Phase B) — DRIVER ONLY: this starts a connection pool, it does NOT make Scylla
@@ -116,6 +126,29 @@ defmodule MessageService.Application do
   defp kafka_projection_consumer_enabled? do
     Application.get_env(:message_service, :kafka_projection_consumer_enabled, false) ||
       System.get_env("KAFKA_PROJECTION_CONSUMER_ENABLED") in ["true", "1", "yes"]
+  end
+
+  defp kafka_inbox_consumer_enabled? do
+    Application.get_env(:message_service, :kafka_inbox_consumer_enabled, false) ||
+      System.get_env("KAFKA_INBOX_CONSUMER_ENABLED") in ["true", "1", "yes"]
+  end
+
+  defp inbox_projection_child_spec do
+    %{
+      id: MessageService.Events.InboxProjectionConsumer,
+      start:
+        {:brod, :start_link_group_subscriber_v2,
+         [
+           %{
+             client: SharedInfra.Kafka.BrodProducer.client_name(),
+             group_id: "message-service-inbox-projection",
+             topics: ["message.events.v1"],
+             cb_module: MessageService.Events.InboxProjectionConsumer,
+             consumer_config: [begin_offset: :latest],
+             message_type: :message
+           }
+         ]}
+    }
   end
 
   defp conversation_summary_child_spec do
