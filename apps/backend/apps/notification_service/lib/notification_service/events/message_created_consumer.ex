@@ -60,16 +60,53 @@ defmodule NotificationService.Events.MessageCreatedConsumer do
   end
 
   # applied/duplicate → commit. invalid_event (structurally bad) → commit (skip, no
-  # redeliver-forever). Any other error (transient DB) → retry (do NOT commit).
-  defp commit_decision({:ok, :applied}, _offset), do: :commit
-  defp commit_decision({:ok, :duplicate}, _offset), do: :commit
+  # redeliver-forever).
+  #
+  # REPLACED, because the old wording was the bug: it read "Any other error (transient DB) → retry
+  # (do NOT commit)", which assumes every non-invalid_event error is transient. It is not. A
+  # permanent error — a type mismatch, a constraint violation, a shape the code cannot handle —
+  # retries forever and WEDGES THE PARTITION, silently. See the poison clause below.
+  # PUBLIC (@doc false) so the classification can be asserted directly. It is a pure function of the
+  # apply result; testing it through handle_message would require stubbing the projection and a DB,
+  # and would test the plumbing rather than the decision that wedges partitions when it is wrong.
+  @doc false
+  def commit_decision({:ok, :applied}, _offset), do: :commit
+  def commit_decision({:ok, :duplicate}, _offset), do: :commit
 
-  defp commit_decision({:error, :invalid_event}, offset) do
+  def commit_decision({:error, :invalid_event}, offset) do
     Logger.warning("notification: invalid event offset=#{offset}, skipping (commit)")
     :commit
   end
 
-  defp commit_decision({:error, reason}, offset) do
+  # POISON: errors that CANNOT succeed on retry. Retrying them wedges the partition forever —
+  # nothing behind the stuck offset is ever processed — which is worse than dropping one event.
+  # Observed for real in the sibling inbox consumer: a %DBConnection.EncodeError% (a type mismatch
+  # between a store response and a Postgres write) retried one offset indefinitely.
+  #
+  #   Postgrex.Error   — a constraint/syntax/type failure on OUR statement; identical every time.
+  #   ArgumentError / FunctionClauseError / KeyError / MatchError
+  #                    — a shape the code cannot handle; deterministic in the event's content.
+  #
+  # Still transient, because these CAN succeed later:
+  #   DBConnection.ConnectionError — pool down or timed out; retry is exactly right.
+  def commit_decision({:error, %struct{}}, offset)
+      when struct in [
+             DBConnection.EncodeError,
+             Postgrex.Error,
+             ArgumentError,
+             FunctionClauseError,
+             KeyError,
+             MatchError
+           ] do
+    Logger.error(
+      "notification: POISON event offset=#{offset} (#{inspect(struct)}) — committing to skip. " <>
+        "This is a code defect, not a transient failure; the event has been DROPPED."
+    )
+
+    :commit
+  end
+
+  def commit_decision({:error, reason}, offset) do
     Logger.warning(
       "notification: apply failed offset=#{offset}, NOT committing (retry): #{inspect(reason)}"
     )

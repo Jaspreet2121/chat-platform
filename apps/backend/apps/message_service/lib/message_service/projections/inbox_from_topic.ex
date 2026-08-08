@@ -33,6 +33,44 @@ defmodule MessageService.Projections.InboxFromTopic do
   exactly once. This is what makes this consumer the SINGLE idempotent writer of the increment, which
   the recount design depends on.
 
+  ## Replaying from offset zero — what the ledger does and does not cover
+
+  The consumer subscribes with `begin_offset: :earliest`, so a first enable replays the whole
+  retained topic rather than silently skipping it. Three different things happen to a replayed event:
+
+    * **Already in the ledger** — `{:ok, :duplicate}`, nothing written. Safe at any age.
+    * **The preview** — safe at any age. `InboxProjection.record_message/1`'s UPDATE is guarded by
+      `last_message_at <= $3`, so an older replayed event CANNOT overwrite a newer preview.
+    * **`unread_count` for events OLDER THAN THE LEDGER'S FIRST ROW — NOT safe.** Those events are
+      absent from the ledger, so they are treated as new and the counter is incremented for messages
+      the user may have read long ago. The increment is unconditional by design (a genuinely new
+      message is inside every window), and a replay violates that assumption.
+
+  What bounds it: Kafka topic retention caps how far back a replay reaches, and the existing
+  read-time recount repairs the counter when the `oldest_unread_at` watermark fails its freshness
+  test. What does NOT bound it: anything in this module.
+
+  ONE SHARP CONSEQUENCE, because it is easy to miss. While `PostgresAdapter` is selected every apply
+  self-gates and returns before `transact/3`, so it writes **no ledger row**. Those events are
+  therefore NOT marked as seen — at the cutover the consumer replays them and applies them for real.
+  That is intended (the recent backlog should land), but it means the inflation above is proportional
+  to retained history at the moment of cutover, not to the time since the flag was enabled.
+
+  ## The backlog-collapse claim, which the implementation does NOT make good on
+
+  The design that chose this shape (thin payload + read-back, over putting bodies on the topic)
+  argued the read-back cost away by saying a backlog collapses: because the topic is keyed by
+  `conversation_id`, only the newest event per conversation changes the preview, so N events should
+  cost one read-back per CONVERSATION.
+
+  `apply_message_created/1` calls `read_back/2` once per EVENT, unconditionally. There is no collapse
+  logic here. Measured end-to-end: 3 creates produced 3 `get_message` calls.
+
+  So the claim is UNEARNED and should not be repeated. The decision to keep bodies off the topic
+  stands on its own — deletion must be genuinely effective, and a Kafka copy has a retention this
+  system cannot reach — but it does not currently stand on the cost argument. Batching per
+  conversation is a follow-up for when volume justifies it; it is deliberately not built.
+
   ## Coexistence with `MessageService.InboxProjection` — the data-corruption hazard
 
   `InboxProjection` writes the SAME columns, from inside `MessageStore.PostgresAdapter` (its four call

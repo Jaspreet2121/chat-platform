@@ -149,7 +149,14 @@ defmodule MessageService.Application do
              group_id: "message-service-inbox-projection",
              topics: ["message.events.v1"],
              cb_module: MessageService.Events.InboxProjectionConsumer,
-             consumer_config: [begin_offset: :latest],
+             # :earliest, NOT :latest. With :latest a consumer that has never committed on a
+             # partition SKIPS whatever is already there — a first enable silently drops the existing
+             # backlog, which is the failure shape this consumer has already produced three of.
+             # Replay is safe because the projection is ledger-idempotent: see
+             # Projections.InboxFromTopic's "Replaying from offset zero" note for what is and is NOT
+             # covered (events older than the ledger's first row inflate unread; the preview cannot
+             # be clobbered).
+             consumer_config: [begin_offset: :earliest],
              message_type: :message
            }
          ]}
