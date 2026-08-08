@@ -68,10 +68,37 @@ defmodule MessageService.Persistence.ScyllaCodec do
     end
   end
 
-  @doc "Responses carry ISO8601 strings (the Postgres adapter's wire shape); decode symmetrically."
+  # REPLACED, because it was the bug: this previously read "Responses carry ISO8601 strings (the
+  # Postgres adapter's wire shape); decode symmetrically." The Postgres adapter's wire shape is NOT
+  # an ISO string — the schema declares :utc_datetime_usec and it returns %DateTime{}. The comment
+  # asserted a false fact and the code faithfully implemented it.
+  @doc """
+  Decode a CQL `timestamp` into the SAME TYPE the Postgres adapter returns: `%DateTime{}`.
+
+  It used to return an ISO-8601 STRING, and that was the bug. `MessageStore` is one behaviour with
+  two adapters; `PostgresAdapter` returns `%DateTime{}` (the schema declares `:utc_datetime_usec`)
+  while this one returned a string, so anything reading a store response had to know WHICH adapter
+  produced it. That is not an abstraction.
+
+  It surfaced as `DBConnection.EncodeError` ("Postgrex expected %DateTime{}, got \"2026-…Z\"") the
+  first time a consumer fed a Scylla-read message straight into a Postgres write — the inbox
+  projection, which could not apply a single event. The same shape as `limit` arriving as the string
+  "50": the engines were real, the calling convention was not.
+
+  Serialisation to ISO-8601 belongs at the WIRE edge, not in the store. `Messages.iso8601/1` already
+  does it for the public response, and Jason encodes `%DateTime{}` for the Kafka envelope.
+  """
   def decode_timestamp(nil), do: nil
-  def decode_timestamp(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
-  def decode_timestamp(value) when is_binary(value), do: value
+  def decode_timestamp(%DateTime{} = dt), do: dt
+
+  def decode_timestamp(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, dt, _offset} -> dt
+      # An unparseable timestamp is returned untouched rather than raising: a decode helper must not
+      # be able to take down a read. The caller sees a string and fails loudly at ITS boundary.
+      _ -> value
+    end
+  end
 
   # --- metadata (the JSON convention) -------------------------------------------------------------
 

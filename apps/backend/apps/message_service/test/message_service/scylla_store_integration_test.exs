@@ -148,13 +148,14 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
     assert got.message_id == message_id
     assert got.status == "active"
 
-    # CQL timestamp is millisecond precision; assert to the second, as ISO strings (the wire shape).
-    assert is_binary(got.created_at)
+    # THE CONTRACT: the same type PostgresAdapter returns — %DateTime{}, not an ISO string.
+    # This assertion used to read `assert is_binary(got.created_at)`, pinning the bug: a live-engine
+    # test can still encode a wrong belief, and this one did, which is why the inbox projection could
+    # not apply a single event while every suite was green.
+    assert %DateTime{} = got.created_at
 
-    assert String.starts_with?(
-             got.created_at,
-             now |> DateTime.truncate(:second) |> DateTime.to_iso8601() |> String.slice(0, 19)
-           )
+    # CQL timestamp is millisecond precision, so compare to the second.
+    assert DateTime.truncate(got.created_at, :second) == DateTime.truncate(now, :second)
 
     assert got.edited_at == nil
     assert got.deleted_at == nil
@@ -262,7 +263,8 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
 
     assert got.body == "edited body"
     assert got.status == "edited"
-    assert is_binary(got.edited_at)
+    # Same contract as created_at: %DateTime{}, matching PostgresAdapter. Was is_binary/1.
+    assert %DateTime{} = got.edited_at
 
     assert {:ok, deleted} =
              ScyllaAdapter.delete_message(%{
@@ -279,7 +281,8 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
              })
 
     assert got.status == "deleted"
-    assert is_binary(got.deleted_at)
+    # Same contract as created_at: %DateTime{}, matching PostgresAdapter. Was is_binary/1.
+    assert %DateTime{} = got.deleted_at
 
     # Mutating a message that does not exist is :message_not_found — resolution is the gate.
     assert {:error, :message_not_found} =
