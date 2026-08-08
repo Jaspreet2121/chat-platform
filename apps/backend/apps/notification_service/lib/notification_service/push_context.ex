@@ -30,11 +30,14 @@ defmodule NotificationService.PushContext do
   maintained `conversation_participants.unread_count`, which the topic-fed projection already keeps.
   Tracked as its own slice.
 
-  THE PREVIEW is a single-message read and CAN come from the store — but not yet, and not from here:
-  `SharedInfra.MessageClient` has no `get_message`, and this app cannot reach message_service at all
-  (its release carries only shared_infra + notification_service, and it has no
-  `MESSAGE_CLIENT_ADAPTER`/`MESSAGE_SERVICE_URL`). It reads `messages` through its OWN Repo on the
-  shared database.
+  THE PREVIEW is a single-message read and CAN come from the store — but not yet, and not from here.
+  `SharedInfra.MessageClient.get_message/1` now EXISTS (added as the capability, with no caller), so
+  the missing half is purely deployment: this app cannot reach message_service. Its release carries
+  only shared_infra + notification_service, so the DEFAULT adapter
+  (`MessageService.MessageClientInProcess`) is not even loaded in that container, and it has no
+  `MESSAGE_CLIENT_ADAPTER`/`MESSAGE_SERVICE_URL` set. Until the notification container is configured
+  for the HTTP adapter — a topology change with its own trade, since today a message-service outage
+  leaves these previews working off the shared DB — this stays a Repo read on the shared database.
 
   What deliberately stayed behind in each sender: the payload envelope, the credential check, the
   device/subscription lookup and the dead-endpoint pruning. Those are transport-shaped and have no

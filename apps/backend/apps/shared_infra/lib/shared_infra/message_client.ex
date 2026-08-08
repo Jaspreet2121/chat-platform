@@ -13,6 +13,25 @@ defmodule SharedInfra.MessageClient do
 
   `list_timeline/1` maps to `MessageService.Timeline.list_messages/1` (distinct from
   `MessageService.Messages.list_messages/1`, exposed here as `list_messages/1`).
+
+  ## `get_message/1` is deliberately UNCALLED
+
+  It exists for `notification_service`, whose `PushContext.message_preview_fields/1` reads the
+  `messages` table with raw SQL against the shared Postgres. That read returns nothing once the
+  message store moves to Scylla, and the push silently degrades to the body "New message" — the
+  failure is invisible because it still looks like a working notification.
+
+  Moving that read onto this boundary is NOT enough on its own, and this is the thing nobody had
+  written down: the `notification_service` RELEASE bundles only `[shared_infra, notification_service]`
+  (`mix.exs`), so `MessageService.MessageClientInProcess` — the default adapter — DOES NOT EXIST in
+  that container. The in-process default would raise there. The push body can only move off Postgres
+  once the notification container is configured with `MESSAGE_CLIENT_ADAPTER=http` and
+  `MESSAGE_SERVICE_URL`, and that is a production topology change with a real trade: today a
+  message-service outage leaves push previews working (they read the shared DB directly); afterwards
+  every preview during such an outage degrades to "New message".
+
+  So this callback is the capability, added and proven, with no caller. An unused callback is honest;
+  a half-wired one is not.
   """
 
   @type attrs :: map()
@@ -43,6 +62,17 @@ defmodule SharedInfra.MessageClient do
   @callback get_by_media_id(attrs()) :: result()
   # Message info (per-user delivery/read state; sender-only). Optional so existing stubs don't all need it.
   @callback message_info(attrs()) :: result()
+  # Single message by id, straight off `MessageService.MessageStore` — the ONLY read on this boundary
+  # that reaches the store rather than a `Messages`/`Timeline` function, because that is where the
+  # store adapter (postgres / scylla / dual-write) is selected. Added for `notification_service`, whose
+  # push preview reads `messages` with raw SQL against the shared Postgres and therefore goes blank the
+  # moment the store moves to Scylla. NOTHING CALLS IT YET — see the moduledoc note below.
+  #
+  # NO AUTHORIZATION. `MessageStore.get_message/1` is a raw store read: no viewer window, no
+  # `deleted_at`/`cleared_before` filter, no block check. It is safe for the push consumer (which has
+  # already decided the recipient set from the conversation's participants) and is NOT safe to expose
+  # to a user-facing controller without adding those filters at the caller.
+  @callback get_message(attrs()) :: result()
   # Polls: replace-the-set vote + the uncapped voter lists.
   @callback vote_poll(attrs()) :: result()
   @callback list_poll_votes(attrs()) :: result()
@@ -63,6 +93,7 @@ defmodule SharedInfra.MessageClient do
   # Owner-anchored message-media download authorization.
   @callback media_download_allowed(attrs()) :: result()
   @optional_callbacks message_info: 1,
+                      get_message: 1,
                       media_download_allowed: 1,
                       vote_poll: 1,
                       list_poll_votes: 1,
@@ -87,6 +118,7 @@ defmodule SharedInfra.MessageClient do
   def delete_message(attrs), do: normalize(adapter().delete_message(attrs))
   def mark_read(attrs), do: normalize(adapter().mark_read(attrs))
   def message_info(attrs), do: normalize(adapter().message_info(attrs))
+  def get_message(attrs), do: normalize(adapter().get_message(attrs))
   def vote_poll(attrs), do: normalize(adapter().vote_poll(attrs))
   def list_poll_votes(attrs), do: normalize(adapter().list_poll_votes(attrs))
   def post_status(attrs), do: normalize(adapter().post_status(attrs))

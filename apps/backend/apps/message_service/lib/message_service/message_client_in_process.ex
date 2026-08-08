@@ -43,6 +43,12 @@ defmodule MessageService.MessageClientInProcess do
   @impl true
   def message_info(attrs), do: MessageService.Messages.message_info(attrs)
 
+  # Straight to the STORE, not to `Messages` — the point of this callback is to read through whichever
+  # store adapter is configured. Same target as the `/internal/messages/get` route, so both adapters
+  # return the same shape (`MessageClientHttpIntegrationTest` asserts that equality).
+  @impl true
+  def get_message(attrs), do: MessageService.MessageStore.get_message(attrs)
+
   @impl true
   def vote_poll(attrs), do: MessageService.Polls.vote(attrs)
 

@@ -35,6 +35,10 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.MessageStore.get_by_media_id(body(conn)))
   end
 
+  post "/internal/messages/get" do
+    send_result(conn, MessageService.MessageStore.get_message(body(conn)))
+  end
+
   post "/internal/messages/list" do
     send_result(conn, MessageService.Messages.list_messages(body(conn)))
   end
