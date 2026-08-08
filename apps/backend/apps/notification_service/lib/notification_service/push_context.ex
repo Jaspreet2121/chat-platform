@@ -6,21 +6,28 @@ defmodule NotificationService.PushContext do
   same preview text and honour the same mute, or the same account gets two different stories on two
   devices.
 
-  Everything here is a READ against the shared Postgres (same precedent as the participant
-  read-model) and every function is BEST-EFFORT: any error resolves to the permissive default
-  (`muted?` → false, i.e. SEND) rather than raising inside a fan-out.
+  Every function is BEST-EFFORT — no error raises inside a fan-out. Most resolve to the PERMISSIVE
+  default (`muted?` → false, i.e. SEND), because a hiccup must not silently drop a push.
+  `message_preview_fields/2` is the ONE EXCEPTION and resolves to SUPPRESS: it is the only function
+  whose failure would put words in the notification that the message does not contain.
+
+  All of these read the shared Postgres EXCEPT `message_preview_fields/2`, which reads the message
+  store through `SharedInfra.MessageClient` — over HTTP to message-service in production.
 
   ## KNOWN DEGRADATION UNDER `MESSAGE_STORE_ADAPTER=scylla` — live from the moment of cutover
 
-  Three functions here read the Postgres `messages` table, which stops receiving writes at the
+  Two functions here still read the Postgres `messages` table, which stops receiving writes at the
   cutover. Their best-effort fallbacks then fire silently:
 
-    * `message_preview_fields/1` → the nil-triple, so `preview/3` falls through every clause to its
-      catch-all and the notification reads **"New message"**. NOT an empty push — a push that LOOKS
-      LIKE A WORKING NOTIFICATION while carrying no content. That is worse than empty, because
-      nothing about it invites investigation.
     * `unread_count/2` → falls back to `1`, so the collapse label always says one message.
     * `total_unread_count/1` → falls back to `0`, so the app-icon badge reads zero.
+
+  `message_preview_fields/2` USED TO BE THE THIRD AND IS NOT ANYMORE. It read Postgres, got nothing
+  after the cutover, and fell through `preview/3` to its catch-all so every notification read
+  **"New message"** — not an empty push, a push that LOOKED LIKE A WORKING NOTIFICATION while
+  carrying no content, which is worse because nothing about it invited investigation. It now reads
+  the message STORE through `SharedInfra.MessageClient`, and when that read fails it suppresses the
+  push and logs at `:error` instead of inventing a body.
 
   `sender_name/1` and `group_name/1` are unaffected — `user_profiles` and `conversations` stay
   Postgres-owned.
@@ -30,20 +37,30 @@ defmodule NotificationService.PushContext do
   maintained `conversation_participants.unread_count`, which the topic-fed projection already keeps.
   Tracked as its own slice.
 
-  THE PREVIEW is a single-message read and CAN come from the store — but not yet, and not from here.
-  `SharedInfra.MessageClient.get_message/1` now EXISTS (added as the capability, with no caller), so
-  the missing half is purely deployment: this app cannot reach message_service. Its release carries
-  only shared_infra + notification_service, so the DEFAULT adapter
-  (`MessageService.MessageClientInProcess`) is not even loaded in that container, and it has no
-  `MESSAGE_CLIENT_ADAPTER`/`MESSAGE_SERVICE_URL` set. Until the notification container is configured
-  for the HTTP adapter — a topology change with its own trade, since today a message-service outage
-  leaves these previews working off the shared DB — this stays a Repo read on the shared database.
+  ## THIS APP NOW DEPENDS ON MESSAGE-SERVICE AT RUNTIME, AND THAT IS A DEPLOYMENT REQUIREMENT
+
+  `message_preview_fields/2` calls `SharedInfra.MessageClient.get_message/1`. The notification
+  container MUST therefore set `MESSAGE_CLIENT_ADAPTER=http` and `MESSAGE_SERVICE_URL`. There is no
+  working default: `MESSAGE_CLIENT_ADAPTER` defaults to `MessageService.MessageClientInProcess`,
+  which is NOT in this release (`[shared_infra, notification_service]` — see the umbrella `mix.exs`),
+  so the call raises `UndefinedFunctionError`. That raise is caught and treated as a failed
+  read-back — logged at `:error`, push suppressed — so a misconfigured container degrades loudly
+  instead of crashing the fan-out, but EVERY preview is suppressed until it is fixed.
+
+  The trade this accepted: before, a message-service outage left previews working off the shared
+  Postgres; now they are suppressed. That independence did not survive the Scylla cutover anyway —
+  after it the Postgres read returns nothing and every push already said "New message". The real
+  choice was "previews work, or they say New message forever". Both containers also run on one host
+  on `chatnet`, so a message-service outage generally means the whole stack is down, and then there
+  is nothing to push about.
 
   What deliberately stayed behind in each sender: the payload envelope, the credential check, the
   device/subscription lookup and the dead-endpoint pruning. Those are transport-shaped and have no
   business being shared — including the web-push avatar-icon URL, which exists only because a
   service worker fetches an icon with no session.
   """
+
+  require Logger
 
   alias NotificationService.Repo
 
@@ -53,14 +70,18 @@ defmodule NotificationService.PushContext do
   the delivery loop because they differ per recipient.
   """
   def message_context(attrs) do
-    %{body: body, message_type: message_type, content_type: content_type} =
-      message_preview_fields(attrs.message_id)
+    case message_preview_fields(attrs.conversation_id, attrs.message_id) do
+      :no_preview ->
+        :no_preview
 
-    %{
-      sender: sender_name(attrs.sender_user_id),
-      preview: preview(body, message_type, content_type),
-      group_name: group_name(attrs.conversation_id)
-    }
+      {:ok, %{body: body, message_type: message_type, content_type: content_type}} ->
+        {:ok,
+         %{
+           sender: sender_name(attrs.sender_user_id),
+           preview: preview(body, message_type, content_type),
+           group_name: group_name(attrs.conversation_id)
+         }}
+    end
   end
 
   @doc """
@@ -154,9 +175,33 @@ defmodule NotificationService.PushContext do
   @doc """
   Body / message_type / content_type for the preview. The Kafka payload carries no body.
 
+  Reads through `SharedInfra.MessageClient.get_message/1` — the message store, whichever adapter is
+  configured — NOT the shared Postgres. That is the point: the Postgres read stopped working at the
+  Scylla cutover and degraded every push to the body "New message" silently.
+
+  Returns `{:ok, fields}` or `:no_preview`. `:no_preview` SUPPRESSES THE PUSH ENTIRELY (see
+  `message_context/1`) rather than falling through `preview/3` to "New message" — a notification that
+  lies about its content is worse than no notification, because it looks like it worked.
+
+  `:no_preview` is an explicit atom rather than the old nil-triple sentinel for a reason: a real text
+  message with an empty body legitimately previews as "New message", and that must stay distinct from
+  "we could not read the message at all". Overloading one value for both is how the earlier silent
+  degradation hid.
+
+  ## The two failure outcomes are logged DIFFERENTLY, on purpose
+
+    * ABSENT or DELETED — a normal outcome. The message really is gone; not pushing is correct.
+      Logged at `:info`.
+    * READ FAILED — client error, timeout, `:message_unavailable`, or the adapter module not being
+      present in this release. NOT normal: it means a dependency is broken and every push in the
+      meantime is being suppressed. Logged at `:error`.
+
+  If those two read the same in the logs, an operator cannot tell a deleted message from a broken
+  message-service. That distinction is the whole reason this function logs at all.
+
   ## THERE IS NO CONTENT FILTER HERE, AND THAT IS SAFE ONLY BECAUSE THE PUSH IS IMMEDIATE
 
-  This query is a bare `WHERE message_id = $1`. It does NOT check `deleted_at`, `cleared_before`,
+  This read is by `(conversation_id, message_id)` alone. It does NOT check `cleared_before`,
   `auto_delete_seconds`, `user_hidden_messages`, or blocks — every visibility rule the transcript and
   the pinned-message list apply. The only gate on this path is `muted?/2`, which is an alert
   preference, not a content rule.
@@ -185,18 +230,73 @@ defmodule NotificationService.PushContext do
   push has already reached a phone. They are separate consumer groups on the same topic and Kafka
   tracks offsets per group, so the difference is expressible and intended. Do not "harmonise" them.
   """
-  def message_preview_fields(message_id) do
-    case Repo.query(
-           "SELECT body, message_type, metadata->>'content_type' FROM messages WHERE message_id = $1",
-           [dump_uuid(message_id)]
-         ) do
-      {:ok, %{rows: [[body, message_type, content_type]]}} ->
-        %{body: body, message_type: message_type, content_type: content_type}
-
-      _ ->
-        %{body: nil, message_type: nil, content_type: nil}
-    end
+  def message_preview_fields(conversation_id, message_id) do
+    SharedInfra.MessageClient.get_message(%{
+      "conversation_id" => conversation_id,
+      "message_id" => message_id
+    })
+    |> classify(conversation_id, message_id)
+  rescue
+    # The adapter module itself may not exist. `MESSAGE_CLIENT_ADAPTER` defaults to
+    # `MessageService.MessageClientInProcess`, which is NOT in notification_service's release
+    # (`[shared_infra, notification_service]`), so a container missing MESSAGE_CLIENT_ADAPTER=http
+    # raises UndefinedFunctionError here on EVERY push. That is a broken dependency, not an absent
+    # message: it must be loud and it must not take the fan-out down with it.
+    error -> read_failed(conversation_id, message_id, error)
+  catch
+    :exit, reason -> read_failed(conversation_id, message_id, {:exit, reason})
   end
+
+  defp classify({:ok, %{deleted_at: deleted_at}}, conversation_id, message_id)
+       when not is_nil(deleted_at) do
+    Logger.info(
+      "push preview: message already DELETED, suppressing push " <>
+        "conversation=#{conversation_id} message=#{message_id}"
+    )
+
+    :no_preview
+  end
+
+  defp classify({:ok, message}, _conversation_id, _message_id) do
+    {:ok,
+     %{
+       body: Map.get(message, :body),
+       message_type: Map.get(message, :message_type),
+       content_type: content_type(Map.get(message, :metadata))
+     }}
+  end
+
+  defp classify({:error, :message_not_found}, conversation_id, message_id) do
+    Logger.info(
+      "push preview: message ABSENT, suppressing push " <>
+        "conversation=#{conversation_id} message=#{message_id}"
+    )
+
+    :no_preview
+  end
+
+  defp classify({:error, reason}, conversation_id, message_id),
+    do: read_failed(conversation_id, message_id, reason)
+
+  # Anything the boundary can return that is not a message and not a clean "not found".
+  defp classify(other, conversation_id, message_id),
+    do: read_failed(conversation_id, message_id, {:unexpected_result, other})
+
+  defp read_failed(conversation_id, message_id, reason) do
+    Logger.error(
+      "push preview READ FAILED, suppressing push (dependency broken, NOT a missing message) " <>
+        "conversation=#{conversation_id} message=#{message_id} reason=#{inspect(reason)}"
+    )
+
+    :no_preview
+  end
+
+  # `metadata` is string-keyed by contract: the HTTP adapter decodes it with `skip_atomize` precisely
+  # so arbitrary atoms are never minted from user input, and Postgres jsonb gives string keys too.
+  defp content_type(%{"content_type" => content_type}) when is_binary(content_type),
+    do: content_type
+
+  defp content_type(_), do: nil
 
   def sender_name(sender_user_id) do
     case Repo.query(

@@ -10,6 +10,7 @@ defmodule NotificationService.FcmSenderTest do
   use NotificationService.DataCase, async: false
 
   alias NotificationService.FcmFakes
+  alias NotificationService.MessageStoreFixture
   alias NotificationService.FcmSender
   alias NotificationService.Repo
 
@@ -36,7 +37,25 @@ defmodule NotificationService.FcmSenderTest do
   describe "delivery" do
     setup context do
       FcmFakes.configure!(context)
+
+      # The preview no longer comes from this app's Repo — it is read from the message STORE through
+      # SharedInfra.MessageClient. Without a reachable store every delivery test below sends NOTHING,
+      # because an unreadable message now suppresses the push instead of saying "New message".
+      MessageStoreFixture.start!()
       :ok
+    end
+
+    @tag :postgres_integration
+    test "an ABSENT message sends NO push — not one whose body says \"New message\"" do
+      # Everything a push needs EXCEPT the message: registered devices, an unmuted recipient, nobody
+      # present. seed_message! is deliberately not called, so the store read returns not-found.
+      seed_tokens!([@token_a])
+
+      FcmSender.deliver(attrs(), [@recipient])
+
+      # The old behaviour reached FCM with "New message". Silence is the fix: a notification that
+      # lies about its content is worse than no notification, because it looks like it worked.
+      refute_receive {:fcm_post, _url, _body, _token}, 300
     end
 
     @tag :postgres_integration
@@ -177,6 +196,15 @@ defmodule NotificationService.FcmSenderTest do
   # ---- Seeding ----
 
   defp seed_message! do
+    # FIRST, and through MessageService.Repo: the message must be readable by the message STORE, which
+    # is a different connection from this app's sandboxed Repo. Committing the shared parent rows
+    # (users_auth, conversations) before the sandbox touches the same primary keys is what stops the
+    # two connections blocking on each other.
+    MessageStoreFixture.insert_message!(@conversation, @message, @sender,
+      body: "hello from the seed",
+      conversation_type: "direct"
+    )
+
     Repo.query!(
       "INSERT INTO users_auth (id, phone_number) VALUES ($1::text::uuid, $2), ($3::text::uuid, $4) " <>
         "ON CONFLICT DO NOTHING",
@@ -199,13 +227,6 @@ defmodule NotificationService.FcmSenderTest do
       "INSERT INTO conversation_participants (conversation_id, user_id) " <>
         "VALUES ($1::text::uuid, $2::text::uuid) ON CONFLICT DO NOTHING",
       [@conversation, @recipient]
-    )
-
-    Repo.query!(
-      "INSERT INTO messages (message_id, conversation_id, sender_user_id, message_type, body, app_id) " <>
-        "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, 'text', $4, " <>
-        "'00000000-0000-0000-0000-000000000001'::uuid) ON CONFLICT DO NOTHING",
-      [@message, @conversation, @sender, "hello from the seed"]
     )
   end
 

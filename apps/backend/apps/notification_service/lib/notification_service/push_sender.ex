@@ -73,8 +73,20 @@ defmodule NotificationService.PushSender do
   defp deliver(attrs, recipients) do
     # Shared per-event context (one lookup each): the sender's name, the message preview, and — for a
     # GROUP — the group name. Per-recipient bits (mute, unread count) are resolved in the loop.
-    context = message_context(attrs)
+    #
+    # :no_preview means the message could not be read (absent, deleted, or the store read failed —
+    # PushContext logs which). SEND NOTHING. The old behaviour fell through to the body "New message",
+    # which looks like a working notification while carrying no content. Suppressing here rather than
+    # per-recipient is deliberate: the preview is per-EVENT, so it cannot differ across recipients.
+    case message_context(attrs) do
+      :no_preview -> :ok
+      {:ok, context} -> deliver_to_recipients(context, attrs, recipients)
+    end
+  rescue
+    error -> Logger.warning("web-push deliver raised, ignored: #{inspect(error)}")
+  end
 
+  defp deliver_to_recipients(context, attrs, recipients) do
     for recipient <- recipients,
         not PushContext.muted?(attrs.conversation_id, recipient),
         # Presence-aware suppression. MAIN gate: the recipient's app is open/foreground ANYWHERE (any
@@ -96,17 +108,16 @@ defmodule NotificationService.PushSender do
         send_one(subscription, payload)
       end
     end
-  rescue
-    error -> Logger.warning("web-push deliver raised, ignored: #{inspect(error)}")
   end
 
   # The shared half (sender name, preview, group name) comes from PushContext — the SAME module the
   # FCM leg reads, which is what keeps a browser notification and an Android one saying the same
   # thing. Only the icon is web-only, so only the icon is added here.
   defp message_context(attrs) do
-    attrs
-    |> PushContext.message_context()
-    |> Map.put(:icon, avatar_icon_url(attrs.sender_user_id))
+    case PushContext.message_context(attrs) do
+      :no_preview -> :no_preview
+      {:ok, context} -> {:ok, Map.put(context, :icon, avatar_icon_url(attrs.sender_user_id))}
+    end
   end
 
   # Sender's avatar as the notification icon. The gateway's avatar routes are AUTHENTICATED now, but a

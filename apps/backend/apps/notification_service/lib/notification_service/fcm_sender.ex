@@ -76,8 +76,19 @@ defmodule NotificationService.FcmSender do
   # The SYNCHRONOUS core, wrapped in Task.start by the public API above. Public so tests can drive
   # delivery deterministically instead of racing a spawned task.
   def deliver(attrs, recipients) do
-    context = PushContext.message_context(attrs)
+    # :no_preview = the message could not be read (absent, deleted, or a failed store read — see
+    # PushContext, which logs which). Send nothing rather than an Android push whose body says
+    # "New message". Must match the web leg exactly; the two must never tell one account
+    # different stories on two devices.
+    case PushContext.message_context(attrs) do
+      :no_preview -> :ok
+      {:ok, context} -> deliver_to_recipients(context, attrs, recipients)
+    end
+  rescue
+    error -> Logger.warning("fcm deliver raised, ignored: #{inspect(error)}")
+  end
 
+  defp deliver_to_recipients(context, attrs, recipients) do
     for recipient <- recipients,
         not PushContext.muted?(attrs.conversation_id, recipient),
         # The SAME gates as the web leg, including FAIL-OPEN: a Redis miss reads as "not present"
@@ -89,8 +100,6 @@ defmodule NotificationService.FcmSender do
 
       for token <- tokens_for(recipient), do: send_one(token, data)
     end
-  rescue
-    error -> Logger.warning("fcm deliver raised, ignored: #{inspect(error)}")
   end
 
   @doc false
