@@ -10,6 +10,32 @@ defmodule NotificationService.PushContext do
   read-model) and every function is BEST-EFFORT: any error resolves to the permissive default
   (`muted?` → false, i.e. SEND) rather than raising inside a fan-out.
 
+  ## KNOWN DEGRADATION UNDER `MESSAGE_STORE_ADAPTER=scylla` — live from the moment of cutover
+
+  Three functions here read the Postgres `messages` table, which stops receiving writes at the
+  cutover. Their best-effort fallbacks then fire silently:
+
+    * `message_preview_fields/1` → the nil-triple, so `preview/3` falls through every clause to its
+      catch-all and the notification reads **"New message"**. NOT an empty push — a push that LOOKS
+      LIKE A WORKING NOTIFICATION while carrying no content. That is worse than empty, because
+      nothing about it invites investigation.
+    * `unread_count/2` → falls back to `1`, so the collapse label always says one message.
+    * `total_unread_count/1` → falls back to `0`, so the app-icon badge reads zero.
+
+  `sender_name/1` and `group_name/1` are unaffected — `user_profiles` and `conversations` stay
+  Postgres-owned.
+
+  THE HONEST FIX for the two counters is NOT a store read: they are aggregates, and computing them
+  from Scylla means a partition scan per recipient. They should come from the inbox projection's
+  maintained `conversation_participants.unread_count`, which the topic-fed projection already keeps.
+  Tracked as its own slice.
+
+  THE PREVIEW is a single-message read and CAN come from the store — but not yet, and not from here:
+  `SharedInfra.MessageClient` has no `get_message`, and this app cannot reach message_service at all
+  (its release carries only shared_infra + notification_service, and it has no
+  `MESSAGE_CLIENT_ADAPTER`/`MESSAGE_SERVICE_URL`). It reads `messages` through its OWN Repo on the
+  shared database.
+
   What deliberately stayed behind in each sender: the payload envelope, the credential check, the
   device/subscription lookup and the dead-endpoint pruning. Those are transport-shaped and have no
   business being shared — including the web-push avatar-icon URL, which exists only because a
@@ -122,7 +148,40 @@ defmodule NotificationService.PushContext do
     _ -> nil
   end
 
-  @doc "Body / message_type / content_type for the preview. The Kafka payload carries no body."
+  @doc """
+  Body / message_type / content_type for the preview. The Kafka payload carries no body.
+
+  ## THERE IS NO CONTENT FILTER HERE, AND THAT IS SAFE ONLY BECAUSE THE PUSH IS IMMEDIATE
+
+  This query is a bare `WHERE message_id = $1`. It does NOT check `deleted_at`, `cleared_before`,
+  `auto_delete_seconds`, `user_hidden_messages`, or blocks — every visibility rule the transcript and
+  the pinned-message list apply. The only gate on this path is `muted?/2`, which is an alert
+  preference, not a content rule.
+
+  That is currently correct, for one reason: the push fires IMMEDIATELY on `message.created`. At that
+  instant the message is new — not deleted, inside every window by definition, and a blocked sender's
+  message never existed (block-drop happens at send). The filter is unnecessary because there is
+  nothing yet to filter.
+
+  ### What breaks if that immediacy ever goes
+
+  The consumer group behind this path uses `begin_offset: :latest`
+  (notification_service/application.ex). Change it to `:earliest`, or replay this group for any other
+  reason, and old events are re-processed: this query would happily return the body of a message that
+  has since been DELETED or aged out of a recipient's auto-delete window, and push it to a handset.
+  Push is fire-and-forget to FCM — there is no recall. That is content leaving the device's control
+  after the system promised to remove it.
+
+  So: if `begin_offset` for this group ever changes, or any replay/backfill path is added, THE FILTER
+  MUST BE ADDED FIRST.
+
+  ### The inbox consumer's `:earliest` is deliberate and must NOT be copied onto this group
+
+  `message-service-inbox-projection` replays from `:earliest` on purpose — a stale unread count is
+  self-correcting, and skipping a backlog silently loses counts. This group is the opposite: a stale
+  push has already reached a phone. They are separate consumer groups on the same topic and Kafka
+  tracks offsets per group, so the difference is expressible and intended. Do not "harmonise" them.
+  """
   def message_preview_fields(message_id) do
     case Repo.query(
            "SELECT body, message_type, metadata->>'content_type' FROM messages WHERE message_id = $1",
