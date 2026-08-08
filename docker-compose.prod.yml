@@ -147,10 +147,15 @@ services:
       MESSAGE_HTTP_API_ENABLED: "true"
       MESSAGE_HTTP_PORT: "4104"
       MESSAGE_DB_BACKED: "true"
-      # Explicit Postgres store for the first deploy (default QueryPlanAdapter; Scylla is later).
-      # UNCHANGED by Phase B: the Scylla vars below start a DRIVER, not a store. Flipping this to
-      # `scylla` is a later phase and needs the type-encoding work (Phase D) first.
-      MESSAGE_STORE_ADAPTER: postgres
+      # THE STORE. Scylla is authoritative for message writes AND reads since the cutover on
+      # 2026-08-08. The Postgres `messages` table still exists but receives no writes — anything that
+      # reads it is reading a frozen snapshot, which is how the inbox reconciler silently reverted
+      # previews for a week (see ConversationService.InboxCounters' interlock).
+      #
+      # This line is read at RUNTIME (config/runtime.exs), not baked at build, so a change here takes
+      # effect on container recreate — no rebuild. Rollback is `postgres`, but note that rows written
+      # to Scylla since the cutover are NOT in Postgres: rolling back loses reads of them.
+      MESSAGE_STORE_ADAPTER: scylla
       # ScyllaDB driver (Phase B) — message_service is the ONLY consumer, so these live here and
       # nowhere else. Present env => runtime.exs configures the nodes AND points the client boundary
       # at the real Xandra adapter; a supervised cluster then starts. It can never break boot: an
@@ -166,6 +171,12 @@ services:
       # Set false in .env to run WITHOUT Kafka (fanout off — see runbook).
       KAFKA_PUBLISH_ENABLED: ${KAFKA_PUBLISH_ENABLED:-true}
       KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      # The inbox projection consumer (group `message-service-inbox-projection`, begin_offset
+      # :earliest). REQUIRED under MESSAGE_STORE_ADAPTER=scylla: it is the ONLY writer that maintains
+      # conversations.last_message_* and conversation_participants.unread_count once the store is no
+      # longer Postgres — the in-transaction writers in MessageStore.PostgresAdapter never run. Read
+      # via System.get_env in MessageService.Application, so it needs no runtime.exs entry.
+      KAFKA_INBOX_CONSUMER_ENABLED: "true"
     expose: ["4104"]
 
   media:
