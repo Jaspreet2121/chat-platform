@@ -204,8 +204,11 @@ Response `200`:
 ## Search (`GET /api/v1/search/messages`) — and its planned degradation
 
 Cross-conversation body search, scoped to conversations the caller still participates in. Today it is
-served by a Postgres `ILIKE` over the caller's conversations (web is its only client; Android searches
-its local Room store).
+served by a Postgres `ILIKE` over the caller's conversations. BOTH clients call it: web, and
+Android's GLOBAL search screen, which is REST-only against this endpoint (the exway-android audit,
+slice-71 — recorded in DECISION_LOG [2026-08-02]'s correction; only Android's in-chat search is
+local Room). An earlier revision of this paragraph claimed web was the only client; that was the
+belief the audit corrected, and losing this endpoint breaks search on both clients.
 
 **AT THE SCYLLA FLIP THIS ENDPOINT STOPS WORKING** — deliberately, not silently. Message bodies leave
 Postgres and no honest Scylla answer exists (no trigram/body index over a participant join). From the

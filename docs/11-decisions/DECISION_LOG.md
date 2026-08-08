@@ -2,6 +2,40 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-08] MESSAGE TEXT LIVES IN POSTGRES — as a search-only copy
+
+- **Decision:** Message text lives in Postgres as a search-only copy (`message_search`). It is
+  **non-authoritative** (Scylla is the store), **rebuildable** (from Scylla, by conversation), and
+  **deletion-propagated** (`message.deleted.v1` removes the index row; result hydration point-reads
+  the authoritative store, so deleted content never renders even if the row survives). It stores the
+  **full body, not a tsvector** — the [2026-08-02] entry already established that a tsvector is not
+  meaningfully less a copy ("the index contains the words but not the message — and the words are
+  enough"), and tsvector semantics break the substring `ILIKE` contract both clients depend on.
+- **Trigger:** [2026-08-02] reserved this decision for "dual-write ending — not a calendar". That
+  fired: production runs plain `MESSAGE_STORE_ADAPTER=scylla` as of 2026-08-08, and search has been
+  answering 503 `search.unavailable` since the cutover (the loud degradation the contract records).
+- **Alternatives rejected:** Scylla cannot do it at all (no text index of any kind over a
+  partitioned-by-conversation schema; any "Scylla-side" answer is a secondary system in disguise).
+  Elasticsearch does not fit 4.1 GiB headroom alongside Postgres, Scylla, Kafka and nine BEAM
+  releases. Meilisearch stores a verbatim copy with its own retention and a cross-system deletion
+  contract, buying relevance ranking the contract does not ask for. Query-time fan-out to Scylla
+  (the only zero-copy option) degrades quietly and unboundedly — every search re-reads the caller's
+  entire history.
+- **Privacy shape, stated on the record:** this is a second copy of message content, in Postgres,
+  with the same words a body has. What makes it defensible is not the format but the plumbing:
+  deletion reaches it through the same ordered topic that created it (create and delete share a
+  partition key), and the hydration layer guarantees a missed delete can linger only as an
+  unrenderable row, never as readable content in a result.
+- **Masking:** per-viewer visibility (`cleared_before`, `auto_delete_seconds`,
+  `user_hidden_messages`, `left_at`, after-viewing) is applied at QUERY time via the shared
+  `VisibilityWindow` fragments — index-time masking is per-viewer and therefore wrong for a
+  conversation-global row. The one global act, delete-for-everyone, is the one thing removed at
+  index time.
+- **Status:** implemented in the slice landing with this entry (consumer on the inbox-projection
+  model + backfill from Scylla). The [2026-08-02] "commits 3 and 4 stay unbuilt" clause is
+  RESOLVED by this entry: what ships is the raw-body variant of commit 3's role, for the contract
+  reason above.
+
 ## [2026-08-03] FILED, NOT FIXED: `forwarded_from` exposes the original sender's user id
 
 - **Found while designing forward depth; deliberately NOT folded into that slice.**
