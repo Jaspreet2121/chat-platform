@@ -115,6 +115,15 @@ services:
       CONVERSATION_HTTP_API_ENABLED: "true"
       CONVERSATION_HTTP_PORT: "4102"
       CONVERSATION_DB_BACKED: "true"
+      # SAME variable as the message block, from the SAME .env line — do not set independently.
+      # This container runs ConversationService.InboxCounters, whose recount/reconcile SQL reads the
+      # Postgres `messages` table and is only correct while Postgres is the authoritative store. At
+      # boot, runtime.exs publishes this value as :shared_infra, :message_store_backend and the
+      # interlock reads it: `scylla` keeps the reconciler OFF (recounting from the frozen table is
+      # what reverted live previews on 2026-08-08); `postgres`/`dual_write` after a rollback turns
+      # the recount backstop back ON. Before this line the container received NOTHING and the
+      # interlock was closed only by fail-closed absence — closed by knowledge is the point.
+      MESSAGE_STORE_ADAPTER: ${MESSAGE_STORE_ADAPTER:?set MESSAGE_STORE_ADAPTER in .env}
       # Publish participant_added/removed to the live broker (fire-and-forget; see message svc note).
       KAFKA_PRODUCER_ADAPTER: brod
       # Set false in .env to run WITHOUT Kafka (fanout off — see runbook); avoids publish retries when
@@ -155,7 +164,14 @@ services:
       # This line is read at RUNTIME (config/runtime.exs), not baked at build, so a change here takes
       # effect on container recreate — no rebuild. Rollback is `postgres`, but note that rows written
       # to Scylla since the cutover are NOT in Postgres: rolling back loses reads of them.
-      MESSAGE_STORE_ADAPTER: scylla
+      #
+      # FROM .env, `:?` DELIBERATELY (2026-08-08, after three same-day host hand-edits of this
+      # block): the value lives in ONE place the host owns, so a hand-change there no longer
+      # diverges this file, and a missing value fails `docker compose config` LOUDLY. Never change
+      # this to `:-postgres` — a lost .env would silently point the store back at Postgres and make
+      # every post-cutover message invisible. The same variable feeds the `conversation` block; they
+      # must never be set independently.
+      MESSAGE_STORE_ADAPTER: ${MESSAGE_STORE_ADAPTER:?set MESSAGE_STORE_ADAPTER in .env}
       # ScyllaDB driver (Phase B) — message_service is the ONLY consumer, so these live here and
       # nowhere else. Present env => runtime.exs configures the nodes AND points the client boundary
       # at the real Xandra adapter; a supervised cluster then starts. It can never break boot: an
@@ -176,7 +192,9 @@ services:
       # conversations.last_message_* and conversation_participants.unread_count once the store is no
       # longer Postgres — the in-transaction writers in MessageStore.PostgresAdapter never run. Read
       # via System.get_env in MessageService.Application, so it needs no runtime.exs entry.
-      KAFKA_INBOX_CONSUMER_ENABLED: "true"
+      # From .env (`:?`, no default): under scylla, off means unread counts and previews silently
+      # stop updating — there is no safe default for a value whose wrong state is invisible.
+      KAFKA_INBOX_CONSUMER_ENABLED: ${KAFKA_INBOX_CONSUMER_ENABLED:?set KAFKA_INBOX_CONSUMER_ENABLED in .env}
       # The search-index consumer (group `message-service-search-index`, begin_offset :earliest) —
       # maintains message_search, the search-only copy of message text (DECISION_LOG 2026-08-08).
       # Enabled BY HAND ON THE EC2 HOST on 2026-08-08, after migration 094 and the one-off
@@ -184,8 +202,9 @@ services:
       # SEARCH IS SERVED ONLY WHILE THIS CONSUMER RUNS: with the flag off, the endpoint answers 503
       # search.unavailable rather than reading a decaying index — so removing this line silently
       # turns search OFF for both clients at the next recreate. Read via System.get_env in
-      # MessageService.Application, so it needs no runtime.exs entry.
-      KAFKA_SEARCH_CONSUMER_ENABLED: "true"
+      # MessageService.Application, so it needs no runtime.exs entry. From .env (`:?`, no default):
+      # search is served only while this runs, so off = 503 on both clients.
+      KAFKA_SEARCH_CONSUMER_ENABLED: ${KAFKA_SEARCH_CONSUMER_ENABLED:?set KAFKA_SEARCH_CONSUMER_ENABLED in .env}
     expose: ["4104"]
 
   media:
