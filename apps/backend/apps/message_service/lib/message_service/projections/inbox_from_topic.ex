@@ -88,6 +88,7 @@ defmodule MessageService.Projections.InboxFromTopic do
   alias MessageService.InboxProjection
   alias MessageService.MessageStore
   alias MessageService.Repo
+  alias MessageService.VisibilityWindow
   alias MessageService.Schemas.ProcessedEvent
 
   @consumer "inbox-from-topic"
@@ -116,10 +117,13 @@ defmodule MessageService.Projections.InboxFromTopic do
   conversation preview.
 
   READ-BACK NOT FOUND IS A VALID OUTCOME, NOT AN ERROR TO RETRY. It means the message was created and
-  then deleted before this event was processed. Defined behaviour: **ledger the event and do nothing
-  else** — the preview keeps showing whatever it showed (the next-newest), and unread does NOT
-  increment. Incrementing for a message the user can never open would overcount permanently, because
-  this slice does not decrement unread on delete.
+  then deleted before this event was processed. Defined behaviour: **ledger the event and SETTLE the
+  message** — insert `inbox_read_marks` rows for every would-have-been recipient, in the same
+  transaction as the ledger row. No increment happens (the user can never open the message), and the
+  settle-marks are what stop the LATER delete event (always later: same partition key) from
+  decrementing recipients who were never incremented. Without them, a fast delete drifts every
+  recipient by -1 — floored to invisibility for some, stealing a count from a DIFFERENT unread
+  message for others. The preview keeps showing whatever it showed.
   """
   @spec apply_message_created(map()) :: result()
   def apply_message_created(%{} = envelope) do
@@ -134,8 +138,15 @@ defmodule MessageService.Projections.InboxFromTopic do
           transact(event_id, fn -> InboxProjection.record_message(stored) end)
 
         :absent ->
-          # Ledger it so redelivery does not retry a message that no longer exists.
-          transact(event_id, fn -> :ok end, :skipped_absent)
+          # Ledger + SETTLE (see the doc above): the marks are what make the coming delete event a
+          # no-op for recipients this create never incremented.
+          sender = Map.get(payload, "sender_user_id")
+
+          transact(
+            event_id,
+            fn -> settle_all_recipients(conversation_id, message_id, sender) end,
+            :skipped_absent
+          )
       end
     else
       {:ok, :skipped_postgres_adapter} = skip -> skip
@@ -159,9 +170,32 @@ defmodule MessageService.Projections.InboxFromTopic do
   it finds none. With messages in Scylla it would find none every time and nil every preview — worse
   than doing nothing.
 
-  UNREAD IS NOT DECREMENTED HERE. Scoped out deliberately: the requirement for this event is the
-  preview. Consequence, stated so it is not discovered later — unread over-counts by the number of
-  deleted-but-unread messages until the existing read-time recount repairs the row.
+  UNREAD IS DECREMENTED HERE (since 2026-08-09; it was scoped out of the original slice), and the
+  consumer is the right side of the read-path asymmetry: deletes HAVE an ordered event, a ledger and
+  this handler, so a crash between the Scylla tombstone and the Postgres decrement redelivers and
+  re-runs atomically — the synchronous read decrement had no event to lean on and accepted
+  best-effort instead.
+
+  Exactly-once, two layers: the LEDGER dedupes a redelivered event (the decrement runs inside
+  `transact`), and PER-RECIPIENT CLAIMS in `inbox_read_marks` cover what the ledger cannot — a
+  second, distinct delete event for the same message claims zero rows and decrements nobody. A
+  mark's meaning is "this (message, recipient) counter is SETTLED, no further effect" (DECISION_LOG
+  2026-08-09): the reader's mark blocks this decrement (their read already decremented), this
+  decrement's mark blocks a later read claim, and the create-skip settle-marks block the
+  delete-before-create drift. One CTE statement claims and decrements the claimed set — a 50-member
+  group is one round trip, not 49.
+
+  WHO: the increment's population (active, non-sender, unmarked) under the READ decrement's guards
+  (participant window, GREATEST floor, watermark NULLed at zero). The window guard is required, not
+  decorative: clear_history zeroes the counter AND sets cleared_before, so decrementing a cleared
+  message would steal from newer ones. Its auto-delete half costs a stuck +1 for aged-out
+  deleted-unread — the same accepted non-decay class as everywhere else.
+
+  ACCEPTED RESIDUAL (interleaving row 8 of the design review): a delete whose CREATE event was lost
+  (fire-and-forget publish failure) decrements a message that was never counted — floored at 0, or
+  -1 drift if the recipient holds other unread. Unfixable without per-(message,recipient) increment
+  evidence, which would mean a row for every message x recipient. The same exposure already exists
+  on the read path for never-incremented messages.
   """
   @spec apply_message_deleted(map()) :: result()
   def apply_message_deleted(%{} = envelope) do
@@ -169,14 +203,25 @@ defmodule MessageService.Projections.InboxFromTopic do
          {:ok, event_id} <- fetch(envelope, "event_id"),
          payload when is_map(payload) <- Map.get(envelope, "payload", %{}),
          {:ok, conversation_id} <- fetch(payload, "conversation_id"),
-         {:ok, message_id} <- fetch(payload, "message_id") do
+         {:ok, message_id} <- fetch(payload, "message_id"),
+         # Required: without the sender the decrement cannot exclude them. Every produced
+         # message.deleted.v1 has carried sender_user_id since the event existed (f95d031).
+         {:ok, sender_user_id} <- fetch(payload, "sender_user_id") do
+      # Store read OUTSIDE the transaction, same rule as the created path. The tombstone point read
+      # supplies created_at for the window guard — the thin payload does not carry it.
+      created_at = tombstone_created_at(conversation_id, message_id)
+
       if preview?(conversation_id, message_id) do
-        # Store read OUTSIDE the transaction, same rule as the created path.
         replacement = next_live_message(conversation_id, message_id)
-        transact(event_id, fn -> write_preview(conversation_id, replacement) end)
+
+        transact(event_id, fn ->
+          write_preview(conversation_id, replacement)
+          decrement_for_delete(conversation_id, message_id, sender_user_id, created_at)
+        end)
       else
-        # Not the preview — nothing to change, but ledger it so redelivery is a cheap no-op.
-        transact(event_id, fn -> :ok end)
+        transact(event_id, fn ->
+          decrement_for_delete(conversation_id, message_id, sender_user_id, created_at)
+        end)
       end
     else
       {:ok, :skipped_postgres_adapter} = skip -> skip
@@ -295,6 +340,76 @@ defmodule MessageService.Projections.InboxFromTopic do
     )
 
     :ok
+  end
+
+  # --- the unread decrement + settlement (delete-for-everyone) -------------------------------------
+
+  # ONE statement, claim-then-decrement: insert a settle-mark for every qualifying recipient
+  # (ON CONFLICT DO NOTHING — readers, prior deletes and create-skip settles all conflict) and
+  # decrement EXACTLY the claimed set. Population mirrors the increment (active, non-sender);
+  # guards mirror the read decrement (participant window, floor, watermark). A NULL created_at
+  # (tombstone unreadable) makes the window predicates NULL -> false for participants WITH window
+  # prefs — conservatively skipping them rather than guessing.
+  defp decrement_for_delete(conversation_id, message_id, sender_user_id, created_at) do
+    Repo.query!(
+      "WITH claimed AS (" <>
+        "INSERT INTO inbox_read_marks (conversation_id, message_id, user_id, message_created_at) " <>
+        "SELECT cp.conversation_id, $2::text::uuid, cp.user_id, $4 " <>
+        "FROM conversation_participants cp " <>
+        "WHERE cp.conversation_id = $1::text::uuid AND cp.left_at IS NULL " <>
+        "AND cp.user_id <> $3::text::uuid " <>
+        "AND " <>
+        VisibilityWindow.participant_window_sql("cp", "$4") <>
+        " " <>
+        "ON CONFLICT DO NOTHING RETURNING user_id) " <>
+        "UPDATE conversation_participants cp SET " <>
+        "unread_count = GREATEST(cp.unread_count - 1, 0), " <>
+        "oldest_unread_at = CASE WHEN GREATEST(cp.unread_count - 1, 0) = 0 THEN NULL " <>
+        "ELSE cp.oldest_unread_at END " <>
+        "FROM claimed WHERE cp.conversation_id = $1::text::uuid AND cp.user_id = claimed.user_id",
+      [conversation_id, message_id, sender_user_id, created_at]
+    )
+
+    :ok
+  end
+
+  # The create-skip settlement: the message was deleted before its create was consumed, so nobody
+  # was incremented — mark every would-have-been recipient as settled so the coming delete event
+  # claims nothing. Sender excluded when the payload carries them (their mark would never be
+  # consulted anyway: the read path bails on own-sender, the delete claim excludes them).
+  defp settle_all_recipients(conversation_id, message_id, sender_user_id) do
+    sender_clause =
+      if is_binary(sender_user_id) and sender_user_id != "",
+        do: "AND cp.user_id <> $3::text::uuid ",
+        else: ""
+
+    params =
+      if sender_clause == "",
+        do: [conversation_id, message_id],
+        else: [conversation_id, message_id, sender_user_id]
+
+    Repo.query!(
+      "INSERT INTO inbox_read_marks (conversation_id, message_id, user_id) " <>
+        "SELECT cp.conversation_id, $2::text::uuid, cp.user_id " <>
+        "FROM conversation_participants cp " <>
+        "WHERE cp.conversation_id = $1::text::uuid AND cp.left_at IS NULL " <>
+        sender_clause <>
+        "ON CONFLICT DO NOTHING",
+      params
+    )
+
+    :ok
+  end
+
+  # The tombstone still carries created_at (soft delete); :absent covers a hard-missing row.
+  defp tombstone_created_at(conversation_id, message_id) do
+    case MessageStore.get_message(%{
+           "conversation_id" => conversation_id,
+           "message_id" => message_id
+         }) do
+      {:ok, message} -> get(message, :created_at)
+      _ -> nil
+    end
   end
 
   # --- the adapter interlock -----------------------------------------------------------------------

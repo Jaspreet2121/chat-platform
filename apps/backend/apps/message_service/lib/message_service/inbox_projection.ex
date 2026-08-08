@@ -106,7 +106,13 @@ defmodule MessageService.InboxProjection do
   `record_read/3` gates on the Postgres receipt row it just upserted in the same transaction, which
   is exact but only available to `MessageStore.PostgresAdapter`. Scylla's receipt write is a blind
   CQL upsert that reports nothing about prior state, so the claim is made here instead: insert the
-  read mark, and decrement ONLY if that insert actually claimed the row. Both in one transaction, so
+  mark, and decrement ONLY if that insert actually claimed the row.
+
+  A MARK MEANS "SETTLED", NOT "READ" (DECISION_LOG [2026-08-09]): since the delete-for-everyone
+  decrement landed, rows are also claimed by `InboxFromTopic`'s delete handler and its create-skip
+  settlement. Counting reads from this table is wrong by design, and the read/delete split is
+  deliberately unrecoverable — all any writer needs to know is that the pair's counter effect is
+  spent. Both in one transaction, so
   a crash between them rolls back and a redelivery re-runs atomically — the same shape the event
   consumers use with `processed_events`.
 

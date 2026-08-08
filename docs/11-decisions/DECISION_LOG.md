@@ -2,6 +2,27 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-09] `inbox_read_marks` rows mean SETTLED, not READ
+
+- **The contract change:** a row in `inbox_read_marks` means "this (message, recipient) pair's
+  unread-counter effect is SPENT — no writer may apply another." Originally (093 / e36e1ae) a row
+  meant "first-time read under the Scylla store." The delete-for-everyone decrement generalized it:
+  rows are now also claimed by the topic consumer's delete handler (per-recipient claim before
+  decrementing) and by the create-skip settlement (a message deleted before its create was consumed
+  settles every would-have-been recipient, so the later delete event decrements nobody).
+- **Consequence, stated so nobody re-derives it wrong: COUNTING READS FROM THIS TABLE IS WRONG BY
+  DESIGN.** Delete-settles and skip-settles are mixed in with read-claims, carry no distinguishing
+  column, and the split is UNRECOVERABLE — deliberately. A sentinel column was considered and
+  rejected: no writer ever needs to know WHY a pair was settled, only THAT it was, and a "why"
+  column would invite exactly the read-analytics misuse this entry forbids. Read analytics belong
+  to `message_receipts` (Scylla) — the receipts store, which remains a faithful record of reads.
+- **Why reuse the table at all:** the three writers compose BECAUSE they share one claim — a
+  reader's mark blocks the delete decrement (the read already decremented), a delete's mark blocks
+  a later read claim, a skip-settle blocks the delete-before-create drift. Two tables would need
+  cross-table NOT EXISTS in every writer and reintroduce the race windows the single PK closes.
+- **Status:** live with the delete-decrement slice; retention note in 093 unchanged (pruning still
+  needs a horizon rule, now for settles as well as reads).
+
 ## [2026-08-08] MESSAGE TEXT LIVES IN POSTGRES — as a search-only copy
 
 - **Decision:** Message text lives in Postgres as a search-only copy (`message_search`). It is

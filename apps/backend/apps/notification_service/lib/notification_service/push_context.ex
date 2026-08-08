@@ -109,10 +109,10 @@ defmodule NotificationService.PushContext do
   push), so the column may legitimately still read 0 for the very message being announced.
 
   Known over-count vs the old (pre-cutover) semantics, accepted and recorded: the column does not
-  decay as an auto-delete window moves, and delete-for-everyone does not decrement under Scylla.
-  Both are standing consequences of the maintained design (see InboxProjection); the app reconciles
-  the true numbers on next focus. Errors degrade to 1 WITH a warning — the push still sends (a
-  slightly-wrong label beats a missed notification), but never silently.
+  decay as an auto-delete window moves. (Delete-for-everyone DOES decrement since 2026-08-09 — the
+  topic consumer's claim-based decrement; see InboxFromTopic.apply_message_deleted.) The app
+  reconciles the true numbers on next focus. Errors degrade to 1 WITH a warning — the push still
+  sends (a slightly-wrong label beats a missed notification), but never silently.
   """
   def unread_count(conversation_id, user_id) do
     case Repo.query(
