@@ -408,7 +408,8 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
   end
 
   test "STARS: Postgres ids hydrated by bounded-concurrency point reads; drift drops, never crashes" do
-    # The satellite lives in Postgres — this is the ONE scylla-gate test that needs the SQL repo too.
+    # The satellite lives in Postgres — one of two scylla-gate tests that need the SQL repo too
+    # (the other is the unread-decrement wiring proof at the end of this file).
     case MessageService.Repo.start_link() do
       {:ok, pid} -> Process.unlink(pid)
       {:error, {:already_started, _}} -> :ok
@@ -474,5 +475,84 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
 
     {:ok, %{messages: messages}} = ScyllaAdapter.list_starred(%{"user_id" => user})
     refute Enum.any?(messages, &(&1.message_id == hd(ids)))
+  end
+
+  # --- THE UNREAD DECREMENT, END TO END THROUGH THE REAL ADAPTER -----------------------------------
+  #
+  # MessageService.InboxProjectionTest proves record_read_once/4 itself. This proves it is WIRED:
+  # that ScyllaAdapter.mark_read actually reaches it against a live keyspace. Before this, every
+  # in-transaction maintenance call lived in PostgresAdapter and this adapter called InboxProjection
+  # nowhere at all, so unread_count only ever increased. An unwired decrement would pass every unit
+  # test in the other file and change nothing in production.
+
+  test "mark_read DECREMENTS unread in Postgres — the adapter is wired, not just the function" do
+    # Same repo+sandbox pattern as the STARS test above; the sandbox transaction rolls the Postgres
+    # rows back, so nothing needs cleaning up by hand.
+    case MessageService.Repo.start_link() do
+      {:ok, pid} -> Process.unlink(pid)
+      {:error, {:already_started, _}} -> :ok
+    end
+
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(MessageService.Repo)
+
+    tenant = "00000000-0000-0000-0000-000000000001"
+    conversation_id = Ecto.UUID.generate()
+    sender = Ecto.UUID.generate()
+    reader = Ecto.UUID.generate()
+
+    for u <- [sender, reader] do
+      MessageService.Repo.query!(
+        "INSERT INTO users_auth (id, app_id, phone_number, status) " <>
+          "VALUES ($1::text::uuid, $2::text::uuid, $3, 'active')",
+        [u, tenant, "+1555#{System.unique_integer([:positive])}"]
+      )
+    end
+
+    MessageService.Repo.query!(
+      "INSERT INTO conversations (id, app_id, type, created_by) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, 'group', $3::text::uuid)",
+      [conversation_id, tenant, sender]
+    )
+
+    for u <- [sender, reader] do
+      MessageService.Repo.query!(
+        "INSERT INTO conversation_participants " <>
+          "(conversation_id, user_id, role, joined_at, unread_count) " <>
+          "VALUES ($1::text::uuid, $2::text::uuid, 'member', now(), $3)",
+        [conversation_id, u, if(u == reader, do: 2, else: 0)]
+      )
+    end
+
+    # A REAL Scylla row — the decrement needs its sender_user_id, deleted_at and created_at, which the
+    # mark_read attrs do not carry, so the adapter point-reads it.
+    {message_id, _} = put!(conversation_id, DateTime.utc_now(), %{"sender_user_id" => sender})
+
+    unread = fn user ->
+      %{rows: [[n]]} =
+        MessageService.Repo.query!(
+          "SELECT unread_count FROM conversation_participants " <>
+            "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+          [conversation_id, user]
+        )
+
+      n
+    end
+
+    attrs = %{
+      "conversation_id" => conversation_id,
+      "message_id" => message_id,
+      "user_id" => reader
+    }
+
+    assert {:ok, _} = ScyllaAdapter.mark_read(attrs)
+    assert unread.(reader) == 1
+
+    # Idempotent through the real adapter too, not only through the projection function.
+    assert {:ok, _} = ScyllaAdapter.mark_read(attrs)
+    assert unread.(reader) == 1
+
+    # The SENDER marking their own message read must not touch their counter.
+    assert {:ok, _} = ScyllaAdapter.mark_read(%{attrs | "user_id" => sender})
+    assert unread.(sender) == 0
   end
 end

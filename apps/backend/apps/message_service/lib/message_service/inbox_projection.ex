@@ -80,14 +80,97 @@ defmodule MessageService.InboxProjection do
       )
     end
 
+    # THE `NOT EXISTS` IS WHAT MAKES THE PAIR ORDER-INDEPENDENT, not an optimisation. This increment
+    # is asynchronous (the Kafka inbox projection), while the decrement fires synchronously on the
+    # read receipt. A fast reader can therefore be marked read BEFORE this runs: the decrement floors
+    # at 0, and without this clause the increment would then add a phantom unread that nothing ever
+    # removes — permanent, because the recount backstop is gated under Scylla. Consulting the same
+    # read marks the decrement claims means read-then-increment and increment-then-read converge.
     Repo.query!(
-      "UPDATE conversation_participants SET " <>
-        "unread_count = unread_count + 1, oldest_unread_at = COALESCE(oldest_unread_at, $3) " <>
-        "WHERE conversation_id = $1::text::uuid AND left_at IS NULL AND user_id <> $2::text::uuid",
-      [message.conversation_id, message.sender_user_id, created_at]
+      "UPDATE conversation_participants cp SET " <>
+        "unread_count = cp.unread_count + 1, oldest_unread_at = COALESCE(cp.oldest_unread_at, $3) " <>
+        "WHERE cp.conversation_id = $1::text::uuid AND cp.left_at IS NULL " <>
+        "AND cp.user_id <> $2::text::uuid " <>
+        "AND NOT EXISTS (SELECT 1 FROM inbox_read_marks m " <>
+        "  WHERE m.conversation_id = cp.conversation_id AND m.message_id = $4::text::uuid " <>
+        "  AND m.user_id = cp.user_id)",
+      [message.conversation_id, message.sender_user_id, created_at, message.message_id]
     )
 
     :ok
+  end
+
+  @doc """
+  A FIRST-TIME read, for stores that cannot gate it themselves — i.e. Scylla.
+
+  `record_read/3` gates on the Postgres receipt row it just upserted in the same transaction, which
+  is exact but only available to `MessageStore.PostgresAdapter`. Scylla's receipt write is a blind
+  CQL upsert that reports nothing about prior state, so the claim is made here instead: insert the
+  read mark, and decrement ONLY if that insert actually claimed the row. Both in one transaction, so
+  a crash between them rolls back and a redelivery re-runs atomically — the same shape the event
+  consumers use with `processed_events`.
+
+  This is the SECOND writer of `unread_count` under Scylla; the first is the topic projection's
+  increment. They coordinate by being exactly-once atomic deltas on the same row — Postgres serialises
+  the row lock, `+1` and `-1` commute, and each fires at most once per (message, participant). The
+  ordering hazard is handled in `record_message/1`'s `NOT EXISTS`, not here.
+
+  The guards mirror `record_read/3` exactly, and for the same reasons: a reader who is the SENDER was
+  never counted, a deleted message was never counted, and a message outside the participant's
+  cleared/auto-delete window was never counted — so none of them may decrement.
+  """
+  def record_read_once(conversation_id, message_id, reader_user_id, %{} = message) do
+    cond do
+      message.sender_user_id == reader_user_id -> :ok
+      not is_nil(message.deleted_at) -> :ok
+      true -> claim_and_decrement(conversation_id, message_id, reader_user_id, message.created_at)
+    end
+  end
+
+  defp claim_and_decrement(conversation_id, message_id, reader_user_id, created_at) do
+    {:ok, result} =
+      Repo.transaction(fn ->
+        %{num_rows: claimed} =
+          Repo.query!(
+            "INSERT INTO inbox_read_marks " <>
+              "(conversation_id, message_id, user_id, message_created_at) " <>
+              "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4) " <>
+              "ON CONFLICT DO NOTHING",
+            [conversation_id, message_id, reader_user_id, created_at]
+          )
+
+        if claimed == 1,
+          do: decrement(conversation_id, reader_user_id, created_at),
+          else: :duplicate
+      end)
+
+    result
+  end
+
+  defp decrement(conversation_id, reader_user_id, created_at) do
+    %{num_rows: rows} =
+      Repo.query!(
+        "UPDATE conversation_participants cp SET " <>
+          "unread_count = GREATEST(cp.unread_count - 1, 0), " <>
+          "oldest_unread_at = CASE WHEN GREATEST(cp.unread_count - 1, 0) = 0 THEN NULL ELSE cp.oldest_unread_at END " <>
+          "WHERE cp.conversation_id = $1::text::uuid AND cp.user_id = $2::text::uuid " <>
+          "AND cp.left_at IS NULL AND " <> VisibilityWindow.participant_window_sql("cp", "$3"),
+        [conversation_id, reader_user_id, created_at]
+      )
+
+    # Same exposure the preview write has: a WHERE that matches nothing SUCCEEDS. Here zero rows is a
+    # legitimate outcome — the reader left the conversation, or the message is outside their window —
+    # so this is :info, not a warning. It is logged at all because the read mark has now been claimed
+    # and will never be claimed again: if this was NOT a legitimate skip, the decrement for this
+    # message is permanently lost and there is no recount to find it.
+    if rows == 0 do
+      Logger.info(
+        "inbox decrement matched ZERO rows (mark already claimed, so this will not retry) " <>
+          "conversation=#{conversation_id} user=#{reader_user_id} created_at=#{inspect(created_at)}"
+      )
+    end
+
+    :applied
   end
 
   @doc "A body edit: the preview text changes only when the edited message IS the preview."

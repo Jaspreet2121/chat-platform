@@ -457,7 +457,46 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   def mark_delivered(attrs), do: put_receipt(Map.merge(attrs, %{"status" => "delivered"}))
 
   @impl true
-  def mark_read(attrs), do: put_receipt(Map.merge(attrs, %{"status" => "read"}))
+  def mark_read(attrs) do
+    with {:ok, response} <- put_receipt(Map.merge(attrs, %{"status" => "read"})) do
+      maintain_unread(attrs)
+      {:ok, response}
+    end
+  end
+
+  # THE UNREAD DECREMENT, which PostgresAdapter does inside its receipt transaction and this adapter
+  # had NO equivalent for — the reason unread_count only ever increased under the Scylla store.
+  #
+  # Kept BEST-EFFORT and after the receipt write: the receipt is the user-visible outcome and is
+  # authoritative in Scylla; a counter that fails to move must not fail the read. Exactly-once is
+  # enforced by the read-mark claim in InboxProjection.record_read_once/4, not by this call site, so a
+  # retry of the whole request is safe.
+  #
+  # The point read is deliberate. The decrement needs `sender_user_id` (a reader who is the sender was
+  # never counted), `deleted_at` and `created_at` (the window guard) — none of which the mark_read
+  # attrs carry, and all of which the Postgres path got for free from its own tables. The alternative
+  # was to have clients send sender_user_id, which no old client would.
+  defp maintain_unread(attrs) do
+    conversation_id = attr(attrs, "conversation_id")
+    message_id = attr(attrs, "message_id")
+    user_id = attr(attrs, "user_id")
+
+    with true <- is_binary(conversation_id) and is_binary(message_id) and is_binary(user_id),
+         {:ok, message} <- get_message(attrs) do
+      MessageService.InboxProjection.record_read_once(
+        conversation_id,
+        message_id,
+        user_id,
+        message
+      )
+    else
+      _ -> :ok
+    end
+  rescue
+    error ->
+      Logger.warning("inbox decrement skipped (read receipt still written): #{inspect(error)}")
+      :ok
+  end
 
   # --- reactions: the CQL partition IS the per-message reaction set ---------------------------------
   # PK ((conversation_id, message_id), user_id): an INSERT for an existing (partition, user) REPLACES

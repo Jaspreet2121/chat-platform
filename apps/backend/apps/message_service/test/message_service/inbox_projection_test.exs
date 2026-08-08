@@ -412,4 +412,229 @@ defmodule MessageService.InboxProjectionTest do
       refute log =~ "matched ZERO rows"
     end
   end
+
+  # --- THE DECREMENT UNDER SCYLLA ------------------------------------------------------------------
+  #
+  # Under MESSAGE_STORE_ADAPTER=scylla nothing decremented unread_count: every in-transaction
+  # maintenance call lives in PostgresAdapter and ScyllaAdapter never called InboxProjection. The
+  # counter only went up. record_read_once/4 is the replacement, and its exactly-once gate is the
+  # inbox_read_marks row rather than a Postgres receipt it cannot see.
+
+  describe "record_read_once/4" do
+    defp msg(sender, opts \\ []) do
+      %{
+        message_id: Keyword.get(opts, :message_id, Ecto.UUID.generate()),
+        sender_user_id: sender,
+        created_at: Keyword.get(opts, :created_at, DateTime.utc_now()),
+        deleted_at: Keyword.get(opts, :deleted_at)
+      }
+    end
+
+    defp unread(conversation, user) do
+      %{rows: [[n]]} =
+        Repo.query!(
+          "SELECT unread_count FROM conversation_participants " <>
+            "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+          [conversation, user]
+        )
+
+      n
+    end
+
+    defp arrive(conversation, sender, message) do
+      MessageService.InboxProjection.record_message(%{
+        conversation_id: conversation,
+        message_id: message.message_id,
+        sender_user_id: sender,
+        message_type: "text",
+        body: "hi",
+        created_at: message.created_at,
+        metadata: %{}
+      })
+    end
+
+    @tag :postgres_integration
+    test "(a) reading decrements the READER only" do
+      sender = user!()
+      reader = user!()
+      bystander = user!()
+      conversation = conversation!([sender, reader, bystander])
+      message = msg(sender)
+
+      arrive(conversation, sender, message)
+      assert unread(conversation, reader) == 1
+      assert unread(conversation, bystander) == 1
+
+      assert :applied =
+               MessageService.InboxProjection.record_read_once(
+                 conversation,
+                 message.message_id,
+                 reader,
+                 message
+               )
+
+      assert unread(conversation, reader) == 0
+
+      # The other recipient is untouched — the decrement is per-participant, not per-conversation.
+      assert unread(conversation, bystander) == 1
+    end
+
+    @tag :postgres_integration
+    test "(b) processing the SAME receipt twice decrements once" do
+      sender = user!()
+      reader = user!()
+      conversation = conversation!([sender, reader])
+      a = msg(sender)
+      b = msg(sender)
+
+      arrive(conversation, sender, a)
+      arrive(conversation, sender, b)
+      assert unread(conversation, reader) == 2
+
+      read = fn ->
+        MessageService.InboxProjection.record_read_once(conversation, a.message_id, reader, a)
+      end
+
+      assert :applied = read.()
+      second = read.()
+      third = read.()
+
+      # THE CLAIM IS THE COUNTER, asserted before the return tags so a mutation reddens on the thing
+      # that matters rather than on a label. Without the read-mark gate this reads 0: three
+      # decrements against a starting 2, floored.
+      assert unread(conversation, reader) == 1
+
+      # And the return values say WHY it only moved once — refused by the claim, not by luck.
+      assert second == :duplicate
+      assert third == :duplicate
+    end
+
+    @tag :postgres_integration
+    test "(c) unread cannot go below zero" do
+      sender = user!()
+      reader = user!()
+      conversation = conversation!([sender, reader])
+      assert unread(conversation, reader) == 0
+
+      # Three DIFFERENT messages read while the counter is already 0 — distinct message_ids, so the
+      # read-mark gate lets every one of them through to the UPDATE. Only the floor stops it.
+      for _ <- 1..3 do
+        m = msg(sender)
+
+        assert :applied =
+                 MessageService.InboxProjection.record_read_once(
+                   conversation,
+                   m.message_id,
+                   reader,
+                   m
+                 )
+      end
+
+      assert unread(conversation, reader) == 0
+    end
+
+    @tag :postgres_integration
+    test "(d) the sender reading their OWN message changes nothing" do
+      sender = user!()
+      reader = user!()
+      conversation = conversation!([sender, reader])
+      message = msg(sender)
+
+      arrive(conversation, sender, message)
+
+      # record_message never incremented the sender, so a decrement would take them negative-by-intent.
+      assert unread(conversation, sender) == 0
+      assert unread(conversation, reader) == 1
+
+      assert :ok =
+               MessageService.InboxProjection.record_read_once(
+                 conversation,
+                 message.message_id,
+                 sender,
+                 message
+               )
+
+      assert unread(conversation, sender) == 0
+      assert unread(conversation, reader) == 1
+    end
+
+    @tag :postgres_integration
+    test "a DELETED message never decrements" do
+      sender = user!()
+      reader = user!()
+      conversation = conversation!([sender, reader])
+      message = msg(sender)
+      arrive(conversation, sender, message)
+
+      deleted = %{message | deleted_at: DateTime.utc_now()}
+
+      assert :ok =
+               MessageService.InboxProjection.record_read_once(
+                 conversation,
+                 message.message_id,
+                 reader,
+                 deleted
+               )
+
+      assert unread(conversation, reader) == 1
+    end
+
+    @tag :postgres_integration
+    test "(e) a decrement that matches NO participant row is logged, not swallowed" do
+      sender = user!()
+      reader = user!()
+      conversation = conversation!([sender, reader])
+      message = msg(sender)
+      arrive(conversation, sender, message)
+
+      # The reader cleared their history after this message arrived, so the window guard excludes
+      # them and the UPDATE matches nothing. Zero rows is LEGITIMATE here — hence :info, not a
+      # warning — but it is still logged, because the read mark has now been claimed and will never
+      # be claimed again: an illegitimate zero row is a decrement lost forever, and there is no
+      # recount left to find it.
+      Repo.query!(
+        "UPDATE conversation_participants SET cleared_before = now() + interval '1 day' " <>
+          "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+        [conversation, reader]
+      )
+
+      log =
+        capture_log(fn ->
+          assert :applied =
+                   MessageService.InboxProjection.record_read_once(
+                     conversation,
+                     message.message_id,
+                     reader,
+                     message
+                   )
+        end)
+
+      assert log =~ "inbox decrement matched ZERO rows"
+      assert log =~ conversation
+    end
+
+    @tag :postgres_integration
+    test "READ BEFORE THE INCREMENT converges — the async projection must not add a phantom" do
+      sender = user!()
+      reader = user!()
+      conversation = conversation!([sender, reader])
+      message = msg(sender)
+
+      # The real ordering hazard: the increment is a Kafka consumer, the decrement is synchronous on
+      # the receipt, so a fast reader beats the projection. Before the NOT EXISTS guard this left
+      # unread stuck at 1 for a message already read, with nothing left to correct it.
+      assert :applied =
+               MessageService.InboxProjection.record_read_once(
+                 conversation,
+                 message.message_id,
+                 reader,
+                 message
+               )
+
+      assert unread(conversation, reader) == 0
+
+      arrive(conversation, sender, message)
+      assert unread(conversation, reader) == 0
+    end
+  end
 end
