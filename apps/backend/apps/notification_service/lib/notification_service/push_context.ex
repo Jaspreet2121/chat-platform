@@ -14,28 +14,23 @@ defmodule NotificationService.PushContext do
   All of these read the shared Postgres EXCEPT `message_preview_fields/2`, which reads the message
   store through `SharedInfra.MessageClient` — over HTTP to message-service in production.
 
-  ## KNOWN DEGRADATION UNDER `MESSAGE_STORE_ADAPTER=scylla` — live from the moment of cutover
+  ## THE CUTOVER DEGRADATIONS — ALL RESOLVED (last one 2026-08-09)
 
-  Two functions here still read the Postgres `messages` table, which stops receiving writes at the
-  cutover. Their best-effort fallbacks then fire silently:
+  Three functions here once read the Postgres `messages` table, which froze at the Scylla cutover;
+  each degraded silently and each is now fixed the honest way:
 
-    * `unread_count/2` → falls back to `1`, so the collapse label always says one message.
-    * `total_unread_count/1` → falls back to `0`, so the app-icon badge reads zero.
-
-  `message_preview_fields/2` USED TO BE THE THIRD AND IS NOT ANYMORE. It read Postgres, got nothing
-  after the cutover, and fell through `preview/3` to its catch-all so every notification read
-  **"New message"** — not an empty push, a push that LOOKED LIKE A WORKING NOTIFICATION while
-  carrying no content, which is worse because nothing about it invited investigation. It now reads
-  the message STORE through `SharedInfra.MessageClient`, and when that read fails it suppresses the
-  push and logs at `:error` instead of inventing a body.
+    * `message_preview_fields/2` → was "New message" on every push; now reads the message STORE
+      through `SharedInfra.MessageClient`, and a failed read suppresses the push with an `:error`
+      log rather than inventing a body.
+    * `unread_count/2` → was stuck at `1`; now reads the MAINTAINED
+      `conversation_participants.unread_count` (the inbox projection's column — increment via the
+      ledger-idempotent consumer, decrement via `inbox_read_marks`), floored at 1.
+    * `total_unread_count/1` → was stuck at `0`; now SUMs the same maintained column over
+      `left_at IS NULL` rows. NOT a store read, deliberately: these are aggregates, and computing
+      them from Scylla would be a partition scan per recipient.
 
   `sender_name/1` and `group_name/1` are unaffected — `user_profiles` and `conversations` stay
-  Postgres-owned.
-
-  THE HONEST FIX for the two counters is NOT a store read: they are aggregates, and computing them
-  from Scylla means a partition scan per recipient. They should come from the inbox projection's
-  maintained `conversation_participants.unread_count`, which the topic-fed projection already keeps.
-  Tracked as its own slice.
+  Postgres-owned. NOTHING in this module reads Postgres `messages` any more.
 
   ## THIS APP NOW DEPENDS ON MESSAGE-SERVICE AT RUNTIME, AND THAT IS A DEPLOYMENT REQUIREMENT
 
@@ -103,58 +98,75 @@ defmodule NotificationService.PushContext do
   end
 
   @doc """
-  The recipient's current unread count for this conversation (their read receipts + clear/auto-delete
-  window respected) — used for the collapse label. Best-effort: on any error, 1 (show the single msg).
+  The recipient's unread count for this conversation — the collapse label. Reads the MAINTAINED
+  column (`conversation_participants.unread_count`): under the Scylla store it is the single source
+  of truth, incremented by the topic projection (ledger-idempotent) and decremented by the receipt
+  path (`inbox_read_marks`, exactly-once). The old inline recount over Postgres `messages` counted a
+  FROZEN table after the cutover, which is why the label was stuck at "1".
+
+  FLOORED AT 1, as it always was: a push is being sent about a real message, so the label never says
+  zero — and the increment is asynchronous (a different consumer group than the one firing this
+  push), so the column may legitimately still read 0 for the very message being announced.
+
+  Known over-count vs the old (pre-cutover) semantics, accepted and recorded: the column does not
+  decay as an auto-delete window moves, and delete-for-everyone does not decrement under Scylla.
+  Both are standing consequences of the maintained design (see InboxProjection); the app reconciles
+  the true numbers on next focus. Errors degrade to 1 WITH a warning — the push still sends (a
+  slightly-wrong label beats a missed notification), but never silently.
   """
   def unread_count(conversation_id, user_id) do
     case Repo.query(
-           "SELECT count(*) FROM messages m " <>
-             "JOIN conversation_participants cp " <>
-             "  ON cp.conversation_id = m.conversation_id AND cp.user_id = $2::text::uuid " <>
-             "WHERE m.conversation_id = $1::text::uuid AND m.deleted_at IS NULL " <>
-             "AND m.sender_user_id <> $2::text::uuid " <>
-             "AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before) " <>
-             "AND (cp.auto_delete_seconds IS NULL " <>
-             "     OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds)) " <>
-             "AND NOT EXISTS (SELECT 1 FROM message_receipts r " <>
-             "  WHERE r.conversation_id = m.conversation_id AND r.message_id = m.message_id " <>
-             "  AND r.user_id = $2::text::uuid AND (r.status = 'read' OR r.read_at IS NOT NULL))",
+           "SELECT unread_count FROM conversation_participants " <>
+             "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
            [conversation_id, user_id]
          ) do
       {:ok, %{rows: [[count]]}} when is_integer(count) and count > 0 -> count
-      _ -> 1
+      {:ok, _} -> 1
+      {:error, reason} -> degraded_count(1, "unread_count", conversation_id, user_id, reason)
     end
   rescue
-    _ -> 1
+    error -> degraded_count(1, "unread_count", conversation_id, user_id, error)
   end
 
   @doc """
-  The recipient's TOTAL unread across ALL their active conversations (same per-conversation window
-  rules, summed) — the app-icon badge while the app is closed. Best-effort: on any error, 0 (the app
-  reconciles the true total on next focus, so a miss self-corrects).
+  The recipient's TOTAL unread across their active conversations — the app-icon badge while the app
+  is closed. SUM of the maintained per-participant column, `left_at IS NULL` only (a left
+  conversation's row keeps its last count and must not haunt the badge — the old query had the same
+  filter in its join).
+
+  Muted chats still count toward the badge (mute silences the alert, not the count) — preserved from
+  the old query, matching the app-side reconciler which sums the chat-list unread without a mute
+  filter. A user with no participant rows gets 0 (COALESCE: SUM over zero rows is NULL, and NULL
+  must not become a missing badge field). Errors degrade to 0 WITH a warning; the app reconciles the
+  true total on next focus, so a miss self-corrects.
   """
   def total_unread_count(user_id) do
-    # Muted chats still count toward the badge (mute silences the alert, not the count) — matches
-    # the app-side reconciler which sums the chat-list unread without a mute filter.
     case Repo.query(
-           "SELECT count(*) FROM messages m " <>
-             "JOIN conversation_participants cp " <>
-             "  ON cp.conversation_id = m.conversation_id AND cp.user_id = $1::text::uuid " <>
-             "     AND cp.left_at IS NULL " <>
-             "WHERE m.deleted_at IS NULL AND m.sender_user_id <> $1::text::uuid " <>
-             "AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before) " <>
-             "AND (cp.auto_delete_seconds IS NULL " <>
-             "     OR m.created_at > now() - make_interval(secs => cp.auto_delete_seconds)) " <>
-             "AND NOT EXISTS (SELECT 1 FROM message_receipts r " <>
-             "  WHERE r.conversation_id = m.conversation_id AND r.message_id = m.message_id " <>
-             "  AND r.user_id = $1::text::uuid AND (r.status = 'read' OR r.read_at IS NOT NULL))",
+           "SELECT COALESCE(SUM(unread_count), 0)::bigint FROM conversation_participants " <>
+             "WHERE user_id = $1::text::uuid AND left_at IS NULL",
            [user_id]
          ) do
       {:ok, %{rows: [[count]]}} when is_integer(count) and count >= 0 -> count
-      _ -> 0
+      {:ok, _} -> 0
+      {:error, reason} -> degraded_count(0, "total_unread_count", nil, user_id, reason)
     end
   rescue
-    _ -> 0
+    error -> degraded_count(0, "total_unread_count", nil, user_id, error)
+  end
+
+  # The trap-2 decision, applied consistently: a failed counter read is a broken dependency and must
+  # not be silent — but unlike the preview (which would put WORDS in the notification that the
+  # message does not contain), a counter is cosmetic and self-corrects on app focus, so the push
+  # still sends with the degraded value instead of being suppressed. Warning, not error: the
+  # dependency here is this service's OWN Postgres, whose total failure already fails the fan-out
+  # loudly elsewhere.
+  defp degraded_count(fallback, which, conversation_id, user_id, reason) do
+    Logger.warning(
+      "push #{which}: read FAILED, degrading to #{fallback} " <>
+        "conversation=#{inspect(conversation_id)} user=#{user_id} reason=#{inspect(reason)}"
+    )
+
+    fallback
   end
 
   @doc "Group name for a group conversation; nil for a DM (no group_profiles row)."
