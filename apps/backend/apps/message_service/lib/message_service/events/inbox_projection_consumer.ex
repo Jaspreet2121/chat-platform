@@ -77,6 +77,36 @@ defmodule MessageService.Events.InboxProjectionConsumer do
     :commit
   end
 
+  # POISON: errors that CANNOT succeed on retry. Retrying them wedges the partition forever, which is
+  # a worse outcome than dropping one event — nothing behind the stuck offset is ever processed.
+  # Observed for real: a %DBConnection.EncodeError% (a type mismatch between the store's response and
+  # the projection's write) retried offset 8 indefinitely and blocked the whole partition.
+  #
+  #   Postgrex.Error   — a constraint/syntax/type failure on OUR statement. The same event will fail
+  #                      the same way every time; only a code change fixes it.
+  #   ArgumentError / FunctionClauseError / KeyError / MatchError
+  #                    — a shape the code cannot handle. Deterministic in the event's content.
+  #
+  # Deliberately NOT poison, because these CAN succeed later:
+  #   DBConnection.ConnectionError — the pool is down or timed out; retry is exactly right.
+  #   :message_store_unavailable   — the store is unreachable; the message may exist later.
+  defp commit_decision({:error, %struct{}}, offset)
+       when struct in [
+              DBConnection.EncodeError,
+              Postgrex.Error,
+              ArgumentError,
+              FunctionClauseError,
+              KeyError,
+              MatchError
+            ] do
+    Logger.error(
+      "inbox-projection: POISON event offset=#{offset} (#{inspect(struct)}) — committing to skip. " <>
+        "This is a code defect, not a transient failure; the projection has DROPPED this event."
+    )
+
+    :commit
+  end
+
   defp commit_decision({:error, reason}, offset) do
     Logger.warning(
       "inbox-projection: apply failed offset=#{offset}, NOT committing (retry): #{inspect(reason)}"

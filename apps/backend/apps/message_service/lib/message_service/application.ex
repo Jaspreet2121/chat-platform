@@ -109,8 +109,13 @@ defmodule MessageService.Application do
       String.to_integer(System.get_env("MESSAGE_HTTP_PORT") || "4104")
   end
 
+  # EVERY consumer flag must be listed here, not just the producer. Omitting one starts the consumer
+  # child with NO brod client, and it then loops forever on `failed to join group, reason:
+  # :client_down` — child "started", flag on, nothing crashes, nothing consumed. Exactly how the
+  # inbox consumer shipped in a1de1cb: reachable only by running it against a real broker.
   defp kafka_client_needed? do
-    brod_producer_selected?() or kafka_consumer_enabled?() or kafka_projection_consumer_enabled?()
+    brod_producer_selected?() or kafka_consumer_enabled?() or kafka_projection_consumer_enabled?() or
+      kafka_inbox_consumer_enabled?()
   end
 
   defp brod_producer_selected? do

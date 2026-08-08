@@ -341,9 +341,9 @@ defmodule MessageService.Messages do
         Logger.warning("message.deleted envelope invalid, skipping publish: #{inspect(reason)}")
     end
   rescue
-    error -> Logger.warning("message.deleted publish raised, ignored: #{inspect(error)}")
+    error -> Logger.error("message.deleted publish raised, ignored: #{inspect(error)}")
   catch
-    kind, value -> Logger.warning("message.deleted publish #{kind}, ignored: #{inspect(value)}")
+    kind, value -> Logger.error("message.deleted publish #{kind}, ignored: #{inspect(value)}")
   end
 
   defp publish_message_created(response) do
@@ -378,9 +378,9 @@ defmodule MessageService.Messages do
         Logger.warning("message.created envelope invalid, skipping publish: #{inspect(reason)}")
     end
   rescue
-    error -> Logger.warning("message.created publish raised, ignored: #{inspect(error)}")
+    error -> Logger.error("message.created publish raised, ignored: #{inspect(error)}")
   catch
-    kind, value -> Logger.warning("message.created publish #{kind}, ignored: #{inspect(value)}")
+    kind, value -> Logger.error("message.created publish #{kind}, ignored: #{inspect(value)}")
   end
 
   defp build_message_created_envelope(response, correlation_id) do
@@ -692,10 +692,15 @@ defmodule MessageService.Messages do
     }
   end
 
+  # `sender_user_id` is part of the contract, not an addition for one consumer: a delete response that
+  # cannot identify whose message was deleted is incomplete on its own terms. Its absence made
+  # message.deleted raise KeyError inside the publisher's rescue, so the event NEVER fired and the
+  # failure sat in a warning — the privacy fix that event exists for did not work end to end.
   defp deleted_message_response(message) do
     %{
       conversation_id: message.conversation_id,
       message_id: message.message_id,
+      sender_user_id: Map.get(message, :sender_user_id),
       deleted: true,
       status: message.status,
       deleted_at: iso8601(message.deleted_at)
