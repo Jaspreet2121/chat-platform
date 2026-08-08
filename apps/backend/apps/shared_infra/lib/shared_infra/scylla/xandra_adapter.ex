@@ -2,12 +2,14 @@ defmodule SharedInfra.Scylla.XandraAdapter do
   @moduledoc """
   The REAL `SharedInfra.Scylla.Client` — a supervised `Xandra.Cluster` (Phase B).
 
-  This is the driver only. It does NOT make Scylla the message store: `MESSAGE_STORE_ADAPTER` still
-  selects Postgres, and nothing writes message rows here (the uuid/timeuuid + date/timestamp encoding
-  question is Phase D — see the note at the bottom).
+  This is the DRIVER, and only the driver. Which store serves messages is `:message_service` config
+  (`MESSAGE_STORE_ADAPTER`, runtime-selected — scylla in production since 2026-08-08), and this
+  module deliberately knows nothing about it: shared_infra must not reach into another app's config,
+  and any claim here about the selected store would go stale the moment that config changed — as the
+  original "store is postgres" boot line did, printing a falsehood on every boot for the whole
+  cutover day.
 
-  BOOT SAFETY IS THE POINT. message_service serves all production chat from Postgres, so a Scylla
-  problem must never take it down:
+  BOOT SAFETY IS THE POINT. A Scylla problem must never take message_service down:
 
     * the cluster is started ONLY when `SCYLLA_NODES` is configured (absent → no child at all);
     * `start_link/1` NEVER returns an error — an unreachable/misconfigured cluster logs and returns
@@ -58,9 +60,11 @@ defmodule SharedInfra.Scylla.XandraAdapter do
   def start_link(opts \\ []) do
     case Xandra.Cluster.start_link(cluster_options(opts)) do
       {:ok, pid} ->
-        Logger.info(
-          "scylla: Xandra cluster started (#{inspect(nodes(opts))}) — driver only, store is postgres"
-        )
+        # Only what THIS module knows: the cluster process started, on these nodes. Which store is
+        # selected is another app's runtime config — a log line needing cross-app config to be true
+        # is a stale claim waiting to happen (this one printed "store is postgres" through the
+        # entire scylla cutover).
+        Logger.info("scylla: Xandra cluster started (#{inspect(nodes(opts))})")
 
         {:ok, pid}
 
