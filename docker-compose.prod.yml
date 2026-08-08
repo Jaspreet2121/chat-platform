@@ -297,6 +297,14 @@ services:
       # markers to Redis; PushSender reads them to skip pushing to an active viewer. Fail-open — no/bad
       # Redis just means no suppression (pushes still send). Same Redis the gateway uses.
       REDIS_URL: redis://redis:6379/0
+      # REQUIRED, not an optimisation. PushContext.message_preview_fields/2 reads the message body
+      # through SharedInfra.MessageClient. Without these two the adapter defaults to
+      # MessageService.MessageClientInProcess, which is NOT in this release ([shared_infra,
+      # notification_service]) — the call raises, is caught as a failed read-back, and EVERY push
+      # preview is suppressed with an :error log. Same pair the gateway uses (see `gateway` below).
+      # Auth for the call is INTERNAL_API_TOKEN, inherited from *secrets above.
+      MESSAGE_CLIENT_ADAPTER: http
+      MESSAGE_SERVICE_URL: http://message:4104
       NOTIFICATION_CONSUMER_ENABLED: "true"
       NOTIFICATION_PARTICIPANTS_CONSUMER_ENABLED: "true"
       NOTIFICATION_CALL_CONSUMER_ENABLED: "true"
