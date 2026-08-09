@@ -33,9 +33,21 @@ Architecture decisions, newest first. Each entry: context → decision → ratio
      re-point for pre-cutover test-era conversations, and soft-deleted rows (which the old count
      included) no longer count.
   3. **Admin analytics** (message_service/analytics.ex, 4 sites, live via the internal router) —
-     frozen numbers. Re-point to `message_search`/summaries or accept removal.
-  4. **Auth-service app stats + moderation** (apps.ex x4, moderation.ex x2) — frozen numbers,
-     admin-facing. Same disposition options as analytics.
+     frozen numbers. **RESOLVED [2026-08-09]: re-pointed to `message_search`** (same argument as
+     blocker #2; every windowed number had read 0 since the cutover).
+  4. **Auth-service app stats + moderation** (apps.ex x4, moderation.ex x2) — frozen numbers.
+     **RESOLVED [2026-08-09]: re-pointed to `message_search` — and two of these sites are THE
+     BILLING METER** (`app_usage_period`: messages_sent, active_users_by_messages — apps.ex names
+     it so), which had measured ZERO for every period since the cutover. Recorded with an EXPIRY
+     in the meter's doc: message_search is deletion-propagated (under-counts — commercially safe,
+     not a metering property) and flag-coupled (stales, never zeroes); before billing CHARGES on
+     these numbers the meter must move to a monotonic source (conversation_message_summaries
+     enabled+backfilled, or a metering ledger). The auth_service-reads-message-tables boundary is
+     RECORDED AS ACCEPTED, not fixed: shared-DB cross-reads are the standing architecture (the
+     analytics moduledoc records the identical pattern; conversation_service reads message_search
+     for blocker #2) — the boundary that matters is the STORE boundary, and the client boundary
+     exists for data that LEFT Postgres. With #1-#4 resolved, the TRUNCATE preconditions are now
+     only the live-schema checks in this entry.
   Also classified by the sweep: `InboxCounters` GATED (interlock, inert under scylla);
   `PostgresAdapter`'s own sites + `refresh_preview_if_last` ADAPTER-DEAD under scylla; the
   conversations.ex:543 freshness lateral LIVE-BUT-CONDITIONAL (auto-delete participants only —

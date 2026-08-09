@@ -58,12 +58,13 @@ defmodule AuthService.AdminListAppsTest do
     id
   end
 
-  # THE TRAP: messages carry their own app_id column, but tenancy is authoritative via the PARENT
-  # CONVERSATION. Write a mismatched app_id on purpose — the count must follow the conversation.
-  defp message!(conversation_id, sender, wrong_app_id) do
+  # THE TRAP, now STRUCTURAL: the count reads message_search (the live source since the re-point),
+  # which has NO app_id column at all — tenancy can only ride the parent-conversation join. The
+  # wrong_app_id param is kept-and-ignored so the call sites still document the old trap's intent.
+  defp message!(conversation_id, sender, _wrong_app_id) do
     Repo.query!(
-      "INSERT INTO messages (message_id, conversation_id, sender_user_id, message_type, body, status, created_at, app_id) VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, 'text', 'hi', 'active', now(), $4::text::uuid)",
-      [Ecto.UUID.generate(), conversation_id, sender, wrong_app_id]
+      "INSERT INTO message_search (message_id, conversation_id, sender_user_id, created_at, search_text) VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, now(), 'hi')",
+      [Ecto.UUID.generate(), conversation_id, sender]
     )
   end
 

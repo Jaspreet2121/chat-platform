@@ -130,7 +130,7 @@ defmodule AuthService.Apps do
            scalar("SELECT count(*) FROM conversations WHERE app_id = $1::text::uuid", app_id),
          messages:
            scalar(
-             "SELECT count(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id " <>
+             "SELECT count(*) FROM message_search m JOIN conversations c ON c.id = m.conversation_id " <>
                "WHERE c.app_id = $1::text::uuid",
              app_id
            ),
@@ -152,6 +152,18 @@ defmodule AuthService.Apps do
   @doc """
   PERIOD usage for ONE app — the billing meter (Phase 1: measurement only). For a calendar month (UTC,
   `period` = "YYYY-MM"; start inclusive, next-month-start exclusive):
+
+  ## THE METER READS message_search — acceptable for MEASUREMENT, with a recorded EXPIRY
+
+  The Postgres `messages` table froze at the scylla cutover, so this meter measured ZERO for every
+  period since 2026-08-08. It now counts `message_search` — the live store's copy — which carries
+  two deltas, stated because this is the billing surface: (1) it is DELETION-PROPAGATED, so a
+  message sent then deleted leaves the meter — UNDER-counting, the commercially safe direction, but
+  not a metering property; (2) if the search consumer is off, the meter goes stale (never zero).
+  EXPIRY CONDITION: before billing CHARGES on these numbers, the meter must move to a MONOTONIC
+  source — `conversation_message_summaries` (increments-only, survives deletion; its consumer is
+  not yet enabled in production and needs a backfill) or a dedicated metering ledger. Measurement-
+  only phase + first-party-only apps is what makes the interim acceptable.
 
     * `messages_sent` — messages created in the period, counted via the PARENT CONVERSATION (the same
       tenancy rule as `app_usage/1`: `messages.app_id` is not trusted).
@@ -189,7 +201,7 @@ defmodule AuthService.Apps do
          period_end: DateTime.to_iso8601(period_end),
          messages_sent:
            period_scalar(
-             "SELECT count(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id " <>
+             "SELECT count(*) FROM message_search m JOIN conversations c ON c.id = m.conversation_id " <>
                "WHERE c.app_id = $1::text::uuid AND m.created_at >= $2 AND m.created_at < $3",
              app_id,
              period_start,
@@ -197,7 +209,7 @@ defmodule AuthService.Apps do
            ),
          active_users_by_messages:
            period_scalar(
-             "SELECT count(DISTINCT m.sender_user_id) FROM messages m " <>
+             "SELECT count(DISTINCT m.sender_user_id) FROM message_search m " <>
                "JOIN conversations c ON c.id = m.conversation_id " <>
                "WHERE c.app_id = $1::text::uuid AND m.created_at >= $2 AND m.created_at < $3",
              app_id,
@@ -304,7 +316,7 @@ defmodule AuthService.Apps do
 
     messages =
       group_count(
-        "SELECT c.app_id::text, count(*) FROM messages m " <>
+        "SELECT c.app_id::text, count(*) FROM message_search m " <>
           "JOIN conversations c ON c.id = m.conversation_id GROUP BY c.app_id"
       )
 

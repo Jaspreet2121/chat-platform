@@ -169,16 +169,14 @@ defmodule AuthService.AppUsageDeliveriesPostgresTest do
   end
 
   # `message_app_id` is stamped on the MESSAGE ROW — deliberately not the conversation's app.
-  defp insert_message!(conversation_id, sender, message_app_id) do
-    id = uuid()
-
+  # Seeds message_search (the live source since the re-point). message_app_id kept-and-ignored:
+  # the table has no app_id column — the conversation join is the only tenancy path, structurally.
+  defp insert_message!(conversation_id, sender, _message_app_id) do
     Repo.query!(
-      "INSERT INTO messages (message_id, conversation_id, sender_user_id, message_type, body, status, app_id) " <>
-        "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, 'text', 'hi', 'active', $4::text::uuid)",
-      [id, conversation_id, sender, message_app_id]
+      "INSERT INTO message_search (message_id, conversation_id, sender_user_id, created_at, search_text) " <>
+        "VALUES (gen_random_uuid(), $1::text::uuid, $2::text::uuid, now(), 'x')",
+      [conversation_id, sender]
     )
-
-    id
   end
 
   defp insert_media!(app_id, owner, size) do

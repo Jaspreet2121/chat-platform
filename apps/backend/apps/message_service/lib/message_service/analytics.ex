@@ -12,10 +12,15 @@ defmodule MessageService.Analytics do
 
   alias MessageService.Repo
 
-  # The admin console is first-party only → every count is scoped to a single tenant. `messages` has NO
-  # reliable app_id (default tenant-zero, never set by inserts), so message counts route through the parent
-  # CONVERSATION's app_id. Direct-app_id tables (users_auth, conversations, media_assets) filter in place.
-  # A nil app_id defaults to tenant-zero (fail-closed to first-party; the console always passes it).
+  # The admin console is first-party only → every count is scoped to a single tenant. Message counts
+  # come from message_search — the live store's copy (DECISION_LOG 2026-08-09 drop-blockers #3): the
+  # Postgres `messages` table froze at the scylla cutover, so every windowed number here has read 0
+  # and every total was stuck since 2026-08-08. message_search has NO app_id column, so tenancy rides
+  # the parent CONVERSATION's app_id — which was already the rule when `messages` was the source (its
+  # app_id was untrusted); now it is structural. Semantics: live non-deleted indexed messages —
+  # deleted messages leave these numbers (recorded delta, same as the admin conversation counts).
+  # If the search consumer is ever off the counts go stale, never zero — search's own 503 is the
+  # loud canary. A nil app_id defaults to tenant-zero (fail-closed to first-party).
   @doc "Totals + recent activity for the dashboard top cards (one map, a handful of grouped queries)."
   def overview(app_id \\ nil) do
     app = SharedInfra.Tenancy.app_id_or_default(app_id)
@@ -27,7 +32,7 @@ defmodule MessageService.Analytics do
         conversations: scalar("SELECT count(*) FROM conversations WHERE app_id = $1", p),
         messages:
           scalar(
-            "SELECT count(*) FROM messages m " <>
+            "SELECT count(*) FROM message_search m " <>
               "JOIN conversations c ON c.id = m.conversation_id WHERE c.app_id = $1",
             p
           ),
@@ -43,7 +48,7 @@ defmodule MessageService.Analytics do
         messages_7d: scalar(recent_messages_sql("7 days"), p),
         active_conversations_7d:
           scalar(
-            "SELECT count(DISTINCT m.conversation_id) FROM messages m " <>
+            "SELECT count(DISTINCT m.conversation_id) FROM message_search m " <>
               "JOIN conversations c ON c.id = m.conversation_id " <>
               "WHERE c.app_id = $1 AND m.created_at >= now() - interval '7 days'",
             p
@@ -55,7 +60,7 @@ defmodule MessageService.Analytics do
 
   # messages routed through the conversation for the tenant predicate (messages.app_id is unreliable).
   defp recent_messages_sql(window) do
-    "SELECT count(*) FROM messages m JOIN conversations c ON c.id = m.conversation_id " <>
+    "SELECT count(*) FROM message_search m JOIN conversations c ON c.id = m.conversation_id " <>
       "WHERE c.app_id = $1 AND m.created_at >= now() - interval '#{window}'"
   end
 
@@ -134,7 +139,7 @@ defmodule MessageService.Analytics do
     FROM generate_series((now()::date - ($1::int - 1)), now()::date, interval '1 day') g
     LEFT JOIN (
       SELECT date_trunc('day', m.created_at)::date AS d, count(*) AS cnt
-      FROM messages m JOIN conversations conv ON conv.id = m.conversation_id
+      FROM message_search m JOIN conversations conv ON conv.id = m.conversation_id
       WHERE m.created_at >= (now()::date - ($1::int - 1)) AND conv.app_id = $2
       GROUP BY d
     ) c ON c.d = g::date

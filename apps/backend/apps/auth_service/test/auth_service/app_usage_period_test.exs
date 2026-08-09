@@ -47,11 +47,16 @@ defmodule AuthService.AppUsagePeriodTest do
     id
   end
 
-  defp message!(conv, sender, at, stamped_app_id) do
+  # Seeds the LIVE source (message_search — the meter's table since the re-point; frozen Postgres
+  # `messages` is no longer consulted). The stamped_app_id param is kept-and-ignored deliberately:
+  # message_search HAS no app_id column, so the old trap this suite proved ("a message stamped with
+  # the wrong app_id counts under its conversation") is now STRUCTURAL — tenancy can only ride the
+  # parent-conversation join, because there is no per-message app_id to mistrust.
+  defp message!(conv, sender, at, _stamped_app_id) do
     Repo.query!(
-      "INSERT INTO messages (message_id, conversation_id, sender_user_id, message_type, body, status, created_at, app_id) " <>
-        "VALUES (gen_random_uuid(), $1::text::uuid, $2::text::uuid, 'text', 'x', 'active', $3, $4::text::uuid)",
-      [conv, sender, at, stamped_app_id]
+      "INSERT INTO message_search (message_id, conversation_id, sender_user_id, created_at, search_text) " <>
+        "VALUES (gen_random_uuid(), $1::text::uuid, $2::text::uuid, $3, 'x')",
+      [conv, sender, at]
     )
   end
 

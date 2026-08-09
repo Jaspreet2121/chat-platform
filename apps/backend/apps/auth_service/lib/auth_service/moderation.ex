@@ -514,8 +514,11 @@ defmodule AuthService.Moderation do
     %{
       conversations:
         scalar("SELECT count(*) FROM conversation_participants WHERE user_id = $1", p),
-      # NOTE: no index on messages.sender_user_id — fine at this scale; add one if message volume grows.
-      messages_sent: scalar("SELECT count(*) FROM messages WHERE sender_user_id = $1", p),
+      # From message_search (the live store's copy — Postgres `messages` froze at the cutover, so
+      # this read 0-growth since 2026-08-08). Deletion-propagated: a user who deletes their messages
+      # shrinks this number — moderation metadata, recorded. No index on sender_user_id — fine at
+      # this scale; add one if message volume grows.
+      messages_sent: scalar("SELECT count(*) FROM message_search WHERE sender_user_id = $1", p),
       media: media_count,
       storage_bytes: storage_bytes,
       last_active_at: last_active(user_id)
@@ -526,7 +529,7 @@ defmodule AuthService.Moderation do
     %Postgrex.Result{rows: [[value]]} =
       Repo.query!(
         "SELECT to_char(GREATEST(m.last_msg, d.last_seen), #{@ts}) FROM " <>
-          "(SELECT max(created_at) AS last_msg FROM messages WHERE sender_user_id = $1) m, " <>
+          "(SELECT max(created_at) AS last_msg FROM message_search WHERE sender_user_id = $1) m, " <>
           "(SELECT max(last_seen_at) AS last_seen FROM device_sessions WHERE user_id = $1) d",
         [uuid_param(user_id)]
       )
