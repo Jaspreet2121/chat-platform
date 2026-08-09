@@ -2,6 +2,67 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-09] The frozen `messages` table: TRUNCATE, eventually — BLOCKED today on four live readers
+
+- **Context:** `public.messages` (1915 rows, all test data) froze at the scylla cutover
+  (last write 2026-08-08 11:00:35). The recorded plan was always to remove it. This entry is the
+  DECISION; execution is its own supervised moment, and the reader sweep that preceded this entry
+  moved the goalposts: the table CANNOT be removed yet.
+- **THE SWEEP FINDING — four live reader groups nobody had named, one of them a user-facing
+  defect:**
+  1. **Pins — BROKEN in production now, independent of any drop.** `Pins.ensure_live_message`
+     validates against Postgres `messages` unconditionally (pins.ex:161), so pinning any
+     post-cutover message fails `:message_not_found`; the pins list mask (pins.ex:106,116) joins
+     the frozen table, so post-cutover pins could not render either. AND `message_pins.message_id`
+     carries `REFERENCES messages ON DELETE CASCADE` (092), so even a fixed validation cannot
+     insert a pin whose message id is not in the frozen table — **the FK itself is incompatible
+     with the scylla store**. The pins fix (validate via `MessageStore.get_message`, drop the FK,
+     mask via store hydration — the stars precedent, which has no FK) is its OWN slice and the
+     FIRST execution blocker.
+  2. **Conversation list/detail `message_count`** (conversations.ex:55,129) — live endpoints
+     serving FROZEN counts. Dropping today would turn a silently-wrong number into a broken core
+     endpoint (42P01 inside the conversation list). Blocker: re-point to
+     `conversation_message_summaries` (already maintained from the topic) or drop the field.
+  3. **Admin analytics** (message_service/analytics.ex, 4 sites, live via the internal router) —
+     frozen numbers. Re-point to `message_search`/summaries or accept removal.
+  4. **Auth-service app stats + moderation** (apps.ex x4, moderation.ex x2) — frozen numbers,
+     admin-facing. Same disposition options as analytics.
+  Also classified by the sweep: `InboxCounters` GATED (interlock, inert under scylla);
+  `PostgresAdapter`'s own sites + `refresh_preview_if_last` ADAPTER-DEAD under scylla; the
+  conversations.ex:543 freshness lateral LIVE-BUT-CONDITIONAL (auto-delete participants only —
+  already recorded as its own narrow defect); `InboxRepair` (nil-safe, sealed) and
+  `ScyllaBackfill` (purpose completed) ONE-OFF-ALREADY-RUN.
+- **Decision — TRUNCATE, not DROP, and only after the blockers clear:**
+  - DROP loses to TRUNCATE: the canonical schema files still CREATE the table, so a
+    dropped-in-prod table resurrects (empty) on every fresh initdb — permanent prod-vs-fresh
+    divergence unless a paired schema-file migration lands, which buys nothing TRUNCATE doesn't.
+  - KEEP-empty loses to KEEP-nothing-in-it: the bytes are irrelevant (a few MB; the 80%-full disk
+    is unrelated); the cost of keeping DATA is cognitive — every future sweep re-proving 1915
+    frozen rows are dead. An empty table with this entry as its tombstone costs neither.
+  - TRUNCATE order: pins slice FIRST (drops the FK — after which `messages` has NO dependents in
+    the canonical schema and TRUNCATE takes nothing with it), then the count/analytics
+    re-points, then TRUNCATE at a natural maintenance moment. NO URGENCY — nothing is waiting on
+    the space, and executing early risks the CASCADE taking live `message_pins` rows.
+- **Execution preconditions (run at the supervised moment, not before):**
+  1. Live-schema dependent check — the schema files have drifted from live before:
+     `SELECT conrelid::regclass FROM pg_constraint WHERE confrelid = 'messages'::regclass;`
+     must return ZERO rows (post-pins-fix). `\d messages` "Referenced by:" must agree.
+  2. Re-run this entry's reader sweep (`grep -rn "FROM messages\|JOIN messages" apps/*/lib`)
+     and confirm every hit is gated, adapter-dead, or removed.
+  3. `InboxRepair.run/0` after truncate prints "messages table is empty — no boundary, nothing to
+     do" (the nil-boundary branch, already in the code) — the sealed tool degrades gracefully and
+     can never run again, which is fine: it is a record, not a tool.
+- **What truncation costs, stated:** rollback-to-postgres was already declared non-lossless
+  (post-cutover rows were never in Postgres); truncation makes it total — but the pre-cutover rows
+  are test data, so the practical loss is nil. Recorded, not discovered later.
+- **`message_receipts` is OUT OF SCOPE, deliberately:** it is a separate frozen table with a LIVE,
+  correct, bounded reader — `seen_under_after_viewing_sql` accepts it as legacy pre-cutover read
+  evidence — so its end is its own decision, due when that evidence ages past relevance, with its
+  own sweep.
+- **Status:** decided; execution blocked on the pins slice (defect fix + FK drop), the
+  message_count re-point, and the analytics/moderation disposition. Nothing was dropped,
+  truncated, or executed in this slice.
+
 ## [2026-08-09] `inbox_read_marks` rows mean SETTLED, not READ
 
 - **The contract change:** a row in `inbox_read_marks` means "this (message, recipient) pair's

@@ -8,6 +8,10 @@ defmodule MessageService.InboxRepair do
   recurring recount is exactly the thing `ConversationService.InboxCounters`' interlock exists to
   prevent.
 
+  AFTER THE FROZEN `messages` TABLE IS TRUNCATED (DECISION_LOG [2026-08-09], the table's-end entry),
+  `boundary/0` returns nil and `run/0` prints "no boundary, nothing to do" — this tool can then
+  never run again, and that is fine: it is sealed, and its audit file is the record.
+
   ## What it repairs, and why the damage exists
 
   Between the Scylla cutover (2026-08-08 ~11:01 UTC) and the reconciler gate (80545d2),
