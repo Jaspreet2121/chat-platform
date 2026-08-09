@@ -13,6 +13,27 @@ defmodule MessageService.PinsTest do
 
   @tenant "00000000-0000-0000-0000-000000000001"
 
+  # Pins now validate/hydrate through MessageStore; this suite's messages are seeded in Postgres,
+  # so the Postgres adapter is the real store for them (the default test adapter is the QueryPlan
+  # placeholder, which answers :message_store_unavailable to everything).
+  setup do
+    prev = Application.get_env(:message_service, :message_store_adapter)
+
+    Application.put_env(
+      :message_service,
+      :message_store_adapter,
+      MessageService.MessageStore.PostgresAdapter
+    )
+
+    on_exit(fn ->
+      if prev,
+        do: Application.put_env(:message_service, :message_store_adapter, prev),
+        else: Application.delete_env(:message_service, :message_store_adapter)
+    end)
+
+    :ok
+  end
+
   defp uuid, do: Ecto.UUID.generate()
 
   defp user! do

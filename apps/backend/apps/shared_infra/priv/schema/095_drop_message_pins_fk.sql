@@ -1,0 +1,23 @@
+-- 095: drop message_pins -> messages FK — the scylla store made it unsatisfiable.
+--
+-- 092 created `message_pins.message_id REFERENCES messages (message_id) ON DELETE CASCADE` when
+-- Postgres was the message store. Since the 2026-08-08 cutover messages live in Scylla and the
+-- Postgres `messages` table is frozen, so the FK cannot hold for any post-cutover message: even
+-- with validation fixed to read the store, INSERT INTO message_pins fails 23503 for every new
+-- message. This is half of the pins defect recorded in DECISION_LOG [2026-08-09] (the frozen
+-- table's-end entry); the other half is code (store-read validation + store-hydrated mask).
+--
+-- THIS DROP IS IRREVERSIBLE IN PRACTICE. The moment one pin references a Scylla-only message, the
+-- constraint can never be re-added — ADD CONSTRAINT would fail validation against rows whose
+-- messages exist only in the other store. What replaces the CASCADE: the synchronous
+-- Pins.unpin_deleted on the delete path (pre-existing), the inbox consumer's delete handler
+-- (at-least-once, ledger-deduped), and the read path's hydration drift-drop as the final net.
+--
+-- Fresh initdb: 092 still creates the FK, this file drops it — fresh environments converge with
+-- production, no schema-file surgery on an already-shipped migration.
+--
+-- DEPLOY ORDER: this migration FIRST, then the code. Between the two, pinning post-cutover
+-- messages keeps failing :message_not_found exactly as it does today (no new breakage). The
+-- REVERSE order makes the fixed validation pass and then hit the FK: a 23503 raise on every
+-- new-message pin — a 500 where today's failure is at least a clean 404.
+ALTER TABLE message_pins DROP CONSTRAINT IF EXISTS message_pins_message_id_fkey;

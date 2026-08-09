@@ -238,9 +238,13 @@ defmodule MessageService.Projections.InboxFromTopic do
         transact(event_id, fn ->
           write_preview(conversation_id, replacement)
           decrement.()
+          unpin(conversation_id, message_id)
         end)
       else
-        transact(event_id, fn -> decrement.() end)
+        transact(event_id, fn ->
+          decrement.()
+          unpin(conversation_id, message_id)
+        end)
       end
     else
       {:ok, :skipped_postgres_adapter} = skip -> skip
@@ -417,6 +421,22 @@ defmodule MessageService.Projections.InboxFromTopic do
         sender_clause <>
         "ON CONFLICT DO NOTHING",
       params
+    )
+
+    :ok
+  end
+
+  # THE CASCADE'S AT-LEAST-ONCE REPLACEMENT (092's FK was dropped in 095 — unsatisfiable once
+  # messages live in Scylla). The synchronous Pins.unpin_deleted on the delete path is best-effort;
+  # a crash there leaves a dead pin occupying one of only max_pins cap slots, which is user-visible
+  # ("pin limit" with fewer pins showing). This runs inside the ledger transaction, so redelivery
+  # re-runs it and a missed synchronous unpin is repaired at-least-once. Idempotent (DELETE), and
+  # the read path's hydration drift-drop remains the final net.
+  defp unpin(conversation_id, message_id) do
+    Repo.query!(
+      "DELETE FROM message_pins " <>
+        "WHERE conversation_id = $1::text::uuid AND message_id = $2::text::uuid",
+      [conversation_id, message_id]
     )
 
     :ok
