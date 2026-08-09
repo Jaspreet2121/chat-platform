@@ -1,4 +1,6 @@
 defmodule AuthService.ApiKeys do
+  require Logger
+
   @moduledoc """
   Secret API keys per app (tenant). The credential an integrator's SERVER presents to call `/v1`.
 
@@ -128,44 +130,63 @@ defmodule AuthService.ApiKeys do
   defp effective_app_id(app_id, "test"), do: resolve_or_create_test_twin(app_id)
   defp effective_app_id(app_id, _live), do: {:ok, app_id}
 
-  # Find-or-create the ONE test twin app for a live app (partial unique index apps_test_twin_unique
-  # guarantees exactly one; a concurrent loser hits the unique violation and re-selects the winner).
-  # Raw SQL (Postgrex) so uuid params use the ::text::uuid cast, matching the outbox convention.
+  # Find-or-create the ONE test twin app for a live app. The fast path is the SELECT (the twin
+  # exists for every key after the integrator's first); the miss path is atomic:
+  # INSERT ... ON CONFLICT DO NOTHING + a GUARANTEED follow-up SELECT (`allocate_twin/1`).
   defp resolve_or_create_test_twin(live_app_id) do
     case twin_of(live_app_id) do
-      {:ok, twin_id} ->
-        {:ok, twin_id}
-
-      :none ->
-        case Repo.query(
-               "INSERT INTO apps (id, name, slug, parent_app_id, mode) " <>
-                 "SELECT gen_random_uuid(), p.name || ' (test)', p.slug || '-test', p.id, 'test' " <>
-                 "FROM apps p WHERE p.id = $1::text::uuid RETURNING id::text",
-               [live_app_id]
-             ) do
-          {:ok, %{rows: [[twin_id]]}} ->
-            {:ok, twin_id}
-
-          # Live app doesn't exist → can't allocate a twin.
-          {:ok, %{rows: []}} ->
-            {:error, :api_key_invalid}
-
-          {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} ->
-            retry_twin(live_app_id)
-
-          _ ->
-            {:error, :api_key_invalid}
-        end
-
-      :error ->
-        {:error, :api_key_invalid}
+      {:ok, twin_id} -> {:ok, twin_id}
+      :none -> allocate_twin(live_app_id)
+      :error -> {:error, :api_key_invalid}
     end
   end
 
-  defp retry_twin(live_app_id) do
-    case twin_of(live_app_id) do
-      {:ok, twin_id} -> {:ok, twin_id}
-      _ -> {:error, :api_key_invalid}
+  @doc false
+  # The atomic miss path, public for the race tests (the commit_decision precedent) — the raced
+  # branch is unreachable through the public API without a genuine concurrent loser.
+  #
+  # THE ON CONFLICT TARGET IS NAMED, not bare: `(parent_app_id) WHERE mode = 'test'` cites the
+  # partial unique index apps_test_twin_unique (054). Bare ON CONFLICT DO NOTHING on this table
+  # would ALSO swallow a collision on apps.slug (048: slug UNIQUE) — an integrator whose live slug
+  # is 'foo' racing a real app named 'foo-test' — and the follow-up SELECT would then find no twin
+  # and return a misleading error with no evidence. Targeted, the slug collision still RAISES and
+  # is logged below as what it actually is.
+  #
+  # ON CONFLICT DO NOTHING RETURNS ZERO ROWS for the conflicted (raced-loser) case — RETURNING
+  # yields nothing precisely when the twin already exists. The follow-up SELECT is therefore NOT
+  # optional; zero rows also covers "live app does not exist", and the SELECT distinguishes the two.
+  def allocate_twin(live_app_id) do
+    case Repo.query(
+           "INSERT INTO apps (id, name, slug, parent_app_id, mode) " <>
+             "SELECT gen_random_uuid(), p.name || ' (test)', p.slug || '-test', p.id, 'test' " <>
+             "FROM apps p WHERE p.id = $1::text::uuid " <>
+             "ON CONFLICT (parent_app_id) WHERE mode = 'test' DO NOTHING " <>
+             "RETURNING id::text",
+           [live_app_id]
+         ) do
+      {:ok, %{rows: [[twin_id]]}} ->
+        {:ok, twin_id}
+
+      {:ok, %{rows: []}} ->
+        # Raced loser (twin exists) or nonexistent live app — the guaranteed SELECT decides.
+        case twin_of(live_app_id) do
+          {:ok, twin_id} -> {:ok, twin_id}
+          _ -> {:error, :api_key_invalid}
+        end
+
+      {:error, %Postgrex.Error{postgres: %{code: :unique_violation}} = error} ->
+        # NOT the twin index (the ON CONFLICT target absorbs that): this is the slug collision.
+        # Loud, because the integrator's test mode is unusable until the clash is resolved and
+        # a silent :api_key_invalid would read as a credentials problem.
+        Logger.warning(
+          "test-twin allocation for #{live_app_id} hit a UNIQUE collision outside the twin " <>
+            "index (almost certainly apps.slug '-test' clash): #{inspect(error.postgres)}"
+        )
+
+        {:error, :api_key_invalid}
+
+      _ ->
+        {:error, :api_key_invalid}
     end
   end
 
