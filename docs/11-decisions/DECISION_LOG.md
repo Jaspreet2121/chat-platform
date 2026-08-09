@@ -2,6 +2,54 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-10] Allocation architecture: three decisions, and two stale flags retired
+
+Per-integrator live app allocation was briefed this week as "the recorded next milestone —
+nothing allocates a distinct live app_id per integrator." VERIFIED FALSE against code and
+production before recording anything: `POST /api/v1/apps` is shipped self-serve allocation
+(session-gated, atomic app+`app_owners` insert, distinct live app_id), and production holds FOUR
+allocated live apps (274c8a2c with owner 0db187fe, plus test-4c91bfbf / hum-1335ed07 /
+dekhu-2aabc0ee, owned by three different users) — the path has been exercised by multiple people.
+Keys have create/list/revoke, owner-authorized; webhooks are per-app on both the session path and
+the key-authed `/v1` path. What the milestone actually still needed was three recorded decisions
+and a contract-doc gap-fill — this entry and the commit beside it.
+
+- **DECISION 1 — TENANT-ZERO IS PERMANENT.** `00000000-…-000000000001` is the first-party (ExWay)
+  tenant, forever. It is NOT technical debt and nobody "cleans it up": removal means rewriting
+  `app_id` on every row of every 048 core table against live data, for zero user value; keeping it
+  costs one function (`SharedInfra.Tenancy.app_id_or_default/1`) and two standing conventions
+  (tenant-zero has no `app_owners` row — VERIFIED in production; the admin console fail-closes to
+  it).
+- **DECISION 2 — THE ORG ENTITY IS DEFERRED-AS-ADDITIVE.** `app_owners` is the org-lite: already
+  many-to-many with roles, so multi-owner teams and multi-app integrators need no schema work. The
+  ONE BINDING RULE that keeps the later addition pure: nothing overloads `apps.name` or
+  `app_owners` with organization semantics. Honoured, adding `organizations` + a nullable
+  `apps.org_id` later is a pure addition — no FK moves, no renames against live customer data.
+  The identity corner, named honestly: an integrator's access rides a consumer OTP login (a
+  tenant-zero `users_auth` row via `app_owners`); moderating that chat user severs their business
+  access. Acceptable while integrators are first-party-adjacent; REVISIT at arms-length
+  integrators, before, not after, the first one.
+- **DECISION 3 — THE SLUG IS CLOSED BY CONSTRUCTION.** `slugify/1` derives every allocated slug as
+  name-prefix + 8 random hex chars (never user-chosen), so no allocated slug can equal any twin's
+  `<slug>-test` — VERIFIED against all four production slugs. The 171aca4 slug-collision residual
+  survives only for hand-INSERTed rows, hence the operational rule: apps are NEVER hand-inserted;
+  the endpoint is the only path.
+- **STALE FLAG 1 RETIRED — "allocation pending."** See the header: shipped and exercised. The
+  fourth false present-tense claim corrected this week.
+- **STALE FLAG 2 RETIRED — "the call:* join is not tenant-gated."** VERIFIED FALSE:
+  `RealtimeGateway.TopicAuthorization.authorize_join("call:" <> id, socket)` resolves the call to
+  its parent conversation (`call_sessions.conversation_id`) and runs the conversation tenant +
+  membership gate; `CallChannel.join/3` calls it in its `with`. The INTEGRATION_GUIDE's claim
+  ("the tenant gate exists and is enforced") was right; the recurring "known gap" flag — repeated
+  in this week's briefs AND in the allocation design report — was the fifth stale claim. The
+  "blocker before integrator #2" it implied DISSOLVES; skeleton mode (persistence off) staying
+  open matches every other topic gate.
+- **Out of scope, per the design traps:** billing/plans/quotas (metering + its recorded expiry
+  stand; `parent_app_id` filterability untouched), dashboards, rotate-as-a-primitive (documented
+  as two calls in the INTEGRATION_GUIDE instead).
+- **Status:** decisions recorded; contract-doc gap-fill lands beside this entry. No code, no
+  schema, no behaviour change.
+
 ## [2026-08-09] The frozen `messages` table: TRUNCATE, eventually — BLOCKED today on four live readers
 
 - **Context:** `public.messages` (1915 rows, all test data) froze at the scylla cutover
