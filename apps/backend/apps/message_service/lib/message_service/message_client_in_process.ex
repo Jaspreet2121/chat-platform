@@ -50,6 +50,18 @@ defmodule MessageService.MessageClientInProcess do
   def get_message(attrs), do: MessageService.MessageStore.get_message(attrs)
 
   @impl true
+  def event_outbox_summary(attrs), do: MessageService.EventOutboxOps.summary(attrs)
+
+  @impl true
+  def event_outbox_list(attrs), do: MessageService.EventOutboxOps.list(attrs)
+
+  @impl true
+  def event_outbox_get(attrs), do: MessageService.EventOutboxOps.get(attrs)
+
+  @impl true
+  def event_outbox_acknowledge(attrs), do: MessageService.EventOutboxOps.acknowledge(attrs)
+
+  @impl true
   def vote_poll(attrs), do: MessageService.Polls.vote(attrs)
 
   @impl true

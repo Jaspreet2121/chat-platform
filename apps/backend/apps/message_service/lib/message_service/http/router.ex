@@ -174,6 +174,25 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.MessageStore.media_download_allowed(body(conn)))
   end
 
+  # Event-outbox operator surface (gated upstream by RequireAdmin + RequirePermission at the
+  # gateway, transport-auth by the TokenPlug here). Read + one one-way acknowledge; the relay is
+  # the only publisher.
+  post "/internal/events/outbox/summary" do
+    send_result(conn, MessageService.EventOutboxOps.summary(body(conn)))
+  end
+
+  post "/internal/events/outbox/list" do
+    send_result(conn, MessageService.EventOutboxOps.list(body(conn)))
+  end
+
+  post "/internal/events/outbox/get" do
+    send_result(conn, MessageService.EventOutboxOps.get(body(conn)))
+  end
+
+  post "/internal/events/outbox/acknowledge" do
+    send_result(conn, MessageService.EventOutboxOps.acknowledge(body(conn)))
+  end
+
   # Read-only admin analytics (gated upstream by the gateway's RequireAdmin + the internal TokenPlug).
   post "/internal/analytics/overview" do
     send_result(conn, {:ok, MessageService.Analytics.overview(Map.get(body(conn), "app_id"))})

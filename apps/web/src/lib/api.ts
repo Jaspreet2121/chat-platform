@@ -1298,6 +1298,67 @@ export function reenqueueWebhook(id: string) {
   );
 }
 
+// --- Event outbox ops (kafka_event_outbox, 096) — read + one-way acknowledge. -------------------
+// The relay is the only publisher; this surface observes. Envelope appears ONLY on the single-row
+// expand (thin payload by design — ids, never message content).
+
+export type EventOutboxStateSummary = {
+  staged: { count: number; max_age_seconds: number };
+  pending: { count: number; max_age_seconds: number };
+  aborted: { count: number };
+  acknowledged: { count: number };
+};
+
+export type EventOutboxRow = {
+  id: string;
+  event_type: string;
+  conversation_id: string;
+  message_id: string;
+  status: string;
+  attempts: number;
+  last_error?: string | null;
+  created_at: string;
+};
+
+export type EventOutboxRowsPage = {
+  data: EventOutboxRow[];
+  count: number;
+  next_cursor?: string | null;
+};
+
+export type EventOutboxRowDetail = EventOutboxRow & {
+  envelope: Record<string, unknown>;
+  topic: string;
+  partition_key: string;
+};
+
+export function getAdminEventOutboxSummary() {
+  return request<EventOutboxStateSummary>(`/api/v1/admin/events/outbox`);
+}
+
+export function getAdminEventOutboxRows(params: {
+  status: string;
+  cursor?: string;
+  limit?: number;
+}) {
+  const query = new URLSearchParams();
+  query.set("status", params.status);
+  if (params.cursor) query.set("cursor", params.cursor);
+  if (params.limit) query.set("limit", String(params.limit));
+  return request<EventOutboxRowsPage>(`/api/v1/admin/events/outbox/rows?${query.toString()}`);
+}
+
+export function getAdminEventOutboxRow(id: string) {
+  return request<EventOutboxRowDetail>(`/api/v1/admin/events/outbox/${encodeURIComponent(id)}`);
+}
+
+export function acknowledgeEventOutboxRow(id: string) {
+  return request<{ id: string; status: string }>(
+    `/api/v1/admin/events/outbox/${encodeURIComponent(id)}/acknowledge`,
+    { method: "POST" }
+  );
+}
+
 export function reenqueueWebhooksBulk(params: { appId?: string; eventType?: string; limit?: number } = {}) {
   const query = new URLSearchParams();
   if (params.appId) query.set("app_id", params.appId);

@@ -1,8 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  acknowledgeEventOutboxRow,
   createConversation,
   createMessage,
+  getAdminEventOutboxRow,
+  getAdminEventOutboxRows,
+  getAdminEventOutboxSummary,
   request,
   updateMe,
   verifyOtp
@@ -185,5 +189,27 @@ describe("the request() boundary", () => {
     installFetch(() => new Response("gateway blew up", { status: 502 }));
 
     await expect(request("/api/v1/thing")).rejects.toThrow("502");
+  });
+});
+
+describe("event-outbox ops client — the wire the admin page rides", () => {
+  it("hits the four routes with the right methods and params", async () => {
+    const calls = installFetch(() => json({}));
+
+    await getAdminEventOutboxSummary();
+    await getAdminEventOutboxRows({ status: "aborted", limit: 50 });
+    await getAdminEventOutboxRow("row 1");
+    await acknowledgeEventOutboxRow("row 1");
+
+    expect(calls[0].url).toContain("/api/v1/admin/events/outbox");
+    expect(calls[1].url).toContain("/api/v1/admin/events/outbox/rows?status=aborted&limit=50");
+    // Encoded id — an id with a space must not split the path.
+    expect(calls[2].url).toContain("/api/v1/admin/events/outbox/row%201");
+    expect(calls[3].url).toContain("/api/v1/admin/events/outbox/row%201/acknowledge");
+    expect(calls[3].method).toBe("POST");
+    // The three reads are GETs — the surface observes; only acknowledge mutates.
+    expect(calls[0].method ?? "GET").toBe("GET");
+    expect(calls[1].method ?? "GET").toBe("GET");
+    expect(calls[2].method ?? "GET").toBe("GET");
   });
 });

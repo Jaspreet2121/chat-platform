@@ -479,6 +479,13 @@ defmodule ApiGatewayWeb.Router do
     # Period meter for one app (billing Phase 1 — measurement only; same fn as the owner endpoint).
     get "/apps/:id/usage", AdminAppsController, :usage
 
+    # Event-outbox ops (096): read + one-way acknowledge; the relay is the only publisher.
+    # Permission reuse recorded 2026-08-10: webhooks.view/manage cover delivery-pipeline ops broadly.
+    get "/events/outbox", AdminEventOutboxController, :summary
+    get "/events/outbox/rows", AdminEventOutboxController, :index
+    get "/events/outbox/:id", AdminEventOutboxController, :show
+    post "/events/outbox/:id/acknowledge", AdminEventOutboxController, :acknowledge
+
     # Webhook failed-delivery ops (dead-letter inspection + idempotent / bulk re-enqueue).
     get "/webhooks/outbox/failed", AdminWebhookController, :failed
     post "/webhooks/outbox/:id/reenqueue", AdminWebhookController, :reenqueue

@@ -14,24 +14,16 @@ defmodule SharedInfra.MessageClient do
   `list_timeline/1` maps to `MessageService.Timeline.list_messages/1` (distinct from
   `MessageService.Messages.list_messages/1`, exposed here as `list_messages/1`).
 
-  ## `get_message/1` is deliberately UNCALLED
+  ## `get_message/1` — history note (this section once said "deliberately UNCALLED")
 
-  It exists for `notification_service`, whose `PushContext.message_preview_fields/1` reads the
-  `messages` table with raw SQL against the shared Postgres. That read returns nothing once the
-  message store moves to Scylla, and the push silently degrades to the body "New message" — the
-  failure is invisible because it still looks like a working notification.
-
-  Moving that read onto this boundary is NOT enough on its own, and this is the thing nobody had
-  written down: the `notification_service` RELEASE bundles only `[shared_infra, notification_service]`
-  (`mix.exs`), so `MessageService.MessageClientInProcess` — the default adapter — DOES NOT EXIST in
-  that container. The in-process default would raise there. The push body can only move off Postgres
-  once the notification container is configured with `MESSAGE_CLIENT_ADAPTER=http` and
-  `MESSAGE_SERVICE_URL`, and that is a production topology change with a real trade: today a
-  message-service outage leaves push previews working (they read the shared DB directly); afterwards
-  every preview during such an outage degrades to "New message".
-
-  So this callback is the capability, added and proven, with no caller. An unused callback is honest;
-  a half-wired one is not.
+  It was added as an uncalled capability for `notification_service`'s push preview, whose raw-SQL
+  Postgres read went blank at the Scylla cutover; the compose change
+  (`MESSAGE_CLIENT_ADAPTER=http` + `MESSAGE_SERVICE_URL` on the notification container) and the
+  caller landed together the same day, and it has been the LIVE push-preview read path since. The
+  release constraint it recorded still matters: `MessageClientInProcess` does not exist in the
+  notification container, so that container must select the HTTP adapter or every preview is
+  suppressed (loudly). Kept because the "capability first, caller as its own decision" sequencing
+  is the pattern this boundary grows by — the event-outbox ops callbacks below followed it.
   """
 
   @type attrs :: map()
@@ -73,6 +65,11 @@ defmodule SharedInfra.MessageClient do
   # already decided the recipient set from the conversation's participants) and is NOT safe to expose
   # to a user-facing controller without adding those filters at the caller.
   @callback get_message(attrs()) :: result()
+  # Event-outbox operator surface (admin console): summary/list/get + the one-way acknowledge.
+  @callback event_outbox_summary(attrs()) :: result()
+  @callback event_outbox_list(attrs()) :: result()
+  @callback event_outbox_get(attrs()) :: result()
+  @callback event_outbox_acknowledge(attrs()) :: result()
   # Polls: replace-the-set vote + the uncapped voter lists.
   @callback vote_poll(attrs()) :: result()
   @callback list_poll_votes(attrs()) :: result()
@@ -94,6 +91,10 @@ defmodule SharedInfra.MessageClient do
   @callback media_download_allowed(attrs()) :: result()
   @optional_callbacks message_info: 1,
                       get_message: 1,
+                      event_outbox_summary: 1,
+                      event_outbox_list: 1,
+                      event_outbox_get: 1,
+                      event_outbox_acknowledge: 1,
                       media_download_allowed: 1,
                       vote_poll: 1,
                       list_poll_votes: 1,
@@ -119,6 +120,10 @@ defmodule SharedInfra.MessageClient do
   def mark_read(attrs), do: normalize(adapter().mark_read(attrs))
   def message_info(attrs), do: normalize(adapter().message_info(attrs))
   def get_message(attrs), do: normalize(adapter().get_message(attrs))
+  def event_outbox_summary(attrs), do: normalize(adapter().event_outbox_summary(attrs))
+  def event_outbox_list(attrs), do: normalize(adapter().event_outbox_list(attrs))
+  def event_outbox_get(attrs), do: normalize(adapter().event_outbox_get(attrs))
+  def event_outbox_acknowledge(attrs), do: normalize(adapter().event_outbox_acknowledge(attrs))
   def vote_poll(attrs), do: normalize(adapter().vote_poll(attrs))
   def list_poll_votes(attrs), do: normalize(adapter().list_poll_votes(attrs))
   def post_status(attrs), do: normalize(adapter().post_status(attrs))

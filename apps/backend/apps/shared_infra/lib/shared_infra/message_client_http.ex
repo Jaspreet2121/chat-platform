@@ -49,6 +49,18 @@ defmodule SharedInfra.MessageClientHttp do
   def get_message(attrs), do: post("/internal/messages/get", attrs)
 
   @impl true
+  def event_outbox_summary(attrs), do: post("/internal/events/outbox/summary", attrs)
+
+  @impl true
+  def event_outbox_list(attrs), do: post("/internal/events/outbox/list", attrs)
+
+  @impl true
+  def event_outbox_get(attrs), do: post("/internal/events/outbox/get", attrs)
+
+  @impl true
+  def event_outbox_acknowledge(attrs), do: post("/internal/events/outbox/acknowledge", attrs)
+
+  @impl true
   def vote_poll(attrs), do: post("/internal/polls/vote", attrs)
 
   @impl true

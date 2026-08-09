@@ -20,6 +20,11 @@ defmodule SharedInfra.IAM do
 
   # Every permission the system knows about. `content.read` is DEFINED for Phase 2 (root only) but no
   # endpoint reads chat content yet.
+  # SCOPE NOTE (recorded 2026-08-10): webhooks.view / webhooks.manage cover DELIVERY-PIPELINE OPS
+  # broadly — the webhook outbox AND the kafka event outbox (096) admin surfaces. The names predate
+  # the second surface; read them as "pipeline ops view/manage", not literally. A separate events.*
+  # pair was considered and rejected: same operator concern, same roles, zero access-control
+  # difference — a new pair would be role-matrix churn for nothing.
   @permissions ~w(
     platform.view
     users.view

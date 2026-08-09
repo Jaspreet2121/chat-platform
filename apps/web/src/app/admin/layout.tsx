@@ -33,6 +33,8 @@ const nav: { href: string; label: string; icon: typeof Activity; exact: boolean;
   // design); moderator sees neither. Mutations (re-enqueue) are separately webhooks.manage server-side.
   { href: "/admin/apps", label: "Apps", icon: Boxes, exact: false, perm: "apps.view" },
   { href: "/admin/webhooks", label: "Webhooks", icon: Webhook, exact: false, perm: "webhooks.view" },
+  // Event-outbox ops (096) — same permission pair as webhooks by recorded decision (pipeline ops).
+  { href: "/admin/events", label: "Events", icon: Activity, exact: false, perm: "webhooks.view" },
   { href: "/admin/health", label: "Health", icon: Activity, exact: false }
 ];
 
