@@ -127,9 +127,22 @@ defmodule MessageService.InboxProjection do
   """
   def record_read_once(conversation_id, message_id, reader_user_id, %{} = message) do
     cond do
-      message.sender_user_id == reader_user_id -> :ok
-      not is_nil(message.deleted_at) -> :ok
-      true -> claim_and_decrement(conversation_id, message_id, reader_user_id, message.created_at)
+      message.sender_user_id == reader_user_id ->
+        :ok
+
+      not is_nil(message.deleted_at) ->
+        :ok
+
+      # The settlement horizon (InboxSettlementPolicy): a receipt for a message older than the
+      # claim horizon is REFUSED — no mark, no decrement. NULL created_at refuses too (unknown age
+      # never claims). Cost: a >30-day-late read leaves its +1 stuck, the same accepted class as
+      # auto-delete non-decay; benefit: any future prune of old marks can never enable a double
+      # decrement, because nothing claims in the pruned range.
+      not MessageService.InboxSettlementPolicy.fresh_enough?(message.created_at) ->
+        :stale_refused
+
+      true ->
+        claim_and_decrement(conversation_id, message_id, reader_user_id, message.created_at)
     end
   end
 

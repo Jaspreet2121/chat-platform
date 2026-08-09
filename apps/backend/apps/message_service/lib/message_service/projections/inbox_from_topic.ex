@@ -86,6 +86,7 @@ defmodule MessageService.Projections.InboxFromTopic do
   """
 
   alias MessageService.InboxProjection
+  alias MessageService.InboxSettlementPolicy
   alias MessageService.MessageStore
   alias MessageService.Repo
   alias MessageService.VisibilityWindow
@@ -139,14 +140,22 @@ defmodule MessageService.Projections.InboxFromTopic do
 
         :absent ->
           # Ledger + SETTLE (see the doc above): the marks are what make the coming delete event a
-          # no-op for recipients this create never incremented.
+          # no-op for recipients this create never incremented. The tombstone read (OUTSIDE the
+          # transaction) supplies created_at — stored on the marks so a future prune can age them,
+          # and checked against the settlement horizon: an over-horizon or age-unknown message
+          # settles NOBODY (the delete claim refuses the same range, so no drift opens up).
           sender = Map.get(payload, "sender_user_id")
+          created_at = tombstone_created_at(conversation_id, message_id)
 
-          transact(
-            event_id,
-            fn -> settle_all_recipients(conversation_id, message_id, sender) end,
-            :skipped_absent
-          )
+          if InboxSettlementPolicy.fresh_enough?(created_at) do
+            transact(
+              event_id,
+              fn -> settle_all_recipients(conversation_id, message_id, sender, created_at) end,
+              :skipped_absent
+            )
+          else
+            transact(event_id, fn -> :ok end, :skipped_absent)
+          end
       end
     else
       {:ok, :skipped_postgres_adapter} = skip -> skip
@@ -211,17 +220,27 @@ defmodule MessageService.Projections.InboxFromTopic do
       # supplies created_at for the window guard — the thin payload does not carry it.
       created_at = tombstone_created_at(conversation_id, message_id)
 
+      # The settlement horizon guards the DECREMENT only — the preview promotion runs regardless
+      # (deleting an old message must still stop showing its text in the chat list). An
+      # over-horizon or age-unknown created_at claims nobody; the read path and the settle refuse
+      # the same range, so no combination of claimants can double-account a pruned-era message.
+      decrement = fn ->
+        if InboxSettlementPolicy.fresh_enough?(created_at) do
+          decrement_for_delete(conversation_id, message_id, sender_user_id, created_at)
+        else
+          :ok
+        end
+      end
+
       if preview?(conversation_id, message_id) do
         replacement = next_live_message(conversation_id, message_id)
 
         transact(event_id, fn ->
           write_preview(conversation_id, replacement)
-          decrement_for_delete(conversation_id, message_id, sender_user_id, created_at)
+          decrement.()
         end)
       else
-        transact(event_id, fn ->
-          decrement_for_delete(conversation_id, message_id, sender_user_id, created_at)
-        end)
+        transact(event_id, fn -> decrement.() end)
       end
     else
       {:ok, :skipped_postgres_adapter} = skip -> skip
@@ -377,20 +396,22 @@ defmodule MessageService.Projections.InboxFromTopic do
   # was incremented — mark every would-have-been recipient as settled so the coming delete event
   # claims nothing. Sender excluded when the payload carries them (their mark would never be
   # consulted anyway: the read path bails on own-sender, the delete claim excludes them).
-  defp settle_all_recipients(conversation_id, message_id, sender_user_id) do
+  defp settle_all_recipients(conversation_id, message_id, sender_user_id, created_at) do
     sender_clause =
       if is_binary(sender_user_id) and sender_user_id != "",
-        do: "AND cp.user_id <> $3::text::uuid ",
+        do: "AND cp.user_id <> $4::text::uuid ",
         else: ""
 
     params =
       if sender_clause == "",
-        do: [conversation_id, message_id],
-        else: [conversation_id, message_id, sender_user_id]
+        do: [conversation_id, message_id, created_at],
+        else: [conversation_id, message_id, created_at, sender_user_id]
 
+    # created_at stored (not NULL as the first version did): new marks are always age-able, so the
+    # future prune's marked_at fallback is needed only for the handful of legacy NULL rows.
     Repo.query!(
-      "INSERT INTO inbox_read_marks (conversation_id, message_id, user_id) " <>
-        "SELECT cp.conversation_id, $2::text::uuid, cp.user_id " <>
+      "INSERT INTO inbox_read_marks (conversation_id, message_id, user_id, message_created_at) " <>
+        "SELECT cp.conversation_id, $2::text::uuid, cp.user_id, $3 " <>
         "FROM conversation_participants cp " <>
         "WHERE cp.conversation_id = $1::text::uuid AND cp.left_at IS NULL " <>
         sender_clause <>

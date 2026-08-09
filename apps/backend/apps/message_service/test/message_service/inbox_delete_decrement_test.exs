@@ -326,4 +326,147 @@ defmodule MessageService.InboxDeleteDecrementTest do
     assert {:ok, :applied} = InboxFromTopic.apply_message_deleted(deleted_env(m))
     assert unread(conversation, recipient) == 0
   end
+
+  # --- the settlement horizon (InboxSettlementPolicy) ----------------------------------------------
+  #
+  # The retention slice: claimants refuse messages older than the claim horizon (or of unknown
+  # age), so a future prune of old marks can never enable a double decrement — nothing claims in
+  # the pruned range. NULL created_at refuses at ALL THREE claimants, by test.
+
+  defp old_message(conversation, sender) do
+    m = message(conversation, sender)
+    stale = DateTime.add(DateTime.utc_now(), -40 * 86_400, :second)
+    m = %{m | created_at: stale}
+    StoreStub.put(m)
+    m
+  end
+
+  defp mark_count(conversation, message_id) do
+    %{rows: [[n]]} =
+      Repo.query!(
+        "SELECT count(*) FROM inbox_read_marks " <>
+          "WHERE conversation_id = $1::text::uuid AND message_id = $2::text::uuid",
+        [conversation, message_id]
+      )
+
+    n
+  end
+
+  test "policy: the 3x invariant holds and nil is never fresh" do
+    alias MessageService.InboxSettlementPolicy, as: Policy
+
+    assert Policy.prune_min_horizon_days() >= 3 * Policy.claim_horizon_days()
+    # The topic-retention constraint (7d measured): replayed events are always claimable.
+    assert Policy.claim_horizon_days() > 7
+    refute Policy.fresh_enough?(nil)
+    refute Policy.fresh_enough?(DateTime.add(DateTime.utc_now(), -31 * 86_400, :second))
+    assert Policy.fresh_enough?(DateTime.utc_now())
+  end
+
+  @tag :postgres_integration
+  test "HORIZON/read: a receipt for an over-horizon message is refused — no mark, no decrement" do
+    [sender, reader] = users = [user!(), user!()]
+    conversation = conversation!(users)
+    m = old_message(conversation, sender)
+
+    # The recipient carries a real unread so a wrong decrement is visible, not floored away.
+    Repo.query!(
+      "UPDATE conversation_participants SET unread_count = 1 " <>
+        "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+      [conversation, reader]
+    )
+
+    assert :stale_refused =
+             InboxProjection.record_read_once(conversation, m.message_id, reader, m)
+
+    assert unread(conversation, reader) == 1
+    assert mark_count(conversation, m.message_id) == 0
+  end
+
+  @tag :postgres_integration
+  test "HORIZON/delete: an over-horizon delete claims nobody; the preview path still runs" do
+    [sender, recipient] = users = [user!(), user!()]
+    conversation = conversation!(users)
+    m = old_message(conversation, sender)
+
+    Repo.query!(
+      "UPDATE conversation_participants SET unread_count = 1 " <>
+        "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+      [conversation, recipient]
+    )
+
+    StoreStub.tombstone(conversation, m.message_id)
+    assert {:ok, :applied} = InboxFromTopic.apply_message_deleted(deleted_env(m))
+
+    assert unread(conversation, recipient) == 1
+    assert mark_count(conversation, m.message_id) == 0
+  end
+
+  @tag :postgres_integration
+  test "HORIZON/settle: an over-horizon create-skip settles nobody" do
+    [sender, recipient] = users = [user!(), user!()]
+    conversation = conversation!(users)
+    m = old_message(conversation, sender)
+    StoreStub.tombstone(conversation, m.message_id)
+
+    assert {:ok, :skipped_absent} = InboxFromTopic.apply_message_created(created_env(m))
+    assert mark_count(conversation, m.message_id) == 0
+    _ = recipient
+  end
+
+  @tag :postgres_integration
+  test "NULL created_at refuses at all three claimants — unknown age never claims" do
+    [sender, recipient] = users = [user!(), user!()]
+    conversation = conversation!(users)
+
+    Repo.query!(
+      "UPDATE conversation_participants SET unread_count = 1 " <>
+        "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+      [conversation, recipient]
+    )
+
+    # Read: a message map with nil created_at (unreadable age).
+    m = message(conversation, sender)
+    nil_aged = %{m | created_at: nil}
+
+    assert :stale_refused =
+             InboxProjection.record_read_once(conversation, m.message_id, recipient, nil_aged)
+
+    # Delete + settle: a message the store cannot resolve at all (tombstone_created_at -> nil).
+    ghost = %{
+      conversation_id: conversation,
+      message_id: Ecto.UUID.generate(),
+      sender_user_id: sender,
+      created_at: DateTime.utc_now(),
+      deleted_at: nil
+    }
+
+    assert {:ok, :skipped_absent} = InboxFromTopic.apply_message_created(created_env(ghost))
+    assert {:ok, :applied} = InboxFromTopic.apply_message_deleted(deleted_env(ghost))
+
+    assert unread(conversation, recipient) == 1
+    assert mark_count(conversation, m.message_id) == 0
+    assert mark_count(conversation, ghost.message_id) == 0
+  end
+
+  @tag :postgres_integration
+  test "fresh settle-marks now CARRY created_at — new rows are always age-able by a future prune" do
+    [sender, recipient] = users = [user!(), user!()]
+    conversation = conversation!(users)
+    m = message(conversation, sender)
+    StoreStub.tombstone(conversation, m.message_id)
+
+    assert {:ok, :skipped_absent} = InboxFromTopic.apply_message_created(created_env(m))
+
+    %{rows: [[with_age]]} =
+      Repo.query!(
+        "SELECT count(*) FROM inbox_read_marks " <>
+          "WHERE conversation_id = $1::text::uuid AND message_id = $2::text::uuid " <>
+          "AND message_created_at IS NOT NULL",
+        [conversation, m.message_id]
+      )
+
+    assert with_age == 1
+    _ = recipient
+  end
 end

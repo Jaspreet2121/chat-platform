@@ -22,6 +22,20 @@ Architecture decisions, newest first. Each entry: context → decision → ratio
   cross-table NOT EXISTS in every writer and reintroduce the race windows the single PK closes.
 - **Status:** live with the delete-decrement slice; retention note in 093 unchanged (pruning still
   needs a horizon rule, now for settles as well as reads).
+- **RETENTION ADDENDUM [2026-08-09] — the horizon rule shipped ALONE; there is NO prune.**
+  `MessageService.InboxSettlementPolicy` is the single source: claimants refuse messages older than
+  30 days (or of unknown age — NULL refuses at all three), any future prune must respect a 90-day
+  floor read from the same module, and the 3x gap is COMPILE-CHECKED — it is what makes the
+  prune-vs-rolling-deploy race unreachable by construction (60 days of margin). Measured before
+  deciding: 17 rows / 2409 B-per-row (page overhead at that size, ~230-250 B real at scale) →
+  worst-case ~0.8 GB/year, decades at current traffic — so nothing scheduled ships; a scheduled
+  writer on a guarded table is the reconciler's shape, and the only new behaviour is claimants
+  DECLINING to write. Constraint recorded with the constant: topic retention (measured 7d,
+  explicitly set) must stay BELOW the claim horizon or replayed events get refused and the
+  1b0bd2e interleaving guarantees silently degrade. REVISIT at 1 GiB table size or 5M rows; the
+  prune to write then is a manual runbook action, not a supervised job. Settle-marks now store
+  message_created_at (the first version wrote NULL), so only legacy rows need the marked_at
+  fallback.
 
 ## [2026-08-08] MESSAGE TEXT LIVES IN POSTGRES — as a search-only copy
 
