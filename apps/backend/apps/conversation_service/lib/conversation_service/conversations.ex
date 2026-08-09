@@ -48,11 +48,21 @@ defmodule ConversationService.Conversations do
       {where, params} = admin_conv_filter(attrs)
 
       # uuid columns ::text for Jason. Counts are subqueries (metadata only — no body/content selected).
+      #
+      # message_count comes from message_search — the search-only copy of the LIVE store — not the
+      # frozen Postgres `messages` table (drop-blocker #2, DECISION_LOG 2026-08-09: that table froze
+      # at the cutover, so this count was stuck at its pre-cutover value and a truncate would 42P01
+      # inside this endpoint). Semantics: live non-deleted messages the index holds — soft-deleted
+      # and never-indexed pre-cutover rows are excluded, so the number DROPPED at the re-point for
+      # old test-era conversations. ADMIN-ONLY surface; if the search consumer is ever off the count
+      # goes stale (existing rows persist — never zero, never an error) and search's own 503 is the
+      # loud canary. The pins slice refused this coupling for a USER-facing feature; that refusal
+      # does not extend to first-party admin metadata with no partition-scan-free alternative.
       sql =
         "SELECT c.id::text, c.type, c.title, c.app_id::text, c.status, " <>
           "to_char(c.updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS last_activity, " <>
           "(SELECT count(*) FROM conversation_participants p WHERE p.conversation_id = c.id) AS participant_count, " <>
-          "(SELECT count(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count " <>
+          "(SELECT count(*) FROM message_search s WHERE s.conversation_id = c.id) AS message_count " <>
           "FROM conversations c #{where} " <>
           "ORDER BY c.updated_at DESC LIMIT #{page_size} OFFSET #{offset}"
 
@@ -126,7 +136,7 @@ defmodule ConversationService.Conversations do
           sql =
             "SELECT c.id::text, c.type, c.title, c.status, " <>
               "to_char(c.updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS last_activity, " <>
-              "(SELECT count(*) FROM messages m WHERE m.conversation_id = c.id) AS message_count, " <>
+              "(SELECT count(*) FROM message_search s WHERE s.conversation_id = c.id) AS message_count, " <>
               "(SELECT count(*) FROM conversation_participants p WHERE p.conversation_id = c.id) AS participant_count, " <>
               "(SELECT COALESCE(up.display_name, ua.phone_number, o.user_id::text) " <>
               "   FROM conversation_participants o " <>

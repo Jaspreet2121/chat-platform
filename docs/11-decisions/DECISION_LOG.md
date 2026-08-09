@@ -19,10 +19,19 @@ Architecture decisions, newest first. Each entry: context → decision → ratio
      with the scylla store**. The pins fix (validate via `MessageStore.get_message`, drop the FK,
      mask via store hydration — the stars precedent, which has no FK) is its OWN slice and the
      FIRST execution blocker.
-  2. **Conversation list/detail `message_count`** (conversations.ex:55,129) — live endpoints
-     serving FROZEN counts. Dropping today would turn a silently-wrong number into a broken core
-     endpoint (42P01 inside the conversation list). Blocker: re-point to
-     `conversation_message_summaries` (already maintained from the topic) or drop the field.
+  2. **`message_count` in the ADMIN conversation endpoints** (conversations.ex:55,129 —
+     `admin_list_conversations` / `admin_user_conversations`; this entry originally said
+     "conversation list/detail", overstating them as user-facing — the user list is @inbox_sql and
+     never carried the field) — live admin endpoints serving FROZEN counts; a drop would 42P01
+     inside them. **RESOLVED [2026-08-09 later the same day]: re-pointed to `message_search`.**
+     `conversation_message_summaries` was rejected on inspection — its consumer is not even
+     enabled in production and its counts would need a backfill; dropping the field was rejected
+     because the admin console renders it in three places. The pins slice's coupling refusal does
+     not extend here: admin-only first-party surface, flag-off degrades counts to STALE (existing
+     index rows persist — never zero, never an error), and search's own 503 is the loud canary.
+     Semantics change, accepted: live non-deleted indexed messages — the number DROPPED at the
+     re-point for pre-cutover test-era conversations, and soft-deleted rows (which the old count
+     included) no longer count.
   3. **Admin analytics** (message_service/analytics.ex, 4 sites, live via the internal router) —
      frozen numbers. Re-point to `message_search`/summaries or accept removal.
   4. **Auth-service app stats + moderation** (apps.ex x4, moderation.ex x2) — frozen numbers,
