@@ -52,6 +52,14 @@ in the path (`/v1`); there is no version header.
 
 ## 2. Quickstart
 
+> **Onboarding today is self-serve via these endpoints — or done for you.** For
+> early integrators the platform team typically runs the app-registration step
+> on your behalf, using the *same* endpoint below (there is no separate admin
+> path, so the result is identical). A freshly registered app is **inert until
+> you configure it**: with no API keys it can do nothing, and with no webhook
+> endpoints nothing is delivered anywhere (events for an endpoint-less app are
+> simply not enqueued). Nothing listens on your behalf until you register it.
+
 Five steps to your first message.
 
 **1 — Register an app** (with your first-party session token):
@@ -140,6 +148,18 @@ random data. The platform stores only a SHA-256 hash plus a non-secret prefix
 (the first 16 chars, e.g. `sk_live_AbCd1234`) for display. The full key is
 shown once at creation and is unrecoverable — if you lose it, revoke it and
 issue a new one.
+
+**Key lifecycle.** Create, list, and revoke are the primitives
+(`POST/GET /api/v1/api-keys`, `DELETE /api/v1/api-keys/:id`, owner-session
+authenticated). There is deliberately no one-call "rotate":
+
+- **Rotation is two calls, and the overlap window is yours.** Create the new
+  key, deploy it to your servers, then revoke the old one. Both keys work
+  during the cutover, so rotation is zero-downtime and you control how long
+  the overlap lasts.
+- **A leaked key's response is revoke, immediately.** Revocation takes effect
+  on the next request — verification checks the stored hash and the revoked
+  flag on every call; there is no cache to wait out. Then issue a replacement.
 
 **App management endpoints** (`/api/v1/apps`, `/api/v1/api-keys`,
 `/api/v1/webhooks/endpoints`) are authenticated with your first-party **OTP
@@ -430,10 +450,18 @@ func verify(raw []byte, header, secret string) bool {
 
 Keys are prefixed `sk_test_` or `sk_live_`. A **test key resolves to a separate,
 fully isolated app** (a "test twin") — so data you create with a test key is
-invisible to your live key and vice-versa. Register a webhook with a test-mode
-session/app to receive test deliveries only.
+invisible to your live key and vice-versa.
 
-Everything in this guide works identically in both modes. Build against
+**Webhooks are registered separately per mode, and test-mode webhooks are
+managed with the test KEY, not the session.** The twin is a distinct app with
+its own endpoints; register test-delivery endpoints via
+`/v1/webhooks/endpoints` **authenticated with your `sk_test_` key** (the key's
+app *is* the twin). The session-authenticated `/api/v1/webhooks/endpoints`
+route manages only apps you own directly — the twin is derived, not owned, so
+that route cannot configure it. Your live endpoints, registered under the live
+app (either route), never receive test deliveries, and vice-versa.
+
+Everything else in this guide works identically in both modes. Build against
 `sk_test_`, then switch to `sk_live_` for production — no code change beyond the
 key.
 
