@@ -47,6 +47,25 @@ defmodule SharedInfra.Kafka.BrodProducer do
     end
   end
 
+  # ACK-CONFIRMED: :brod.produce_sync awaits the broker ack, so :ok here means the broker HAS the
+  # event — the property the event outbox needs before it may mark a row published. Latency is the
+  # broker RTT; every caller is off the request path (an unlinked Task or the relay).
+  @impl true
+  def produce_sync(topic, key, value, opts \\ []) do
+    client = Keyword.get(opts, :client, @client_name)
+
+    case Jason.encode(value) do
+      {:ok, encoded} ->
+        case :brod.produce_sync(client, topic, :hash, encode_key(key), encoded) do
+          :ok -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, {:encode_failed, reason}}
+    end
+  end
+
   defp encode_key(key) when is_binary(key), do: key
   defp encode_key(nil), do: ""
   defp encode_key(key), do: to_string(key)

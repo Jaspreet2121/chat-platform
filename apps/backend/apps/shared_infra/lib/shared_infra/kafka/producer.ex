@@ -12,8 +12,17 @@ defmodule SharedInfra.Kafka.Producer do
   @callback produce(topic :: String.t(), key :: term(), value :: term(), opts :: keyword()) ::
               {:ok, term()} | {:error, term()}
 
+  # ACK-CONFIRMED produce, for callers that must know delivery happened (the event outbox marks a
+  # row published only on this). `produce/4`'s {:ok, :produced} means buffer-accept, NOT delivery.
+  @callback produce_sync(topic :: String.t(), key :: term(), value :: term(), opts :: keyword()) ::
+              :ok | {:error, term()}
+
   def produce(topic, key, value, opts \\ []) do
     adapter().produce(topic, key, value, opts)
+  end
+
+  def produce_sync(topic, key, value, opts \\ []) do
+    adapter().produce_sync(topic, key, value, opts)
   end
 
   def adapter do
@@ -38,4 +47,7 @@ defmodule SharedInfra.Kafka.NoopProducer do
 
   @impl true
   def produce(_topic, _key, _value, _opts \\ []), do: {:error, :kafka_unavailable}
+
+  @impl true
+  def produce_sync(_topic, _key, _value, _opts \\ []), do: {:error, :kafka_unavailable}
 end

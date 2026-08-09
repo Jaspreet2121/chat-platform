@@ -308,7 +308,19 @@ defmodule MessageService.InboxConsumerE2ETest do
         send(:delete_publish_probe, {:produced, topic, key, value})
         {:ok, :produced}
       end
+
+      # The delete publish now flows through the EVENT OUTBOX (broker-acked produce_sync), not the
+      # legacy fire-and-forget produce — same event, same key, same payload contract, durable path.
+      @impl true
+      def produce_sync(topic, key, value, _opts \\ []) do
+        send(:delete_publish_probe, {:produced, topic, key, value})
+        :ok
+      end
     end
+
+    # Shared sandbox: the outbox's fast-path Task (unlinked) reads/deletes its row via Repo.
+    Ecto.Adapters.SQL.Sandbox.mode(MessageService.Repo, {:shared, self()})
+    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.mode(MessageService.Repo, :manual) end)
 
     previous = Application.get_env(:shared_infra, :kafka_producer_adapter)
     prev_publish = Application.get_env(:message_service, :kafka_publish_enabled)
@@ -333,6 +345,14 @@ defmodule MessageService.InboxConsumerE2ETest do
       "message_id" => message_id,
       "actor_user_id" => sender
     })
+
+    # The outbox publishes the CREATE from put_message itself now (store! goes through the
+    # adapter), so the probe sees created-then-deleted — assert BOTH, in order: the create
+    # arriving first on the same key is the partition-ordering guarantee made visible.
+    assert_receive {:produced, "message.events.v1", ^conversation, created_env}, 5_000
+
+    assert (Map.get(created_env, :event_type) || Map.get(created_env, "event_type")) ==
+             "message.created.v1"
 
     assert_receive {:produced, "message.events.v1", key, envelope}, 5_000
 

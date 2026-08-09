@@ -300,7 +300,8 @@ defmodule MessageService.Messages do
   # Mirrors publish_message_created/1 exactly — unlinked Task, correlation id captured in the CALLER
   # process, every failure logged and swallowed. A delete must never fail because a broker is down.
   defp publish_message_deleted(response) do
-    if kafka_publish_enabled?() do
+    # Same ownership rule as publish_message_created/1 above.
+    if kafka_publish_enabled?() and not MessageService.EventOutbox.owns_publishes?() do
       correlation_id = SharedInfra.Correlation.get_or_generate()
       Task.start(fn -> do_publish_message_deleted(response, correlation_id) end)
     end
@@ -347,7 +348,11 @@ defmodule MessageService.Messages do
   end
 
   defp publish_message_created(response) do
-    if kafka_publish_enabled?() do
+    # Under the Scylla adapter the EVENT OUTBOX owns this publish (staged in the store's joined
+    # transaction, broker-acked, relay-backed) — firing here too would double-publish every create
+    # as the NORM rather than as a recovery artifact. Other adapters keep this legacy
+    # fire-and-forget path, with its known loss window, stated in EventOutbox's moduledoc.
+    if kafka_publish_enabled?() and not MessageService.EventOutbox.owns_publishes?() do
       # Capture the correlation id SYNCHRONOUSLY in THIS (caller) process — Logger metadata is
       # per-process, so reading it inside the Task below would see the Task's empty metadata and
       # lose the trace. Threaded into the closure instead.

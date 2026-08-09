@@ -27,6 +27,11 @@ defmodule MessageService.Application do
     # store path; sweeping an empty set is a no-op, so it is safe to run everywhere the repo runs).
     sweeper = if repo == [], do: [], else: [MessageService.WebhookOutboxSweeper]
 
+    # The event-outbox relay rides with the repo exactly like the webhook sweeper (its moduledoc
+    # cites that precedent). Its passes self-gate on KAFKA_PUBLISH_ENABLED, so running it where
+    # publishing is off is a no-op tick, never work.
+    relay = if repo == [], do: [], else: [MessageService.EventOutboxRelay]
+
     # C7: the shadow-mirror task supervisor is ALWAYS cheap to run (idle unless dual_write is the
     # selected adapter) and must exist before any mirror dispatches.
     shadow = [{Task.Supervisor, name: MessageService.ShadowMirror.TaskSupervisor}]
@@ -61,6 +66,7 @@ defmodule MessageService.Application do
 
     repo ++
       sweeper ++
+      relay ++
       shadow ++
       client ++
       log_consumer ++

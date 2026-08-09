@@ -281,11 +281,25 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     # promotes/aborts. NO LOST WEBHOOK survives; what the same-transaction emit had and this does
     # not is atomicity of the ENQUEUE — stated in the integration guide, not just here.
     app_id = MessageService.WebhookEvents.conversation_app_id(attr(attrs, "conversation_id"))
-    {:ok, staged_ids} = stage_webhooks(app_id, attrs)
+
+    # THE JOINED TRANSACTION (event-outbox design decision): the Kafka event intent and the webhook
+    # intent commit or roll back TOGETHER — two observers of one event can never see different
+    # truth. Both are durable Postgres intent BEFORE the authoritative Scylla put.
+    #
+    # DEPLOY ORDER CONSEQUENCE, stated where the risk lives: this INSERT is inside the message-send
+    # path. Deploying this code before migration 096 makes EVERY send fail with Postgrex.Error —
+    # harsher than the 42P01-retry consumer pattern. Migration first is MANDATORY.
+    {:ok, {staged_ids, event_ids}} =
+      Repo.transaction(fn ->
+        {:ok, staged_ids} = stage_webhooks(app_id, attrs)
+        event_ids = MessageService.EventOutbox.stage_created(attrs)
+        {staged_ids, event_ids}
+      end)
 
     with {:ok, client} <- client_adapter(),
          {:ok, _result} <- execute(client, plan) do
       {:ok, _} = SharedInfra.WebhookOutbox.promote_staged(Repo, staged_ids)
+      MessageService.EventOutbox.promote_and_publish_async(event_ids)
       write_media_projections(client, attrs)
       {:ok, response_from_attrs(attrs)}
     else
@@ -296,6 +310,11 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
             staged_ids,
             "scylla put_message failed before promote: #{inspect(reason)}"
           )
+
+        MessageService.EventOutbox.abort(
+          event_ids,
+          "scylla put_message failed before promote: #{inspect(reason)}"
+        )
 
         {:error, reason}
     end
@@ -419,6 +438,17 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
   @impl true
   def delete_message(attrs) do
+    # Durable event intent BEFORE the tombstone (the delete path stages no webhooks, so this is its
+    # own INSERT — not latency-sensitive). Same lifecycle as the create path: promote+publish on
+    # success, abort-with-evidence on failure.
+    #
+    # The delete attrs carry no sender_user_id (the store resolves the row itself), but the EVENT
+    # must — the inbox consumer requires it (the decrement cannot exclude the sender without it;
+    # the f95d031/widened-response lesson). Enrich from a point read of the still-live row; the
+    # extra read is on a non-hot path and mirrors what the old envelope took from the deleted
+    # row's response.
+    event_ids = MessageService.EventOutbox.stage_deleted(enrich_with_sender(attrs))
+
     mutate_resolved(attrs, fn bucket ->
       MessageTimelineWrites.mark_deleted_plan(
         attrs
@@ -428,10 +458,16 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     end)
     |> case do
       {:ok, row} ->
+        MessageService.EventOutbox.promote_and_publish_async(event_ids)
         tombstone_gallery(row)
         {:ok, Map.put(response_from_row(row), :status, "deleted")}
 
       {:error, reason} ->
+        MessageService.EventOutbox.abort(
+          event_ids,
+          "scylla delete_message failed: #{inspect(reason)}"
+        )
+
         {:error, reason}
     end
   end
@@ -480,6 +516,20 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     with {:ok, response} <- put_receipt(Map.merge(attrs, %{"status" => "read"})) do
       maintain_unread(attrs)
       {:ok, response}
+    end
+  end
+
+  defp enrich_with_sender(attrs) do
+    if attr(attrs, "sender_user_id") do
+      attrs
+    else
+      case get_message(attrs) do
+        {:ok, message} ->
+          Map.put(attrs, "sender_user_id", to_string(Map.get(message, :sender_user_id)))
+
+        _ ->
+          attrs
+      end
     end
   end
 
