@@ -50,9 +50,13 @@ Architecture decisions, newest first. Each entry: context → decision → ratio
      only the live-schema checks in this entry.
   Also classified by the sweep: `InboxCounters` GATED (interlock, inert under scylla);
   `PostgresAdapter`'s own sites + `refresh_preview_if_last` ADAPTER-DEAD under scylla; the
-  conversations.ex:543 freshness lateral LIVE-BUT-CONDITIONAL (auto-delete participants only —
-  already recorded as its own narrow defect); `InboxRepair` (nil-safe, sealed) and
-  `ScyllaBackfill` (purpose completed) ONE-OFF-ALREADY-RUN.
+  @inbox_sql freshness lateral LIVE-BUT-CONDITIONAL — **RETIRED [2026-08-09]**: its write-back was
+  already inert behind the reconciler interlock, its display fired frozen-window counts for
+  aged-out auto-delete unread, and post-truncate it would have zeroed live counters on the front
+  door; removed outright, the maintained column answers, auto-delete non-decay accepted (the
+  standing class); `InboxRepair` (nil-safe, sealed) and `ScyllaBackfill` (purpose completed)
+  ONE-OFF-ALREADY-RUN. With the lateral retired, EVERY reader in the sweep is now resolved, gated,
+  adapter-dead, or sealed — the TRUNCATE waits only on the live-schema precondition checks below.
 - **Decision — TRUNCATE, not DROP, and only after the blockers clear:**
   - DROP loses to TRUNCATE: the canonical schema files still CREATE the table, so a
     dropped-in-prod table resurrects (empty) on every fresh initdb — permanent prod-vs-fresh

@@ -518,13 +518,11 @@ defmodule ConversationService.Conversations do
          CASE WHEN vis.ok THEN c.last_message_content_type END,
          to_char((CASE WHEN vis.ok THEN c.last_message_at ELSE c.updated_at END) AT TIME ZONE 'UTC',
                  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
-         COALESCE(rc.recount, cp.unread_count)::int,
+         cp.unread_count::int,
          gp.avatar_media_id::text,
          (cp.pinned_at IS NOT NULL),
          (cp.archived_at IS NOT NULL),
-         COALESCE(tg.tag_ids, ARRAY[]::text[]),
-         cp.unread_count::int,
-         rc.recount::int
+         COALESCE(tg.tag_ids, ARRAY[]::text[])
   FROM conversations c
   JOIN conversation_participants cp
     ON cp.conversation_id = c.id AND cp.user_id = ANY($1::uuid[]) AND cp.left_at IS NULL
@@ -540,27 +538,16 @@ defmodule ConversationService.Conversations do
             AND (cp.auto_delete_seconds IS NULL
                  OR c.last_message_at > now() - make_interval(secs => cp.auto_delete_seconds))) AS ok
   ) vis ON true
-  -- THE FRESHNESS EXCEPTION: a maintained counter cannot decay as a rolling auto-delete window moves
-  -- (messages age out with no write anywhere). `oldest_unread_at` is the trustworthiness watermark:
-  -- when it has (or may have) aged out, recount inline — the CASE short-circuits, so the messages
-  -- scan runs ONLY for rows that fail the test (auto-delete on, unread > 0, watermark stale). The
-  -- app-side mapper write-repairs any row where this fired (InboxCounters.repair/3).
-  LEFT JOIN LATERAL (
-    SELECT CASE
-             WHEN cp.auto_delete_seconds IS NOT NULL AND cp.unread_count > 0
-                  AND (cp.oldest_unread_at IS NULL
-                       OR cp.oldest_unread_at <= now() - make_interval(secs => cp.auto_delete_seconds))
-               THEN (SELECT count(*)::int FROM messages m
-                     WHERE m.conversation_id = c.id AND m.deleted_at IS NULL
-                       AND m.sender_user_id <> cp.user_id
-                       AND (cp.cleared_before IS NULL OR m.created_at > cp.cleared_before)
-                       AND m.created_at > now() - make_interval(secs => cp.auto_delete_seconds)
-                       AND NOT EXISTS (
-                         SELECT 1 FROM message_receipts r
-                         WHERE r.conversation_id = c.id AND r.message_id = m.message_id
-                           AND r.user_id = cp.user_id AND (r.status = 'read' OR r.read_at IS NOT NULL)))
-           END AS recount
-  ) rc ON true
+  -- THE FRESHNESS EXCEPTION STOOD HERE and was RETIRED on 2026-08-09 (the last frozen-table
+  -- conditional). It inline-recounted from Postgres `messages` when an auto-delete watermark aged
+  -- out, and the mapper write-repaired the row. Under the scylla store that recount read a FROZEN
+  -- table (displaying frozen-window counts — usually 0 — for users with real unread), and after the
+  -- planned truncate it would have silently ZEROED live counters on the front door. Its write-back
+  -- (InboxCounters.repair) was already inert — the reconciler interlock gates it. The maintained
+  -- column is authoritative: increment (ledger consumer), decrement (read marks + delete claims),
+  -- horizon, and the one-off repair. What retiring it costs: auto-delete NON-DECAY — an aged-out
+  -- unread keeps its count until the user opens the chat — the class accepted and recorded across
+  -- every counter surface this week. Do not reintroduce a `messages` read here.
   -- THE CALLER'S OWN tags on this conversation. Anchored on cp.user_id, so a row can only ever carry
   -- the tags of the user the row is for — another participant's tags are unreachable from here, not
   -- merely filtered out. Rides conversation_tag_assignments(conversation_id) from migration 085.
@@ -619,17 +606,8 @@ defmodule ConversationService.Conversations do
                         avatar_media_id,
                         pinned,
                         archived,
-                        tag_ids,
-                        raw_unread,
-                        recount
+                        tag_ids
                       ] ->
-      # READ-REPAIR (086): `recount` is non-nil only when the freshness exception fired (auto-delete
-      # window moved past the watermark). Persist the correction so the exception stops firing for
-      # this row — rare by construction, bounded to one recount write per stale row per read.
-      if is_integer(recount) and recount != raw_unread do
-        ConversationService.InboxCounters.repair(id, user_id, recount)
-      end
-
       %{
         user_id: user_id,
         conversation_id: id,

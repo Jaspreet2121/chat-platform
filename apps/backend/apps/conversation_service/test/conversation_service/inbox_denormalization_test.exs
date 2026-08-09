@@ -7,9 +7,9 @@ defmodule ConversationService.InboxDenormalizationTest do
     * the PREVIEW MASK — per-user windows applied to conversation-global columns at read time,
       including the argument's key property: if the newest message is outside a user's window,
       NO older message is shown (nothing older can be inside it);
-    * THE FRESHNESS EXCEPTION — a stale `oldest_unread_at` under an auto-delete window triggers an
-      inline recount, the row answers with the CORRECT count immediately, and READ-REPAIR persists
-      it so the exception stops firing;
+    * THE FRESHNESS EXCEPTION IS RETIRED (2026-08-09) — an aged-out watermark now answers with the
+      MAINTAINED count (auto-delete non-decay, the accepted class), and nothing recounts or
+      write-repairs on the read path;
     * the exception NEVER fires for trustworthy rows (the happy path stays one lateral-free query —
       asserted by query count, the same telemetry proof the tags slice used);
     * clear_history resets counter + watermark in its own UPDATE;
@@ -138,14 +138,22 @@ defmodule ConversationService.InboxDenormalizationTest do
     assert row_for(conv, a).last_message_preview == "hello"
   end
 
-  # --- the freshness exception + read-repair -------------------------------------------------------
+  # --- the freshness exception, RETIRED ------------------------------------------------------------
+  #
+  # HISTORY NOTE, replacing the test that stood here: "FRESHNESS EXCEPTION: a stale watermark under
+  # auto-delete recounts inline AND read-repairs the row" proved the @inbox_sql lateral that
+  # recounted from Postgres `messages` and write-repaired via InboxCounters.repair/3. Retired
+  # 2026-08-09: under the scylla store the recount read a FROZEN table (its write-back was already
+  # inert behind the reconciler interlock), and after the planned truncate it would have silently
+  # zeroed live counters. The replacement below proves the behaviour that superseded it.
 
   @tag :postgres_integration
-  test "FRESHNESS EXCEPTION: a stale watermark under auto-delete recounts inline AND read-repairs the row" do
+  test "RETIREMENT: an aged-out watermark returns the MAINTAINED count — no recount, no repair" do
     [a, b] = for _ <- 1..2, do: user!()
     conv = conversation!([a, b])
 
-    # One unread inside a 1-hour window, one outside it.
+    # The frozen-era rows that would have fed the old recount — seeded ON PURPOSE, to prove they
+    # are now ignored (the old lateral would have answered 1 from these).
     message!(conv, a, "aged out", 5_400)
     message!(conv, a, "still fresh", 60)
 
@@ -155,9 +163,7 @@ defmodule ConversationService.InboxDenormalizationTest do
       [conv, b]
     )
 
-    # Manufacture the EXACT stale state the window's movement produces: the counter still says 2
-    # (both messages), the watermark still points at the aged-out one. No write ever fixes this —
-    # that is the break the pressure test named.
+    # The exact state that used to trip the exception: counter 2, watermark aged past the window.
     Repo.query!(
       "UPDATE conversation_participants SET unread_count = 2, " <>
         "oldest_unread_at = now() - make_interval(secs => 5400) " <>
@@ -165,17 +171,55 @@ defmodule ConversationService.InboxDenormalizationTest do
       [conv, b]
     )
 
-    # The read answers CORRECTLY (1, not the stale 2) — the inline recount.
-    assert row_for(conv, b).unread_count == 1
+    # The MAINTAINED count answers — 2, the accepted non-decay, NOT the frozen table's 1 and NOT 0.
+    assert row_for(conv, b).unread_count == 2
 
-    # ...and READ-REPAIR persisted the correction: the stored row is fixed and the watermark
-    # refreshed, so the exception stops firing.
-    repaired = cp_row(conv, b)
-    assert repaired.unread == 1
-    assert not is_nil(repaired.oldest)
+    # And nothing wrote: the stored row is untouched (no read-repair exists any more).
+    stored = cp_row(conv, b)
+    assert stored.unread == 2
+    assert not is_nil(stored.oldest)
+  end
 
-    # Second read: still 1, now from the trusted counter.
-    assert row_for(conv, b).unread_count == 1
+  @tag :postgres_integration
+  test "THE FRONT DOOR SHAPE, key-exact — the contract the clients parse" do
+    [a, b] = for _ <- 1..2, do: user!()
+    conv = conversation!([a, b])
+    message!(conv, a, "hello", 60)
+
+    {:ok, %{conversations: [row]}} = Conversations.list_conversations(%{"user_id" => b})
+    _ = conv
+
+    assert Map.keys(row) |> Enum.sort() ==
+             [
+               :archived,
+               :conversation_id,
+               :group_avatar_media_id,
+               :last_message_kind,
+               :last_message_preview,
+               :pinned,
+               :tag_ids,
+               :title,
+               :type,
+               :unread_count,
+               :updated_at
+             ]
+             |> Enum.sort()
+  end
+
+  @tag :postgres_integration
+  test "THE NORMAL PATH IS BYTE-IDENTICAL: unread is the maintained column, exactly" do
+    [a, b] = for _ <- 1..2, do: user!()
+    conv = conversation!([a, b])
+
+    # No auto-delete, fresh watermark — the lateral never fired here even before the retirement, so
+    # this value must be indistinguishable from the old behaviour: the column, verbatim.
+    Repo.query!(
+      "UPDATE conversation_participants SET unread_count = 7, oldest_unread_at = now() " <>
+        "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
+      [conv, b]
+    )
+
+    assert row_for(conv, b).unread_count == 7
   end
 
   @tag :postgres_integration
