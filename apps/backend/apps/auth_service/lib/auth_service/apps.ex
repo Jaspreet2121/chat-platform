@@ -76,12 +76,23 @@ defmodule AuthService.Apps do
   @doc """
   Authorize that `owner_user_id` owns `app_id`. {:ok, %{app_id}} if owned, else {:error, :forbidden}.
   The single gate every app-scoped action runs before acting AS an app_id.
+
+  OWNING A LIVE APP INCLUDES ITS TEST TWIN (gap-4 fix, 2026-08-15): the twin IS the integrator's
+  test mode, so every owner-console surface that goes through this gate (keys, webhook endpoints,
+  deliveries, usage) sees the twin too. The traversal is DOWNWARD-ONLY and exactly one hop: the
+  subquery maps the REQUESTED app to its parent only when the requested app itself is a twin
+  (`parent_app_id` + `mode = 'test'`), never the reverse — an owner row ON a twin (none exist
+  today, structurally guarded regardless) grants only the twin itself; its parent still requires
+  its own app_owners row. Not a general "related apps" concept.
   """
   def owns_app(attrs) do
     with {:ok, owner_user_id} <- fetch(attrs, "owner_user_id"),
          {:ok, app_id} <- fetch(attrs, "app_id") do
       case Repo.query(
-             "SELECT 1 FROM app_owners WHERE app_id = $1::text::uuid AND owner_user_id = $2::text::uuid LIMIT 1",
+             "SELECT 1 FROM app_owners o WHERE o.owner_user_id = $2::text::uuid " <>
+               "AND (o.app_id = $1::text::uuid OR o.app_id = " <>
+               "(SELECT a.parent_app_id FROM apps a " <>
+               "WHERE a.id = $1::text::uuid AND a.mode = 'test')) LIMIT 1",
              [app_id, owner_user_id]
            ) do
         {:ok, %{rows: [[_]]}} -> {:ok, %{app_id: app_id}}

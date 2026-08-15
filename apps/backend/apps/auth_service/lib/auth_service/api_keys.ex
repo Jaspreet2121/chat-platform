@@ -128,7 +128,20 @@ defmodule AuthService.ApiKeys do
 
   # A live key keeps the caller's app_id; a test key resolves to the integrator's test-twin app_id.
   defp effective_app_id(app_id, "test"), do: resolve_or_create_test_twin(app_id)
-  defp effective_app_id(app_id, _live), do: {:ok, app_id}
+
+  # A live key never lands on a test app. Unreachable before the gap-4 owns_app widening (a twin
+  # app_id 403'd at the console gate); now an owner CAN name their twin here, and without this
+  # guard that would mint an sk_live_ credential bound to a test tenant. Twins stay leaf-only —
+  # the same rule allocate_twin's `p.mode = 'live'` enforces for sk_test_.
+  defp effective_app_id(app_id, _live) do
+    case Repo.query(
+           "SELECT 1 FROM apps WHERE id = $1::text::uuid AND mode = 'test' LIMIT 1",
+           [app_id]
+         ) do
+      {:ok, %{rows: []}} -> {:ok, app_id}
+      _ -> {:error, :api_key_invalid}
+    end
+  end
 
   # Find-or-create the ONE test twin app for a live app. The fast path is the SELECT (the twin
   # exists for every key after the integrator's first); the miss path is atomic:
@@ -157,9 +170,13 @@ defmodule AuthService.ApiKeys do
   # optional; zero rows also covers "live app does not exist", and the SELECT distinguishes the two.
   def allocate_twin(live_app_id) do
     case Repo.query(
+           # `p.mode = 'live'`: twins are LEAVES. The gap-4 owns_app widening lets an owner name
+           # their twin as the target app; without this guard a test key against the twin would
+           # allocate a twin-of-twin (the partial index only dedupes per parent, it would not stop
+           # a second generation). Zero rows here → the follow-up SELECT reports :api_key_invalid.
            "INSERT INTO apps (id, name, slug, parent_app_id, mode) " <>
              "SELECT gen_random_uuid(), p.name || ' (test)', p.slug || '-test', p.id, 'test' " <>
-             "FROM apps p WHERE p.id = $1::text::uuid " <>
+             "FROM apps p WHERE p.id = $1::text::uuid AND p.mode = 'live' " <>
              "ON CONFLICT (parent_app_id) WHERE mode = 'test' DO NOTHING " <>
              "RETURNING id::text",
            [live_app_id]
