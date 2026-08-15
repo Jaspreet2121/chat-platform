@@ -16,8 +16,10 @@ per-request id; isolation itself held on the first run too). Lines 1–2 were fo
 guide as an outsider during the walk's design review; line 3 by a live probe (2026-08-08), confirmed
 at runtime (`status=pending attempts=1 last_error="HTTP 404"` in the delivery log); line 4 found
 statically while building the walk and **pinned at runtime** (the twin log answered 403 on
-production). One probe remains unwalked: step 6's other-live-app conversation (no
-`WALK_FOREIGN_CONVERSATION_ID` supplied; the tenant-zero probe and the random-id floor both held).
+production). The last open probe closed on 2026-08-15: a footprint-free re-run (`WALK_APP_ID`) with
+`WALK_FOREIGN_CONVERSATION_ID` set to a conversation in app `869819fa` (another tenant's twin — the
+isolation contract is per-`app_id` regardless of mode) walked step 6's foreign probe alongside
+tenant-zero: 19/19, both foreign ids 404 with the same shape as a nonexistent id.
 
 Running it (operator-assisted; see the suite's header comment for the full minting steps):
 
@@ -70,7 +72,7 @@ asserted unreachable.
 | §6 socket | 4 (the other participant's SDK socket receives the sent message, same id) | **walked 2026-08-09** |
 | §7–§8 webhook delivery + signatures | 8 (attempt + status in the delivery log — evidence floor held: `HTTP 404`, attempts=1; signature *verification* needs a real receiver: out of scope, see gap 3) | **walked 2026-08-09** (evidence floor) |
 | §9 test vs live | 2 (twin mint), 7 (isolation both directions), 8 (twin delivery-log 403 — gap 4, pinned live) | **walked 2026-08-09** |
-| tenant isolation (implicit contract) | 6 (foreign conversation ids are 404, same shape as nonexistent modulo `correlation_id`) | **partial 2026-08-09** — tenant-zero probe + random-id floor held; other-live-app probe awaits `WALK_FOREIGN_CONVERSATION_ID` |
+| tenant isolation (implicit contract) | 6 (foreign conversation ids are 404, same shape as nonexistent modulo `correlation_id`) | **walked 2026-08-15** — tenant-zero probe, foreign-tenant probe (app `869819fa`), and the random-id floor all held |
 | event pipeline health (not in the guide) | 9 (admin outbox summary: staged=0/pending=0 — zeros mean health) | **walked 2026-08-09** |
 
 Maintenance: step 10 of the walk prints `conformance note (→ INTEGRATION_GUIDE_GAPS.md)` lines for
