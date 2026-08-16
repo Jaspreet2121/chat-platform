@@ -144,6 +144,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.CallStore.mark_missed(body(conn)))
   end
 
+  post "/internal/calls/cancel" do
+    send_result(conn, ConversationService.CallStore.mark_cancelled(body(conn)))
+  end
+
   post "/internal/calls/end" do
     send_result(conn, ConversationService.CallStore.mark_ended(body(conn)))
   end

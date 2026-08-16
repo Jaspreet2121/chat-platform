@@ -13,10 +13,13 @@ defmodule ConversationService.Schemas.Call do
 
   @types ~w(voice video)
   @kinds ~w(direct group link)
-  @statuses ~w(ringing accepted declined missed ended ongoing)
+  @statuses ~w(ringing accepted declined missed ended ongoing cancelled)
 
   schema "calls" do
     field(:room_name, :string)
+
+    # The session/credential tenant, stamped at the boundary (097). Nullable: pre-097 rows are legacy.
+    field(:app_id, :binary_id)
     field(:kind, :string, default: "direct")
     field(:caller_id, :binary_id)
     field(:callee_id, :binary_id)
@@ -36,6 +39,7 @@ defmodule ConversationService.Schemas.Call do
     |> cast(attrs, [
       :id,
       :room_name,
+      :app_id,
       :kind,
       :caller_id,
       :callee_id,

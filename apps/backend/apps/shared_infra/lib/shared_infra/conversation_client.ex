@@ -52,6 +52,7 @@ defmodule SharedInfra.ConversationClient do
   @callback mark_call_answered(attrs()) :: result()
   @callback mark_call_declined(attrs()) :: result()
   @callback mark_call_missed(attrs()) :: result()
+  @callback mark_call_cancelled(attrs()) :: result()
   @callback mark_call_ended(attrs()) :: result()
   @callback get_call(attrs()) :: result()
   @callback list_calls_for_user(attrs()) :: result()
@@ -108,6 +109,7 @@ defmodule SharedInfra.ConversationClient do
                       mark_call_answered: 1,
                       mark_call_declined: 1,
                       mark_call_missed: 1,
+                      mark_call_cancelled: 1,
                       mark_call_ended: 1,
                       get_call: 1,
                       list_calls_for_user: 1,
@@ -196,6 +198,7 @@ defmodule SharedInfra.ConversationClient do
   def mark_call_answered(attrs), do: adapter().mark_call_answered(attrs)
   def mark_call_declined(attrs), do: adapter().mark_call_declined(attrs)
   def mark_call_missed(attrs), do: adapter().mark_call_missed(attrs)
+  def mark_call_cancelled(attrs), do: adapter().mark_call_cancelled(attrs)
   def mark_call_ended(attrs), do: adapter().mark_call_ended(attrs)
   def get_call(attrs), do: adapter().get_call(attrs)
   def list_calls_for_user(attrs), do: adapter().list_calls_for_user(attrs)

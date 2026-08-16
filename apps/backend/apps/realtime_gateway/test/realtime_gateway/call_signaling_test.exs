@@ -121,12 +121,36 @@ defmodule RealtimeGateway.CallSignalingMockClient do
   def mark_call_answered(attrs), do: transition(:answer, "accepted", attrs)
   def mark_call_declined(attrs), do: transition(:decline, "declined", attrs)
   def mark_call_missed(attrs), do: transition(:miss, "missed", attrs)
+  def mark_call_cancelled(attrs), do: transition(:cancel, "cancelled", attrs)
   def mark_call_ended(attrs), do: transition(:end, "ended", attrs)
 
+  # Mirrors CallStore's optional atomic precondition: with "expected_status" set, the patch applies ONLY
+  # when the current status matches — else {:error, :call_conflict}. This is what makes the hangup
+  # once-only-pill tests honest (the second hangup must CONFLICT, exactly like the locked row would).
   defp transition(op, status, attrs) do
     Agent.get_and_update(__MODULE__, fn s ->
-      call = if s.call, do: %{s.call | status: status}, else: nil
-      {{:ok, call}, %{s | call: call, log: [{op, attrs} | s.log]}}
+      expected = attrs["expected_status"]
+
+      cond do
+        is_nil(s.call) ->
+          {{:ok, nil}, %{s | log: [{op, attrs} | s.log]}}
+
+        is_binary(expected) and s.call.status != expected ->
+          {{:error, :call_conflict}, %{s | log: [{op, attrs} | s.log]}}
+
+        true ->
+          call = %{s.call | status: status}
+
+          call =
+            if status == "accepted", do: Map.put(call, :answered_at, "t-answered"), else: call
+
+          call =
+            if status == "ended",
+              do: call |> Map.put(:ended_at, "t-ended") |> Map.put(:duration_seconds, 42),
+              else: call
+
+          {{:ok, call}, %{s | call: call, log: [{op, attrs} | s.log]}}
+      end
     end)
   end
 end
@@ -486,6 +510,97 @@ defmodule RealtimeGateway.CallSignalingTest do
     assert_receive {:broadcast, "user:" <> other, "call:ended", %{call_id: ^call_id}}
     assert other == @callee
     assert Enum.any?(Mock.log(), &match?({:end, _}, &1))
+  end
+
+  # ---- the ANSWERED call's pill (2026-08-16): terminal-time, once-only, correct content ----------
+  describe "answered-call pill" do
+    setup do
+      prev = Application.get_env(:shared_infra, :message_client_adapter)
+
+      Application.put_env(
+        :shared_infra,
+        :message_client_adapter,
+        RealtimeGateway.CallPillCaptureClient
+      )
+
+      on_exit(fn -> restore(:message_client_adapter, prev) end)
+      :ok
+    end
+
+    test "accept → hangup writes EXACTLY ONE pill: status answered, duration, started_at" do
+      # A DM-attached call (the pill needs a conversation to land in).
+      assert {:reply, {:ok, %{call_id: call_id}}, _} =
+               CallSignaling.handle_event(
+                 "call:invite",
+                 %{"callee_id" => @callee, "type" => "voice", "conversation_id" => @dm_conv},
+                 socket(@caller)
+               )
+
+      assert {:reply, {:ok, _}, _} =
+               CallSignaling.handle_event("call:accept", %{"call_id" => call_id}, socket(@callee))
+
+      assert {:reply, {:ok, _}, _} =
+               CallSignaling.handle_event("call:hangup", %{"call_id" => call_id}, socket(@caller))
+
+      assert_receive {:pill, attrs}
+      assert attrs["message_type"] == "call"
+      assert attrs["conversation_id"] == @dm_conv
+      assert attrs["sender_user_id"] == @caller
+      assert attrs["body"] == "Voice call"
+      assert attrs["metadata"]["status"] == "answered"
+      assert attrs["metadata"]["duration_seconds"] == 42
+      assert attrs["metadata"]["started_at"] == "t-answered"
+      assert attrs["metadata"]["call_id"] == call_id
+
+      # It fans out as an ordinary message_created.
+      assert_receive {:broadcast, "conversation:#{@dm_conv}", "message_created", _}
+
+      # The OTHER party's near-simultaneous hangup CONFLICTS (accepted → ended already won) → no second pill.
+      assert {:reply, {:ok, _}, _} =
+               CallSignaling.handle_event("call:hangup", %{"call_id" => call_id}, socket(@callee))
+
+      refute_receive {:pill, _}, 100
+    end
+
+    test "hangup on a still-ringing call writes NO pill (legacy unconditional end, pill-free)" do
+      assert {:reply, {:ok, %{call_id: call_id}}, _} =
+               CallSignaling.handle_event(
+                 "call:invite",
+                 %{"callee_id" => @callee, "type" => "voice", "conversation_id" => @dm_conv},
+                 socket(@caller)
+               )
+
+      assert {:reply, {:ok, _}, _} =
+               CallSignaling.handle_event("call:hangup", %{"call_id" => call_id}, socket(@caller))
+
+      refute_receive {:pill, _}, 100
+      # The legacy fallback still ended the call.
+      assert Enum.any?(Mock.log(), &match?({:end, %{"call_id" => ^call_id}}, &1))
+    end
+
+    test "invite stamps the socket session's app_id on the call row (097 boundary rule)" do
+      {_call_id, _room} = invite!()
+      assert Enum.any?(Mock.log(), &match?({:create, %{"app_id" => @app}}, &1))
+    end
+
+    test "cancel transitions to CANCELLED (not missed) while keeping the missed pill" do
+      assert {:reply, {:ok, %{call_id: call_id}}, _} =
+               CallSignaling.handle_event(
+                 "call:invite",
+                 %{"callee_id" => @callee, "type" => "voice", "conversation_id" => @dm_conv},
+                 socket(@caller)
+               )
+
+      assert {:reply, {:ok, _}, _} =
+               CallSignaling.handle_event("call:cancel", %{"call_id" => call_id}, socket(@caller))
+
+      assert Enum.any?(Mock.log(), &match?({:cancel, _}, &1))
+      refute Enum.any?(Mock.log(), &match?({:miss, _}, &1))
+
+      # The chat pill is STILL the missed pill — to the callee a cancelled ring IS a missed call.
+      assert_receive {:pill, attrs}
+      assert attrs["metadata"]["status"] == "missed"
+    end
   end
 
   test "a non-participant cannot accept (ownership auth → call.forbidden)" do

@@ -55,6 +55,9 @@ defmodule SharedInfra.ConversationClientHttp do
   def mark_call_missed(attrs), do: post("/internal/calls/miss", attrs)
 
   @impl true
+  def mark_call_cancelled(attrs), do: post("/internal/calls/cancel", attrs)
+
+  @impl true
   def mark_call_ended(attrs), do: post("/internal/calls/end", attrs)
 
   @impl true

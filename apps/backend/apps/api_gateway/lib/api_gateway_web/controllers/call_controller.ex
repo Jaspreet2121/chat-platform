@@ -10,23 +10,53 @@ defmodule ApiGatewayWeb.CallController do
 
   alias ApiGatewayWeb.ErrorResponse
 
-  # GET /api/v1/calls → { "calls": [ …, counterpart_id, counterpart_name ] } for the current user.
-  # Call history (both sides), newest first — served from conversation_service's CallStore. Each row is
-  # enriched server-side with the OTHER party's display name (batched, one profile lookup per unique id);
-  # the avatar is resolved client-side via the shared cached useUserProfile hook (same as every chat row).
-  # DB flag off (`{:error, :call_unavailable}`) or any read failure → 200 { calls: [] } (never a 500).
-  def index(conn, _params) do
+  # GET /api/v1/calls?cursor=&limit= → { "calls": [ …, counterpart_id, counterpart_name ],
+  # "next_cursor": <opaque|null> } for the current user. Call history (both sides), newest first, keyset
+  # pagination — served from conversation_service's CallStore, SCOPED to the session's tenant (097: rows
+  # stamped with another app never appear; NULL-app legacy rows still do). Each row is enriched
+  # server-side with the OTHER party's display name (batched, one profile lookup per unique id); the
+  # avatar is resolved client-side via the shared cached useUserProfile hook (same as every chat row).
+  # DB flag off (`{:error, :call_unavailable}`) or any read failure → 200 { calls: [] } (never a 500) —
+  # but LOGGED with the ids it filtered by, because a silently-empty list is a diagnosis dead end
+  # (2026-08-16: an empty list took a device session to even notice).
+  def index(conn, params) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}) do
-      calls =
-        case SharedInfra.ConversationClient.list_calls_for_user(%{"user_id" => session.user_id}) do
-          {:ok, %{calls: calls}} when is_list(calls) -> calls
-          {:ok, %{"calls" => calls}} when is_list(calls) -> calls
-          _ -> []
+      {cursor_ts, cursor_id} = decode_cursor(Map.get(params, "cursor"))
+
+      attrs =
+        %{
+          "user_id" => session.user_id,
+          "app_id" => session_app(session),
+          "limit" => Map.get(params, "limit"),
+          "cursor_ts" => cursor_ts,
+          "cursor_id" => cursor_id
+        }
+        |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+        |> Map.new()
+
+      {calls, next_cursor} =
+        case SharedInfra.ConversationClient.list_calls_for_user(attrs) do
+          {:ok, %{calls: calls} = result} when is_list(calls) ->
+            {calls, cget(result, :next_cursor)}
+
+          {:ok, %{"calls" => calls} = result} when is_list(calls) ->
+            {calls, cget(result, :next_cursor)}
+
+          other ->
+            Logger.warning(
+              "calls list read failed → 200 empty (user=#{session.user_id} " <>
+                "app=#{inspect(session_app(session))}): #{inspect(other)}"
+            )
+
+            {[], nil}
         end
 
-      json(conn, %{calls: enrich(calls, session.user_id, session_app(session))})
+      json(conn, %{
+        calls: enrich(calls, session.user_id, session_app(session)),
+        next_cursor: encode_cursor(next_cursor)
+      })
     else
       _ -> ErrorResponse.unauthorized(conn, "auth.unauthorized", "Invalid or missing session")
     end
@@ -235,7 +265,23 @@ defmodule ApiGatewayWeb.CallController do
        when is_binary(me) and caller_id == me,
        do: "missed"
 
+  # 097, the inverse masking: a caller-CANCELLED ring reads "cancelled" to the caller (their own action)
+  # and "missed" to everyone else — to the callee it IS a missed call, and the pill already says so.
+  defp viewer_status("cancelled", caller_id, me)
+       when is_binary(me) and caller_id != me,
+       do: "missed"
+
   defp viewer_status(status, _caller_id, _me), do: status
+
+  # The terminal contract vocabulary (2026-08-16 spec), applied BEFORE the viewer mask: a
+  # connected-then-finished call presents as "answered" (the DB's "ended" is the transition name, not
+  # the outcome; answered_at proves connection). An "ended" row that never connected (legacy
+  # hangup-on-ringing) reads "cancelled" — which the mask then shows the callee as "missed".
+  defp outcome("ended", answered_at) when is_binary(answered_at) and answered_at != "",
+    do: "answered"
+
+  defp outcome("ended", _never_answered), do: "cancelled"
+  defp outcome(status, _answered_at), do: status
 
   defp enrich(calls, me, app_id) do
     rows = Enum.map(calls, &present_call(&1, me))
@@ -270,10 +316,16 @@ defmodule ApiGatewayWeb.CallController do
       "callee_id" => callee_id,
       "conversation_id" => cget(call, :conversation_id),
       "type" => cget(call, :type),
-      "status" => viewer_status(cget(call, :status), caller_id, me),
+      "status" =>
+        cget(call, :status)
+        |> outcome(cget(call, :answered_at))
+        |> viewer_status(caller_id, me),
       "created_at" => cget(call, :created_at),
       "answered_at" => cget(call, :answered_at),
       "ended_at" => cget(call, :ended_at),
+      # The recorded first-party rule: 0 (not nil) for a call that never connected. The /v1 webhook keeps
+      # its own recorded nil — two surfaces, two recorded contracts, one raw source (CallStore).
+      "duration_seconds" => cget(call, :duration_seconds) || 0,
       "counterpart_id" => counterpart_id
     }
   end
@@ -302,4 +354,30 @@ defmodule ApiGatewayWeb.CallController do
 
   # Call maps arrive atom-keyed (in-process CallStore) or string-keyed (HTTP adapter) — read either.
   defp cget(call, key), do: Map.get(call, key) || Map.get(call, to_string(key))
+
+  # Opaque base64 keyset cursor over "created_at|id" — the SAME encoding the webhook-deliveries and
+  # event-outbox lists use. Malformed input degrades to page one, never a 500.
+  defp decode_cursor(cursor) when is_binary(cursor) and cursor != "" do
+    with {:ok, decoded} <- Base.url_decode64(cursor, padding: false),
+         [ts, id] <- String.split(decoded, "|", parts: 2) do
+      {ts, id}
+    else
+      _ -> {nil, nil}
+    end
+  end
+
+  defp decode_cursor(_), do: {nil, nil}
+
+  defp encode_cursor(nil), do: nil
+
+  defp encode_cursor(next) when is_map(next) do
+    ts = cget(next, :ts)
+    id = cget(next, :id)
+
+    if is_binary(ts) and is_binary(id),
+      do: Base.url_encode64("#{ts}|#{id}", padding: false),
+      else: nil
+  end
+
+  defp encode_cursor(_), do: nil
 end

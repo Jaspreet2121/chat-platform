@@ -62,7 +62,9 @@ defmodule ApiGatewayWeb.CallLinkController do
          {:ok, result} <-
            SharedInfra.ConversationClient.join_call_link(%{
              "link_id" => id,
-             "user_id" => session.user_id
+             "user_id" => session.user_id,
+             # 097: the session's tenant stamps a freshly-created link call (only the FIRST joiner creates).
+             "app_id" => Map.get(session, :app_id)
            }) do
       call = cget(result, :call)
 

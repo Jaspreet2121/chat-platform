@@ -120,6 +120,8 @@ defmodule ConversationService.ConversationClientInProcess do
 
   @impl true
   def mark_call_missed(attrs), do: ConversationService.CallStore.mark_missed(attrs)
+  @impl true
+  def mark_call_cancelled(attrs), do: ConversationService.CallStore.mark_cancelled(attrs)
 
   @impl true
   def mark_call_ended(attrs), do: ConversationService.CallStore.mark_ended(attrs)

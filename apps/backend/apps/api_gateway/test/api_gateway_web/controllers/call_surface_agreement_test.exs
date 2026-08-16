@@ -52,7 +52,7 @@ defmodule ApiGatewayWeb.CallSurfaceAgreementTest do
     end
   end
 
-  defp conversation_stub(call_status) do
+  defp conversation_stub(call_status, answered_at \\ nil) do
     module = String.to_atom("Elixir.ConvStub#{System.unique_integer([:positive])}")
 
     contents =
@@ -71,7 +71,7 @@ defmodule ApiGatewayWeb.CallSurfaceAgreementTest do
                  type: "voice",
                  status: unquote(call_status),
                  created_at: "2026-08-03T10:00:00Z",
-                 answered_at: nil,
+                 answered_at: unquote(answered_at),
                  ended_at: nil
                }
              ]
@@ -110,11 +110,11 @@ defmodule ApiGatewayWeb.CallSurfaceAgreementTest do
   end
 
   # What the Calls tab shows `viewer` for a call whose ROW status is `call_status`.
-  defp calls_tab_status(call_status, viewer) do
+  defp calls_tab_status(call_status, viewer, answered_at \\ nil) do
     Application.put_env(
       :shared_infra,
       :conversation_client_adapter,
-      conversation_stub(call_status)
+      conversation_stub(call_status, answered_at)
     )
 
     conn =
@@ -163,10 +163,14 @@ defmodule ApiGatewayWeb.CallSurfaceAgreementTest do
     assert calls_tab_status("missed", @caller) == "missed"
   end
 
-  test "CANCEL: both surfaces agree (the caller hung up before an answer)" do
-    # cancel marks the row missed and writes the same pill — nothing to mask, asserted so it stays so.
+  test "CANCEL: the caller sees their own cancel; the callee reads it as missed (097)" do
+    # cancel now marks the row "cancelled" (its own terminal status). The pill is STILL the missed
+    # pill — one shared message, and to the callee a cancelled ring IS a missed call. The Calls tab
+    # shows the caller their own action and masks it to "missed" for everyone else (the inverse of
+    # the declined mask).
     assert pill_status() == "missed"
-    assert calls_tab_status("missed", @caller) == "missed"
+    assert calls_tab_status("cancelled", @caller) == "cancelled"
+    assert calls_tab_status("cancelled", @callee) == "missed"
   end
 
   test "THE DELIBERATE ASYMMETRY: the CALLEE still sees their own decline" do
@@ -176,10 +180,23 @@ defmodule ApiGatewayWeb.CallSurfaceAgreementTest do
     assert calls_tab_status("declined", @callee) == "declined"
   end
 
-  test "non-terminal and answered statuses are passed through untouched for both parties" do
-    for status <- ["ringing", "accepted", "ongoing", "ended"] do
+  test "non-terminal statuses are passed through untouched for both parties" do
+    for status <- ["ringing", "accepted", "ongoing"] do
       assert calls_tab_status(status, @caller) == status
       assert calls_tab_status(status, @callee) == status
     end
+  end
+
+  test "ANSWERED (097 contract vocabulary): a connected-then-finished call reads 'answered' to both" do
+    # The DB's "ended" is the transition name; answered_at proves the connection — the outcome the
+    # 2026-08-16 spec names "answered".
+    assert calls_tab_status("ended", @caller, "2026-08-16T10:00:05Z") == "answered"
+    assert calls_tab_status("ended", @callee, "2026-08-16T10:00:05Z") == "answered"
+  end
+
+  test "an 'ended' row that never connected reads cancelled/missed (caller/other) — not 'answered'" do
+    # Legacy hangup-on-ringing rows: ended with answered_at NULL. Same masking as a cancelled row.
+    assert calls_tab_status("ended", @caller) == "cancelled"
+    assert calls_tab_status("ended", @callee) == "missed"
   end
 end

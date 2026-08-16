@@ -71,7 +71,10 @@ defmodule RealtimeGateway.CallSignaling do
                "caller_id" => caller_id,
                "callee_id" => callee_id,
                "type" => type,
-               "conversation_id" => payload["conversation_id"]
+               "conversation_id" => payload["conversation_id"],
+               # The tenant rides from the AUTHENTICATED socket session (UserSocket.assign_session) — the
+               # boundary resolution rule (097). nil assigns → NULL row, never an invented default.
+               "app_id" => app_id(socket)
              }) do
           {:ok, call} ->
             call_id = cget(call, :id)
@@ -206,7 +209,11 @@ defmodule RealtimeGateway.CallSignaling do
   # --- cancel (caller only, pre-answer) ----------------------------------------------------------
   defp cancel(%{"call_id" => call_id}, socket) do
     with_call(call_id, socket, [:caller], fn call, _role ->
-      _ = ConversationClient.mark_call_missed(%{"call_id" => call_id})
+      # 097: a caller-cancel is its own terminal status ("cancelled" — the Calls tab shows the caller
+      # their own action) instead of folding into "missed". The PILL stays the missed pill: to the
+      # callee a cancelled ring IS a missed call, and one shared message serves both audiences (the
+      # same masking philosophy as declined-reads-missed). Integrator webhook stays call.missed.
+      _ = ConversationClient.mark_call_cancelled(%{"call_id" => call_id})
       write_missed_message(call, socket.endpoint)
       broadcast(socket, cget(call, :callee_id), "call:cancelled", %{call_id: call_id})
       {:reply, {:ok, %{call_id: call_id}}, socket}
@@ -218,7 +225,26 @@ defmodule RealtimeGateway.CallSignaling do
   # --- hangup (either party) → notify the OTHER party --------------------------------------------
   defp hangup(%{"call_id" => call_id}, socket) do
     with_call(call_id, socket, [:caller, :callee], fn call, role ->
-      _ = ConversationClient.mark_call_ended(%{"call_id" => call_id})
+      # ONCE-ONLY ended pill (the answered call's chat entry — previously NO pill existed for an
+      # answered call at all). `expected_status: "accepted"` makes the transition atomic under the row
+      # lock: exactly ONE of two near-simultaneous hangups wins accepted→ended and writes the pill; the
+      # loser conflicts and writes nothing. A hangup on a call that was never accepted (still ringing —
+      # clients normally send call:cancel for that) keeps the legacy unconditional end, pill-free.
+      case ConversationClient.mark_call_ended(%{
+             "call_id" => call_id,
+             "expected_status" => "accepted"
+           }) do
+        {:ok, ended} ->
+          write_call_ended_message(ended, socket.endpoint)
+
+        {:error, :call_conflict} ->
+          if cget(call, :status) == "ringing",
+            do: ConversationClient.mark_call_ended(%{"call_id" => call_id})
+
+        _ ->
+          :ok
+      end
+
       other = if role == :caller, do: cget(call, :callee_id), else: cget(call, :caller_id)
       broadcast(socket, other, "call:ended", %{call_id: call_id})
       {:reply, {:ok, %{call_id: call_id}}, socket}
@@ -268,7 +294,8 @@ defmodule RealtimeGateway.CallSignaling do
     case ConversationClient.create_group_call(%{
            "initiator_id" => initiator,
            "conversation_id" => cid,
-           "type" => type
+           "type" => type,
+           "app_id" => app_id(socket)
          }) do
       {:ok, result} ->
         call = cget(result, :call)
@@ -908,6 +935,59 @@ defmodule RealtimeGateway.CallSignaling do
     :ok
   rescue
     error -> Logger.warning("missed-call chat write raised, ignored: #{inspect(error)}")
+  end
+
+  @doc false
+  # The ANSWERED call's chat entry (097) — the terminal-time twin of write_missed_message, written by the
+  # hangup that atomically won accepted→ended (its caller guarantees once-only; see hangup/2). Same
+  # create+broadcast path, same skip-without-conversation rule (every /v1 call). metadata carries what the
+  # client renders "Outgoing voice call · 0:42" from: status "answered" + duration + started_at. No block
+  # check: an ANSWERED call means both parties connected — there is nothing to mask.
+  def write_call_ended_message(call, endpoint) do
+    conversation_id = cget(call, :conversation_id)
+    caller_id = cget(call, :caller_id)
+    callee_id = cget(call, :callee_id)
+
+    if is_binary(conversation_id) and conversation_id != "" and is_binary(caller_id) do
+      call_type = if cget(call, :type) == "video", do: "video", else: "voice"
+      duration = cget(call, :duration_seconds) || 0
+
+      attrs = %{
+        "conversation_id" => conversation_id,
+        "sender_user_id" => caller_id,
+        "message_type" => "call",
+        # Short human body (conversation-list preview + a11y); the bubble renders from metadata.
+        "body" => if(call_type == "video", do: "Video call", else: "Voice call"),
+        "metadata" => %{
+          "call_id" => cget(call, :id),
+          "call_type" => call_type,
+          "status" => "answered",
+          "duration_seconds" => duration,
+          "started_at" => cget(call, :answered_at)
+        }
+      }
+
+      Task.start(fn ->
+        case SharedInfra.MessageClient.create_message(attrs) do
+          {:ok, response} ->
+            endpoint.broadcast("conversation:" <> conversation_id, "message_created", response)
+
+            if is_binary(callee_id),
+              do: endpoint.broadcast("user:" <> callee_id, "message_created", response)
+
+            endpoint.broadcast("user:" <> caller_id, "message_created", response)
+
+          other ->
+            Logger.warning(
+              "ended-call chat write failed for call #{cget(call, :id)}: #{inspect(other)}"
+            )
+        end
+      end)
+    end
+
+    :ok
+  rescue
+    error -> Logger.warning("ended-call chat write raised, ignored: #{inspect(error)}")
   end
 
   # Best-effort incoming-call push for a backgrounded callee. Reuses the message-push path: fire-and-forget

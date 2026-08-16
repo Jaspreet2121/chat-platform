@@ -54,7 +54,9 @@ defmodule ApiGatewayWeb.V1.CallController do
            SharedInfra.ConversationClient.create_call(%{
              "caller_id" => conn.assigns.v1_user_id,
              "callee_id" => callee_id,
-             "type" => type
+             "type" => type,
+             # 097: the credential's tenant (live app or test twin) stamps the row at the boundary.
+             "app_id" => app_id
            }),
          room = cget(call, :room_name),
          {:ok, jwt} <-
@@ -206,7 +208,8 @@ defmodule ApiGatewayWeb.V1.CallController do
          {:ok, result} <-
            SharedInfra.ConversationClient.join_call_link(%{
              "link_id" => link_id,
-             "user_id" => conn.assigns.v1_user_id
+             "user_id" => conn.assigns.v1_user_id,
+             "app_id" => conn.assigns[:v1_app_id]
            }) do
       json(conn, join_payload(conn, result))
     else

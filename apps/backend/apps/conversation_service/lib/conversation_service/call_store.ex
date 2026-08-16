@@ -35,6 +35,9 @@ defmodule ConversationService.CallStore do
         Call.create_changeset(%{
           id: id,
           room_name: "call-" <> id,
+          # The boundary's tenant (socket assigns / v1 credential / session). Optional: nil is stored as
+          # NULL (a legacy-shaped row), NEVER defaulted — inventing a tenant here is how rows go wrong.
+          app_id: get(attrs, "app_id"),
           caller_id: caller_id,
           callee_id: callee_id,
           conversation_id: get(attrs, "conversation_id"),
@@ -61,9 +64,17 @@ defmodule ConversationService.CallStore do
   def mark_declined(attrs),
     do: transition(attrs, %{status: "declined", ended_at: DateTime.utc_now()}, "call.declined")
 
-  @doc "Never answered (timeout / caller cancel while ringing) → missed. attrs: \"call_id\". Emits `call.missed`."
+  @doc "Never answered (ring timeout) → missed. attrs: \"call_id\". Emits `call.missed`."
   def mark_missed(attrs),
     do: transition(attrs, %{status: "missed", ended_at: DateTime.utc_now()}, "call.missed")
+
+  @doc """
+  Caller hung up while still ringing → cancelled (097 — previously folded into `missed`). attrs:
+  \"call_id\". Still emits `call.missed` to the integrator (to the callee's side it IS an unanswered
+  call; the payload's `reason` carries "cancelled" for the distinction) — no new webhook event type.
+  """
+  def mark_cancelled(attrs),
+    do: transition(attrs, %{status: "cancelled", ended_at: DateTime.utc_now()}, "call.missed")
 
   @doc "Call finished (hang up) → ended. attrs: \"call_id\". Emits `call.ended` (with duration_seconds)."
   def mark_ended(attrs),
@@ -84,7 +95,9 @@ defmodule ConversationService.CallStore do
 
   @doc """
   Call history for a user — every call they placed OR received, most recent first. attrs: "user_id",
-  optional "limit" (default 50). → {:ok, %{calls: [...]}}.
+  optional "limit" (default 50), optional "app_id" (the session tenant — rows must match it, with
+  NULL-app legacy rows still included), optional keyset cursor "cursor_ts"/"cursor_id".
+  → {:ok, %{calls: [...], next_cursor: %{ts, id} | nil}}.
   """
   def list_calls_for_user(attrs) do
     with :ok <- persistence(),
@@ -96,23 +109,60 @@ defmodule ConversationService.CallStore do
       participant_calls =
         from(p in CallParticipant, where: p.user_id == ^user_id, select: p.call_id)
 
-      calls =
+      query =
         from(c in Call,
           where:
             c.caller_id == ^user_id or c.callee_id == ^user_id or
               c.id in subquery(participant_calls),
           distinct: true,
-          order_by: [desc: c.created_at],
+          order_by: [desc: c.created_at, desc: c.id],
           limit: ^limit
         )
-        |> Repo.all()
-        |> Enum.map(&response/1)
+        |> filter_app(get(attrs, "app_id"))
+        |> after_cursor(get(attrs, "cursor_ts"), get(attrs, "cursor_id"))
 
-      {:ok, %{calls: calls}}
+      rows = Repo.all(query)
+      calls = Enum.map(rows, &response/1)
+
+      next_cursor =
+        case List.last(rows) do
+          %Call{} = last when length(rows) == limit ->
+            %{ts: iso8601(last.created_at), id: last.id}
+
+          _ ->
+            nil
+        end
+
+      {:ok, %{calls: calls, next_cursor: next_cursor}}
     end
   rescue
     _ -> {:error, :call_invalid}
   end
+
+  # SESSION-TENANT gating (097). Rows stamped with a DIFFERENT app never appear; NULL rows (pre-097
+  # legacy) stay visible — they are already tenant-safe because caller/callee/participant user ids are
+  # app-scoped uuids, so a foreign tenant's user id can never have matched the user predicate above.
+  # Hiding them would empty every user's pre-097 history — the exact symptom this slice was fixing.
+  defp filter_app(query, app_id) when is_binary(app_id) and app_id != "",
+    do: from(c in query, where: c.app_id == ^app_id or is_nil(c.app_id))
+
+  defp filter_app(query, _app_id), do: query
+
+  # Keyset page: strictly older than the (created_at, id) the previous page ended on.
+  defp after_cursor(query, ts, id)
+       when is_binary(ts) and ts != "" and is_binary(id) and id != "" do
+    case DateTime.from_iso8601(ts) do
+      {:ok, cursor_at, _offset} ->
+        from(c in query,
+          where: c.created_at < ^cursor_at or (c.created_at == ^cursor_at and c.id < ^id)
+        )
+
+      _ ->
+        query
+    end
+  end
+
+  defp after_cursor(query, _ts, _id), do: query
 
   # ============================================================================================
   # Phase-3 group calling. ADDITIVE — the 1-on-1 functions above are untouched. A group call is a
@@ -138,8 +188,10 @@ defmodule ConversationService.CallStore do
       now = DateTime.utc_now()
       others = members |> Enum.map(& &1.user_id) |> Enum.reject(&(&1 == initiator_id))
 
+      app_id = get(attrs, "app_id")
+
       Repo.transaction(fn ->
-        call = insert_call!(id, initiator_id, conversation_id, type, now)
+        call = insert_call!(id, app_id, initiator_id, conversation_id, type, now)
         insert_participant!(id, initiator_id, "joined", now, now)
         Enum.each(others, fn uid -> insert_participant!(id, uid, "invited", now, nil) end)
         call
@@ -419,7 +471,7 @@ defmodule ConversationService.CallStore do
           # Lock the link row → serialize concurrent joins so only the FIRST creates the link call; the rest
           # find the one it created and reuse its room.
           Repo.one(from(l in CallLink, where: l.id == ^link_id, lock: "FOR UPDATE"))
-          call = find_or_create_link_call(link, user_id, now)
+          call = find_or_create_link_call(link, user_id, get(attrs, "app_id"), now)
           admitted = seat_link_joiner(call, link, user_id, now)
           {call, admitted}
         end)
@@ -535,10 +587,10 @@ defmodule ConversationService.CallStore do
   # ~11 url-safe chars (8 random bytes, base64url, no padding).
   defp generate_link_id, do: :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
 
-  defp find_or_create_link_call(%CallLink{id: link_id, type: type}, user_id, now) do
+  defp find_or_create_link_call(%CallLink{id: link_id, type: type}, user_id, app_id, now) do
     case active_link_call(link_id) do
       %Call{} = call -> call
-      nil -> insert_link_call!(link_id, type, user_id, now)
+      nil -> insert_link_call!(link_id, type, user_id, app_id, now)
     end
   end
 
@@ -588,12 +640,13 @@ defmodule ConversationService.CallStore do
     |> Repo.one()
   end
 
-  defp insert_link_call!(link_id, type, caller_id, now) do
+  defp insert_link_call!(link_id, type, caller_id, app_id, now) do
     id = Ecto.UUID.generate()
 
     %{
       id: id,
       room_name: "call-" <> id,
+      app_id: app_id,
       kind: "link",
       caller_id: caller_id,
       callee_id: nil,
@@ -621,10 +674,11 @@ defmodule ConversationService.CallStore do
 
   # --- group helpers -----------------------------------------------------------------------------
 
-  defp insert_call!(id, initiator_id, conversation_id, type, now) do
+  defp insert_call!(id, app_id, initiator_id, conversation_id, type, now) do
     %{
       id: id,
       room_name: "call-" <> id,
+      app_id: app_id,
       kind: "group",
       caller_id: initiator_id,
       callee_id: nil,
@@ -1039,6 +1093,7 @@ defmodule ConversationService.CallStore do
       room_name: call.room_name,
       # Old rows (pre-068) load as "direct" (column default); new group calls carry "group".
       kind: call.kind || "direct",
+      app_id: call.app_id,
       caller_id: call.caller_id,
       callee_id: call.callee_id,
       conversation_id: call.conversation_id,
@@ -1046,7 +1101,10 @@ defmodule ConversationService.CallStore do
       status: call.status,
       created_at: iso8601(call.created_at),
       answered_at: iso8601(call.answered_at),
-      ended_at: iso8601(call.ended_at)
+      ended_at: iso8601(call.ended_at),
+      # nil when the call never connected — the /v1 webhook's recorded "nil, not a misleading 0"; the
+      # first-party list surface maps nil → 0 at presentation (its recorded contract) — one raw truth here.
+      duration_seconds: duration_seconds(call)
     }
   end
 

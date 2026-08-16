@@ -92,4 +92,107 @@ defmodule ConversationService.CallStoreTest do
                "type" => "hologram"
              })
   end
+
+  # ---- 097: tenant stamping + app-gated history + cursor + cancelled/duration --------------------
+
+  @tag :postgres_integration
+  test "097: app_id stamps the row; the list gates by app — foreign hidden, NULL legacy visible" do
+    caller = Ecto.UUID.generate()
+    callee = Ecto.UUID.generate()
+    app = Ecto.UUID.generate()
+    foreign_app = Ecto.UUID.generate()
+
+    create = fn extra ->
+      {:ok, call} =
+        CallStore.create_call(
+          Map.merge(
+            %{"caller_id" => caller, "callee_id" => callee, "type" => "voice"},
+            extra
+          )
+        )
+
+      call
+    end
+
+    mine = create.(%{"app_id" => app})
+    legacy = create.(%{})
+
+    # Contrived: in production a user id is app-scoped so a foreign-app row can't share this caller —
+    # but the GATE must be structural, not lean on that invariant.
+    foreign = create.(%{"app_id" => foreign_app})
+
+    assert mine.app_id == app
+    assert is_nil(legacy.app_id)
+
+    # App-scoped list: own-app + legacy NULL rows only.
+    assert {:ok, %{calls: gated}} =
+             CallStore.list_calls_for_user(%{"user_id" => caller, "app_id" => app})
+
+    gated_ids = Enum.map(gated, & &1.id)
+    assert mine.id in gated_ids
+    assert legacy.id in gated_ids
+    refute foreign.id in gated_ids
+
+    # No app in attrs (legacy caller) → unfiltered, exactly the pre-097 behaviour.
+    assert {:ok, %{calls: all}} = CallStore.list_calls_for_user(%{"user_id" => caller})
+    assert length(all) == 3
+  end
+
+  @tag :postgres_integration
+  test "097: cancelled is its own terminal status; duration_seconds only when the call connected" do
+    caller = Ecto.UUID.generate()
+    callee = Ecto.UUID.generate()
+
+    base = %{"caller_id" => caller, "callee_id" => callee, "type" => "voice"}
+
+    # Caller hung up while ringing → cancelled (previously folded into missed), never connected → nil.
+    {:ok, c1} = CallStore.create_call(base)
+    assert {:ok, cancelled} = CallStore.mark_cancelled(%{"call_id" => c1.id})
+    assert cancelled.status == "cancelled"
+    assert is_binary(cancelled.ended_at)
+    assert is_nil(cancelled.duration_seconds)
+
+    # Answered then ended → integer duration (ended_at − answered_at, floored at 0).
+    {:ok, c2} = CallStore.create_call(base)
+    assert {:ok, _} = CallStore.mark_answered(%{"call_id" => c2.id})
+    assert {:ok, ended} = CallStore.mark_ended(%{"call_id" => c2.id})
+    assert ended.status == "ended"
+    assert is_integer(ended.duration_seconds) and ended.duration_seconds >= 0
+  end
+
+  @tag :postgres_integration
+  test "097: keyset cursor pages the history newest-first without overlap or loss" do
+    caller = Ecto.UUID.generate()
+
+    ids =
+      for _ <- 1..3 do
+        {:ok, call} =
+          CallStore.create_call(%{
+            "caller_id" => caller,
+            "callee_id" => Ecto.UUID.generate(),
+            "type" => "voice"
+          })
+
+        call.id
+      end
+
+    assert {:ok, %{calls: page1, next_cursor: cursor}} =
+             CallStore.list_calls_for_user(%{"user_id" => caller, "limit" => 2})
+
+    assert length(page1) == 2
+    assert %{ts: ts, id: id} = cursor
+
+    assert {:ok, %{calls: page2, next_cursor: last_cursor}} =
+             CallStore.list_calls_for_user(%{
+               "user_id" => caller,
+               "limit" => 2,
+               "cursor_ts" => ts,
+               "cursor_id" => id
+             })
+
+    assert length(page2) == 1
+    # The final short page carries no cursor, and the pages tile the set exactly.
+    assert is_nil(last_cursor)
+    assert Enum.sort(Enum.map(page1 ++ page2, & &1.id)) == Enum.sort(ids)
+  end
 end
