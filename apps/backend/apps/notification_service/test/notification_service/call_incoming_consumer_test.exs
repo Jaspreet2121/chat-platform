@@ -98,4 +98,23 @@ defmodule NotificationService.CallIncomingConsumerTest do
 
     assert log =~ "JSON decode failed"
   end
+
+  test "a call.cancelled event dispatches (the stop-ringing branch) and commits" do
+    corr = "corr-#{System.unique_integer([:positive])}"
+
+    cancelled = %{
+      "type" => "call.cancelled",
+      "call_id" => "call-1",
+      "callee_id" => "callee-1",
+      "caller_id" => "caller-1",
+      "reason" => "cancelled",
+      "correlation_id" => corr
+    }
+
+    assert {:ok, :commit, :state} = handle!(Jason.encode!(cancelled))
+
+    # dispatch_cancel/1 ran — same correlation side-effect as the incoming branch (the FCM leg itself
+    # is config-gated off here; its behaviour has its own suite).
+    assert SharedInfra.Correlation.get() == corr
+  end
 end

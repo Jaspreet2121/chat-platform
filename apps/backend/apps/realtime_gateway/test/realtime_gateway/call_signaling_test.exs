@@ -101,6 +101,7 @@ defmodule RealtimeGateway.CallSignalingMockClient do
       id: "call_1",
       room_name: "room_1",
       status: "ringing",
+      app_id: attrs["app_id"],
       caller_id: attrs["caller_id"],
       callee_id: attrs["callee_id"],
       type: attrs["type"],
@@ -181,6 +182,26 @@ defmodule RealtimeGateway.CallPillCaptureClient do
 
     {:ok, Map.put(attrs, "message_id", "pill_1")}
   end
+end
+
+defmodule RealtimeGateway.CallPushCaptureProducer do
+  @moduledoc "Captures call.events.v1 produces (call.incoming / call.cancelled) for the push tests."
+  def produce(topic, key, value, _opts \\ []) do
+    case Application.get_env(:realtime_gateway, :call_test_pid) do
+      pid when is_pid(pid) -> send(pid, {:produced, topic, key, value})
+      _ -> :ok
+    end
+
+    {:ok, :produced}
+  end
+
+  def produce_sync(topic, key, value, opts \\ []), do: produce(topic, key, value, opts)
+end
+
+defmodule RealtimeGateway.CallPushFailingProducer do
+  @moduledoc "Every produce fails — proves a broker outage never breaks the cancel itself."
+  def produce(_t, _k, _v, _o \\ []), do: {:error, :leader_not_available}
+  def produce_sync(_t, _k, _v, _o \\ []), do: {:error, :leader_not_available}
 end
 
 defmodule RealtimeGateway.CallSignalingStubs do
@@ -600,6 +621,124 @@ defmodule RealtimeGateway.CallSignalingTest do
       # The chat pill is STILL the missed pill — to the callee a cancelled ring IS a missed call.
       assert_receive {:pill, attrs}
       assert attrs["metadata"]["status"] == "missed"
+    end
+  end
+
+  # ---- call.cancelled push (2026-08-17): the stop for a backgrounded callee's ringing handset ----
+  describe "call.cancelled push" do
+    setup do
+      prev_producer = Application.get_env(:shared_infra, :kafka_producer_adapter)
+      prev_enabled = Application.get_env(:realtime_gateway, :call_push_enabled)
+      prev_msg = Application.get_env(:shared_infra, :message_client_adapter)
+
+      Application.put_env(
+        :shared_infra,
+        :kafka_producer_adapter,
+        RealtimeGateway.CallPushCaptureProducer
+      )
+
+      Application.put_env(:realtime_gateway, :call_push_enabled, true)
+
+      # The cancel path also writes the missed pill — capture it so its Task never hits a real client.
+      Application.put_env(
+        :shared_infra,
+        :message_client_adapter,
+        RealtimeGateway.CallPillCaptureClient
+      )
+
+      on_exit(fn ->
+        restore(:kafka_producer_adapter, prev_producer)
+        restore(:message_client_adapter, prev_msg)
+
+        if prev_enabled,
+          do: Application.put_env(:realtime_gateway, :call_push_enabled, prev_enabled),
+          else: Application.delete_env(:realtime_gateway, :call_push_enabled)
+      end)
+
+      :ok
+    end
+
+    defp invite_dm! do
+      assert {:reply, {:ok, %{call_id: call_id}}, _} =
+               CallSignaling.handle_event(
+                 "call:invite",
+                 %{"callee_id" => @callee, "type" => "voice", "conversation_id" => @dm_conv},
+                 socket(@caller)
+               )
+
+      # The invite's own call.incoming produce — drain it so cancel assertions see only theirs.
+      assert_receive {:produced, "call.events.v1", @callee, %{"type" => "call.incoming"}}, 500
+      call_id
+    end
+
+    test "cancel produces call.cancelled AFTER the broadcast, payload locked; keyed by callee" do
+      call_id = invite_dm!()
+
+      assert {:reply, {:ok, _}, _} =
+               CallSignaling.handle_event("call:cancel", %{"call_id" => call_id}, socket(@caller))
+
+      # The channel broadcast still happened (the push is never INSTEAD of it).
+      assert_receive {:broadcast, "user:" <> _, "call:cancelled", %{call_id: ^call_id}}
+
+      assert_receive {:produced, "call.events.v1", @callee, value}, 500
+      assert value["type"] == "call.cancelled"
+      assert value["call_id"] == call_id
+      assert value["callee_id"] == @callee
+      assert value["caller_id"] == @caller
+      assert value["app_id"] == @app
+      assert value["reason"] == "cancelled"
+      assert is_binary(value["correlation_id"])
+    end
+
+    test "the server ring-timeout produces reason=timeout" do
+      call_id = invite_dm!()
+
+      assert :ok = CallSignaling.ring_timeout(call_id, RealtimeGateway.CallCaptureEndpoint)
+
+      assert_receive {:produced, "call.events.v1", @callee,
+                      %{"type" => "call.cancelled"} = value},
+                     500
+
+      assert value["reason"] == "timeout"
+      assert value["call_id"] == call_id
+    end
+
+    test "accept and decline produce NO call.cancelled" do
+      call_id = invite_dm!()
+
+      assert {:reply, {:ok, _}, _} =
+               CallSignaling.handle_event("call:accept", %{"call_id" => call_id}, socket(@callee))
+
+      refute_receive {:produced, _, _, %{"type" => "call.cancelled"}}, 150
+
+      # Fresh ringing call for the decline side.
+      Mock.reset()
+      call_id2 = invite_dm!()
+
+      assert {:reply, {:ok, _}, _} =
+               CallSignaling.handle_event(
+                 "call:reject",
+                 %{"call_id" => call_id2},
+                 socket(@callee)
+               )
+
+      refute_receive {:produced, _, _, %{"type" => "call.cancelled"}}, 150
+    end
+
+    test "a produce failure never breaks the cancel (fire-and-forget, logged)" do
+      call_id = invite_dm!()
+
+      Application.put_env(
+        :shared_infra,
+        :kafka_producer_adapter,
+        RealtimeGateway.CallPushFailingProducer
+      )
+
+      assert {:reply, {:ok, %{call_id: ^call_id}}, _} =
+               CallSignaling.handle_event("call:cancel", %{"call_id" => call_id}, socket(@caller))
+
+      # The transition itself still happened — the broker outage cost only the push.
+      assert Enum.any?(Mock.log(), &match?({:cancel, _}, &1))
     end
   end
 

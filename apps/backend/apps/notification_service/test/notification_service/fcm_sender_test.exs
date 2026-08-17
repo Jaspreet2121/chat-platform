@@ -177,9 +177,43 @@ defmodule NotificationService.FcmSenderTest do
         @recipient
       )
 
-      assert_receive {:fcm_post, _url, %{"message" => %{"data" => data}}, _token}
+      assert_receive {:fcm_post, _url, %{"message" => %{"data" => data} = message}, _token}
       assert data["type"] == "call"
       assert data["call_id"] == "call-9"
+
+      # The ring carries the collapse key its stop will reuse (a pending ring is superseded by cancel).
+      assert message["android"]["collapse_key"] == "call_call-9"
+    end
+
+    @tag presence: FcmFakes.PresentEverywhere
+    @tag :postgres_integration
+    test "call.cancelled pushes UNSUPPRESSED (even foreground) with ttl + collapse_key" do
+      seed_tokens!([@token_a])
+
+      # PresentEverywhere: the incoming leg would suppress — the STOP must not (a redundant stop is an
+      # idempotent no-op on the client; a suppressed one leaves a dead ring on the handset).
+      FcmSender.deliver_call_cancelled(
+        %{"call_id" => "call-9", "reason" => "cancelled"},
+        @recipient
+      )
+
+      assert_receive {:fcm_post, _url, %{"message" => message}, _token}
+
+      assert message["data"] == %{
+               "type" => "call_cancelled",
+               "call_id" => "call-9",
+               "reason" => "cancelled"
+             }
+
+      assert message["android"]["priority"] == "high"
+      assert message["android"]["ttl"] == "60s"
+      assert message["android"]["collapse_key"] == "call_call-9"
+    end
+
+    @tag :postgres_integration
+    test "call.cancelled with no tokens is a clean no-op" do
+      FcmSender.deliver_call_cancelled(%{"call_id" => "call-9"}, @recipient)
+      refute_receive {:fcm_post, _url, _body, _token}, 100
     end
 
     @tag presence: FcmFakes.PresentEverywhere

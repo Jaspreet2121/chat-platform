@@ -216,6 +216,10 @@ defmodule RealtimeGateway.CallSignaling do
       _ = ConversationClient.mark_call_cancelled(%{"call_id" => call_id})
       write_missed_message(call, socket.endpoint)
       broadcast(socket, cget(call, :callee_id), "call:cancelled", %{call_id: call_id})
+
+      # AFTER the broadcast, never instead of it: the socket is the authoritative stop; the FCM data
+      # push is for the callee whose socket is down (backgrounded/killed handset still ringing).
+      emit_cancel_push(call, "cancelled")
       {:reply, {:ok, %{call_id: call_id}}, socket}
     end)
   end
@@ -265,6 +269,10 @@ defmodule RealtimeGateway.CallSignaling do
           write_missed_message(call, endpoint)
           do_broadcast(endpoint, cget(call, :caller_id), "call:missed", %{call_id: call_id})
           do_broadcast(endpoint, cget(call, :callee_id), "call:missed", %{call_id: call_id})
+
+          # The backgrounded callee's handset may STILL be ringing off the call.incoming push (observed
+          # on MIUI: the incoming push landed 40s late and rang a dead call for a minute) — chase it.
+          emit_cancel_push(call, "timeout")
         end
 
       _ ->
@@ -1027,6 +1035,51 @@ defmodule RealtimeGateway.CallSignaling do
             # invisibility: a dead client / broker shows up in the logs instead of vanishing.
             Logger.warning(
               "call.incoming push produce failed (call #{call_id}): #{inspect(reason)}"
+            )
+        end
+      end)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  # The TERMINAL push for a still-ringing backgrounded callee — cancel (caller hung up while ringing)
+  # and the server ring-timeout both produce `call.cancelled` to call.events.v1, the same
+  # fire-and-forget + CALL_PUSH_ENABLED gating as call.incoming. Keyed by callee_id so it lands on the
+  # SAME partition as the call.incoming it chases (per-key ordering — the consumer sees stop after
+  # ring). A produce failure logs and never fails the cancel/timeout (the call IS already terminal).
+  # Only "call_cancelled" exists on the client (vc8) — decline/ended pushes are noted follow-ups.
+  defp emit_cancel_push(call, reason) do
+    callee_id = cget(call, :callee_id)
+
+    if call_push_enabled?() and is_binary(callee_id) and callee_id != "" do
+      correlation = SharedInfra.Correlation.get_or_generate()
+      call_id = cget(call, :id)
+
+      value = %{
+        "type" => "call.cancelled",
+        "call_id" => call_id,
+        "callee_id" => callee_id,
+        "caller_id" => cget(call, :caller_id),
+        "app_id" => cget(call, :app_id),
+        "reason" => reason,
+        "correlation_id" => correlation
+      }
+
+      Task.start(fn ->
+        SharedInfra.Correlation.put(correlation)
+
+        case SharedInfra.Kafka.Producer.produce(@call_events_topic, callee_id, value,
+               client: RealtimeGateway.Application.kafka_client_name()
+             ) do
+          {:ok, _} ->
+            :ok
+
+          {:error, produce_error} ->
+            Logger.warning(
+              "call.cancelled push produce failed (call #{call_id}): #{inspect(produce_error)}"
             )
         end
       end)

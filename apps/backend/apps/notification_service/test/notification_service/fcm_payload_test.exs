@@ -87,6 +87,33 @@ defmodule NotificationService.FcmPayloadTest do
       assert data["call_type"] == "voice"
     end
 
+    test "call_cancelled data is the client's stop contract (vc8): type + call_id + reason" do
+      assert FcmSender.call_cancelled_data(%{"call_id" => "call-1", "reason" => "timeout"}) == %{
+               "type" => "call_cancelled",
+               "call_id" => "call-1",
+               "reason" => "timeout"
+             }
+
+      # No reason on the event → "cancelled", never an empty string.
+      assert FcmSender.call_cancelled_data(%{"call_id" => "call-1"})["reason"] == "cancelled"
+    end
+
+    test "android extras (ttl, collapse_key) merge onto the envelope without losing high priority" do
+      envelope =
+        FcmSender.build_envelope(@token_a, %{"type" => "call_cancelled"}, %{
+          "ttl" => "60s",
+          "collapse_key" => "call_call-1"
+        })
+
+      assert envelope["message"]["android"] == %{
+               "priority" => "high",
+               "ttl" => "60s",
+               "collapse_key" => "call_call-1"
+             }
+
+      refute Map.has_key?(envelope["message"], "notification")
+    end
+
     test "the envelope is data-only and high priority — NO notification block" do
       envelope = FcmSender.build_envelope(@token_a, %{"type" => "message"})
 

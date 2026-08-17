@@ -70,6 +70,21 @@ defmodule NotificationService.FcmSender do
     :ok
   end
 
+  @doc """
+  Fire-and-forget STOP-RINGING data push (2026-08-17): the decoded `call.cancelled` event (caller
+  cancelled while ringing, or the server ring-timeout fired). The handset ringing off a call.incoming
+  push has no socket — this is the only way the ring stops before the OS gives up.
+  """
+  def push_call_cancelled(attrs) when is_map(attrs) do
+    callee_id = attrs["callee_id"]
+
+    if configured?() and is_binary(callee_id) and callee_id != "" do
+      Task.start(fn -> deliver_call_cancelled(attrs, callee_id) end)
+    end
+
+    :ok
+  end
+
   # ---- Delivery ----
 
   @doc false
@@ -106,11 +121,30 @@ defmodule NotificationService.FcmSender do
   def deliver_call(attrs, callee_id) do
     unless presence().app_present?(callee_id) do
       data = call_data(attrs)
-      for token <- tokens_for(callee_id), do: send_one(token, data)
+
+      # collapse_key ties the ring and its stop together: a later call.cancelled push with the SAME key
+      # supersedes a still-pending incoming push where the transport supports it.
+      for token <- tokens_for(callee_id),
+          do: send_one(token, data, %{"collapse_key" => collapse_key(attrs)})
     end
   rescue
     error -> Logger.warning("fcm call deliver raised, ignored: #{inspect(error)}")
   end
+
+  @doc false
+  # NO presence suppression, unlike the incoming leg: if the incoming push escaped to the handset, the
+  # stop must escape too — and a redundant stop is an idempotent no-op on the client (vc8), while a
+  # suppressed one leaves a dead call ringing for a minute (observed on MIUI, 2026-08-16). TTL 60s: a
+  # late cancel is useless — expire it rather than queue it for hours.
+  def deliver_call_cancelled(attrs, callee_id) do
+    data = call_cancelled_data(attrs)
+    android = %{"ttl" => "60s", "collapse_key" => collapse_key(attrs)}
+    for token <- tokens_for(callee_id), do: send_one(token, data, android)
+  rescue
+    error -> Logger.warning("fcm cancel deliver raised, ignored: #{inspect(error)}")
+  end
+
+  defp collapse_key(attrs), do: "call_" <> to_string(attrs["call_id"])
 
   # ---- Payloads (DATA ONLY — see the moduledoc) ----
 
@@ -148,30 +182,43 @@ defmodule NotificationService.FcmSender do
     |> maybe_put("conversation_id", attrs["conversation_id"])
   end
 
+  @doc false
+  # The client's stop contract (vc8): {"type":"call_cancelled","call_id",...,"reason"} — it also
+  # accepts "call.cancelled" as the type, but the underscore form is what it documents.
+  def call_cancelled_data(attrs) do
+    %{
+      "type" => "call_cancelled",
+      "call_id" => to_string(attrs["call_id"]),
+      "reason" => to_string(attrs["reason"] || "cancelled")
+    }
+  end
+
   defp maybe_put(map, _key, value) when value in [nil, ""], do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, to_string(value))
 
   @doc false
   # Public for the tests: the exact HTTP v1 envelope. `android.priority: "high"` is what lets a data
   # message wake a dozing app — without it a backgrounded handset may not see a call until much later.
-  def build_envelope(token, data) do
+  # `android_extra` merges per-message AndroidConfig on top (ttl, collapse_key) without forking the
+  # envelope shape.
+  def build_envelope(token, data, android_extra \\ %{}) do
     %{
       "message" => %{
         "token" => token,
         "data" => data,
-        "android" => %{"priority" => "high"}
+        "android" => Map.merge(%{"priority" => "high"}, android_extra)
       }
     }
   end
 
   # ---- Transport ----
 
-  defp send_one(token, data) do
+  defp send_one(token, data, android_extra \\ %{}) do
     with {:ok, access_token} <- access_token(),
          {:ok, project_id} <- project_id() do
       url = "https://fcm.googleapis.com/v1/projects/#{project_id}/messages:send"
 
-      case http().post(url, build_envelope(token, data), access_token) do
+      case http().post(url, build_envelope(token, data, android_extra), access_token) do
         {:ok, %{status: status}} when status in 200..299 ->
           :ok
 
