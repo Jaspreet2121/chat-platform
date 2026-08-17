@@ -27,6 +27,9 @@ defmodule SharedInfra.UserClientHttp do
   def lookup_by_username(attrs), do: post("/internal/usernames/lookup", attrs)
 
   @impl true
+  def search_users(attrs), do: post("/internal/users/search", attrs)
+
+  @impl true
   def check_username(attrs), do: post("/internal/usernames/check", attrs)
 
   @impl true

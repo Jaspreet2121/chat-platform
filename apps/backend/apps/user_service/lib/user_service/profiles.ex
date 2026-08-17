@@ -55,6 +55,89 @@ defmodule UserService.Profiles do
 
   def get_me(attrs \\ %{}), do: get_current_profile(attrs)
 
+  @doc """
+  Case-insensitive SUBSTRING search over display_name + username, inside ONE app (2026-08-17).
+  attrs: "q" (pre-validated by the gateway — min length lives there), "app_id" (the caller's session
+  tenant), "caller_user_id" (excluded from results), optional "limit" (clamped 1..50, default 20).
+
+  Rows are the SAME public-profile card `get_public_profile/1` returns (the gateway runs each through
+  ProfilePresenter, so redaction cannot differ from by-phone/by-username). ACTIVE accounts only
+  (status parity with those lookups). Ordering: prefix matches (display_name OR username starting
+  with q) first, then alphabetical by display_name — ties broken by user_id so pages are stable.
+  LIKE wildcards in q are escaped: a query containing % or _ matches those LITERAL characters.
+  Rides the 098 trigram indexes (lower(col) LIKE against gin_trgm_ops expressions).
+  """
+  def search_users(attrs) do
+    if user_profile_persistence_enabled?() do
+      search_users_in_db(attrs)
+    else
+      {:ok, %{users: []}}
+    end
+  end
+
+  defp search_users_in_db(attrs) do
+    with {:ok, q} <- required_attr(attrs, :q),
+         {:ok, app_id} <- required_attr(attrs, :app_id),
+         {:ok, caller_id} <- required_attr(attrs, :caller_user_id) do
+      limit = search_limit(get_attr(attrs, :limit))
+      needle = q |> String.trim() |> String.downcase() |> escape_like()
+      pattern = "%" <> needle <> "%"
+      prefix = needle <> "%"
+
+      %{rows: rows} =
+        UserService.Repo.query!(
+          """
+          SELECT p.user_id::text, p.display_name, p.username, p.avatar_media_id::text,
+                 p.avatar_object_key, p.app_id::text, p.bio
+          FROM user_profiles p
+          JOIN users_auth a ON a.id = p.user_id
+          WHERE p.app_id = $1::text::uuid
+            AND a.status = 'active'
+            AND p.user_id <> $2::text::uuid
+            AND (lower(p.display_name) LIKE $3 OR lower(p.username) LIKE $3)
+          ORDER BY (CASE WHEN lower(p.display_name) LIKE $4 OR lower(p.username) LIKE $4
+                    THEN 0 ELSE 1 END),
+                   lower(p.display_name), p.user_id
+          LIMIT #{limit}
+          """,
+          [app_id, caller_id, pattern, prefix]
+        )
+
+      users =
+        Enum.map(rows, fn [user_id, display_name, username, media_id, object_key, row_app, bio] ->
+          %{
+            user_id: user_id,
+            display_name: display_name,
+            username: username,
+            avatar_media_id: media_id,
+            avatar_object_key: object_key,
+            # The profile's tenant — presign input only; the gateway's presenter strips it.
+            app_id: row_app,
+            bio: bio
+          }
+        end)
+
+      {:ok, %{users: users}}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :profile_invalid}
+    _error in Postgrex.Error -> {:error, :profile_invalid}
+  end
+
+  # % and _ are LIKE wildcards and \\ is the default LIKE escape — all three become literals.
+  defp escape_like(q), do: String.replace(q, ~r/[\\%_]/, fn ch -> "\\" <> ch end)
+
+  defp search_limit(limit) when is_integer(limit), do: limit |> max(1) |> min(50)
+
+  defp search_limit(limit) when is_binary(limit) do
+    case Integer.parse(limit) do
+      {n, _} -> search_limit(n)
+      :error -> 20
+    end
+  end
+
+  defp search_limit(_), do: 20
+
   defp update_current_profile_in_db(attrs) do
     with {:ok, user_id} <- required_user_id(attrs),
          {:ok, profile} <- upsert_profile(user_id, attrs),

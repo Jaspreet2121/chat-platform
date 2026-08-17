@@ -52,6 +52,7 @@ event is pure noise.
 | `POST /broadcasts/:id/send` | 20 | 3600s | user | **CLOSED** | The spam amplifier — 20 sends × 256 recipients = 5,120 messages/hour. A limiter outage must not open that gate. |
 | `POST /reports` | 5 | 3600s | user | OPEN | A legitimate safety report must not be lost to a Redis blip. |
 | `GET /usernames/:u/availability` | 30 | 3600s | user | OPEN | Namespace prober. Availability is advisory UX, not a gate. |
+| `GET /users/search` | 30 | 60s | user | **CLOSED** | The name-substring directory search (098) — a wider enumeration oracle than by-phone (one query returns up to 50 accounts). 30/min is generous for a human typing a name; the limiter *is* the control, so an outage rejects (contacts-sync precedent). |
 | `/v1/*` (integrator API) | 3000 (`V1_RATE_LIMIT`) | 60s | **app_id** | OPEN | Per-tenant ceiling across all 28 `/v1` routes. |
 
 `API_RATE_LIMITING_ENABLED` gates **only** the two pre-session auth limiters. Everything else is

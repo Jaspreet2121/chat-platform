@@ -28,10 +28,15 @@ defmodule SharedInfra.UserClient do
   @callback remove_favourite(attrs()) :: result()
   @callback reorder_favourites(attrs()) :: result()
   @callback lookup_by_username(attrs()) :: result()
+  @callback search_users(attrs()) :: result()
   @callback check_username(attrs()) :: result()
 
   # Optional so a partial test stub of this behaviour doesn't need to implement everything; the real adapters do.
-  @optional_callbacks get_privacy: 1, update_privacy: 1, lookup_by_username: 1, check_username: 1
+  @optional_callbacks get_privacy: 1,
+                      update_privacy: 1,
+                      lookup_by_username: 1,
+                      check_username: 1,
+                      search_users: 1
 
   def get_current_profile(attrs), do: adapter().get_current_profile(attrs)
   def list_favourites(attrs), do: adapter().list_favourites(attrs)
@@ -50,6 +55,7 @@ defmodule SharedInfra.UserClient do
   @doc "Sparse update of a user's privacy settings; returns the full updated map or a validation error."
   def update_privacy(attrs), do: adapter().update_privacy(attrs)
   def lookup_by_username(attrs), do: adapter().lookup_by_username(attrs)
+  def search_users(attrs), do: adapter().search_users(attrs)
   def check_username(attrs), do: adapter().check_username(attrs)
 
   @doc "The configured User client adapter (default `UserService.UserClientInProcess`)."

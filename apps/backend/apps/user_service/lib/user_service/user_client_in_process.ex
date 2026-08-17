@@ -27,6 +27,8 @@ defmodule UserService.UserClientInProcess do
 
   @impl true
   def lookup_by_username(attrs), do: UserService.Usernames.lookup(attrs)
+  @impl true
+  def search_users(attrs), do: Profiles.search_users(attrs)
 
   @impl true
   def check_username(attrs), do: UserService.Usernames.check_availability(attrs)

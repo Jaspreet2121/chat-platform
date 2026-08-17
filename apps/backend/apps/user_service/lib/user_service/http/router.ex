@@ -25,6 +25,10 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Profiles.get_public_profile(body(conn)))
   end
 
+  post "/internal/users/search" do
+    send_result(conn, UserService.Profiles.search_users(body(conn)))
+  end
+
   post "/internal/profiles/update" do
     send_result(conn, UserService.Profiles.update_current_profile(body(conn)))
   end

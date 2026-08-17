@@ -178,6 +178,11 @@ defmodule ApiGatewayWeb.Router do
     # path, so it never collides with the two-segment "/:user_id/profile" below.
     get "/by-phone", UserController, :by_phone
 
+    # Display-name/username substring search (098) — the directory's third leg beside by-phone and
+    # by-username: same session gate, same app scope, same presenter card, rate-limited like contacts
+    # sync (an enumeration oracle). Literal one-segment path, same no-collision argument as by-phone.
+    get "/search", UserController, :search
+
     # Handle → profile card (080): same card + redaction as by-phone; per-tenant namespace, active-only.
     get "/by-username/:username", UserController, :by_username
     get "/:user_id/profile", UserController, :profile

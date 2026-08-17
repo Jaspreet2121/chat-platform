@@ -232,6 +232,100 @@ defmodule ApiGatewayWeb.UserController do
 
   def by_phone(conn, _params), do: invalid_request(conn)
 
+  # 30/min, FAIL-CLOSED (contacts-sync precedent: a name search is the directory's widest enumeration
+  # oracle, so a limiter outage rejects rather than opening it). Registered in RATE_LIMIT_POLICY.md.
+  @search_limit 30
+  @search_window_seconds 60
+  @search_limiter_outage_retry 30
+
+  @doc """
+  Substring search over display_name + username (098) — the directory's third leg. Session-gated and
+  scoped to the CALLER's app exactly like by-phone (no cross-app rows, ever); every row is the SAME
+  redacted §6.5 profile card the other lookups return (ProfilePresenter per row — hidden avatars
+  redact identically; the card carries no phone number by construction). The caller never appears in
+  their own results. q trimmed, < 3 chars → 400 search.query_too_short (the /search/messages code);
+  limit clamped 1..50, default 20. Prefix matches order first, then display_name.
+  """
+  def search(conn, params) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, q} <- validate_search_query(params),
+         :ok <- search_rate_limit(session.user_id),
+         {:ok, result} <-
+           SharedInfra.UserClient.search_users(%{
+             "q" => q,
+             "app_id" => session_app(session),
+             "caller_user_id" => session.user_id,
+             "limit" => clamp_search_limit(Map.get(params, "limit"))
+           }) do
+      users = Map.get(result, :users) || Map.get(result, "users") || []
+
+      cards =
+        Enum.map(users, fn row ->
+          target = Map.get(row, :user_id) || Map.get(row, "user_id")
+          ProfilePresenter.present(session.user_id, target, row)
+        end)
+
+      json(conn, %{users: cards})
+    else
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :query_too_short} ->
+        ErrorResponse.invalid_request(conn, "search.query_too_short")
+
+      {:error, :rate_limited, retry_after_seconds} ->
+        conn
+        |> put_resp_header("retry-after", Integer.to_string(retry_after_seconds))
+        |> ErrorResponse.rate_limited("user.search_rate_limited")
+
+      {:error, :rate_limiter_unavailable} ->
+        conn
+        |> put_resp_header("retry-after", Integer.to_string(@search_limiter_outage_retry))
+        |> ErrorResponse.service_unavailable("user.search_unavailable")
+
+      {:error, :user_unavailable} ->
+        service_unavailable(conn)
+
+      _ ->
+        invalid_request(conn)
+    end
+  end
+
+  defp validate_search_query(params) do
+    q = params |> Map.get("q", "") |> to_string() |> String.trim()
+    if String.length(q) < 3, do: {:error, :query_too_short}, else: {:ok, q}
+  end
+
+  defp clamp_search_limit(nil), do: 20
+  defp clamp_search_limit(limit) when is_integer(limit), do: limit |> max(1) |> min(50)
+
+  defp clamp_search_limit(limit) when is_binary(limit) do
+    case Integer.parse(limit) do
+      {n, _} -> clamp_search_limit(n)
+      :error -> 20
+    end
+  end
+
+  defp clamp_search_limit(_), do: 20
+
+  defp search_rate_limit(user_id) do
+    case SharedInfra.RateLimiter.check_rate(%{
+           "key" => "user_search:" <> user_id,
+           "limit" => @search_limit,
+           "window_seconds" => @search_window_seconds,
+           "fail_open" => false
+         }) do
+      :ok -> :ok
+      {:error, :rate_limited, _retry} = limited -> limited
+      _ -> {:error, :rate_limiter_unavailable}
+    end
+  end
+
   @doc """
   Resolve an @handle → the SAME redacted profile card by-phone returns (ProfilePresenter — block +
   photo-visibility redaction cannot drift). Session-gated + app-scoped (the handle namespace is
