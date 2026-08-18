@@ -15,6 +15,74 @@ defmodule ApiGatewayWeb.ProfilePresenter do
   # (name shown) and the result is byte-identical to a user with no avatar, so neither the block nor the
   # visibility setting is ever revealed. Last-seen/online is a SEPARATE surface (SharedInfra.PresenceAuthz).
   def present(caller_id, target_id, profile) when is_map(profile) do
+    profile
+    |> present_payment_business(caller_id, target_id)
+    |> present_avatar(caller_id, target_id)
+  end
+
+  def present(_caller_id, _target_id, other), do: other
+
+  # --- payment + business card (100) -------------------------------------------------------------
+
+  @payment_keys [:upi_id, :payment_name, :upi_qr_media_id, :upi_qr_url]
+  @business_keys [:address, :website, :business_email, :business_hours]
+  # Never in a non-owner card, whatever the visibility says.
+  @owner_only_keys [:upi_merchant]
+
+  # Per-field-group visibility, owner-controlled (profile_visibility rides the card from user_service
+  # WITH defaults applied, and never reaches a non-owner client — dropped below):
+  #   payment  ∈ everyone | contacts (default; same shares-a-conversation rule as photo) | nobody
+  #   business ∈ everyone (default) | nobody
+  # Hidden fields are DROPPED — indistinguishable from unset, the same posture as the avatar rules.
+  # Runs BEFORE the avatar step because presigning upi_qr_url needs the app_id that step strips.
+  defp present_payment_business(profile, caller_id, target_id) do
+    visibility = Map.get(profile, :profile_visibility) || %{}
+    owner? = is_binary(caller_id) and caller_id == target_id
+
+    payment? = owner? or payment_visible?(visibility, caller_id, target_id)
+    business? = owner? or Map.get(visibility, "business", "everyone") == "everyone"
+
+    profile
+    |> then(fn p -> if payment?, do: attach_qr_url(p), else: Map.drop(p, @payment_keys) end)
+    |> then(fn p -> if business?, do: p, else: Map.drop(p, @business_keys) end)
+    |> then(fn p ->
+      if owner?,
+        do: p,
+        else: Map.drop(p, @owner_only_keys ++ [:profile_visibility, :upi_qr_media_id])
+    end)
+  end
+
+  defp payment_visible?(visibility, caller_id, target_id) do
+    case Map.get(visibility, "payment", "contacts") do
+      "everyone" -> true
+      "contacts" -> shares_conversation?(caller_id, target_id)
+      _ -> false
+    end
+  end
+
+  # Presign the generated QR PNG (a normal "message"-purpose media asset) into upi_qr_url —
+  # best-effort, exactly like the avatar presign; no id / no app / any error → no URL attached.
+  defp attach_qr_url(profile) do
+    media_id = Map.get(profile, :upi_qr_media_id)
+    app_id = Map.get(profile, :app_id)
+
+    with true <- is_binary(media_id) and is_binary(app_id),
+         {:ok, download} <-
+           SharedInfra.MediaClient.get_download_url(%{
+             "media_id" => media_id,
+             "app_id" => app_id,
+             "purpose" => "message"
+           }),
+         url when is_binary(url) <- Map.get(download, :download_url) do
+      Map.put(profile, :upi_qr_url, url)
+    else
+      _ -> profile
+    end
+  rescue
+    _ -> profile
+  end
+
+  defp present_avatar(profile, caller_id, target_id) do
     if avatar_hidden?(caller_id, target_id) do
       # Skip the presign entirely and drop the raw avatar id (so the client can't resolve it itself) + the
       # internal app_id; avatar_url: nil is the same shape a genuinely-avatarless profile returns.
@@ -32,8 +100,6 @@ defmodule ApiGatewayWeb.ProfilePresenter do
     end
   end
 
-  def present(_caller_id, _target_id, other), do: other
-
   # The single "may this caller see the target's avatar?" rule, reused by every OTHER-user avatar path
   # (profile, by-phone, the avatar redirect, contacts sync). Block hides it BOTH ways; otherwise the
   # three-way profile_photo_visibility decides. Composes with the block slice's check — one place.
@@ -48,6 +114,7 @@ defmodule ApiGatewayWeb.ProfilePresenter do
   # Visibility gating (block + profile_photo_visibility) is applied UPSTREAM by present/avatar_hidden?
   # BEFORE this presign, so this helper only ever runs for an avatar the caller is permitted to see.
   def with_avatar_url(profile) when is_map(profile) do
+    profile = attach_qr_url(profile)
     media_id = Map.get(profile, :avatar_media_id)
     app_id = Map.get(profile, :app_id)
 

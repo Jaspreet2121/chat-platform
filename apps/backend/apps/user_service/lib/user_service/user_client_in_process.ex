@@ -31,6 +31,21 @@ defmodule UserService.UserClientInProcess do
   def search_users(attrs), do: Profiles.search_users(attrs)
 
   @impl true
+  def list_quick_replies(attrs), do: UserService.QuickReplies.list(attrs)
+
+  @impl true
+  def create_quick_reply(attrs), do: UserService.QuickReplies.create(attrs)
+
+  @impl true
+  def update_quick_reply(attrs), do: UserService.QuickReplies.update(attrs)
+
+  @impl true
+  def delete_quick_reply(attrs), do: UserService.QuickReplies.delete(attrs)
+
+  @impl true
+  def reorder_quick_replies(attrs), do: UserService.QuickReplies.reorder(attrs)
+
+  @impl true
   def check_username(attrs), do: UserService.Usernames.check_availability(attrs)
 
   @impl true

@@ -29,6 +29,11 @@ defmodule SharedInfra.UserClient do
   @callback reorder_favourites(attrs()) :: result()
   @callback lookup_by_username(attrs()) :: result()
   @callback search_users(attrs()) :: result()
+  @callback list_quick_replies(attrs()) :: result()
+  @callback create_quick_reply(attrs()) :: result()
+  @callback update_quick_reply(attrs()) :: result()
+  @callback delete_quick_reply(attrs()) :: result()
+  @callback reorder_quick_replies(attrs()) :: result()
   @callback check_username(attrs()) :: result()
 
   # Optional so a partial test stub of this behaviour doesn't need to implement everything; the real adapters do.
@@ -36,7 +41,12 @@ defmodule SharedInfra.UserClient do
                       update_privacy: 1,
                       lookup_by_username: 1,
                       check_username: 1,
-                      search_users: 1
+                      search_users: 1,
+                      list_quick_replies: 1,
+                      create_quick_reply: 1,
+                      update_quick_reply: 1,
+                      delete_quick_reply: 1,
+                      reorder_quick_replies: 1
 
   def get_current_profile(attrs), do: adapter().get_current_profile(attrs)
   def list_favourites(attrs), do: adapter().list_favourites(attrs)
@@ -56,6 +66,11 @@ defmodule SharedInfra.UserClient do
   def update_privacy(attrs), do: adapter().update_privacy(attrs)
   def lookup_by_username(attrs), do: adapter().lookup_by_username(attrs)
   def search_users(attrs), do: adapter().search_users(attrs)
+  def list_quick_replies(attrs), do: adapter().list_quick_replies(attrs)
+  def create_quick_reply(attrs), do: adapter().create_quick_reply(attrs)
+  def update_quick_reply(attrs), do: adapter().update_quick_reply(attrs)
+  def delete_quick_reply(attrs), do: adapter().delete_quick_reply(attrs)
+  def reorder_quick_replies(attrs), do: adapter().reorder_quick_replies(attrs)
   def check_username(attrs), do: adapter().check_username(attrs)
 
   @doc "The configured User client adapter (default `UserService.UserClientInProcess`)."

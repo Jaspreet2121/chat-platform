@@ -43,3 +43,6 @@ tmp/
 # on-server edit — exactly how the FCM wiring drifted out of the repo in the first place.
 *.save
 *.save.*
+
+# Timestamped Caddyfile backups made before edits on the prod host.
+infra/caddy/Caddyfile.bak.*

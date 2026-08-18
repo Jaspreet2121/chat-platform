@@ -29,6 +29,26 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Profiles.search_users(body(conn)))
   end
 
+  post "/internal/quick_replies/list" do
+    send_result(conn, UserService.QuickReplies.list(body(conn)))
+  end
+
+  post "/internal/quick_replies/create" do
+    send_result(conn, UserService.QuickReplies.create(body(conn)))
+  end
+
+  post "/internal/quick_replies/update" do
+    send_result(conn, UserService.QuickReplies.update(body(conn)))
+  end
+
+  post "/internal/quick_replies/delete" do
+    send_result(conn, UserService.QuickReplies.delete(body(conn)))
+  end
+
+  post "/internal/quick_replies/reorder" do
+    send_result(conn, UserService.QuickReplies.reorder(body(conn)))
+  end
+
   post "/internal/profiles/update" do
     send_result(conn, UserService.Profiles.update_current_profile(body(conn)))
   end

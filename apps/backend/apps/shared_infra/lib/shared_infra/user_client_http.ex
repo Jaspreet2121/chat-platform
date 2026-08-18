@@ -30,6 +30,21 @@ defmodule SharedInfra.UserClientHttp do
   def search_users(attrs), do: post("/internal/users/search", attrs)
 
   @impl true
+  def list_quick_replies(attrs), do: post("/internal/quick_replies/list", attrs)
+
+  @impl true
+  def create_quick_reply(attrs), do: post("/internal/quick_replies/create", attrs)
+
+  @impl true
+  def update_quick_reply(attrs), do: post("/internal/quick_replies/update", attrs)
+
+  @impl true
+  def delete_quick_reply(attrs), do: post("/internal/quick_replies/delete", attrs)
+
+  @impl true
+  def reorder_quick_replies(attrs), do: post("/internal/quick_replies/reorder", attrs)
+
+  @impl true
   def check_username(attrs), do: post("/internal/usernames/check", attrs)
 
   @impl true

@@ -33,7 +33,10 @@ defmodule UserService.MixProject do
       # Internal HTTP API (Plug, not Phoenix). The listener is flag-gated/default-off.
       {:plug, "~> 1.14"},
       {:plug_cowboy, "~> 2.7"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      # UPI payment QR (100): eqrcode renders the PNG; req PUTs it to the media store's presigned URL.
+      {:eqrcode, "~> 0.2"},
+      {:req, "~> 0.6"}
     ]
   end
 

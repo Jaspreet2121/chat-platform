@@ -52,6 +52,7 @@ event is pure noise.
 | `POST /broadcasts/:id/send` | 20 | 3600s | user | **CLOSED** | The spam amplifier — 20 sends × 256 recipients = 5,120 messages/hour. A limiter outage must not open that gate. |
 | `POST /reports` | 5 | 3600s | user | OPEN | A legitimate safety report must not be lost to a Redis blip. |
 | `GET /usernames/:u/availability` | 30 | 3600s | user | OPEN | Namespace prober. Availability is advisory UX, not a gate. |
+| `POST/PATCH/DELETE/PUT /quick-replies*` | 30 | 60s | user | OPEN | Quick-reply writes (100) — user data, not an oracle; a Redis blip must not block saving a reply. Reads unlimited. |
 | `GET /users/search` | 30 | 60s | user | **CLOSED** | The name-substring directory search (098) — a wider enumeration oracle than by-phone (one query returns up to 50 accounts). 30/min is generous for a human typing a name; the limiter *is* the control, so an outage rejects (contacts-sync precedent). |
 | `POST /link/qr` | 10 | 60s | client IP | **CLOSED** | QR link mint (099) — unauthenticated and writes server state per call. 10/min covers every legitimate retry of a 60s-TTL code; an outage rejects (linking is optional, state-writing must not open up). |
 | `GET /link/qr/:id/wait` | 30 | 60s | client IP | OPEN | The creating browser's long-poll (≤25s each, ~2/min legitimate). The poll_token is the security control, not this limiter — it is load protection, so it fails open. |

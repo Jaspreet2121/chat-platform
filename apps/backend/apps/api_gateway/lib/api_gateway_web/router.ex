@@ -186,6 +186,24 @@ defmodule ApiGatewayWeb.Router do
     delete "/:id", WebhookEndpointController, :delete
   end
 
+  # Slash commands (100): the static built-ins + per-user custom quick replies. Reserved-name and
+  # media-ownership rules live in QuickReplyController; writes are limited in-controller (30/min).
+  scope "/api/v1", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/commands", CommandController, :index
+  end
+
+  scope "/api/v1/quick-replies", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/", QuickReplyController, :index
+    post "/", QuickReplyController, :create
+    put "/order", QuickReplyController, :reorder
+    patch "/:id", QuickReplyController, :update
+    delete "/:id", QuickReplyController, :delete
+  end
+
   scope "/api/v1/users", ApiGatewayWeb do
     pipe_through :api
 

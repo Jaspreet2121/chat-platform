@@ -139,6 +139,12 @@ defmodule UserService.UserSearchTest do
     assert is_binary(row.display_name)
     assert Map.has_key?(row, :username)
     assert Map.has_key?(row, :avatar_media_id)
+
+    # 100: SEARCH CARDS NEVER CARRY PAYMENT (or business) FIELDS — a directory listing must not
+    # become a payment-detail sweep. Locked against the SELECT itself (mutation-proven).
+    for key <- [:upi_id, :payment_name, :upi_qr_media_id, :upi_merchant, :profile_visibility] do
+      refute Map.has_key?(row, key)
+    end
   end
 
   test "persistence off → empty result, never an error (unit-tier default)" do

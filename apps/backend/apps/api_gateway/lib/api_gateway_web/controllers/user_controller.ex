@@ -7,7 +7,22 @@ defmodule ApiGatewayWeb.UserController do
   # avatar_object_key is NO LONGER accepted — the server resolves object_key from the media_assets row
   # (bee9562). It is tolerated in the body but stripped + ignored (never persisted). avatar_media_id is
   # accepted but VALIDATED for ownership before it is stored (see validate_avatar_media_id/2).
-  @allowed_update_fields ["display_name", "bio", "avatar_media_id", "username", "email"]
+  @allowed_update_fields [
+    "display_name",
+    "bio",
+    "avatar_media_id",
+    "username",
+    "email",
+    # 100: payment (scanned upi:// payload, or manual VPA) + business card + per-group visibility.
+    "upi_qr_payload",
+    "upi_id",
+    "payment_name",
+    "address",
+    "website",
+    "business_email",
+    "business_hours",
+    "profile_visibility"
+  ]
   @ignored_update_fields ["avatar_object_key"]
 
   def me(conn, params) do
@@ -482,12 +497,26 @@ defmodule ApiGatewayWeb.UserController do
          {:ok, email} <- update_email_if_present(params, session),
          {:ok, response} <-
            SharedInfra.UserClient.update_current_profile(
-             Map.put(Map.drop(params, ["email"]), "user_id", session.user_id)
+             params
+             |> Map.drop(["email"])
+             |> Map.put("user_id", session.user_id)
+             # 100: the session tenant rides along for the QR media write (the profile row's app_id
+             # may be an unloaded column default on a fresh row).
+             |> Map.put("app_id", session_app(session))
            ) do
       json(conn, response |> ProfilePresenter.with_avatar_url() |> put_email(email))
     else
       {:error, :session_invalid} ->
         session_invalid(conn)
+
+      {:error, upi_error} when upi_error in [:invalid_scheme, :missing_pa, :invalid_vpa] ->
+        ErrorResponse.invalid_request(conn, "profile.invalid_upi_payload")
+
+      {:error, :invalid_visibility} ->
+        ErrorResponse.invalid_request(conn, "profile.invalid_visibility")
+
+      {:error, :upi_qr_failed} ->
+        ErrorResponse.service_unavailable(conn, "profile.qr_unavailable")
 
       {:error, :email_taken} ->
         ErrorResponse.invalid_request_with(
