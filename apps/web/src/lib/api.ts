@@ -387,6 +387,29 @@ export function getCurrentSession() {
   return request<Session>("/api/v1/auth/session");
 }
 
+// Linked devices (099): the caller's non-revoked device sessions. `current` marks THIS browser;
+// `linked_by` is null for a primary (direct-login) session and carries the approving phone's
+// device_id for a QR-linked one — primaries render with no revoke control.
+export type LinkedDevice = {
+  device_id: string;
+  device_name: string | null;
+  platform: string;
+  linked_by: string | null;
+  last_seen_at: string | null;
+  created_at: string | null;
+  current: boolean;
+};
+
+export function listDevices() {
+  return request<{ devices: LinkedDevice[] }>("/api/v1/devices");
+}
+
+export function revokeDevice(deviceId: string) {
+  return request<{ revoked: boolean }>(`/api/v1/devices/${encodeURIComponent(deviceId)}`, {
+    method: "DELETE"
+  });
+}
+
 export function getMe() {
   return request<UserProfile>("/api/v1/users/me");
 }

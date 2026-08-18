@@ -2,7 +2,7 @@
 
 import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowLeft, ArrowRight, MessagesSquare, RotateCcw, ShieldCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, MessagesSquare, QrCode, RotateCcw, ShieldCheck } from "lucide-react";
 import { getMe, requestOtp, verifyOtp } from "@/lib/api";
 import { hasAccessToken, setSessionTokens } from "@/lib/session";
 import { getOrCreateDeviceId } from "@/lib/device";
@@ -38,6 +38,7 @@ function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = safeRedirect(searchParams.get("redirect"));
+  const notice = searchParams.get("notice");
   const [step, setStep] = useState<Step>("phone");
   const [destination, setDestination] = useState("");
   // Captured silently from the requestOtp response and passed to verifyOtp — never a visible field.
@@ -284,6 +285,13 @@ function LoginForm() {
             </p>
           </div>
 
+          {/* Pushed here by a phone-side revoke (session_revoked) — say why they're looking at login. */}
+          {notice === "revoked" && (
+            <p className="mb-4 rounded-lg border border-border bg-elevated px-3 py-2 text-sm text-muted">
+              Signed out from your phone.
+            </p>
+          )}
+
           <form className="space-y-5" onSubmit={handleRequestOtp}>
             <LoginIdentityFields onChange={setDestination} phoneOnly autoFocus />
 
@@ -303,6 +311,16 @@ function LoginForm() {
           <p className="mt-5 text-center text-xs text-faint">
             By continuing you agree to receive a one-time verification code by SMS.
           </p>
+
+          {/* The second path (099): no SMS on this machine — scan a QR with the already-signed-in phone. */}
+          <div className="mt-5 border-t border-border pt-4 text-center">
+            <a
+              href="/link"
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-brand hover:underline"
+            >
+              <QrCode className="h-4 w-4" aria-hidden /> Link with phone instead
+            </a>
+          </div>
         </Card>
       )}
       {/* The one place the chat app points at the developer surface — a quiet link, not a redesign. */}

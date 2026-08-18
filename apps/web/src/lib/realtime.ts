@@ -184,6 +184,8 @@ export type CallGroupAck = { call_id: string; room: string; participants?: CallP
 // server-side; joining someone else's topic is rejected. Also carries the call:* ring plane (Slice 3).
 export type UserChannel = {
   onMessageCreated: (callback: (message: Message) => void) => () => void;
+  /** 099: the phone revoked a device. Payload names the device_id — compare against your own. */
+  onSessionRevoked: (callback: (payload: { device_id?: string }) => void) => () => void;
   /** Subscribe to a server-fanned call:* broadcast (returns an unsubscribe fn). */
   onCall: (event: CallServerEvent, callback: (payload: CallEventPayload) => void) => () => void;
   /** Push a call:* control event; `call:invite` resolves with the `{ call_id, room }` ack. */
@@ -244,6 +246,7 @@ export function joinUserChannel(socket: Socket, userId: string): Promise<UserCha
         }
         resolve({
           onMessageCreated: (callback) => subscribe(channel, "message_created", callback),
+          onSessionRevoked: (callback) => subscribe(channel, "session_revoked", callback),
           onCall: (event, callback) => subscribe(channel, event, callback),
           pushCall: (event, payload) => push(channel, event, payload),
           leave: () => {

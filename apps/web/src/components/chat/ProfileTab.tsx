@@ -5,11 +5,13 @@ import {
   Bell,
   BellRing,
   ChevronRight,
+  Laptop,
   LogOut,
   Moon,
   Pencil,
   Share,
   Shield,
+  Smartphone,
   Star,
   Sun,
   UserPlus
@@ -20,7 +22,8 @@ import {
   setNotificationSoundEnabled
 } from "./NotificationToasts";
 import { enablePush, disablePush, getPushStatus, type PushStatus } from "@/lib/push";
-import type { Session, UserProfile } from "@/lib/api";
+import { listDevices, revokeDevice, type LinkedDevice, type Session, type UserProfile } from "@/lib/api";
+import { getOrCreateDeviceId } from "@/lib/device";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 
@@ -55,6 +58,45 @@ export function ProfileTab({
   const [soundOn, setSoundOn] = useState(() => notificationSoundEnabled());
   // Web-push state (Phase 2). Resolved async on mount; every transition is user-gesture-driven.
   const [pushStatus, setPushStatus] = useState<PushStatus | null>(null);
+  // Linked devices (099): loaded on mount; `current` is derived server-side from the session, but we
+  // also compare against this browser's device_id as belt (both come from the same login).
+  const [devices, setDevices] = useState<LinkedDevice[] | null>(null);
+  const [devicesError, setDevicesError] = useState("");
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    listDevices()
+      .then((result) => {
+        if (!cancelled) setDevices(result.devices ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDevices([]);
+          setDevicesError("Couldn't load linked devices.");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleRevoke = async (deviceId: string) => {
+    if (deviceId === getOrCreateDeviceId()) return; // belt: never revoke self here (Log out owns it)
+    setRevokingId(deviceId);
+    setDevicesError("");
+
+    try {
+      await revokeDevice(deviceId);
+      setDevices((current) => (current ?? []).filter((d) => d.device_id !== deviceId));
+    } catch {
+      setDevicesError("Couldn't remove that device.");
+    } finally {
+      setRevokingId(null);
+    }
+  };
   const [pushBusy, setPushBusy] = useState(false);
 
   useEffect(() => {
@@ -283,6 +325,61 @@ export function ProfileTab({
                 Clear chat and auto-delete messages live in each chat — open a conversation and tap its
                 name.
               </p>
+            </div>
+          </div>
+        </section>
+
+        {/* Linked devices (099) — this browser and everything else signed in. Revoke is offered only
+            where the backend allows it: never THIS browser (Log out below owns that gesture) and
+            never a PRIMARY phone session (the server 403s a linked device touching a primary). */}
+        <section className="overflow-hidden rounded-2xl border border-border bg-surface shadow-subtle">
+          <div className="flex items-start gap-3 px-4 py-3">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand-subtle text-brand-hover">
+              <Laptop className="h-[18px] w-[18px]" aria-hidden />
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium text-fg">Linked devices</p>
+              {devices === null ? (
+                <p className="mt-0.5 text-xs text-muted">Loading…</p>
+              ) : devices.length === 0 ? (
+                <p className="mt-0.5 text-xs text-muted">Only this browser is signed in.</p>
+              ) : (
+                <ul className="mt-2 space-y-2">
+                  {devices.map((device) => (
+                    <li key={device.device_id} className="flex items-center gap-2 text-xs">
+                      {device.platform === "web" ? (
+                        <Laptop className="h-3.5 w-3.5 shrink-0 text-faint" aria-hidden />
+                      ) : (
+                        <Smartphone className="h-3.5 w-3.5 shrink-0 text-faint" aria-hidden />
+                      )}
+                      <span className="min-w-0 flex-1 truncate text-muted">
+                        {device.device_name || device.platform}
+                        {device.current ? (
+                          <span className="ml-1.5 rounded bg-brand-subtle px-1.5 py-0.5 text-[10px] font-medium text-brand-hover">
+                            This browser
+                          </span>
+                        ) : null}
+                        {device.linked_by === null && device.platform !== "web" ? (
+                          <span className="ml-1.5 rounded bg-elevated px-1.5 py-0.5 text-[10px] font-medium text-faint">
+                            Primary
+                          </span>
+                        ) : null}
+                      </span>
+                      {!device.current && device.linked_by !== null ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleRevoke(device.device_id)}
+                          disabled={revokingId === device.device_id}
+                          className="shrink-0 font-medium text-danger hover:underline disabled:opacity-50"
+                        >
+                          {revokingId === device.device_id ? "Removing…" : "Remove"}
+                        </button>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {devicesError ? <p className="mt-1 text-xs text-danger">{devicesError}</p> : null}
             </div>
           </div>
         </section>

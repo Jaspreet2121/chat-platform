@@ -25,6 +25,7 @@ import {
   unstarMessage
 } from "@/lib/api";
 import { clearSessionTokens } from "@/lib/session";
+import { getOrCreateDeviceId } from "@/lib/device";
 import { disablePush } from "@/lib/push";
 import {
   ConversationChannel,
@@ -464,6 +465,21 @@ export default function ChatPage() {
       /* ignore a malformed stash */
     }
   }, [userChannel]);
+
+  // 099: revoked from the phone → this browser signs out LIVE. The event names the device_id;
+  // only act when it is OURS (the same user's other devices get the event too).
+  useEffect(() => {
+    if (!userChannel) return;
+
+    const unsubscribe = userChannel.onSessionRevoked((payload) => {
+      if (payload?.device_id && payload.device_id === getOrCreateDeviceId()) {
+        clearSessionTokens();
+        router.replace("/login?notice=revoked");
+      }
+    });
+
+    return unsubscribe;
+  }, [userChannel, router]);
 
   // Call-link L3b hand-off: an approval-required join landed pending → show the waiting screen + ask the
   // host (requestLinkJoin). We connect automatically once the host approves (call:link_approved).
