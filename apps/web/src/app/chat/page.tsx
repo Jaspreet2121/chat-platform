@@ -24,7 +24,7 @@ import {
   starMessage,
   unstarMessage
 } from "@/lib/api";
-import { clearSessionTokens } from "@/lib/session";
+import { clearSessionTokens, getSessionId } from "@/lib/session";
 import { getOrCreateDeviceId } from "@/lib/device";
 import { disablePush } from "@/lib/push";
 import {
@@ -472,7 +472,13 @@ export default function ChatPage() {
     if (!userChannel) return;
 
     const unsubscribe = userChannel.onSessionRevoked((payload) => {
-      if (payload?.device_id && payload.device_id === getOrCreateDeviceId()) {
+      // Match EITHER identity (2026-08-18 live-test fix): an OTP login knows its device_id, but a
+      // QR-LINKED browser's device_id was minted server-side — it only knows its session_id.
+      const mine =
+        (payload?.device_id && payload.device_id === getOrCreateDeviceId()) ||
+        (payload?.session_id && payload.session_id === getSessionId());
+
+      if (mine) {
         clearSessionTokens();
         router.replace("/login?notice=revoked");
       }

@@ -96,7 +96,9 @@ defmodule AuthService.Devices do
             {:error, :cannot_revoke_primary}
           else
             revoke_sessions_tx([session], user_id)
-            {:ok, %{revoked: true}}
+            # session_id rides back so the gateway's session_revoked broadcast can name BOTH
+            # identities — a QR-linked browser knows its session_id, not its server-minted device_id.
+            {:ok, %{revoked: true, session_id: session.id}}
           end
 
         _ ->

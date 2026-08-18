@@ -1,4 +1,4 @@
-import { getAccessToken } from "./session";
+import { clearSessionTokens, getAccessToken } from "./session";
 import { deviceDisplayName, getOrCreateDeviceId } from "./device";
 
 const defaultApiBaseUrl = "http://localhost:4000";
@@ -245,6 +245,19 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   const data = (await response.json().catch(() => ({}))) as T | ApiError;
 
   if (!response.ok) {
+    // BELT (2026-08-18): a 401 while we HOLD a token means the session died server-side (revoked,
+    // expired) and any realtime signal was missed — sign out here rather than leaving a dead app.
+    // Guards: only with a stored token (the login/link flows themselves 401 without one) and never
+    // when already on an auth page (no redirect loops).
+    if (response.status === 401 && token && typeof window !== "undefined") {
+      const path = window.location.pathname;
+
+      if (path !== "/login" && path !== "/link") {
+        clearSessionTokens();
+        window.location.replace("/login?notice=revoked");
+      }
+    }
+
     const apiError = data as ApiError;
     const message = apiError.error?.message ?? `Request failed with ${response.status}`;
     throw new ApiRequestError(message, response.status, apiError.error?.code);

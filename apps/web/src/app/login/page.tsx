@@ -4,7 +4,7 @@ import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState 
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, MessagesSquare, QrCode, RotateCcw, ShieldCheck } from "lucide-react";
 import { getMe, requestOtp, verifyOtp } from "@/lib/api";
-import { hasAccessToken, setSessionTokens } from "@/lib/session";
+import { hasAccessToken, setSessionId, setSessionTokens } from "@/lib/session";
 import { getOrCreateDeviceId } from "@/lib/device";
 import { AuthLayout, Button, Card, Input, LoginIdentityFields } from "@/components";
 import { OnboardingStep } from "./OnboardingStep";
@@ -152,6 +152,7 @@ function LoginForm() {
         accessToken: response.access_token,
         refreshToken: response.refresh_token
       });
+      setSessionId(response.session_id);
       setUserId(response.user_id);
 
       // New/un-onboarded users (no display_name) go to onboarding; everyone else straight to chat.

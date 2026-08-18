@@ -49,7 +49,7 @@ defmodule ApiGatewayWeb.DeviceControllerTest do
 
     def revoke_device(%{"device_id" => "phone-1"} = attrs) do
       send(:device_controller_test, {:revoked, attrs})
-      {:ok, %{revoked: true}}
+      {:ok, %{revoked: true, session_id: "sess-phone-1"}}
     end
 
     def revoke_device(_attrs), do: {:error, :device_not_found}
@@ -120,6 +120,29 @@ defmodule ApiGatewayWeb.DeviceControllerTest do
     assert DeviceController.index(authed(:get, "nobody"), %{}).status == 401
     assert DeviceController.delete(authed(:delete, "nobody"), %{"device_id" => "x"}).status == 401
     assert DeviceController.revoke_others(authed(:post, "nobody"), %{}).status == 401
+  end
+
+  test "REVOKE broadcasts session_revoked with BOTH identities BEFORE the disconnect" do
+    # 2026-08-18 live-test fix: a QR-linked browser only knows its session_id (its device_id was
+    # minted server-side), an OTP browser knows its device_id — the event must name both, and it
+    # must reach the topic before the socket is severed (order asserted by receiving it at all
+    # alongside the disconnect on the device topic).
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@me}")
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user_socket:#{@me}:phone-1")
+
+    conn = DeviceController.delete(authed(:delete), %{"device_id" => "phone-1"})
+    assert conn.status == 200
+
+    assert_receive %Phoenix.Socket.Broadcast{
+                     topic: "user:" <> _,
+                     event: "session_revoked",
+                     payload: payload
+                   },
+                   1000
+
+    assert payload.device_id == "phone-1"
+    assert payload.session_id == "sess-phone-1"
+    assert_receive %Phoenix.Socket.Broadcast{event: "disconnect"}, 1000
   end
 
   test "REVOKE severs exactly that device's live socket; the caller's own socket is untouched" do

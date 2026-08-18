@@ -50,7 +50,7 @@ defmodule ApiGatewayWeb.DeviceController do
   def delete(conn, %{"device_id" => device_id}) when is_binary(device_id) and device_id != "" do
     with {:ok, session} <- current_session(conn),
          :ok <- ensure_not_current(session, device_id),
-         {:ok, _result} <-
+         {:ok, result} <-
            SharedInfra.AuthClient.revoke_device(%{
              "user_id" => session.user_id,
              "device_id" => device_id,
@@ -58,9 +58,13 @@ defmodule ApiGatewayWeb.DeviceController do
              "caller_device_id" => session.device_id
            }) do
       # 099: tell the revoked device it was signed out BEFORE severing its socket, so an open web
-      # tab can render "logged out on your phone" instead of a silent dead socket.
+      # tab can render "logged out on your phone" instead of a silent dead socket. BOTH identities
+      # ride the payload: a QR-linked browser only knows its session_id (its device_id was minted
+      # server-side and never told to it as an identity), an OTP browser matches on device_id —
+      # the live-test 2026-08-18 found the device_id-only payload matched neither for linked tabs.
       ApiGatewayWeb.Endpoint.broadcast("user:" <> session.user_id, "session_revoked", %{
-        device_id: device_id
+        device_id: device_id,
+        session_id: cget(result, :session_id)
       })
 
       # REALTIME SESSION REVOCATION: sever exactly that device's live socket (the per-(user, device)

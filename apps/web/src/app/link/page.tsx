@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { QrCode, RotateCcw, Smartphone } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { createLinkQr, pollUntilResolved, type LinkQr } from "@/lib/link";
-import { hasAccessToken, setSessionTokens } from "@/lib/session";
+import { hasAccessToken, setSessionId, setSessionTokens } from "@/lib/session";
 import { AuthLayout, Button, Card } from "@/components";
 
 // "Link with phone" (backend 1fb5f13): mint an anonymous link request, show its QR, long-poll until
@@ -69,6 +69,9 @@ export default function LinkPage() {
           accessToken: outcome.session.access_token,
           refreshToken: outcome.session.refresh_token
         });
+        // The linked session's identity: session_revoked matches on this (the device_id was minted
+        // server-side and this browser never learns it as an identity).
+        setSessionId(outcome.session.session_id);
         goToApp();
       } else if (outcome.status === "refresh") {
         // consumed/expired server-side → immediately mint a fresh code (via the ref: a useCallback
