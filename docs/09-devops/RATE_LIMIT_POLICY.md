@@ -53,6 +53,9 @@ event is pure noise.
 | `POST /reports` | 5 | 3600s | user | OPEN | A legitimate safety report must not be lost to a Redis blip. |
 | `GET /usernames/:u/availability` | 30 | 3600s | user | OPEN | Namespace prober. Availability is advisory UX, not a gate. |
 | `GET /users/search` | 30 | 60s | user | **CLOSED** | The name-substring directory search (098) — a wider enumeration oracle than by-phone (one query returns up to 50 accounts). 30/min is generous for a human typing a name; the limiter *is* the control, so an outage rejects (contacts-sync precedent). |
+| `POST /link/qr` | 10 | 60s | client IP | **CLOSED** | QR link mint (099) — unauthenticated and writes server state per call. 10/min covers every legitimate retry of a 60s-TTL code; an outage rejects (linking is optional, state-writing must not open up). |
+| `GET /link/qr/:id/wait` | 30 | 60s | client IP | OPEN | The creating browser's long-poll (≤25s each, ~2/min legitimate). The poll_token is the security control, not this limiter — it is load protection, so it fails open. |
+| `POST /link/approve` | 5 | 60s | user | **CLOSED** | The phone-side approval (099) — the security-sensitive step. 5/min is generous for a human scanning QRs; an outage rejects (a link the phone can't approve simply expires in 60s). |
 | `/v1/*` (integrator API) | 3000 (`V1_RATE_LIMIT`) | 60s | **app_id** | OPEN | Per-tenant ceiling across all 28 `/v1` routes. |
 
 `API_RATE_LIMITING_ENABLED` gates **only** the two pre-session auth limiters. Everything else is

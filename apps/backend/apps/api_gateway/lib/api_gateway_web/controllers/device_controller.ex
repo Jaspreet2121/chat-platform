@@ -33,6 +33,8 @@ defmodule ApiGatewayWeb.DeviceController do
             device_id: cget(device, :device_id),
             device_name: cget(device, :device_name),
             platform: cget(device, :platform),
+            # 099: the approving phone's device_id for a QR-linked session; null for a primary login.
+            linked_by: cget(device, :linked_by),
             last_seen_at: cget(device, :last_seen_at),
             created_at: cget(device, :created_at),
             current: cget(device, :device_id) == session.device_id
@@ -51,8 +53,16 @@ defmodule ApiGatewayWeb.DeviceController do
          {:ok, _result} <-
            SharedInfra.AuthClient.revoke_device(%{
              "user_id" => session.user_id,
-             "device_id" => device_id
+             "device_id" => device_id,
+             # 099: the caller's own device identity — a LINKED session may never revoke a PRIMARY.
+             "caller_device_id" => session.device_id
            }) do
+      # 099: tell the revoked device it was signed out BEFORE severing its socket, so an open web
+      # tab can render "logged out on your phone" instead of a silent dead socket.
+      ApiGatewayWeb.Endpoint.broadcast("user:" <> session.user_id, "session_revoked", %{
+        device_id: device_id
+      })
+
       # REALTIME SESSION REVOCATION: sever exactly that device's live socket (the per-(user, device)
       # socket id) — the same user's OTHER devices, including this caller, are untouched.
       disconnect_device_socket(session.user_id, device_id)
@@ -117,6 +127,16 @@ defmodule ApiGatewayWeb.DeviceController do
         "devices.cannot_revoke_current",
         "Use logout to sign out this device",
         %{}
+      )
+
+  # 099: a QR-LINKED session tried to revoke a PRIMARY (direct-login) session — never allowed; a
+  # stolen browser session must not be able to sign the phone out.
+  defp handle_error(conn, {:error, :cannot_revoke_primary}),
+    do:
+      ErrorResponse.forbidden(
+        conn,
+        "devices.cannot_revoke_primary",
+        "A linked device cannot sign out a primary device"
       )
 
   defp handle_error(conn, {:error, :device_not_found}),

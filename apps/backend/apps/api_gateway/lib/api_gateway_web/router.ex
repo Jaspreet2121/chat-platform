@@ -28,6 +28,24 @@ defmodule ApiGatewayWeb.Router do
     plug ApiGatewayWeb.Plugs.RequireAdmin
   end
 
+  # QR link (099): create mints server state per call → tight + FAIL-CLOSED; wait is a long-poll the
+  # legitimate browser re-issues ~2/min → generous + fail-open (the poll still requires the
+  # poll_token, so the limiter is load protection here, not the security control).
+  pipeline :link_qr_create_rate_limited do
+    plug ApiGatewayWeb.Plugs.RateLimit,
+      limit: 10,
+      window_seconds: 60,
+      key_prefix: "link:qr_create"
+  end
+
+  pipeline :link_qr_wait_rate_limited do
+    plug ApiGatewayWeb.Plugs.RateLimit,
+      limit: 30,
+      window_seconds: 60,
+      key_prefix: "link:qr_wait",
+      fail_open: true
+  end
+
   # Public integrator API: authenticate (secret key OR end-user JWT) → app_id scope → per-app rate limit.
   pipeline :v1 do
     plug :accepts, ["json"]
@@ -231,6 +249,28 @@ defmodule ApiGatewayWeb.Router do
     pipe_through :api
 
     get "/:username/availability", UserController, :username_availability
+  end
+
+  # QR device linking (099) — the phone approves, never the browser. Create + long-poll are
+  # UNAUTHENTICATED (the browser has no session yet) and per-IP rate-limited through the OTP plug
+  # (whose (IP, target) key degrades to per-IP here — no phone/email param); approve is
+  # session-authed + per-user limited in the controller.
+  scope "/api/v1/link", ApiGatewayWeb do
+    pipe_through [:api, :link_qr_create_rate_limited]
+
+    post "/qr", LinkController, :create
+  end
+
+  scope "/api/v1/link", ApiGatewayWeb do
+    pipe_through [:api, :link_qr_wait_rate_limited]
+
+    get "/qr/:link_id/wait", LinkController, :wait
+  end
+
+  scope "/api/v1/link", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/approve", LinkController, :approve
   end
 
   # Linked devices — list the caller's signed-in devices / sign one (or all others) out. Session-authed.

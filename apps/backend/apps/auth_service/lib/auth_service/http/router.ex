@@ -269,6 +269,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Devices.revoke_device(body(conn)))
   end
 
+  post "/internal/devices/link" do
+    send_result(conn, AuthService.Devices.link_device_session(body(conn)))
+  end
+
   post "/internal/devices/revoke_others" do
     send_result(conn, AuthService.Devices.revoke_other_devices(body(conn)))
   end

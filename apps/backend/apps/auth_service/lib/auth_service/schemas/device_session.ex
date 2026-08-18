@@ -16,6 +16,9 @@ defmodule AuthService.Schemas.DeviceSession do
     field(:device_name, :string)
     field(:platform, :string)
     field(:refresh_token_hash, :string)
+    # The phone device that approved this session's QR link (099); NULL = a primary (direct-login)
+    # session. Drives the linked-devices list and the asymmetric revocation rule.
+    field(:linked_by_device_id, :string)
     field(:last_seen_at, :utc_datetime_usec)
     field(:revoked_at, :utc_datetime_usec)
     field(:created_at, :utc_datetime_usec)
@@ -30,6 +33,7 @@ defmodule AuthService.Schemas.DeviceSession do
       :device_name,
       :platform,
       :refresh_token_hash,
+      :linked_by_device_id,
       :last_seen_at,
       :revoked_at
     ])

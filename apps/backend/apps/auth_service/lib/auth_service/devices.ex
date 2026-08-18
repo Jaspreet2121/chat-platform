@@ -62,6 +62,9 @@ defmodule AuthService.Devices do
             device_id: s.device_id,
             device_name: s.device_name,
             platform: s.platform,
+            # 099: NULL for a primary (direct-login) session; the approving phone's device_id for a
+            # QR-linked one. The client renders the "linked via <phone>" line off this.
+            linked_by: s.linked_by_device_id,
             last_seen_at: iso8601(s.last_seen_at),
             created_at: iso8601(s.created_at)
           }
@@ -84,8 +87,17 @@ defmodule AuthService.Devices do
          {:ok, device_id} <- required(attrs, "device_id") do
       case Repo.get_by(DeviceSession, user_id: user_id, device_id: device_id) do
         %DeviceSession{revoked_at: nil} = session ->
-          revoke_sessions_tx([session], user_id)
-          {:ok, %{revoked: true}}
+          # ASYMMETRIC REVOCATION (099): the phone revokes its linked devices, but a LINKED device
+          # (linked_by set) may never revoke a PRIMARY (direct-login, linked_by NULL) session — a
+          # stolen browser session must not be able to sign the phone out. Caller identity comes
+          # from the gateway's session (caller_device_id); absent (legacy caller) => primary rules.
+          if linked_caller?(user_id, Map.get(attrs, "caller_device_id")) and
+               is_nil(session.linked_by_device_id) do
+            {:error, :cannot_revoke_primary}
+          else
+            revoke_sessions_tx([session], user_id)
+            {:ok, %{revoked: true}}
+          end
 
         _ ->
           {:error, :device_not_found}
@@ -94,6 +106,18 @@ defmodule AuthService.Devices do
   rescue
     Ecto.Query.CastError -> {:error, :device_not_found}
   end
+
+  # Is the CALLER's own session a linked one? Unknown caller row fails CLOSED (treated as linked —
+  # the weaker privilege) so a spoofed/absent row can never unlock primary revocation.
+  defp linked_caller?(user_id, caller_device_id) when is_binary(caller_device_id) do
+    case Repo.get_by(DeviceSession, user_id: user_id, device_id: caller_device_id) do
+      %DeviceSession{linked_by_device_id: nil} -> false
+      %DeviceSession{} -> true
+      nil -> true
+    end
+  end
+
+  defp linked_caller?(_user_id, _caller_device_id), do: false
 
   @doc """
   "Sign out everywhere else": revoke EVERY other non-revoked device of the caller (the same per-device
@@ -141,6 +165,66 @@ defmodule AuthService.Devices do
     end
   rescue
     Ecto.Query.CastError -> {:ok, %{active: false}}
+  end
+
+  @doc """
+  Mint the SESSION for a QR-LINKED web/desktop device (099): a fresh device_session (platform "web",
+  generated device_id, linked_by_device_id = the approving PHONE's device) + its refresh-token row,
+  in one transaction, on the existing token machinery (`Tokens.prepare_issue_pair` — remember-me TTL:
+  a linked desktop should survive a workday, and logout/revocation still kills it instantly).
+  attrs: "user_id", "app_id" (the PHONE session's tenant — stamped into the token claims, never
+  defaulted here), "device_name", "linked_by_device_id".
+  → {:ok, %{access_token, access_token_expires_in_seconds, refresh_token,
+            refresh_token_expires_in_seconds, session_id, device_id, device_name}}
+  """
+  def link_device_session(attrs) do
+    with {:ok, user_id} <- required(attrs, "user_id"),
+         {:ok, device_name} <- required(attrs, "device_name"),
+         {:ok, linked_by} <- required(attrs, "linked_by_device_id") do
+      device_id = "web-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
+      session_id = Ecto.UUID.generate()
+
+      {:ok, pair} =
+        AuthService.Tokens.prepare_issue_pair(
+          %{
+            "user_id" => user_id,
+            "session_id" => session_id,
+            "device_id" => device_id,
+            "device_name" => device_name,
+            "platform" => "web",
+            "app_id" => Map.get(attrs, "app_id")
+          },
+          access_ttl_seconds: AuthService.Tokens.session_ttl_seconds(true)
+        )
+
+      Repo.transaction(fn ->
+        with {:ok, _session} <-
+               pair.device_session_attrs
+               |> Map.put("id", session_id)
+               |> Map.put("linked_by_device_id", linked_by)
+               |> AuthService.DeviceSessions.create_device_session(),
+             {:ok, _refresh} <-
+               AuthService.RefreshTokens.create_refresh_token(pair.refresh_token_attrs) do
+          %{
+            access_token: pair.access_token,
+            access_token_expires_in_seconds: pair.access_token_expires_in_seconds,
+            refresh_token: pair.refresh_token,
+            refresh_token_expires_in_seconds: pair.refresh_token_expires_in_seconds,
+            session_id: session_id,
+            device_id: device_id,
+            device_name: device_name
+          }
+        else
+          _ -> Repo.rollback(:link_invalid)
+        end
+      end)
+      |> case do
+        {:ok, minted} -> {:ok, minted}
+        {:error, _} -> {:error, :link_invalid}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :link_invalid}
   end
 
   # One transaction for the whole sweep: sessions marked, refresh tokens revoked, FCM rows gone.

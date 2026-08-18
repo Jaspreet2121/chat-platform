@@ -159,6 +159,9 @@ defmodule SharedInfra.AuthClientHttp do
   def revoke_device(attrs), do: post("/internal/devices/revoke", attrs)
 
   @impl true
+  def link_device_session(attrs), do: post("/internal/devices/link", attrs)
+
+  @impl true
   def revoke_other_devices(attrs), do: post("/internal/devices/revoke_others", attrs)
 
   @impl true

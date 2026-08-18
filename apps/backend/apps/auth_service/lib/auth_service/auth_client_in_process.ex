@@ -178,6 +178,8 @@ defmodule AuthService.AuthClientInProcess do
 
   @impl true
   def revoke_device(attrs), do: AuthService.Devices.revoke_device(attrs)
+  @impl true
+  def link_device_session(attrs), do: AuthService.Devices.link_device_session(attrs)
 
   @impl true
   def revoke_other_devices(attrs), do: AuthService.Devices.revoke_other_devices(attrs)
