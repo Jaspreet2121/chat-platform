@@ -5,6 +5,8 @@ defmodule AuthService.Application do
 
   @impl true
   def start(_type, _args) do
+    # Runtime env read at boot (never config.exs-baked — the release trap). Count logged, values never.
+    AuthService.ReviewerLogins.load()
     Supervisor.start_link(children(), strategy: :one_for_one, name: AuthService.Supervisor)
   end
 

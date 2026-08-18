@@ -93,6 +93,10 @@ services:
       OTP_SMS_DELIVERY_ENABLED: ${OTP_SMS_DELIVERY_ENABLED:-false}
       # Local/staging convenience to obtain the OTP without SMS (echo→response, log→logs). DEFAULT none.
       OTP_DELIVERY_MODE: ${OTP_DELIVERY_MODE:-none}
+      # Play-reviewer test logins (2026-08-18): "<E.164>:<6-digit code>[,...]" — the listed numbers
+      # skip the SMS provider and accept their fixed code. Empty (default) = feature OFF. Auth only;
+      # rotate by changing .env and `up -d auth`. See docs/09-devops/REVIEWER_LOGIN.md.
+      REVIEWER_TEST_LOGINS: ${REVIEWER_TEST_LOGINS:-}
       SMS_GATEWAY_HUB_API_KEY: ${SMS_GATEWAY_HUB_API_KEY:-}
       SMS_GATEWAY_HUB_SENDER_ID: ${SMS_GATEWAY_HUB_SENDER_ID:-ISOOBC}
       SMS_GATEWAY_HUB_ROUTE: ${SMS_GATEWAY_HUB_ROUTE:-}

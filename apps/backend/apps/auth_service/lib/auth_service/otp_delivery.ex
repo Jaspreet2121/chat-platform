@@ -35,8 +35,11 @@ defmodule AuthService.OtpDelivery do
     warn_if_unsafe_in_prod()
 
     # The SMS provider (incl. the no-op "console") decides whether a real send happens; email is a
-    # separate future channel and never touches SMS.
-    if method == "sms", do: send_sms(destination, code)
+    # separate future channel and never touches SMS. An allowlisted REVIEWER number (2026-08-18)
+    # skips the provider entirely — no SMS, no credit spend — while everything else about the
+    # request (row, response, limits) stays byte-identical, so this is not an enumeration oracle.
+    if method == "sms" and not AuthService.ReviewerLogins.allowlisted?(destination),
+      do: send_sms(destination, code)
 
     if delivery_mode() == "log" do
       Logger.warning(

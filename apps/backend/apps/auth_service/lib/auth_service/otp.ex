@@ -7,6 +7,8 @@ defmodule AuthService.OTP do
   local development do not require PostgreSQL.
   """
 
+  require Logger
+
   alias AuthService.Accounts
   alias AuthService.DeviceSessions
   alias AuthService.RefreshTokens
@@ -218,13 +220,24 @@ defmodule AuthService.OTP do
   # The code check, with the exhaustion verdict attached. A wrong code on the final attempt burns the
   # row and reports exhaustion; a wrong code before that is an ordinary `:otp_invalid`.
   defp check_code(verification_code, otp_code, attempt, now) do
+    # REVIEWER OVERRIDE (2026-08-18): an allowlisted number's FIXED code is accepted for the login
+    # purpose (constant-time compare in ReviewerLogins); every other rule — attempts already charged
+    # above, expiry, consumption, exhaustion burn — applies unchanged. Wrong code on an allowlisted
+    # number falls through to the normal hash check and fails like any other wrong code.
     valid? =
-      valid_code?(
-        verification_code.destination,
-        verification_code.purpose,
-        otp_code,
-        verification_code.code_hash
+      reviewer_override?(verification_code, otp_code) or
+        valid_code?(
+          verification_code.destination,
+          verification_code.purpose,
+          otp_code,
+          verification_code.code_hash
+        )
+
+    if valid? and reviewer_override?(verification_code, otp_code) do
+      Logger.info(
+        "reviewer test login verified for #{AuthService.ReviewerLogins.mask(verification_code.destination)}"
       )
+    end
 
     cond do
       valid? ->
@@ -238,6 +251,11 @@ defmodule AuthService.OTP do
         {:error, :otp_invalid}
     end
   end
+
+  defp reviewer_override?(%{purpose: "login", destination: destination}, otp_code),
+    do: AuthService.ReviewerLogins.code_matches?(destination, otp_code)
+
+  defp reviewer_override?(_verification_code, _otp_code), do: false
 
   defp get_verification_code(otp_request_id, destination, purpose, now) do
     with %{} = verification_code <- VerificationCodes.get_verification_code(otp_request_id),
