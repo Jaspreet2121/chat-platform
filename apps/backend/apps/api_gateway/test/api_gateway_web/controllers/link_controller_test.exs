@@ -202,6 +202,76 @@ defmodule ApiGatewayWeb.LinkControllerTest do
     assert %{"state" => "expired"} = Jason.decode!(expired.resp_body)
   end
 
+  # A store that misbehaves in a rotating pattern — RAISES, then ERRORS, then works — so a sustained
+  # poll crosses every failure mode several times. The wait contract: the browser NEVER sees a 5xx
+  # for a still-resolvable link (2026-08-18 prod fix — 500s at ~16s killed live link attempts).
+  defmodule FlakyStore do
+    @moduledoc false
+    @behaviour ApiGatewayWeb.LinkStore
+    def start_link, do: Agent.start_link(fn -> 0 end, name: __MODULE__)
+
+    @impl true
+    def put(key, value, ttl), do: ApiGatewayWeb.LinkControllerTest.MemStore.put(key, value, ttl)
+
+    @impl true
+    def get(key) do
+      case Agent.get_and_update(__MODULE__, fn n -> {n, n + 1} end) |> rem(3) do
+        0 -> raise "boom (simulated store crash)"
+        1 -> {:error, :closed}
+        _ -> ApiGatewayWeb.LinkControllerTest.MemStore.get(key)
+      end
+    end
+
+    @impl true
+    def put_get(key, value, ttl),
+      do: ApiGatewayWeb.LinkControllerTest.MemStore.put_get(key, value, ttl)
+
+    @impl true
+    def del(key), do: ApiGatewayWeb.LinkControllerTest.MemStore.del(key)
+  end
+
+  test "NEVER 5xx WHILE PENDING: a minute of polling through crashes and store errors is all 200s" do
+    created = create!()
+
+    start_supervised!(%{id: FlakyStore, start: {FlakyStore, :start_link, []}})
+    Application.put_env(:api_gateway, :link_store_adapter, FlakyStore)
+
+    # Tight loop for the test: the window/interval shrink makes ~20 polls stand in for 60s of real time.
+    Application.put_env(:api_gateway, :link_poll_interval_ms, 10)
+
+    on_exit(fn ->
+      Application.put_env(:api_gateway, :link_store_adapter, MemStore)
+      Application.delete_env(:api_gateway, :link_poll_interval_ms)
+    end)
+
+    for _ <- 1..20 do
+      conn = poll(created["link_id"], created["poll_token"])
+      assert conn.status == 200
+      assert Jason.decode!(conn.resp_body)["state"] in ["pending", "approved"]
+    end
+  end
+
+  test "a decrypt failure answers pending and does NOT consume the approved state" do
+    created = create!()
+    assert approve(created["qr_payload"]).status == 200
+
+    # Corrupt the encrypted payload in place: valid base64, right envelope sizes, garbage AEAD bytes —
+    # decrypt returns :error and the pipeline raises (the exact shape of the pre-fix 500-after-consume).
+    store_key = "link_qr:" <> created["link_id"]
+    {:ok, raw} = MemStore.get(store_key)
+    state = Jason.decode!(raw)
+    garbage = Base.encode64(:crypto.strong_rand_bytes(12 + 16 + 32))
+    MemStore.put(store_key, Jason.encode!(%{state | "payload_enc" => garbage}), 60)
+
+    conn = poll(created["link_id"], created["poll_token"])
+    assert conn.status == 200
+    assert %{"state" => "pending"} = Jason.decode!(conn.resp_body)
+
+    # THE POINT: the single retrieval was NOT burned — the state is still approved, not consumed.
+    {:ok, after_raw} = MemStore.get(store_key)
+    assert %{"state" => "approved"} = Jason.decode!(after_raw)
+  end
+
   test "a WRONG poll_token is indistinguishable from an unknown link (404), even when approved" do
     created = create!()
     assert approve(created["qr_payload"]).status == 200

@@ -22,8 +22,10 @@ defmodule ApiGatewayWeb.LinkController do
 
   @qr_prefix "skifi-link:v1:"
   @link_ttl_seconds 60
-  # Long-poll: ≤ 25s per request, re-checking Redis every second (test-shrinkable).
-  @poll_window_ms 25_000
+  # Long-poll: ≤ 10s per request, re-checking Redis every second (test-shrinkable). Was 25s: prod
+  # intermittently killed ~16s-old requests with a 500 (observed 3×, 2026-08-18) — a shorter hold
+  # both shrinks the exposure window and keeps each request cheap to lose; the client loops anyway.
+  @poll_window_ms 10_000
   @poll_interval_ms 1_000
 
   # Approve is the security-sensitive step: 5/min per USER, FAIL-CLOSED (registered in
@@ -71,6 +73,18 @@ defmodule ApiGatewayWeb.LinkController do
   def wait(conn, %{"link_id" => link_id, "poll_token" => poll_token} = _params)
       when is_binary(link_id) and link_id != "" and is_binary(poll_token) and poll_token != "" do
     poll(conn, link_id, poll_token, System.monotonic_time(:millisecond) + poll_window_ms())
+  rescue
+    # NEVER a 5xx while the link is still resolvable: whatever raised (the 2026-08-18 prod 500s
+    # died in here), the truthful answer to the polling browser is "pending — ask again"; the state
+    # machine is untouched because the consume step now decrypts BEFORE it writes (below). The full
+    # stack is logged loudly so the next occurrence names itself instead of surfacing as a 500.
+    error ->
+      Logger.error(
+        "[link_qr] wait crashed — returned pending: " <>
+          Exception.format(:error, error, __STACKTRACE__)
+      )
+
+      json(conn, %{state: "pending"})
   end
 
   def wait(conn, _params), do: ErrorResponse.invalid_request(conn, "link.invalid_request")
@@ -93,8 +107,13 @@ defmodule ApiGatewayWeb.LinkController do
         end
 
       {:error, reason} ->
-        Logger.warning("[link_qr] poll failed (redis): #{inspect(reason)}")
-        ErrorResponse.service_unavailable(conn, "link.unavailable")
+        # A transient store error mid-poll is not the browser's problem — "pending" keeps its loop
+        # alive (a 5xx here is what the client's backoff treats as a network failure anyway).
+        Logger.warning(
+          "[link_qr] poll read failed (redis) — returned pending: #{inspect(reason)}"
+        )
+
+        json(conn, %{state: "pending"})
     end
   end
 
@@ -107,7 +126,19 @@ defmodule ApiGatewayWeb.LinkController do
     end
   end
 
-  defp advance(conn, link_id, _poll_token, %{"state" => "approved"} = state, _deadline) do
+  defp advance(
+         conn,
+         link_id,
+         _poll_token,
+         %{"state" => "approved", "payload_enc" => payload_enc} = state,
+         _deadline
+       ) do
+    # DECRYPT BEFORE CONSUMING. The old order consumed first, so a decrypt raise both surfaced as a
+    # 500 and burned the single retrieval — the session was lost forever while the phone showed
+    # "linked". A raise here now leaves the approved state INTACT (the wait-level rescue answers
+    # "pending") and the next poll retries the same, still-unconsumed payload.
+    session = payload_enc |> decrypt(link_id) |> Jason.decode!()
+
     consumed =
       Jason.encode!(%{
         "state" => "consumed",
@@ -115,12 +146,11 @@ defmodule ApiGatewayWeb.LinkController do
       })
 
     # ATOMIC single retrieval: both of two racing polls write "consumed", but SET..GET hands the
-    # approved previous value to exactly one of them — only that one can decrypt and return tokens.
+    # approved previous value to exactly one of them — only that one returns the tokens.
     case LinkStore.put_get(key(link_id), consumed, @link_ttl_seconds) do
       {:ok, {:was_present, previous_raw}} ->
         case Jason.decode!(previous_raw) do
-          %{"state" => "approved", "payload_enc" => payload_enc} ->
-            session = payload_enc |> decrypt(link_id) |> Jason.decode!()
+          %{"state" => "approved"} ->
             Logger.info("[link_qr] consumed link_id=#{link_id} session=#{session["session_id"]}")
             json(conn, %{state: "approved", session: session})
 
