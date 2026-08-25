@@ -58,6 +58,222 @@ defmodule UserService.NearbyTest do
   end
 
   @tag :postgres_integration
+  test "SETTINGS (104): defaults, partial PATCH (false is a value), disable deletes presence + refuses discover" do
+    me = user!()
+
+    assert {:ok, %{enabled: true, ble_assist: false, audience: "everyone"}} =
+             Nearby.get_settings(%{"user_id" => me})
+
+    # Partial update: only the provided key changes; enabled=false is a VALUE, not absent.
+    assert {:ok, %{enabled: true, ble_assist: true, audience: "everyone"}} =
+             Nearby.update_settings(%{"user_id" => me, "app_id" => @app_id, "ble_assist" => true})
+
+    assert {:ok, %{enabled: true, ble_assist: true, audience: "contacts"}} =
+             Nearby.update_settings(%{
+               "user_id" => me,
+               "app_id" => @app_id,
+               "audience" => "contacts"
+             })
+
+    assert {:error, :nearby_invalid} =
+             Nearby.update_settings(%{"user_id" => me, "app_id" => @app_id, "audience" => "vips"})
+
+    # MASTER OFF: the live presence row dies in the same transaction, and discover refuses.
+    assert {:ok, _} = discover(me, @delhi_lat)
+
+    %{rows: [[before_off]]} =
+      Repo.query!(
+        "SELECT count(*)::int FROM nearby_presence WHERE user_id = $1::text::uuid",
+        [me]
+      )
+
+    assert before_off == 1
+
+    assert {:ok, %{enabled: false}} =
+             Nearby.update_settings(%{"user_id" => me, "app_id" => @app_id, "enabled" => false})
+
+    %{rows: [[after_off]]} =
+      Repo.query!(
+        "SELECT count(*)::int FROM nearby_presence WHERE user_id = $1::text::uuid",
+        [me]
+      )
+
+    assert after_off == 0
+    assert {:error, :nearby_disabled} = discover(me, @delhi_lat)
+
+    # And BLE admission refuses too (master off gates everything).
+    assert {:error, :nearby_disabled} =
+             Nearby.admit_ble_targets(%{
+               "user_id" => me,
+               "app_id" => @app_id,
+               "targets" => [Ecto.UUID.generate()]
+             })
+
+    # Back on: everything reopens (presence returns only when sharing again — unchanged contract).
+    assert {:ok, %{enabled: true}} =
+             Nearby.update_settings(%{"user_id" => me, "app_id" => @app_id, "enabled" => true})
+
+    assert {:ok, _} = discover(me, @delhi_lat)
+  end
+
+  @tag :postgres_integration
+  test "AUDIENCE, BOTH DIRECTIONS: each side's audience must admit the other" do
+    viewer = user!()
+    target = user!()
+
+    assert {:ok, _} = discover(target, @delhi_lat + 0.0004)
+
+    sees? = fn ->
+      {:ok, %{people: people}} = discover(viewer, @delhi_lat, 200)
+      Enum.any?(people, &(&1.user_id == target))
+    end
+
+    # Defaults: both everyone → visible.
+    assert sees?.()
+
+    # TARGET restricts to contacts; viewer is not one → invisible (target direction).
+    {:ok, _} =
+      Nearby.update_settings(%{
+        "user_id" => target,
+        "app_id" => @app_id,
+        "audience" => "contacts"
+      })
+
+    refute sees?.()
+
+    # Target favourites the viewer → visible again.
+    fav!(target, viewer)
+    assert sees?.()
+
+    # VIEWER restricts to contacts; target is not the viewer's favourite → invisible (viewer
+    # direction — your audience also limits who YOU see).
+    {:ok, _} =
+      Nearby.update_settings(%{
+        "user_id" => viewer,
+        "app_id" => @app_id,
+        "audience" => "contacts"
+      })
+
+    refute sees?.()
+
+    # Viewer favourites the target → both directions admit → visible.
+    fav!(viewer, target)
+    assert sees?.()
+
+    # Target's settings row says enabled=false WITH a presence row still live (inserted directly —
+    # the update path would delete it): the SQL itself must exclude — defense in depth.
+    Repo.query!(
+      "UPDATE nearby_settings SET enabled = false WHERE user_id = $1::text::uuid",
+      [target]
+    )
+
+    refute sees?.()
+  end
+
+  @tag :postgres_integration
+  test "BLE ADMISSION (104): presence-required plus the store-level drop matrix" do
+    viewer = user!()
+    ok_target = user!()
+    blocked_target = user!()
+    contacts_only = user!()
+    disabled_target = user!()
+    foreign = foreign_app_user!()
+
+    # No live presence → presence_required (BLE assists discovery, never lurk-mode).
+    assert {:error, :nearby_presence_required} =
+             Nearby.admit_ble_targets(%{
+               "user_id" => viewer,
+               "app_id" => @app_id,
+               "targets" => [ok_target]
+             })
+
+    assert {:ok, _} = discover(viewer, @delhi_lat)
+
+    block!(blocked_target, viewer)
+
+    {:ok, _} =
+      Nearby.update_settings(%{
+        "user_id" => contacts_only,
+        "app_id" => @app_id,
+        "audience" => "contacts"
+      })
+
+    {:ok, _} =
+      Nearby.update_settings(%{
+        "user_id" => disabled_target,
+        "app_id" => @app_id,
+        "enabled" => false
+      })
+
+    assert {:ok, %{admitted: admitted}} =
+             Nearby.admit_ble_targets(%{
+               "user_id" => viewer,
+               "app_id" => @app_id,
+               "targets" => [
+                 ok_target,
+                 blocked_target,
+                 contacts_only,
+                 disabled_target,
+                 foreign,
+                 viewer
+               ]
+             })
+
+    # Only the unencumbered same-app target survives: blocked (either direction), audience-refusing,
+    # disabled, cross-app, and self are all dropped BY THE STORE.
+    assert admitted == [ok_target]
+
+    # Audience heals when the target favourites the viewer.
+    fav!(contacts_only, viewer)
+
+    assert {:ok, %{admitted: healed}} =
+             Nearby.admit_ble_targets(%{
+               "user_id" => viewer,
+               "app_id" => @app_id,
+               "targets" => [contacts_only]
+             })
+
+    assert healed == [contacts_only]
+
+    # >20 targets is invalid at the boundary.
+    too_many = for _ <- 1..21, do: Ecto.UUID.generate()
+
+    assert {:error, :nearby_invalid} =
+             Nearby.admit_ble_targets(%{
+               "user_id" => viewer,
+               "app_id" => @app_id,
+               "targets" => too_many
+             })
+  end
+
+  defp fav!(owner, favourite) do
+    Repo.query!(
+      "INSERT INTO favourite_contacts (owner_user_id, favourite_user_id, app_id) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid) ON CONFLICT DO NOTHING",
+      [owner, favourite, @app_id]
+    )
+  end
+
+  defp foreign_app_user! do
+    app = Ecto.UUID.generate()
+
+    Repo.query!("INSERT INTO apps (id, name, slug) VALUES ($1::text::uuid, 'F', $2)", [
+      app,
+      "f-#{app}"
+    ])
+
+    id = Ecto.UUID.generate()
+
+    Repo.query!(
+      "INSERT INTO users_auth (id, app_id, phone_number, password_hash, status, created_at, updated_at) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, $3, 'x', 'active', now(), now())",
+      [id, app, "+1#{System.unique_integer([:positive])}"]
+    )
+
+    id
+  end
+
+  @tag :postgres_integration
   test "STORE-LEVEL block exclusion: a blocked pair never surfaces or qualifies, gateway bypassed" do
     me = user!()
     # Either direction blocks: one account blocked me, the other I blocked.

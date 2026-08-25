@@ -72,6 +72,15 @@ defmodule SharedInfra.UserClientHttp do
   def respond_nearby_request(attrs), do: post("/internal/nearby/requests/respond", attrs)
 
   @impl true
+  def get_nearby_settings(attrs), do: post("/internal/nearby/settings/get", attrs)
+
+  @impl true
+  def update_nearby_settings(attrs), do: post("/internal/nearby/settings/update", attrs)
+
+  @impl true
+  def admit_ble_targets(attrs), do: post("/internal/nearby/ble/admit", attrs)
+
+  @impl true
   def get_auto_replies(attrs), do: post("/internal/auto_replies/get", attrs)
 
   @impl true

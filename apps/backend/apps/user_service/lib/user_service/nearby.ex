@@ -12,6 +12,65 @@ defmodule UserService.Nearby do
   @presence_seconds 300
   @max_results 30
   @valid_radii [100, 200]
+  @audiences ~w(everyone contacts)
+
+  @doc """
+  Per-user discoverability settings (104). Absent row = the defaults — enabled (the master switch;
+  presence still only exists while actively sharing), no BLE assist, audience everyone.
+  """
+  def get_settings(attrs) do
+    with {:ok, user_id} <- required(attrs, "user_id") do
+      {:ok, settings_row(user_id)}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :nearby_invalid}
+  end
+
+  @doc """
+  PATCH semantics: only provided keys change (booleans matched EXPLICITLY — the falsy-mget trap:
+  `false` must never read as absent). Setting `enabled` false DELETES any live presence row in the
+  same transaction — flipping the master switch off must revoke discoverability immediately, not at
+  the five-minute expiry.
+  """
+  def update_settings(attrs) do
+    with {:ok, user_id} <- required(attrs, "user_id"),
+         {:ok, app_id} <- required(attrs, "app_id"),
+         {:ok, enabled} <- optional_bool(attrs, "enabled", :enabled),
+         {:ok, ble_assist} <- optional_bool(attrs, "ble_assist", :ble_assist),
+         {:ok, audience} <- optional_audience(attrs) do
+      {:ok, settings} =
+        Repo.transaction(fn ->
+          Repo.query!(
+            """
+            INSERT INTO nearby_settings (user_id, app_id, enabled, ble_assist, audience, updated_at)
+            VALUES ($1::text::uuid, $2::text::uuid,
+                    COALESCE($3, true), COALESCE($4, false), COALESCE($5, 'everyone'), now())
+            ON CONFLICT (user_id) DO UPDATE SET
+              app_id = EXCLUDED.app_id,
+              enabled = COALESCE($3, nearby_settings.enabled),
+              ble_assist = COALESCE($4, nearby_settings.ble_assist),
+              audience = COALESCE($5, nearby_settings.audience),
+              updated_at = now()
+            """,
+            [user_id, app_id, enabled, ble_assist, audience]
+          )
+
+          if enabled == false do
+            Repo.query!(
+              "DELETE FROM nearby_presence WHERE user_id = $1::text::uuid",
+              [user_id]
+            )
+          end
+
+          settings_row(user_id)
+        end)
+
+      {:ok, settings}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :nearby_invalid}
+    _error in Postgrex.Error -> {:error, :nearby_invalid}
+  end
 
   def discover(attrs) do
     with {:ok, user_id} <- required(attrs, "user_id"),
@@ -19,7 +78,8 @@ defmodule UserService.Nearby do
          {:ok, latitude} <- coordinate(attrs, "latitude", -90.0, 90.0),
          {:ok, longitude} <- coordinate(attrs, "longitude", -180.0, 180.0),
          {:ok, accuracy} <- accuracy(attrs),
-         {:ok, radius} <- radius(attrs) do
+         {:ok, radius} <- radius(attrs),
+         {:ok, viewer} <- require_enabled(user_id) do
       # RETENTION: expired rows are DELETED, not merely filtered — stale coordinates must not sit at
       # rest, and a re-created row starting fresh is what resets the per-viewer bucket pins.
       Repo.query!(
@@ -68,6 +128,18 @@ defmodule UserService.Nearby do
                 WHERE (ub.blocker_user_id = $1::text::uuid AND ub.blocked_user_id = p.user_id)
                    OR (ub.blocker_user_id = p.user_id AND ub.blocked_user_id = $1::text::uuid)
               )
+              -- AUDIENCE, BOTH DIRECTIONS (104): the target's settings must admit the viewer AND
+              -- the viewer's audience ($6) must admit the target. Absent row = enabled/everyone.
+              AND COALESCE((SELECT s.enabled FROM nearby_settings s WHERE s.user_id = p.user_id), true)
+              AND (COALESCE((SELECT s.audience FROM nearby_settings s WHERE s.user_id = p.user_id),
+                            'everyone') = 'everyone'
+                   OR EXISTS (SELECT 1 FROM favourite_contacts tf
+                              WHERE tf.owner_user_id = p.user_id
+                                AND tf.favourite_user_id = $1::text::uuid))
+              AND ($6 = 'everyone'
+                   OR EXISTS (SELECT 1 FROM favourite_contacts vf
+                              WHERE vf.owner_user_id = $1::text::uuid
+                                AND vf.favourite_user_id = p.user_id))
           )
           SELECT c.user_id::text, c.distance_m, c.pinned_bucket,
             CASE
@@ -91,7 +163,7 @@ defmodule UserService.Nearby do
           ORDER BY c.distance_m, c.user_id
           LIMIT #{@max_results}
           """,
-          [user_id, app_id, latitude, longitude, radius * 1.0]
+          [user_id, app_id, latitude, longitude, radius * 1.0, viewer.audience]
         )
 
       people =
@@ -320,6 +392,126 @@ defmodule UserService.Nearby do
 
       [] ->
         Repo.rollback(:nearby_request_not_found)
+    end
+  end
+
+  @doc """
+  BLE sighting admission (104), the STORE-LEVEL wall — the gateway resolves tokens, this decides
+  which resolved pairs may become proximity markers. In ONE query per call: the viewer must have a
+  LIVE presence row (BLE assists discovery, never lurk-mode) and each candidate survives only if
+  same-app + active, not self, not blocked (either direction), target enabled, and audience admits
+  BOTH ways. Returns the admitted ids — a dropped candidate is indistinguishable from an unknown
+  token upstream (the response is a count either way).
+  """
+  def admit_ble_targets(attrs) do
+    with {:ok, user_id} <- required(attrs, "user_id"),
+         {:ok, app_id} <- required(attrs, "app_id"),
+         {:ok, targets} <- target_list(attrs),
+         {:ok, viewer} <- require_enabled(user_id) do
+      %{rows: [[live]]} =
+        Repo.query!(
+          "SELECT EXISTS (SELECT 1 FROM nearby_presence " <>
+            "WHERE user_id = $1::text::uuid AND app_id = $2::text::uuid AND expires_at > now())",
+          [user_id, app_id]
+        )
+
+      if live do
+        %{rows: rows} =
+          Repo.query!(
+            """
+            SELECT c.id::text
+            FROM (SELECT DISTINCT (t.cand)::uuid AS id FROM unnest($3::text[]) AS t(cand)) c
+            JOIN users_auth a ON a.id = c.id AND a.app_id = $2::text::uuid AND a.status = 'active'
+            WHERE c.id <> $1::text::uuid
+              AND NOT EXISTS (
+                SELECT 1 FROM user_blocks ub
+                WHERE (ub.blocker_user_id = $1::text::uuid AND ub.blocked_user_id = c.id)
+                   OR (ub.blocker_user_id = c.id AND ub.blocked_user_id = $1::text::uuid)
+              )
+              AND COALESCE((SELECT s.enabled FROM nearby_settings s WHERE s.user_id = c.id), true)
+              AND (COALESCE((SELECT s.audience FROM nearby_settings s WHERE s.user_id = c.id),
+                            'everyone') = 'everyone'
+                   OR EXISTS (SELECT 1 FROM favourite_contacts tf
+                              WHERE tf.owner_user_id = c.id
+                                AND tf.favourite_user_id = $1::text::uuid))
+              AND ($4 = 'everyone'
+                   OR EXISTS (SELECT 1 FROM favourite_contacts vf
+                              WHERE vf.owner_user_id = $1::text::uuid
+                                AND vf.favourite_user_id = c.id))
+            """,
+            [user_id, app_id, targets, viewer.audience]
+          )
+
+        {:ok, %{admitted: Enum.map(rows, fn [id] -> id end)}}
+      else
+        # Distinct from :nearby_not_discoverable — this is "YOU are not sharing", not "they left".
+        {:error, :nearby_presence_required}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :nearby_invalid}
+    _error in Postgrex.Error -> {:error, :nearby_invalid}
+  end
+
+  # --- settings internals ------------------------------------------------------------------------
+
+  defp settings_row(user_id) do
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT enabled, ble_assist, audience FROM nearby_settings WHERE user_id = $1::text::uuid",
+        [user_id]
+      )
+
+    case rows do
+      [[enabled, ble_assist, audience]] ->
+        %{enabled: enabled, ble_assist: ble_assist, audience: audience}
+
+      [] ->
+        %{enabled: true, ble_assist: false, audience: "everyone"}
+    end
+  end
+
+  defp require_enabled(user_id) do
+    case settings_row(user_id) do
+      %{enabled: true} = settings -> {:ok, settings}
+      _ -> {:error, :nearby_disabled}
+    end
+  end
+
+  # Booleans matched EXPLICITLY — `false` is a value, absent is nil. The module's shared `get/2`
+  # helper is exactly the falsy-mget trap (`Map.get(m, "k") || Map.get(m, :k)` reads a stored false
+  # as absent), so booleans must never go through it — caught red in the settings test.
+  defp optional_bool(attrs, key, atom_key) do
+    value =
+      case Map.fetch(attrs, key) do
+        {:ok, found} -> found
+        :error -> Map.get(attrs, atom_key)
+      end
+
+    case value do
+      nil -> {:ok, nil}
+      boolean when is_boolean(boolean) -> {:ok, boolean}
+      _ -> {:error, :nearby_invalid}
+    end
+  end
+
+  defp optional_audience(attrs) do
+    case get(attrs, "audience") do
+      nil -> {:ok, nil}
+      value when value in @audiences -> {:ok, value}
+      _ -> {:error, :nearby_invalid}
+    end
+  end
+
+  defp target_list(attrs) do
+    case get(attrs, "targets") do
+      list when is_list(list) and length(list) <= 20 ->
+        if Enum.all?(list, &(is_binary(&1) and match?({:ok, _}, Ecto.UUID.cast(&1)))),
+          do: {:ok, list},
+          else: {:error, :nearby_invalid}
+
+      _ ->
+        {:error, :nearby_invalid}
     end
   end
 

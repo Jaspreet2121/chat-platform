@@ -27,18 +27,16 @@ defmodule ApiGatewayWeb.NearbyControllerTest do
     def discover_nearby(attrs) do
       send(:nearby_test_collector, {:discover, attrs})
 
-      {:ok,
-       %{
-         people: [
-           %{
-             user_id: "22222222-2222-2222-2222-222222222222",
-             distance_bucket_m: 100,
-             relationship: "none"
-           }
-         ],
-         expires_in_seconds: 300,
-         radius_m: attrs["radius_m"]
-       }}
+      people =
+        Application.get_env(:api_gateway, :test_nearby_people, [
+          %{
+            user_id: "22222222-2222-2222-2222-222222222222",
+            distance_bucket_m: 100,
+            relationship: "none"
+          }
+        ])
+
+      {:ok, %{people: people, expires_in_seconds: 300, radius_m: attrs["radius_m"]}}
     end
 
     def stop_nearby(attrs) do
@@ -82,6 +80,35 @@ defmodule ApiGatewayWeb.NearbyControllerTest do
     end
 
     def get_privacy(_attrs), do: {:ok, %{profile_photo_visibility: "everyone"}}
+
+    def get_nearby_settings(_attrs) do
+      {:ok,
+       Application.get_env(:api_gateway, :test_nearby_settings, %{
+         enabled: true,
+         ble_assist: true,
+         audience: "everyone"
+       })}
+    end
+
+    def update_nearby_settings(attrs) do
+      send(:nearby_test_collector, {:update_settings, attrs})
+
+      {:ok,
+       %{
+         enabled: attrs["enabled"] != false,
+         ble_assist: attrs["ble_assist"] == true,
+         audience: attrs["audience"] || "everyone"
+       }}
+    end
+
+    def admit_ble_targets(attrs) do
+      send(:nearby_test_collector, {:admit, attrs})
+
+      case Application.get_env(:api_gateway, :test_ble_admitted, :echo) do
+        :echo -> {:ok, %{admitted: attrs["targets"]}}
+        other -> other
+      end
+    end
   end
 
   defmodule ConversationOk do
@@ -103,6 +130,53 @@ defmodule ApiGatewayWeb.NearbyControllerTest do
     def check_rate(_attrs), do: :ok
   end
 
+  defmodule LimiterTrips do
+    def check_rate(_attrs), do: {:error, :rate_limited, 17}
+  end
+
+  # In-memory NearbyBleStore (the LinkStore stub precedent) — an Agent so rotation (put_get) and
+  # marker reads behave exactly like Redis, deterministically.
+  defmodule BleStub do
+    @behaviour ApiGatewayWeb.NearbyBleStore
+
+    def start_link, do: Agent.start_link(fn -> %{} end, name: __MODULE__)
+    def dump, do: Agent.get(__MODULE__, & &1)
+    def seed(key, value), do: Agent.update(__MODULE__, &Map.put(&1, key, value))
+
+    @impl true
+    def put(key, value, _ttl) do
+      Agent.update(__MODULE__, &Map.put(&1, key, value))
+      :ok
+    end
+
+    @impl true
+    def get(key) do
+      case Agent.get(__MODULE__, &Map.get(&1, key)) do
+        nil -> :not_found
+        value -> {:ok, value}
+      end
+    end
+
+    @impl true
+    def put_get(key, value, _ttl) do
+      Agent.get_and_update(__MODULE__, fn state ->
+        previous =
+          case Map.get(state, key) do
+            nil -> :was_absent
+            old -> {:was_present, old}
+          end
+
+        {{:ok, previous}, Map.put(state, key, value)}
+      end)
+    end
+
+    @impl true
+    def del(key) do
+      Agent.update(__MODULE__, &Map.delete(&1, key))
+      :ok
+    end
+  end
+
   setup do
     Process.register(self(), :nearby_test_collector)
 
@@ -116,12 +190,20 @@ defmodule ApiGatewayWeb.NearbyControllerTest do
     previous = for {key, _} <- keys, into: %{}, do: {key, Application.get_env(:shared_infra, key)}
     for {key, value} <- keys, do: Application.put_env(:shared_infra, key, value)
 
+    {:ok, _} = BleStub.start_link()
+    Application.put_env(:api_gateway, :nearby_ble_store_adapter, BleStub)
+
     on_exit(fn ->
       for {key, value} <- previous do
         if value,
           do: Application.put_env(:shared_infra, key, value),
           else: Application.delete_env(:shared_infra, key)
       end
+
+      Application.delete_env(:api_gateway, :nearby_ble_store_adapter)
+
+      for key <- [:test_nearby_settings, :test_ble_admitted, :test_nearby_people],
+          do: Application.delete_env(:api_gateway, key)
     end)
   end
 
@@ -248,6 +330,156 @@ defmodule ApiGatewayWeb.NearbyControllerTest do
     assert conn.status == 200
     refute_receive %Phoenix.Socket.Broadcast{event: "nearby_request_accepted"}, 50
     refute_receive %Phoenix.Socket.Broadcast{event: "nearby_request_received"}, 10
+  end
+
+  test "SETTINGS: GET reflects the store; PATCH rides identity+tenant and broadcasts settings_changed" do
+    conn = authed(:get, "/api/v1/nearby/settings") |> NearbyController.settings(%{})
+    assert conn.status == 200
+
+    assert %{"enabled" => true, "ble_assist" => true, "audience" => "everyone"} =
+             Jason.decode!(conn.resp_body)
+
+    ApiGatewayWeb.Endpoint.subscribe("user:" <> @me)
+    params = %{"ble_assist" => true, "audience" => "contacts"}
+
+    conn =
+      authed(:patch, "/api/v1/nearby/settings", params)
+      |> NearbyController.update_settings(params)
+
+    assert conn.status == 200
+    assert_receive {:update_settings, attrs}
+    assert attrs["user_id"] == @me
+    assert attrs["app_id"] == @app
+    assert attrs["ble_assist"] == true
+
+    assert_receive %Phoenix.Socket.Broadcast{
+      event: "nearby_settings_changed",
+      payload: %{"type" => "nearby_settings_changed"}
+    }
+  end
+
+  test "BLE TOKEN: issue + ROTATION (old token resolution deleted); disabled -> 403; limited -> 429" do
+    conn = authed(:post, "/api/v1/nearby/ble/token") |> NearbyController.ble_token(%{})
+    assert conn.status == 200
+    %{"token" => token1, "expires_in" => 300} = Jason.decode!(conn.resp_body)
+    # 16 random bytes, base64url, no padding.
+    assert {:ok, raw} = Base.url_decode64(token1, padding: false)
+    assert byte_size(raw) == 16
+    assert BleStub.dump()["nearby:ble:tok:" <> token1] == @me <> "|" <> @app
+
+    # Re-request ROTATES: the new token resolves, the OLD one no longer does.
+    conn = authed(:post, "/api/v1/nearby/ble/token") |> NearbyController.ble_token(%{})
+    %{"token" => token2} = Jason.decode!(conn.resp_body)
+    refute token2 == token1
+    store = BleStub.dump()
+    assert store["nearby:ble:tok:" <> token2] == @me <> "|" <> @app
+    refute Map.has_key?(store, "nearby:ble:tok:" <> token1)
+    assert store["nearby:ble:cur:" <> @me] == token2
+
+    # Master off / ble off -> 403 nearby.disabled (both gates behind one code).
+    Application.put_env(:api_gateway, :test_nearby_settings, %{
+      enabled: true,
+      ble_assist: false,
+      audience: "everyone"
+    })
+
+    conn = authed(:post, "/api/v1/nearby/ble/token") |> NearbyController.ble_token(%{})
+    assert conn.status == 403
+    assert %{"error" => %{"code" => "nearby.disabled"}} = Jason.decode!(conn.resp_body)
+
+    # Rate limited (fail-closed surface) -> 429 with retry-after.
+    Application.put_env(:shared_infra, :rate_limiter_adapter, LimiterTrips)
+    conn = authed(:post, "/api/v1/nearby/ble/token") |> NearbyController.ble_token(%{})
+    assert conn.status == 429
+    assert get_resp_header(conn, "retry-after") == ["17"]
+  end
+
+  test "BLE SIGHTINGS: resolution drops (unknown/cross-app/self) before the store; COUNT-ONLY response; markers written" do
+    peer2 = "66666666-6666-4666-8666-666666666666"
+    BleStub.seed("nearby:ble:tok:tok-peer", @peer <> "|" <> @app)
+    BleStub.seed("nearby:ble:tok:tok-peer2", peer2 <> "|" <> @app)
+    BleStub.seed("nearby:ble:tok:tok-foreign", "77777777-7777-4777-8777-777777777777|other-app")
+    BleStub.seed("nearby:ble:tok:tok-self", @me <> "|" <> @app)
+
+    params = %{"tokens" => ["tok-peer", "tok-peer2", "tok-foreign", "tok-self", "tok-unknown"]}
+
+    conn =
+      authed(:post, "/api/v1/nearby/ble/sightings", params)
+      |> NearbyController.ble_sightings(params)
+
+    assert conn.status == 200
+
+    # THE RESPONSE IS A COUNT AND NOTHING ELSE — which tokens resolved is never disclosed.
+    assert Jason.decode!(conn.resp_body) == %{"matched" => 2}
+
+    # Only same-app non-self candidates reached the store-level admission.
+    assert_receive {:admit, attrs}
+    assert attrs["user_id"] == @me
+    assert attrs["app_id"] == @app
+    assert Enum.sort(attrs["targets"]) == Enum.sort([@peer, peer2])
+
+    # A 120s proximity marker per admitted pair.
+    store = BleStub.dump()
+    assert store["nearby:ble:prox:" <> @me <> ":" <> @peer] == "1"
+    assert store["nearby:ble:prox:" <> @me <> ":" <> peer2] == "1"
+
+    # No live presence (store says so) -> 409 presence_required, nothing written.
+    Application.put_env(:api_gateway, :test_ble_admitted, {:error, :nearby_presence_required})
+
+    conn =
+      authed(:post, "/api/v1/nearby/ble/sightings", params)
+      |> NearbyController.ble_sightings(params)
+
+    assert conn.status == 409
+    assert %{"error" => %{"code" => "nearby.presence_required"}} = Jason.decode!(conn.resp_body)
+
+    # >20 tokens or a non-list is invalid at the boundary.
+    bad = %{"tokens" => Enum.map(1..21, &"t#{&1}")}
+
+    conn =
+      authed(:post, "/api/v1/nearby/ble/sightings", bad) |> NearbyController.ble_sightings(bad)
+
+    assert conn.status == 400
+  end
+
+  test "DISCOVER OVERLAY: a live marker shows bucket \"ble\" ordered first; expiry reverts to the PINNED GPS bucket" do
+    # The store returns the target with its PINNED GPS bucket (200). A live proximity marker
+    # overlays "ble"; when the marker dies the response falls back to 200 — never a refined 100:
+    # no BLE path touches the pin, so a sighting cannot narrow the GPS bucket.
+    peer2 = "66666666-6666-4666-8666-666666666666"
+
+    Application.put_env(:api_gateway, :test_nearby_people, [
+      %{user_id: @peer, distance_bucket_m: 100, relationship: "none"},
+      %{user_id: peer2, distance_bucket_m: 200, relationship: "none"}
+    ])
+
+    BleStub.seed("nearby:ble:prox:" <> @me <> ":" <> peer2, "1")
+
+    params = %{
+      "latitude" => 28.6139,
+      "longitude" => 77.2090,
+      "accuracy_m" => 12,
+      "radius_m" => 200
+    }
+
+    conn = authed(:post, "/api/v1/nearby/discover", params) |> NearbyController.discover(params)
+    assert conn.status == 200
+    %{"people" => people} = Jason.decode!(conn.resp_body)
+
+    assert Enum.map(people, &{&1["user_id"], &1["distance_bucket_m"]}) == [
+             {peer2, "ble"},
+             {@peer, 100}
+           ]
+
+    # Marker gone (TTL expiry) -> the pinned GPS bucket 200 returns, unrefined.
+    BleStub.del("nearby:ble:prox:" <> @me <> ":" <> peer2)
+    conn = authed(:post, "/api/v1/nearby/discover", params) |> NearbyController.discover(params)
+    %{"people" => reverted} = Jason.decode!(conn.resp_body)
+
+    assert Enum.map(reverted, &{&1["user_id"], &1["distance_bucket_m"]}) == [
+             {@peer, 100},
+             {peer2, 200}
+           ]
   end
 
   test "stop is session-owned" do

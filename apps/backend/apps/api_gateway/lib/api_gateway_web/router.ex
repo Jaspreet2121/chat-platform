@@ -257,6 +257,12 @@ defmodule ApiGatewayWeb.Router do
     get "/requests", NearbyController, :requests
     post "/requests", NearbyController, :send_request
     post "/requests/:request_id/respond", NearbyController, :respond
+    # v2 (104): discoverability settings + the BLE proximity assist (tokens/sightings are
+    # Redis-TTL-only; no coordinates anywhere on the BLE path, by construction).
+    get "/settings", NearbyController, :settings
+    patch "/settings", NearbyController, :update_settings
+    post "/ble/token", NearbyController, :ble_token
+    post "/ble/sightings", NearbyController, :ble_sightings
   end
 
   # Status (082) — ephemeral 24h posts. Feed + per-owner list are audience-gated; media rides the

@@ -106,6 +106,18 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Nearby.list_requests(body(conn)))
   end
 
+  post "/internal/nearby/settings/get" do
+    send_result(conn, UserService.Nearby.get_settings(body(conn)))
+  end
+
+  post "/internal/nearby/settings/update" do
+    send_result(conn, UserService.Nearby.update_settings(body(conn)))
+  end
+
+  post "/internal/nearby/ble/admit" do
+    send_result(conn, UserService.Nearby.admit_ble_targets(body(conn)))
+  end
+
   post "/internal/nearby/requests/respond" do
     send_result(conn, UserService.Nearby.respond(body(conn)))
   end

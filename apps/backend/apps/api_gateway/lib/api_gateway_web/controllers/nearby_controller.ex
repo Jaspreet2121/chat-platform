@@ -7,12 +7,19 @@ defmodule ApiGatewayWeb.NearbyController do
   use ApiGatewayWeb, :controller
 
   alias ApiGatewayWeb.ErrorResponse
+  alias ApiGatewayWeb.NearbyBleStore
   alias ApiGatewayWeb.ProfilePresenter
 
   # 6/min (was 30 — audit 2026-08-26): with per-pair bucket pinning this is belt-and-braces
   # against movement-based trilateration; a human refreshing a modal never approaches it.
   @discover_limit 6
   @request_limit 10
+  # BLE (104): a handset re-requests its broadcast token at most every ~75s in practice; sightings
+  # batch. Both fail CLOSED like discover — the BLE path is an enumeration/abuse surface.
+  @ble_token_limit 4
+  @ble_sightings_limit 12
+  @ble_token_ttl 300
+  @ble_marker_ttl 120
   @window_seconds 60
   @limiter_outage_retry 30
 
@@ -28,7 +35,7 @@ defmodule ApiGatewayWeb.NearbyController do
              "accuracy_m" => Map.get(params, "accuracy_m"),
              "radius_m" => Map.get(params, "radius_m", 200)
            }) do
-      people = mget(result, :people) || []
+      people = result |> mget(:people) |> Kernel.||([]) |> overlay_ble(session)
 
       json(conn, %{
         people: enrich_visible(people, session),
@@ -65,6 +72,96 @@ defmodule ApiGatewayWeb.NearbyController do
       error -> handle_error(conn, error)
     end
   end
+
+  # GET /api/v1/nearby/settings — the caller's discoverability settings (absent row = defaults).
+  def settings(conn, _params) do
+    with {:ok, session} <- session(conn),
+         {:ok, settings} <-
+           SharedInfra.UserClient.get_nearby_settings(%{"user_id" => session.user_id}) do
+      json(conn, settings_view(settings))
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  # PATCH /api/v1/nearby/settings — partial update; enabled=false revokes any live presence
+  # immediately (store-side, same transaction). Broadcasts nearby_settings_changed to own devices.
+  def update_settings(conn, params) do
+    with {:ok, session} <- session(conn),
+         {:ok, settings} <-
+           SharedInfra.UserClient.update_nearby_settings(%{
+             "user_id" => session.user_id,
+             "app_id" => session_app(session),
+             "enabled" => Map.get(params, "enabled"),
+             "ble_assist" => Map.get(params, "ble_assist"),
+             "audience" => Map.get(params, "audience")
+           }) do
+      ApiGatewayWeb.Endpoint.broadcast("user:" <> session.user_id, "nearby_settings_changed", %{
+        "type" => "nearby_settings_changed"
+      })
+
+      json(conn, settings_view(settings))
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  # POST /api/v1/nearby/ble/token — a fresh broadcast token (16 CSPRNG bytes, base64url), TTL 300s.
+  # Re-request ROTATES: the per-user current-token key answers with the previous token in the same
+  # atomic write, and that token's resolution entry is deleted — at most one live token per user.
+  def ble_token(conn, _params) do
+    with {:ok, session} <- session(conn),
+         :ok <- rate_limit("nearby_ble_token", session.user_id, @ble_token_limit),
+         :ok <- require_ble(session) do
+      token = Base.url_encode64(:crypto.strong_rand_bytes(16), padding: false)
+
+      with {:ok, previous} <-
+             NearbyBleStore.put_get(cur_key(session.user_id), token, @ble_token_ttl),
+           :ok <- rotate_out(previous),
+           :ok <-
+             NearbyBleStore.put(
+               tok_key(token),
+               session.user_id <> "|" <> session_app(session),
+               @ble_token_ttl
+             ) do
+        json(conn, %{token: token, expires_in: @ble_token_ttl})
+      else
+        # A token that cannot be resolved later is worse than no token — 503, client retries.
+        _ -> ErrorResponse.service_unavailable(conn, "nearby.unavailable")
+      end
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  # POST /api/v1/nearby/ble/sightings — the caller reports tokens it HEARD. The server resolves
+  # them (same app only, never self, unknown/expired silently dropped), the STORE decides admission
+  # (viewer presence live + audience both ways + blocks — UserService.Nearby.admit_ble_targets),
+  # and each admitted pair gets a 120s proximity marker. The response is a COUNT only: which tokens
+  # resolved (or to whom) is never disclosed — no oracle.
+  def ble_sightings(conn, %{"tokens" => tokens}) when is_list(tokens) and length(tokens) <= 20 do
+    with {:ok, session} <- session(conn),
+         :ok <- rate_limit("nearby_ble_sightings", session.user_id, @ble_sightings_limit),
+         :ok <- require_ble(session),
+         {:ok, result} <-
+           SharedInfra.UserClient.admit_ble_targets(%{
+             "user_id" => session.user_id,
+             "app_id" => session_app(session),
+             "targets" => resolve_tokens(tokens, session)
+           }) do
+      admitted = mget(result, :admitted) || []
+
+      for target <- admitted do
+        NearbyBleStore.put(prox_key(session.user_id, target), "1", @ble_marker_ttl)
+      end
+
+      json(conn, %{matched: length(admitted)})
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  def ble_sightings(conn, _params), do: ErrorResponse.invalid_request(conn, "nearby.invalid")
 
   def send_request(conn, %{"user_id" => target}) when is_binary(target) and target != "" do
     with {:ok, session} <- session(conn),
@@ -181,6 +278,87 @@ defmodule ApiGatewayWeb.NearbyController do
     end)
   end
 
+  # BLE OVERLAY (104): a live proximity marker shows the pair as bucket "ble", ordered first. The
+  # marker's TTL is the revert — when it dies, the row falls back to the GPS bucket, which is still
+  # the PINNED one (the pin row in Postgres is never touched by any BLE path; a sighting cannot let
+  # a viewer refine the GPS bucket). Redis trouble degrades to plain GPS — assist only.
+  defp overlay_ble(people, session) do
+    people
+    |> Enum.map(fn row ->
+      target = mget(row, :user_id)
+
+      if is_binary(target) and ble_marker?(session.user_id, target) do
+        row |> Map.new() |> Map.put(:distance_bucket_m, "ble")
+      else
+        row
+      end
+    end)
+    |> Enum.sort_by(fn row -> if mget(row, :distance_bucket_m) == "ble", do: 0, else: 1 end)
+  end
+
+  defp ble_marker?(viewer, target) do
+    match?({:ok, _}, NearbyBleStore.get(prox_key(viewer, target)))
+  end
+
+  # settings/enabled/ble_assist are BOOLEANS — matched explicitly, never through mget (the
+  # falsy-mget trap: `false || fallback` reads a stored false as absent).
+  defp setting_bool(settings, key, default) do
+    case {Map.get(settings, key), Map.get(settings, Atom.to_string(key))} do
+      {value, _} when is_boolean(value) -> value
+      {_, value} when is_boolean(value) -> value
+      _ -> default
+    end
+  end
+
+  defp settings_view(settings) do
+    %{
+      enabled: setting_bool(settings, :enabled, true),
+      ble_assist: setting_bool(settings, :ble_assist, false),
+      audience: mget(settings, :audience) || "everyone"
+    }
+  end
+
+  defp require_ble(session) do
+    case SharedInfra.UserClient.get_nearby_settings(%{"user_id" => session.user_id}) do
+      {:ok, settings} ->
+        if setting_bool(settings, :enabled, true) and setting_bool(settings, :ble_assist, false),
+          do: :ok,
+          else: {:error, :nearby_disabled}
+
+      _ ->
+        {:error, :user_unavailable}
+    end
+  end
+
+  # Token → target user id, applying the RESOLUTION-TIME drops (unknown/expired: Redis miss;
+  # cross-app: stored app differs; self). Store-level admission (audience/blocks/presence) follows
+  # in admit_ble_targets — none of the drops here are observable in the response (count only).
+  defp resolve_tokens(tokens, session) do
+    app = session_app(session)
+    viewer = session.user_id
+
+    tokens
+    |> Enum.filter(&(is_binary(&1) and &1 != "" and byte_size(&1) <= 64))
+    |> Enum.uniq()
+    |> Enum.flat_map(fn token ->
+      with {:ok, value} <- NearbyBleStore.get(tok_key(token)),
+           [user_id, token_app] <- String.split(value, "|", parts: 2),
+           true <- token_app == app and user_id != viewer do
+        [user_id]
+      else
+        _ -> []
+      end
+    end)
+    |> Enum.uniq()
+  end
+
+  defp rotate_out({:was_present, old_token}), do: NearbyBleStore.del(tok_key(old_token))
+  defp rotate_out(:was_absent), do: :ok
+
+  defp tok_key(token), do: "nearby:ble:tok:" <> token
+  defp cur_key(user_id), do: "nearby:ble:cur:" <> user_id
+  defp prox_key(viewer, target), do: "nearby:ble:prox:" <> viewer <> ":" <> target
+
   # If block state cannot be checked, Nearby fails closed: proximity must never become a bypass.
   defp not_blocked(_viewer, nil), do: {:error, :nearby_blocked}
 
@@ -270,6 +448,17 @@ defmodule ApiGatewayWeb.NearbyController do
 
   defp handle_error(conn, {:error, :nearby_already_connected}),
     do: ErrorResponse.conflict(conn, "nearby.already_connected", "You are already connected")
+
+  defp handle_error(conn, {:error, :nearby_presence_required}),
+    do:
+      ErrorResponse.conflict(
+        conn,
+        "nearby.presence_required",
+        "Start sharing your location before reporting sightings"
+      )
+
+  defp handle_error(conn, {:error, :nearby_disabled}),
+    do: ErrorResponse.forbidden(conn, "nearby.disabled", "Nearby is turned off in your settings")
 
   defp handle_error(conn, {:error, :nearby_not_discoverable}),
     do: ErrorResponse.not_found(conn, "nearby.not_available", "This person is no longer nearby")

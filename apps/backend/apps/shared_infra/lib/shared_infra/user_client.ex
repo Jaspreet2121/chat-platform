@@ -41,6 +41,9 @@ defmodule SharedInfra.UserClient do
   @callback send_nearby_request(attrs()) :: result()
   @callback list_nearby_requests(attrs()) :: result()
   @callback respond_nearby_request(attrs()) :: result()
+  @callback get_nearby_settings(attrs()) :: result()
+  @callback update_nearby_settings(attrs()) :: result()
+  @callback admit_ble_targets(attrs()) :: result()
   # Auto-replies (102): settings + the engine's at-least-once claim.
   @callback get_auto_replies(attrs()) :: result()
   @callback update_auto_replies(attrs()) :: result()
@@ -62,6 +65,9 @@ defmodule SharedInfra.UserClient do
                       send_nearby_request: 1,
                       list_nearby_requests: 1,
                       respond_nearby_request: 1,
+                      get_nearby_settings: 1,
+                      update_nearby_settings: 1,
+                      admit_ble_targets: 1,
                       get_auto_replies: 1,
                       update_auto_replies: 1,
                       claim_auto_reply: 1
@@ -95,6 +101,9 @@ defmodule SharedInfra.UserClient do
   def send_nearby_request(attrs), do: adapter().send_nearby_request(attrs)
   def list_nearby_requests(attrs), do: adapter().list_nearby_requests(attrs)
   def respond_nearby_request(attrs), do: adapter().respond_nearby_request(attrs)
+  def get_nearby_settings(attrs), do: adapter().get_nearby_settings(attrs)
+  def update_nearby_settings(attrs), do: adapter().update_nearby_settings(attrs)
+  def admit_ble_targets(attrs), do: adapter().admit_ble_targets(attrs)
   def get_auto_replies(attrs), do: adapter().get_auto_replies(attrs)
   def update_auto_replies(attrs), do: adapter().update_auto_replies(attrs)
   def claim_auto_reply(attrs), do: adapter().claim_auto_reply(attrs)
