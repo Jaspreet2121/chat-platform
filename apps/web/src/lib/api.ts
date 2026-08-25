@@ -1474,3 +1474,103 @@ export function reenqueueWebhooksBulk(params: { appId?: string; eventType?: stri
     { method: "POST" }
   );
 }
+
+// ---- Dating (105) -------------------------------------------------------------------------------
+
+export type DatingLocation = { lat: number | null; lng: number | null; name: string | null };
+
+export type DatingPrefs = {
+  min_age: number;
+  max_age: number;
+  max_distance_km: number;
+  genders: string[];
+};
+
+export type DatingProfile = {
+  enabled: boolean;
+  dob: string | null;
+  age: number | null;
+  gender: string | null;
+  interested_in: string[];
+  bio: string | null;
+  /** Ordered media ids (first = main). */
+  photos: string[];
+  location: DatingLocation;
+  prefs: DatingPrefs;
+};
+
+/** The dating card — its own shape (never the profile card): presigned photo URLs, never coordinates. */
+export type DatingCard = {
+  user_id: string;
+  display_name: string | null;
+  age: number | null;
+  bio: string | null;
+  photos: string[];
+  distance_km: number | null;
+};
+
+export type DatingMatchEntry = DatingCard & {
+  match_id: string;
+  conversation_id: string | null;
+  matched_at: string | null;
+};
+
+export type DatingProfilePatch = {
+  enabled?: boolean;
+  dob?: string;
+  gender?: string;
+  interested_in?: string[];
+  bio?: string;
+  photos?: string[];
+  location?: { lat: number; lng: number; name: string };
+  prefs?: Partial<DatingPrefs>;
+};
+
+export type DatingSwipeResult = {
+  matched: boolean;
+  match_id?: string;
+  conversation_id?: string | null;
+};
+
+export function getDatingProfile() {
+  return request<DatingProfile>("/api/v1/dating/profile");
+}
+
+export function updateDatingProfile(patch: DatingProfilePatch) {
+  return request<DatingProfile>("/api/v1/dating/profile", {
+    method: "PATCH",
+    body: JSON.stringify(patch)
+  });
+}
+
+export function getDatingDeck(limit = 25) {
+  return request<{ cards: DatingCard[] }>(`/api/v1/dating/deck?limit=${limit}`).then(
+    (r) => r.cards ?? []
+  );
+}
+
+export function postDatingSwipe(targetId: string, action: "like" | "pass") {
+  return request<DatingSwipeResult>("/api/v1/dating/swipes", {
+    method: "POST",
+    body: JSON.stringify({ target_id: targetId, action })
+  });
+}
+
+export function getDatingLikes(cursor?: string) {
+  const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  return request<{ cards: DatingCard[]; next_cursor: string | null }>(`/api/v1/dating/likes${qs}`);
+}
+
+export function getDatingMatches(cursor?: string) {
+  const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  return request<{ matches: DatingMatchEntry[]; next_cursor: string | null }>(
+    `/api/v1/dating/matches${qs}`
+  );
+}
+
+export function deleteDatingMatch(matchId: string) {
+  return request<{ unmatched: boolean }>(
+    `/api/v1/dating/matches/${encodeURIComponent(matchId)}`,
+    { method: "DELETE" }
+  );
+}

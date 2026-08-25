@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Heart,
   MessageCircle,
   MessagesSquare,
   Phone,
@@ -115,6 +116,11 @@ function DesktopRail({
         <Phone className="h-5 w-5" aria-hidden />
         <span className="sr-only">Calls</span>
       </button>
+      {/* Dating (105) — its own top-level route; visible always (routes to setup when off). */}
+      <a href="/dating" className={railItemClass(false)} title="Dating">
+        <Heart className="h-5 w-5" aria-hidden />
+        <span className="sr-only">Dating</span>
+      </a>
       <button type="button" onClick={onNewGroup} className={railItemClass(false)} title="New group">
         <Users className="h-5 w-5" aria-hidden />
         <span className="sr-only">New group</span>
@@ -227,6 +233,13 @@ function MobileTabBar({
         </span>
         <span className="max-w-full truncate leading-none">Calls</span>
       </button>
+
+      <a href="/dating" aria-label="Dating" className={tabClass(false)}>
+        <span className="flex h-6 w-6 items-center justify-center">
+          <Heart className="h-5 w-5" aria-hidden />
+        </span>
+        <span className="max-w-full truncate leading-none">Dating</span>
+      </a>
 
       {/* You — WhatsApp-style: profile photo in the same 24px icon slot + a "You" label on the same
           baseline as Messages/Calls, so all three tabs share one column structure and vertical

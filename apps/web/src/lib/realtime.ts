@@ -182,6 +182,19 @@ export type CallGroupAck = { call_id: string; room: string; participants?: CallP
 // The caller's OWN `user:<id>` topic — the backend fans message_created for conversations the user
 // does NOT have open onto it (in-app notifications: toasts + live unread badges). Identity-pinned
 // server-side; joining someone else's topic is rejected. Also carries the call:* ring plane (Slice 3).
+export type DatingServerEvent =
+  | "dating_matched"
+  | "dating_like_received"
+  | "dating_unmatched"
+  | "dating_profile_changed";
+
+export type DatingEventPayload = {
+  type?: string;
+  match_id?: string;
+  user_id?: string;
+  conversation_id?: string | null;
+};
+
 export type UserChannel = {
   onMessageCreated: (callback: (message: Message) => void) => () => void;
   /** 099: the phone revoked a device. Payload names BOTH identities — match on either. */
@@ -190,6 +203,8 @@ export type UserChannel = {
   ) => () => void;
   /** Subscribe to a server-fanned call:* broadcast (returns an unsubscribe fn). */
   onCall: (event: CallServerEvent, callback: (payload: CallEventPayload) => void) => () => void;
+  /** Dating (105): dating_matched / dating_like_received / dating_unmatched / dating_profile_changed. */
+  onDating: (event: DatingServerEvent, callback: (payload: DatingEventPayload) => void) => () => void;
   /** Push a call:* control event; `call:invite` resolves with the `{ call_id, room }` ack. */
   pushCall: (event: CallClientEvent, payload: Record<string, unknown>) => Promise<unknown>;
   leave: () => void;
@@ -250,6 +265,7 @@ export function joinUserChannel(socket: Socket, userId: string): Promise<UserCha
           onMessageCreated: (callback) => subscribe(channel, "message_created", callback),
           onSessionRevoked: (callback) => subscribe(channel, "session_revoked", callback),
           onCall: (event, callback) => subscribe(channel, event, callback),
+          onDating: (event, callback) => subscribe(channel, event, callback),
           pushCall: (event, payload) => push(channel, event, payload),
           leave: () => {
             stopHeartbeat();
