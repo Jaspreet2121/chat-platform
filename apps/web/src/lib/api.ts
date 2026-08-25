@@ -179,6 +179,27 @@ export type UserProfile = {
   };
 };
 
+export type NearbyPerson = UserProfile & {
+  // 100/200 only — the 50 m bucket was dropped (trilateration hardening, audit 2026-08-26).
+  distance_bucket_m: 100 | 200;
+  relationship: "none" | "sent" | "received" | "connected";
+};
+
+export type NearbyRequest = UserProfile & {
+  request_id: string;
+  created_at: string;
+};
+
+export type NearbyConnection = UserProfile & {
+  connected_at: string;
+};
+
+export type NearbyRequests = {
+  incoming: NearbyRequest[];
+  outgoing: NearbyRequest[];
+  connections: NearbyConnection[];
+};
+
 export type ApiError = {
   error?: {
     code?: string;
@@ -790,6 +811,53 @@ export function createInvite(phoneNumber: string) {
     method: "POST",
     body: JSON.stringify({ phone_number: phoneNumber })
   });
+}
+
+// Nearby People is deliberately an explicit, foreground-only flow. Coordinates are sent to the
+// server for a five-minute presence window; responses contain only a coarse distance bucket.
+export function discoverNearby(input: {
+  latitude: number;
+  longitude: number;
+  accuracy_m: number;
+  radius_m: 100 | 200;
+}) {
+  return request<{
+    people: NearbyPerson[];
+    expires_in_seconds: number;
+    radius_m: 100 | 200;
+  }>("/api/v1/nearby/discover", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function stopNearbyDiscovery() {
+  return request<{ discoverable: false }>("/api/v1/nearby/presence", { method: "DELETE" });
+}
+
+export function listNearbyRequests() {
+  return request<NearbyRequests>("/api/v1/nearby/requests");
+}
+
+export function sendNearbyRequest(userId: string) {
+  return request<{ request_id: string; status: "pending" }>("/api/v1/nearby/requests", {
+    method: "POST",
+    body: JSON.stringify({ user_id: userId })
+  });
+}
+
+export function respondNearbyRequest(requestId: string, decision: "accept" | "decline") {
+  // On accept the server also creates-or-gets the 1:1 (same find-or-create path every DM uses) and
+  // returns its id so the client can jump straight into the chat.
+  return request<{
+    request_id: string;
+    status: "accepted" | "declined";
+    user_id: string;
+    conversation_id?: string;
+  }>(
+    `/api/v1/nearby/requests/${encodeURIComponent(requestId)}/respond`,
+    { method: "POST", body: JSON.stringify({ decision }) }
+  );
 }
 
 export function listConversations() {
@@ -1406,4 +1474,3 @@ export function reenqueueWebhooksBulk(params: { appId?: string; eventType?: stri
     { method: "POST" }
   );
 }
-

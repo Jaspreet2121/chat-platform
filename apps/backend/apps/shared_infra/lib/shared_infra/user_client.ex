@@ -35,6 +35,12 @@ defmodule SharedInfra.UserClient do
   @callback delete_quick_reply(attrs()) :: result()
   @callback reorder_quick_replies(attrs()) :: result()
   @callback check_username(attrs()) :: result()
+  # Nearby People (101): short-lived discovery and consent-based connection requests.
+  @callback discover_nearby(attrs()) :: result()
+  @callback stop_nearby(attrs()) :: result()
+  @callback send_nearby_request(attrs()) :: result()
+  @callback list_nearby_requests(attrs()) :: result()
+  @callback respond_nearby_request(attrs()) :: result()
 
   # Optional so a partial test stub of this behaviour doesn't need to implement everything; the real adapters do.
   @optional_callbacks get_privacy: 1,
@@ -46,7 +52,12 @@ defmodule SharedInfra.UserClient do
                       create_quick_reply: 1,
                       update_quick_reply: 1,
                       delete_quick_reply: 1,
-                      reorder_quick_replies: 1
+                      reorder_quick_replies: 1,
+                      discover_nearby: 1,
+                      stop_nearby: 1,
+                      send_nearby_request: 1,
+                      list_nearby_requests: 1,
+                      respond_nearby_request: 1
 
   def get_current_profile(attrs), do: adapter().get_current_profile(attrs)
   def list_favourites(attrs), do: adapter().list_favourites(attrs)
@@ -72,6 +83,11 @@ defmodule SharedInfra.UserClient do
   def delete_quick_reply(attrs), do: adapter().delete_quick_reply(attrs)
   def reorder_quick_replies(attrs), do: adapter().reorder_quick_replies(attrs)
   def check_username(attrs), do: adapter().check_username(attrs)
+  def discover_nearby(attrs), do: adapter().discover_nearby(attrs)
+  def stop_nearby(attrs), do: adapter().stop_nearby(attrs)
+  def send_nearby_request(attrs), do: adapter().send_nearby_request(attrs)
+  def list_nearby_requests(attrs), do: adapter().list_nearby_requests(attrs)
+  def respond_nearby_request(attrs), do: adapter().respond_nearby_request(attrs)
 
   @doc "The configured User client adapter (default `UserService.UserClientInProcess`)."
   def adapter do

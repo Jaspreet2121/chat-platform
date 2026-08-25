@@ -2,6 +2,37 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-25] Nearby People is foreground opt-in, coarse-distance, and consent-based
+
+- **Context:** Users need to discover people within 100–200 metres, send a connection request, and
+  connect only if the recipient accepts. Proximity is unusually sensitive: persistent/background
+  tracking, exact distances, or a block bypass would turn a convenience feature into a stalking
+  surface.
+- **Decision — foreground opt-in only:** opening the Nearby modal and tapping scan writes a
+  five-minute presence row. Closing the modal deletes it immediately; the expiry is only a
+  crash/network-loss safety net. No background geolocation or passive enrollment.
+- **Decision — server-only coordinates:** latitude/longitude/accuracy never leave user-service.
+  Client results expose only `distance_bucket_m` (50/100/200), never an exact distance. Accuracy
+  worse than 100 metres is rejected rather than presenting a false 100–200 m claim.
+- **Decision — mutual consent:** discovery allows a pending request, not an automatic contact.
+  The recipient must accept; an unordered-pair partial unique index prevents reverse/duplicate
+  pending requests. Accepted pairs become durable `nearby_connections`.
+- **Decision — safety gates:** same-app active users only; either-direction blocks are checked
+  fail-closed both when rendering results and before send/accept. Discovery and request sends are
+  separately rate-limited, fail-closed.
+- **Status:** Implemented across schema 101, user-service/internal HTTP boundary, gateway APIs, and
+  web `People nearby` modal; all suites (incl. the real-SQL tier) run green as of 2026-08-26.
+- **Audit hardening (2026-08-26):** accept now creates-or-gets the pair's 1:1 through the existing
+  direct find-or-create path and returns `conversation_id`; the 50 m bucket was DROPPED (100/200
+  only); discover is 6/min; the first bucket computed per (viewer, target) is PINNED in the target
+  presence row's `pins` jsonb for that row's lifetime (a moving viewer cannot walk the boundary);
+  expired presence rows are physically DELETED by every discover/stop; a decline imposes a 24 h
+  same-direction request cooldown.
+- **Named follow-ups:** (1) realtime `nearby_request_received` / `nearby_request_accepted` events on
+  the user channel — today both sides learn by re-opening/refreshing the modal; (2) store-level
+  block exclusion in the discover/list SQL as defense-in-depth (the gateway's fail-closed
+  either-direction filtering is currently the only layer).
+
 ## [2026-08-10] Allocation architecture: three decisions, and two stale flags retired
 
 Per-integrator live app allocation was briefed this week as "the recorded next milestone —

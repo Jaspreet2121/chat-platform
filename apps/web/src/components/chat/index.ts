@@ -18,6 +18,8 @@ export { MyProfileModal } from "./MyProfileModal";
 export type { MyProfileModalProps } from "./MyProfileModal";
 export { NewConversationModal } from "./NewConversationModal";
 export type { NewConversationModalProps } from "./NewConversationModal";
+export { NearbyPeopleModal } from "./NearbyPeopleModal";
+export type { NearbyPeopleModalProps } from "./NearbyPeopleModal";
 export { Composer } from "./Composer";
 export type { ComposerProps } from "./Composer";
 export { EmptyState } from "./EmptyState";

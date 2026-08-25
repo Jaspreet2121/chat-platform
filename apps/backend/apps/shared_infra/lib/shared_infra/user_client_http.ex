@@ -56,6 +56,21 @@ defmodule SharedInfra.UserClientHttp do
   @impl true
   def update_privacy(attrs), do: post("/internal/privacy/update", attrs)
 
+  @impl true
+  def discover_nearby(attrs), do: post("/internal/nearby/discover", attrs)
+
+  @impl true
+  def stop_nearby(attrs), do: post("/internal/nearby/stop", attrs)
+
+  @impl true
+  def send_nearby_request(attrs), do: post("/internal/nearby/requests/create", attrs)
+
+  @impl true
+  def list_nearby_requests(attrs), do: post("/internal/nearby/requests/list", attrs)
+
+  @impl true
+  def respond_nearby_request(attrs), do: post("/internal/nearby/requests/respond", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs, unavailable: @unavailable)
   end

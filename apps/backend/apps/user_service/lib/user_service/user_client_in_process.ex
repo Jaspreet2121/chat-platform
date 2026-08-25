@@ -62,4 +62,19 @@ defmodule UserService.UserClientInProcess do
 
   @impl true
   def reorder_favourites(attrs), do: UserService.FavouriteContacts.reorder(attrs)
+
+  @impl true
+  def discover_nearby(attrs), do: UserService.Nearby.discover(attrs)
+
+  @impl true
+  def stop_nearby(attrs), do: UserService.Nearby.stop(attrs)
+
+  @impl true
+  def send_nearby_request(attrs), do: UserService.Nearby.send_request(attrs)
+
+  @impl true
+  def list_nearby_requests(attrs), do: UserService.Nearby.list_requests(attrs)
+
+  @impl true
+  def respond_nearby_request(attrs), do: UserService.Nearby.respond(attrs)
 end

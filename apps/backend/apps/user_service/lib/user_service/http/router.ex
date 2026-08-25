@@ -90,6 +90,26 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Privacy.update_privacy(body(conn)))
   end
 
+  post "/internal/nearby/discover" do
+    send_result(conn, UserService.Nearby.discover(body(conn)))
+  end
+
+  post "/internal/nearby/stop" do
+    send_result(conn, UserService.Nearby.stop(body(conn)))
+  end
+
+  post "/internal/nearby/requests/create" do
+    send_result(conn, UserService.Nearby.send_request(body(conn)))
+  end
+
+  post "/internal/nearby/requests/list" do
+    send_result(conn, UserService.Nearby.list_requests(body(conn)))
+  end
+
+  post "/internal/nearby/requests/respond" do
+    send_result(conn, UserService.Nearby.respond(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "user", status: "ok", deps: %{}}})
   end

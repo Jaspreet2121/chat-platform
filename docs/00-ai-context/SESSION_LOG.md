@@ -1,5 +1,20 @@
 # Session Log
 
+## [2026-08-25] Nearby People: 100/200 m discovery + connection requests
+
+- Added privacy-first Nearby People end-to-end: foreground-only opt-in discovery, five-minute
+  server expiry with immediate close-time revocation, coarse 50/100/200 m buckets, request
+  send/accept/decline, and durable accepted connections.
+- Added schema `101_nearby_people.sql` in both canonical Docker init and release-bundled copies;
+  user-service domain + in-process/HTTP clients; gateway routes/controller with session ownership,
+  rate limits, tenant scope, profile redaction, and fail-closed block checks.
+- Added web `More options → People nearby` modal with 100/200 m selector, foreground geolocation,
+  Add/Accept/Decline, and Message for accepted connections. Exact coordinates/distances are never
+  rendered; nearby presence is stopped when the modal closes.
+- Verification: backend compile passed; schema drift guard 1/1; gateway Nearby tests 4/4; Next.js
+  production build passed. Added 3 PostgreSQL integration tests; could not execute locally because
+  PostgreSQL was stopped and the Docker daemon was unavailable.
+
 ## [2026-06-24] Slice: Demo/echo OTP delivery mode for local testing (flag-gated, default-off)
 - Status: ✅ green; default "none" → zero behavior change. Unblocks local frontend login testing without SMS.
 - Why: OTP code is SMS-only + hashed (unrecoverable) → couldn't complete a local login. Added a flag-gated echo.

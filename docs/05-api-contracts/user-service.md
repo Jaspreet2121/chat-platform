@@ -97,3 +97,62 @@ Response `200`:
   "bio": "Public profile placeholder"
 }
 ```
+
+## Nearby People
+
+All Nearby endpoints require a bearer session. The authenticated user/app always come from that
+session; client-supplied identity fields are ignored. Nearby mode is foreground opt-in and is
+revoked when the client closes the Nearby UI (with a five-minute server expiry as fallback).
+
+### POST /api/v1/nearby/discover
+
+Request:
+
+```json
+{
+  "latitude": 28.6139,
+  "longitude": 77.209,
+  "accuracy_m": 12,
+  "radius_m": 200
+}
+```
+
+`radius_m` must be `100` or `200`; `accuracy_m` must be at most `100`. Response rows never contain
+coordinates or exact distance:
+
+```json
+{
+  "people": [
+    {
+      "user_id": "22222222-2222-2222-2222-222222222222",
+      "display_name": "Nearby Person",
+      "avatar_url": null,
+      "distance_bucket_m": 100,
+      "relationship": "none"
+    }
+  ],
+  "expires_in_seconds": 300,
+  "radius_m": 200
+}
+```
+
+`relationship` is `none`, `sent`, `received`, or `connected`.
+
+### DELETE /api/v1/nearby/presence
+
+Immediately removes the caller from discovery. Idempotent response: `{"discoverable": false}`.
+
+### GET /api/v1/nearby/requests
+
+Returns profile-enriched `incoming`, `outgoing`, and accepted `connections`. Blocked relationships
+are omitted.
+
+### POST /api/v1/nearby/requests
+
+Request: `{"user_id": "..."}`. Both users must still have a live Nearby presence. Returns `201`
+with a pending request. Duplicate/reverse pending requests return `409 nearby.request_exists`.
+
+### POST /api/v1/nearby/requests/:request_id/respond
+
+Request: `{"decision": "accept"}` or `{"decision": "decline"}`. Only the recipient may respond.
+Accepting creates the durable connection; a block prevents acceptance.

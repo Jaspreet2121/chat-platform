@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { MessagesSquare, MoreVertical, Search } from "lucide-react";
+import { MapPin, MessagesSquare, MoreVertical, Search } from "lucide-react";
 import type {
   ConversationListItem as ConversationListItemData,
   Session,
@@ -15,6 +15,7 @@ import { ContactSearch } from "./ContactSearch";
 import { EmptyState } from "./EmptyState";
 import { MessageSearchModal } from "./MessageSearchModal";
 import { NewConversationModal } from "./NewConversationModal";
+import { NearbyPeopleModal } from "./NearbyPeopleModal";
 
 type ConversationFilter = "all" | "unread" | "groups";
 
@@ -84,6 +85,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
   // focusing the phone search (the edit button/FAB start a DM there — no type-picker step).
   const [isNewConvOpen, setIsNewConvOpen] = useState(false);
   const [isMsgSearchOpen, setIsMsgSearchOpen] = useState(false);
+  const [isNearbyOpen, setIsNearbyOpen] = useState(false);
   // Header 3-dot dropdown (list-level actions; entries open their own UI).
   const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
   const headerMenuRef = useRef<HTMLDivElement>(null);
@@ -177,6 +179,18 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
                 role="menu"
                 className="absolute right-0 top-full z-40 mt-1 w-48 overflow-hidden rounded-xl border border-border bg-surface p-1 shadow-elevated animate-scale-in"
               >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsHeaderMenuOpen(false);
+                    setIsNearbyOpen(true);
+                  }}
+                  className="flex min-h-11 w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm text-fg transition-colors hover:bg-elevated"
+                >
+                  <MapPin className="h-4 w-4 text-muted" aria-hidden />
+                  People nearby
+                </button>
                 <button
                   type="button"
                   role="menuitem"
@@ -298,6 +312,16 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         currentUserId={session?.user_id}
         onJump={onJumpToMessage}
       />
+
+      {isNearbyOpen ? (
+        <NearbyPeopleModal
+          onClose={() => setIsNearbyOpen(false)}
+          onStartDirectChat={async (profile) => {
+            await onStartDirectChat(profile);
+            setIsNearbyOpen(false);
+          }}
+        />
+      ) : null}
     </aside>
   );
 }

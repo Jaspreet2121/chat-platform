@@ -229,6 +229,16 @@ defmodule ApiGatewayWeb.Router do
     get "/:user_id/avatar", UserController, :avatar
   end
 
+  scope "/api/v1/nearby", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/discover", NearbyController, :discover
+    delete "/presence", NearbyController, :stop
+    get "/requests", NearbyController, :requests
+    post "/requests", NearbyController, :send_request
+    post "/requests/:request_id/respond", NearbyController, :respond
+  end
+
   # Status (082) — ephemeral 24h posts. Feed + per-owner list are audience-gated; media rides the
   # purpose-"status" authz arm on the normal media download route.
   scope "/api/v1/status", ApiGatewayWeb do
