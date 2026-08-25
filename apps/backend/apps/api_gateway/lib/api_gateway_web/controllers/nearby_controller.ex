@@ -76,6 +76,14 @@ defmodule ApiGatewayWeb.NearbyController do
              "recipient_user_id" => target,
              "app_id" => session_app(session)
            }) do
+      # Realtime (recorded follow-up): the TARGET learns of the request live on their user topic —
+      # the same helper convention as quick_replies_changed. Declines stay silent by design.
+      ApiGatewayWeb.Endpoint.broadcast("user:" <> target, "nearby_request_received", %{
+        "type" => "nearby_request_received",
+        "request_id" => mget(result, :request_id),
+        "from_user_id" => session.user_id
+      })
+
       conn |> put_status(:created) |> json(result)
     else
       error -> handle_error(conn, error)
@@ -94,7 +102,9 @@ defmodule ApiGatewayWeb.NearbyController do
              "request_id" => request_id,
              "decision" => decision
            }) do
-      json(conn, maybe_open_conversation(result, session))
+      response = maybe_open_conversation(result, session)
+      broadcast_accepted(response, session)
+      json(conn, response)
     else
       error -> handle_error(conn, error)
     end
@@ -126,6 +136,23 @@ defmodule ApiGatewayWeb.NearbyController do
       )
     else
       _ -> result
+    end
+  end
+
+  # Realtime (recorded follow-up): on ACCEPT the REQUESTER learns live — who accepted and which
+  # conversation opened (after maybe_open_conversation, so the id rides along when the create
+  # succeeded). A decline broadcasts NOTHING: silent by design, the requester just never hears back.
+  defp broadcast_accepted(response, session) do
+    with "accepted" <- mget(response, :status),
+         requester when is_binary(requester) <- mget(response, :user_id) do
+      ApiGatewayWeb.Endpoint.broadcast("user:" <> requester, "nearby_request_accepted", %{
+        "type" => "nearby_request_accepted",
+        "request_id" => mget(response, :request_id),
+        "user_id" => session.user_id,
+        "conversation_id" => mget(response, :conversation_id)
+      })
+    else
+      _ -> :ok
     end
   end
 

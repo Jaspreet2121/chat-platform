@@ -58,6 +58,51 @@ defmodule UserService.NearbyTest do
   end
 
   @tag :postgres_integration
+  test "STORE-LEVEL block exclusion: a blocked pair never surfaces or qualifies, gateway bypassed" do
+    me = user!()
+    # Either direction blocks: one account blocked me, the other I blocked.
+    blocker = user!()
+    blocked = user!()
+    visible = user!()
+
+    for {peer, offset} <- [{blocker, 0.0004}, {blocked, 0.0005}, {visible, 0.0006}] do
+      assert {:ok, _} = discover(peer, @delhi_lat + offset)
+    end
+
+    block!(blocker, me)
+    block!(me, blocked)
+
+    # The store function called DIRECTLY — no gateway either_blocked? wall anywhere in this suite:
+    # the SQL itself must exclude both directions (defense-in-depth behind the outer wall).
+    assert {:ok, %{people: people}} = discover(me, @delhi_lat, 200)
+    assert Enum.map(people, & &1.user_id) == [visible]
+
+    # Request eligibility, same store level: a blocked pair fails EXACTLY like any other
+    # non-discoverable target — no distinct error that would leak the block's existence.
+    assert {:error, :nearby_not_discoverable} = send_request(me, blocked)
+    assert {:error, :nearby_not_discoverable} = send_request(me, blocker)
+
+    # The unblocked pair still qualifies (the exclusion is a filter, not a lockout).
+    assert {:ok, %{status: "pending"}} = send_request(me, visible)
+  end
+
+  defp block!(blocker_id, blocked_id) do
+    Repo.query!(
+      "INSERT INTO user_blocks (blocker_user_id, blocked_user_id) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid)",
+      [blocker_id, blocked_id]
+    )
+  end
+
+  defp send_request(requester, recipient) do
+    Nearby.send_request(%{
+      "requester_user_id" => requester,
+      "recipient_user_id" => recipient,
+      "app_id" => @app_id
+    })
+  end
+
+  @tag :postgres_integration
   test "connection requires a live nearby presence and recipient acceptance" do
     sender = user!()
     recipient = user!()

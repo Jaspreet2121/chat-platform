@@ -206,6 +206,50 @@ defmodule ApiGatewayWeb.NearbyControllerTest do
     assert conversation_attrs["participant_user_ids"] == [@peer]
   end
 
+  test "REALTIME: target hears request_received; requester hears request_accepted; decline silent" do
+    # Both roles land on @peer's user topic here: the TARGET of the send is @peer, and the stub's
+    # respond result names @peer as the original REQUESTER of the accepted request.
+    ApiGatewayWeb.Endpoint.subscribe("user:" <> @peer)
+
+    send_params = %{"user_id" => @peer}
+
+    conn =
+      authed(:post, "/api/v1/nearby/requests", send_params)
+      |> NearbyController.send_request(send_params)
+
+    assert conn.status == 201
+
+    assert_receive %Phoenix.Socket.Broadcast{
+      event: "nearby_request_received",
+      payload: %{
+        "type" => "nearby_request_received",
+        "request_id" => @request,
+        "from_user_id" => @me
+      }
+    }
+
+    accept = %{"request_id" => @request, "decision" => "accept"}
+    conn = authed(:post, "/respond", accept) |> NearbyController.respond(accept)
+    assert conn.status == 200
+
+    assert_receive %Phoenix.Socket.Broadcast{
+      event: "nearby_request_accepted",
+      payload: %{
+        "type" => "nearby_request_accepted",
+        "request_id" => @request,
+        "user_id" => @me,
+        "conversation_id" => "conv-nearby-1"
+      }
+    }
+
+    # A DECLINE emits nothing — silent by design; the requester simply never hears back.
+    decline = %{"request_id" => @request, "decision" => "decline"}
+    conn = authed(:post, "/respond", decline) |> NearbyController.respond(decline)
+    assert conn.status == 200
+    refute_receive %Phoenix.Socket.Broadcast{event: "nearby_request_accepted"}, 50
+    refute_receive %Phoenix.Socket.Broadcast{event: "nearby_request_received"}, 10
+  end
+
   test "stop is session-owned" do
     conn = authed(:delete, "/api/v1/nearby/presence") |> NearbyController.stop(%{})
     assert conn.status == 200

@@ -61,6 +61,13 @@ defmodule UserService.Nearby do
             WHERE p.app_id = $2::text::uuid
               AND p.user_id <> $1::text::uuid
               AND p.expires_at > now()
+              -- STORE-LEVEL block exclusion (defense-in-depth): a blocked pair — either direction —
+              -- never surfaces from this query, even if the gateway's outer wall were bypassed.
+              AND NOT EXISTS (
+                SELECT 1 FROM user_blocks ub
+                WHERE (ub.blocker_user_id = $1::text::uuid AND ub.blocked_user_id = p.user_id)
+                   OR (ub.blocker_user_id = p.user_id AND ub.blocked_user_id = $1::text::uuid)
+              )
           )
           SELECT c.user_id::text, c.distance_m, c.pinned_bucket,
             CASE
@@ -157,6 +164,13 @@ defmodule UserService.Nearby do
                 cos(radians(mine.latitude)) * cos(radians(theirs.latitude)) *
                 power(sin(radians((theirs.longitude - mine.longitude) / 2.0)), 2)
               ))) <= 200
+          -- STORE-LEVEL block exclusion (defense-in-depth, mirrors discover): a blocked pair fails
+          -- eligibility outright — same :nearby_not_discoverable as any other miss, no block leak.
+          AND NOT EXISTS (
+            SELECT 1 FROM user_blocks ub
+            WHERE (ub.blocker_user_id = $1::text::uuid AND ub.blocked_user_id = $2::text::uuid)
+               OR (ub.blocker_user_id = $2::text::uuid AND ub.blocked_user_id = $1::text::uuid)
+          )
         """,
         [requester, recipient, app_id]
       )
