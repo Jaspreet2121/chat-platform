@@ -29,8 +29,20 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
 
     ensure_no_cluster()
     {:ok, _pid} = XandraAdapter.start_link(nodes: nodes, keyspace: "chat_messages")
-    # sync_connect is deliberately off (boot safety) — give the background connect a moment.
-    Process.sleep(2_000)
+    # sync_connect is deliberately off (boot safety), so the session connects in the background. A
+    # fixed sleep here flaked three times (2 s is sometimes not enough on a cold container) — wait
+    # until a REAL query against the keyspace under test succeeds, bounded at 30 s, then hard-fail.
+    wait_scylla_ready(_deadline = System.monotonic_time(:millisecond) + 30_000, _delay = 50)
+
+    # THE ACTUAL RECORDED FLAKE (3 occurrences, seed-dependent, reproduced with --seed 0/3): the SQL
+    # repo was started lazily inside the three stars/unread tests, but EVERY put! crosses it since
+    # the 096 outbox stage — an unlucky ExUnit order ran a Repo-less test first and the suite died
+    # with "could not lookup Ecto repo". Start it deterministically here instead. (No Sandbox.mode
+    # call on purpose: this suite runs in the sandbox's default :automatic mode, as it always has.)
+    case MessageService.Repo.start_link() do
+      {:ok, repo_pid} -> Process.unlink(repo_pid)
+      {:error, {:already_started, _}} -> :ok
+    end
 
     previous = Application.get_env(:message_service, :scylla_client_adapter)
     Application.put_env(:message_service, :scylla_client_adapter, XandraAdapter)
@@ -44,6 +56,26 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
     end)
 
     :ok
+  end
+
+  # Bounded readiness: retry with growing backoff until a trivial SELECT against the actual test
+  # table answers (proving session + keyspace + schema, not just a TCP connect). Never a bare sleep.
+  defp wait_scylla_ready(deadline, delay) do
+    case XandraAdapter.execute(
+           "SELECT conversation_id FROM chat_messages.messages_by_conversation LIMIT 1",
+           []
+         ) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          raise "scylla not ready within 30s (last error: #{inspect(reason)})"
+        end
+
+        Process.sleep(delay)
+        wait_scylla_ready(deadline, min(delay * 2, 1_000))
+    end
   end
 
   defp ensure_no_cluster do
