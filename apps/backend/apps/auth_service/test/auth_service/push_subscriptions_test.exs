@@ -44,30 +44,34 @@ defmodule AuthService.PushSubscriptionsTest do
                "user_id" => @user_a,
                "endpoint" => @endpoint,
                "p256dh" => "key1",
-               "auth" => "auth1"
+               "auth" => "auth1",
+               "device_id" => "web-aaaa"
              })
 
     assert count(@endpoint) == 1
 
-    # Same browser re-subscribes under another account → same row, new owner/keys (still 1 row).
+    # Same browser re-subscribes under another account → same row, new owner/keys/device (still 1
+    # row). The device linkage (103) follows the CURRENT session, so revocation targets the right one.
     assert {:ok, _} =
              PushSubscriptions.save_subscription(%{
                "user_id" => @user_b,
                "endpoint" => @endpoint,
                "p256dh" => "key2",
-               "auth" => "auth2"
+               "auth" => "auth2",
+               "device_id" => "web-bbbb"
              })
 
     assert count(@endpoint) == 1
 
-    %{rows: [[owner, p256dh]]} =
+    %{rows: [[owner, p256dh, device_id]]} =
       Repo.query!(
-        "SELECT user_id::text, p256dh FROM push_subscriptions WHERE endpoint = $1",
+        "SELECT user_id::text, p256dh, device_id FROM push_subscriptions WHERE endpoint = $1",
         [@endpoint]
       )
 
     assert owner == @user_b
     assert p256dh == "key2"
+    assert device_id == "web-bbbb"
 
     # Delete scoped to the CALLER: user A (not the owner) can't remove it; user B can.
     assert {:ok, _} =

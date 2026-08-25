@@ -14,13 +14,15 @@ defmodule AuthService.PushSubscriptions do
          {:ok, p256dh} <- required(attrs, "p256dh"),
          {:ok, auth} <- required(attrs, "auth") do
       if persistence_enabled?() do
+        # device_id (103) ties the subscription to the session so device revocation can delete it.
+        # Nullable: pre-103 clients/rows have none and expire via push-failure pruning instead.
         Repo.query!(
-          "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent) " <>
-            "VALUES ($1::text::uuid, $2, $3, $4, $5) " <>
+          "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, user_agent, device_id) " <>
+            "VALUES ($1::text::uuid, $2, $3, $4, $5, $6) " <>
             "ON CONFLICT (endpoint) DO UPDATE SET user_id = EXCLUDED.user_id, " <>
             "p256dh = EXCLUDED.p256dh, auth = EXCLUDED.auth, user_agent = EXCLUDED.user_agent, " <>
-            "last_used_at = now()",
-          [user_id, endpoint, p256dh, auth, attrs["user_agent"]]
+            "device_id = EXCLUDED.device_id, last_used_at = now()",
+          [user_id, endpoint, p256dh, auth, attrs["user_agent"], attrs["device_id"]]
         )
 
         {:ok, %{saved: true}}

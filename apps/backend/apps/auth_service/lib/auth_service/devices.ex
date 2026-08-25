@@ -21,9 +21,10 @@ defmodule AuthService.Devices do
       the sweep is defensive);
     * DELETES its FCM tokens (074) — a signed-out handset must stop receiving pushes. Rows with a NULL
       device_id (pre-074-shape registrations) can't be matched and are left to FCM dead-token pruning /
-      the token-UNIQUE re-register upsert — recorded gap. Web-push subscriptions (061) carry NO
-      device_id at all, so a revoked browser keeps its push subscription — recorded gap (needs a column
-      + client change).
+      the token-UNIQUE re-register upsert — recorded gap;
+    * DELETES its web-push subscriptions (103) — same rule for a signed-out browser. The gateway
+      stamps the session's device_id on subscribe; pre-103 NULL rows can't be matched and expire via
+      push-failure pruning.
   """
 
   import Ecto.Query
@@ -253,6 +254,14 @@ defmodule AuthService.Devices do
         # The signed-out handset must stop receiving pushes (074). NULL-device_id rows can't match here.
         Repo.query!(
           "DELETE FROM fcm_tokens WHERE user_id = $1::text::uuid AND device_id = ANY($2)",
+          [user_id, device_ids]
+        )
+
+        # And the signed-out BROWSER must stop receiving web pushes (103) — subscriptions carry the
+        # session's device_id since 103. Pre-103 NULL rows can't be attributed to a device and are
+        # left to expire via push-failure pruning; other devices' subscriptions are untouched.
+        Repo.query!(
+          "DELETE FROM push_subscriptions WHERE user_id = $1::text::uuid AND device_id = ANY($2)",
           [user_id, device_ids]
         )
       end)

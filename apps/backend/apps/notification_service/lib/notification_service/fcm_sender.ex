@@ -123,9 +123,12 @@ defmodule NotificationService.FcmSender do
       data = call_data(attrs)
 
       # collapse_key ties the ring and its stop together: a later call.cancelled push with the SAME key
-      # supersedes a still-pending incoming push where the transport supports it.
-      for token <- tokens_for(callee_id),
-          do: send_one(token, data, %{"collapse_key" => collapse_key(attrs)})
+      # supersedes a still-pending incoming push where the transport supports it. TTL = the server ring
+      # timeout (CallSignaling @ring_timeout_ms, 35s): a ring push FCM could not deliver inside the
+      # ring window is for a call that has already timed out — it must die in transit, never ring a
+      # dead call late (the recorded MIUI 40s-late ring).
+      android = %{"ttl" => "35s", "collapse_key" => collapse_key(attrs)}
+      for token <- tokens_for(callee_id), do: send_one(token, data, android)
     end
   rescue
     error -> Logger.warning("fcm call deliver raised, ignored: #{inspect(error)}")

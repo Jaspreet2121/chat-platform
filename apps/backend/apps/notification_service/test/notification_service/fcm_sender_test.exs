@@ -181,7 +181,11 @@ defmodule NotificationService.FcmSenderTest do
       assert data["type"] == "call"
       assert data["call_id"] == "call-9"
 
-      # The ring carries the collapse key its stop will reuse (a pending ring is superseded by cancel).
+      # The ring carries the collapse key its stop will reuse (a pending ring is superseded by cancel)
+      # AND a TTL equal to the server ring timeout (CallSignaling: 35s) — a delivery FCM can't make
+      # inside the ring window dies in transit instead of ringing a dead call late (the MIUI case).
+      assert message["android"]["priority"] == "high"
+      assert message["android"]["ttl"] == "35s"
       assert message["android"]["collapse_key"] == "call_call-9"
     end
 

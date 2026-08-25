@@ -21,13 +21,16 @@ defmodule ApiGatewayWeb.PushController do
         %{"endpoint" => endpoint, "keys" => %{"p256dh" => p256dh, "auth" => auth}} = params
       )
       when is_binary(endpoint) and endpoint != "" do
-    with_session(conn, fn user_id ->
+    with_session(conn, fn session ->
       SharedInfra.AuthClient.save_push_subscription(%{
-        "user_id" => user_id,
+        "user_id" => session.user_id,
         "endpoint" => endpoint,
         "p256dh" => p256dh,
         "auth" => auth,
-        "user_agent" => params["user_agent"] || first_header(conn, "user-agent")
+        "user_agent" => params["user_agent"] || first_header(conn, "user-agent"),
+        # 103: the SESSION's device identity, never client-supplied — device revocation deletes the
+        # browser's subscriptions by this linkage.
+        "device_id" => session.device_id
       })
     end)
   end
@@ -35,9 +38,9 @@ defmodule ApiGatewayWeb.PushController do
   def create(conn, _params), do: ErrorResponse.invalid_request(conn, "push.invalid_subscription")
 
   def delete(conn, %{"endpoint" => endpoint}) when is_binary(endpoint) and endpoint != "" do
-    with_session(conn, fn user_id ->
+    with_session(conn, fn session ->
       SharedInfra.AuthClient.delete_push_subscription(%{
-        "user_id" => user_id,
+        "user_id" => session.user_id,
         "endpoint" => endpoint
       })
     end)
@@ -92,7 +95,7 @@ defmodule ApiGatewayWeb.PushController do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
-         {:ok, response} <- operation.(session.user_id) do
+         {:ok, response} <- operation.(session) do
       json(conn, response)
     else
       {:error, :session_invalid} ->

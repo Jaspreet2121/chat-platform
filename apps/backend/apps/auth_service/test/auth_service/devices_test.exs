@@ -80,6 +80,22 @@ defmodule AuthService.DevicesTest do
         [user_id, device_id]
       )
 
+  # device_id nil = a pre-103 legacy row (no linkage).
+  defp sub!(user_id, device_id) do
+    Repo.query!(
+      "INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, device_id) " <>
+        "VALUES ($1::text::uuid, $2, 'p', 'a', $3)",
+      [user_id, "https://push.test/#{device_id || "legacy"}-#{Ecto.UUID.generate()}", device_id]
+    )
+  end
+
+  defp sub_count(user_id) do
+    count!(
+      "SELECT count(*)::int FROM push_subscriptions WHERE user_id = $1::text::uuid",
+      [user_id]
+    )
+  end
+
   defp list!(user_id) do
     {:ok, %{devices: devices}} = Devices.list_devices(%{"user_id" => user_id})
     devices
@@ -120,18 +136,24 @@ defmodule AuthService.DevicesTest do
     refresh!(me, "laptop", "rt-laptop")
     fcm!(me, "phone")
     fcm!(me, "laptop")
+    # Web-push (103): one subscription per device + a pre-103 legacy row with no device linkage.
+    sub!(me, "phone")
+    sub!(me, "laptop")
+    sub!(me, nil)
 
     assert {:ok, %{revoked: true}} =
              Devices.revoke_device(%{"user_id" => me, "device_id" => "phone"})
 
-    # The revoked device: gone from the list, refresh dead, FCM gone.
+    # The revoked device: gone from the list, refresh dead, FCM gone, web-push subscription gone.
     assert Enum.map(list!(me), & &1.device_id) == ["laptop"]
     assert active_refresh_count(me, "phone") == 0
     assert fcm_count(me, "phone") == 0
 
-    # The surviving device: fully intact.
+    # The surviving device: fully intact. The NULL-device legacy row is deliberately left (it cannot
+    # be attributed to a device; push-failure pruning owns it) — so 2 remain: laptop + legacy.
     assert active_refresh_count(me, "laptop") == 1
     assert fcm_count(me, "laptop") == 1
+    assert sub_count(me) == 2
   end
 
   @tag :postgres_integration
