@@ -10,7 +10,8 @@ defmodule ApiGatewayWeb.AppController do
 
   alias ApiGatewayWeb.ErrorResponse
 
-  # POST /api/v1/apps — register a new business app owned by the caller. Returns {app_id, name, mode}.
+  # POST /api/v1/apps (alias /api/v1/developer/apps) — register a new business app owned by the
+  # caller. Returns {app_id, name, mode}. Capped per owner (default 3) → 403 app.limit_reached.
   def create(conn, params) do
     with {:ok, name} <- require_name(params),
          {:ok, session} <- app_session(conn),
@@ -23,10 +24,56 @@ defmodule ApiGatewayWeb.AppController do
       |> put_status(:created)
       |> json(app)
     else
-      {:error, :missing_name} -> ErrorResponse.invalid_request(conn, "app.name_required")
-      {:error, :session_invalid} -> session_invalid(conn)
-      {:error, :auth_unavailable} -> service_unavailable(conn)
-      _ -> ErrorResponse.invalid_request(conn, "app.invalid_request")
+      {:error, :missing_name} ->
+        ErrorResponse.invalid_request(conn, "app.name_required")
+
+      {:error, :app_limit_reached} ->
+        ErrorResponse.forbidden(
+          conn,
+          "app.limit_reached",
+          "App limit reached for this account"
+        )
+
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      _ ->
+        ErrorResponse.invalid_request(conn, "app.invalid_request")
+    end
+  end
+
+  # PATCH /api/v1/apps/:app_id — RENAME only (deletion/deactivation is a recorded follow-up; an app
+  # owns live keys, webhooks, and tenant data — removal needs its own slice). Ownership is enforced
+  # at the store (the UPDATE joins app_owners); not-owned/nonexistent/twin are the same 403 — no
+  # existence leak.
+  def update(conn, %{"app_id" => app_id} = params) do
+    with {:ok, name} <- require_name(params),
+         {:ok, session} <- app_session(conn),
+         {:ok, app} <-
+           SharedInfra.AuthClient.rename_app(%{
+             "owner_user_id" => session.user_id,
+             "app_id" => app_id,
+             "name" => name
+           }) do
+      json(conn, app)
+    else
+      {:error, :missing_name} ->
+        ErrorResponse.invalid_request(conn, "app.name_required")
+
+      {:error, :forbidden} ->
+        ErrorResponse.forbidden(conn, "app.forbidden", "Not an owner of this app")
+
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      _ ->
+        ErrorResponse.invalid_request(conn, "app.invalid_request")
     end
   end
 

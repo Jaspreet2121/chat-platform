@@ -147,12 +147,24 @@ defmodule ApiGatewayWeb.Router do
     delete "/webhooks/endpoints/:id", WebhookEndpointController, :delete
   end
 
-  # Self-serve integrator onboarding — register a business app (distinct live app_id) + list owned apps.
+  # Self-serve integrator onboarding — register a business app (distinct live app_id, capped per
+  # owner), list owned apps, rename an owned app (rename ONLY — deletion is a recorded follow-up).
   scope "/api/v1/apps", ApiGatewayWeb do
     pipe_through :api
 
     post "/", AppController, :create
     get "/", AppController, :index
+    patch "/:app_id", AppController, :update
+  end
+
+  # Canonical developer-console alias for the same actions (B2C milestone naming). Same controller,
+  # same behavior — /api/v1/apps stays for the deployed dashboard; new integrations use this path.
+  scope "/api/v1/developer/apps", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/", AppController, :create
+    get "/", AppController, :index
+    patch "/:app_id", AppController, :update
   end
 
   # Owner console — per-app usage counts + the webhook delivery log. Same session + app_owners gate as

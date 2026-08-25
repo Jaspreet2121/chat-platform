@@ -91,6 +91,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Apps.create_app(body(conn)))
   end
 
+  post "/internal/apps/rename" do
+    send_result(conn, AuthService.Apps.rename_app(body(conn)))
+  end
+
   post "/internal/apps/list" do
     send_result(conn, AuthService.Apps.list_apps(body(conn)))
   end

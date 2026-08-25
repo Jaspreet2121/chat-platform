@@ -87,6 +87,9 @@ defmodule SharedInfra.AuthClientHttp do
   def create_app(attrs), do: post("/internal/apps/create", attrs)
 
   @impl true
+  def rename_app(attrs), do: post("/internal/apps/rename", attrs)
+
+  @impl true
   def list_apps(attrs), do: post("/internal/apps/list", attrs)
 
   @impl true

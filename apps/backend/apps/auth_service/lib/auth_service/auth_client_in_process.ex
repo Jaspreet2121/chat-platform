@@ -92,6 +92,9 @@ defmodule AuthService.AuthClientInProcess do
   def create_app(attrs), do: AuthService.Apps.create_app(attrs)
 
   @impl true
+  def rename_app(attrs), do: AuthService.Apps.rename_app(attrs)
+
+  @impl true
   def list_apps(attrs), do: AuthService.Apps.list_apps(attrs)
 
   @impl true

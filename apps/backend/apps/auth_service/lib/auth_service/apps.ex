@@ -13,9 +13,20 @@ defmodule AuthService.Apps do
 
   alias AuthService.Repo
 
+  # Per-owner allocation cap (B2C milestone). Config so operators can raise it for a specific
+  # deployment without a release; the DEFAULT is the product decision.
+  @default_max_apps_per_owner 3
+
+  def max_apps_per_owner,
+    do: Application.get_env(:auth_service, :max_apps_per_owner, @default_max_apps_per_owner)
+
   @doc """
   Register a new LIVE app owned by `owner_user_id`. Allocates a fresh app row (mode='live',
   parent_app_id=NULL) and records the caller as its owner, atomically. Returns %{app_id, name, mode}.
+
+  Capped at `max_apps_per_owner/0` LIVE apps per owner (default 3) → {:error, :app_limit_reached}.
+  The count runs under a per-owner advisory xact lock (the rolling-window claim precedent): a cap
+  cannot be a unique index, and without the lock two concurrent creates both count N-1 and both land.
   """
   def create_app(attrs) do
     with {:ok, owner_user_id} <- fetch(attrs, "owner_user_id"),
@@ -23,6 +34,21 @@ defmodule AuthService.Apps do
       slug = slugify(name)
 
       Repo.transaction(fn ->
+        Repo.query!(
+          "SELECT pg_advisory_xact_lock(hashtextextended('app_alloc:' || $1, 0))",
+          [owner_user_id]
+        )
+
+        %{rows: [[owned]]} =
+          Repo.query!(
+            "SELECT count(*)::int FROM app_owners o " <>
+              "JOIN apps a ON a.id = o.app_id AND a.mode = 'live' " <>
+              "WHERE o.owner_user_id = $1::text::uuid",
+            [owner_user_id]
+          )
+
+        if owned >= max_apps_per_owner(), do: Repo.rollback(:app_limit_reached)
+
         with {:ok, %{rows: [[app_id]]}} <-
                Repo.query(
                  "INSERT INTO apps (id, name, slug, mode, parent_app_id) " <>
@@ -42,9 +68,36 @@ defmodule AuthService.Apps do
       end)
       |> case do
         {:ok, result} -> {:ok, result}
+        {:error, :app_limit_reached} -> {:error, :app_limit_reached}
         {:error, _} -> {:error, :app_invalid}
       end
     end
+  end
+
+  @doc """
+  Rename an owned LIVE app. RENAME ONLY — deletion/deactivation is deliberately absent (recorded
+  follow-up: an app owns live keys, webhooks, and tenant data; removal semantics need their own
+  slice). Ownership is enforced HERE at the store (the UPDATE joins app_owners), not just at the
+  gateway gate; a non-owned or nonexistent or twin app_id is the same {:error, :forbidden} — no
+  existence leak. The slug (internal, never shown) and the twin's derived name are untouched.
+  """
+  def rename_app(attrs) do
+    with {:ok, owner_user_id} <- fetch(attrs, "owner_user_id"),
+         {:ok, app_id} <- fetch(attrs, "app_id"),
+         {:ok, name} <- fetch(attrs, "name") do
+      case Repo.query(
+             "UPDATE apps a SET name = $3, updated_at = now() FROM app_owners o " <>
+               "WHERE a.id = $1::text::uuid AND a.mode = 'live' AND o.app_id = a.id " <>
+               "AND o.owner_user_id = $2::text::uuid RETURNING a.id::text, a.name",
+             [app_id, owner_user_id, name]
+           ) do
+        {:ok, %{rows: [[id, new_name]]}} -> {:ok, %{app_id: id, name: new_name, mode: "live"}}
+        {:ok, %{rows: []}} -> {:error, :forbidden}
+        _ -> {:error, :app_invalid}
+      end
+    end
+  rescue
+    _ -> {:error, :app_invalid}
   end
 
   @doc "List the LIVE apps `owner_user_id` owns (newest first). Twins are never listed (never owned)."

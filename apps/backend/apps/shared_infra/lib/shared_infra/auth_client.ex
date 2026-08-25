@@ -80,6 +80,7 @@ defmodule SharedInfra.AuthClient do
   @callback reenqueue_webhook(attrs()) :: result()
   @callback reenqueue_webhooks_bulk(attrs()) :: result()
   @callback create_app(attrs()) :: result()
+  @callback rename_app(attrs()) :: result()
   @callback list_apps(attrs()) :: result()
   @callback admin_list_apps(attrs()) :: result()
   @callback owns_app(attrs()) :: result()
@@ -109,6 +110,7 @@ defmodule SharedInfra.AuthClient do
                       reenqueue_webhook: 1,
                       reenqueue_webhooks_bulk: 1,
                       create_app: 1,
+                      rename_app: 1,
                       list_apps: 1,
                       admin_list_apps: 1,
                       owns_app: 1,
@@ -150,6 +152,7 @@ defmodule SharedInfra.AuthClient do
   def reenqueue_webhook(attrs), do: adapter().reenqueue_webhook(attrs)
   def reenqueue_webhooks_bulk(attrs), do: adapter().reenqueue_webhooks_bulk(attrs)
   def create_app(attrs), do: adapter().create_app(attrs)
+  def rename_app(attrs), do: adapter().rename_app(attrs)
   def list_apps(attrs), do: adapter().list_apps(attrs)
 
   @doc "Cross-tenant operator app list (admin console) — counts + metadata only, never secrets."

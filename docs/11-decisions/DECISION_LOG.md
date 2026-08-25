@@ -2,6 +2,32 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-26] B2C allocation hardening: per-owner cap, rename-only mutation, claim-flow regression seal
+
+- **Context:** The 2026-08-10 verification stands — per-integrator live allocation is shipped
+  (`POST /api/v1/apps`, distinct live app_id + `app_owners`, keys/webhooks per app) and exercised
+  in production. This slice adds the approved hardening around it; existing integrators stay
+  grandfathered (tenant-zero permanent per Decision 1 of 2026-08-10, no data migration).
+- **Decision — per-owner cap, default 3:** `create_app` counts the owner's LIVE apps under a
+  per-owner advisory xact lock (a cap can't be a unique index; without the lock two concurrent
+  creates both count N−1) and rejects with `app.limit_reached` (403). Config-raisable per
+  deployment (`:auth_service, :max_apps_per_owner`) without a release.
+- **Decision — canonical developer route alias:** `/api/v1/developer/apps` (POST/GET/PATCH) serves
+  the same controller as `/api/v1/apps`; the old path stays for the deployed dashboard.
+- **Decision — rename is the ONLY app mutation:** `PATCH …/apps/:app_id` renames an owned live app
+  (ownership enforced in the UPDATE itself; non-owned/twin/nonexistent are one indistinguishable
+  403). **Named follow-up: app deletion/deactivation** — an app owns live keys, webhooks, and
+  tenant data; removal semantics (revoke keys? tombstone data? twin cascade?) need their own slice.
+- **Sealed by regression:** the session app-claim flow (`Tokens` mints `"app"`, `Sessions` applies
+  `app_id_or_default` ONLY to a missing claim) is now locked by an end-to-end acceptance suite —
+  allocation via the real routes, a fresh app's session scoping search/by-username/by-phone/nearby
+  to its own app, tenant isolation between two fresh integrators, and the claim-less token still
+  landing on tenant-zero — with BOTH failure directions mutation-proven (fallback removed → legacy
+  red; fallback unconditional → fresh-app claim AND live search surface red).
+- **Confirmed, no change needed:** sk keys were already hash-at-rest from 049 (sha256 + display
+  prefix; the raw secret exists only in the create response) — the dashboard cannot re-show them.
+  No migration in this slice.
+
 ## [2026-08-25] Nearby People is foreground opt-in, coarse-distance, and consent-based
 
 - **Context:** Users need to discover people within 100–200 metres, send a connection request, and
