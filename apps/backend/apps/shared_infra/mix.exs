@@ -28,6 +28,8 @@ defmodule SharedInfra.MixProject do
 
   defp deps do
     [
+      # IANA tz database for auto-reply schedules (102) — umbrella-wide via shared_infra.
+      {:tzdata, "~> 1.1"},
       {:brod, "~> 4.0"},
       {:jason, "~> 1.4"},
       # HTTP client for the service→service HTTP adapters (SharedInfra.HttpClient). Replaces OTP

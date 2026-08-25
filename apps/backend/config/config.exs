@@ -230,3 +230,7 @@ config :conversation_service,
   # ConversationService.Application starts no brod client → plain mix test stays Docker-free.
   conversation_publish_enabled:
     System.get_env("CONVERSATION_PUBLISH_ENABLED") in ["true", "1", "yes"]
+
+# IANA zones for DateTime.shift_zone (auto-reply schedules, 102). A library binding, not an
+# env-dependent value — config.exs is correct here (no runtime bake concern).
+config :elixir, :time_zone_database, Tzdata.TimeZoneDatabase

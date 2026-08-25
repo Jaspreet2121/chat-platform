@@ -77,4 +77,13 @@ defmodule UserService.UserClientInProcess do
 
   @impl true
   def respond_nearby_request(attrs), do: UserService.Nearby.respond(attrs)
+
+  @impl true
+  def get_auto_replies(attrs), do: UserService.AutoReplies.get_settings(attrs)
+
+  @impl true
+  def update_auto_replies(attrs), do: UserService.AutoReplies.update_settings(attrs)
+
+  @impl true
+  def claim_auto_reply(attrs), do: UserService.AutoReplies.claim(attrs)
 end

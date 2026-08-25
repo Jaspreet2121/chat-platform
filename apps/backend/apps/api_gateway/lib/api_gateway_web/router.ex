@@ -229,6 +229,14 @@ defmodule ApiGatewayWeb.Router do
     get "/:user_id/avatar", UserController, :avatar
   end
 
+  # Auto-replies (102): away + greeting settings; the async engine reads them off the event stream.
+  scope "/api/v1/auto-replies", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/", AutoReplyController, :show
+    patch "/", AutoReplyController, :update
+  end
+
   scope "/api/v1/nearby", ApiGatewayWeb do
     pipe_through :api
 

@@ -71,6 +71,15 @@ defmodule SharedInfra.UserClientHttp do
   @impl true
   def respond_nearby_request(attrs), do: post("/internal/nearby/requests/respond", attrs)
 
+  @impl true
+  def get_auto_replies(attrs), do: post("/internal/auto_replies/get", attrs)
+
+  @impl true
+  def update_auto_replies(attrs), do: post("/internal/auto_replies/update", attrs)
+
+  @impl true
+  def claim_auto_reply(attrs), do: post("/internal/auto_replies/claim", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs, unavailable: @unavailable)
   end

@@ -537,6 +537,8 @@ services:
       # client starving a tenant; X-RateLimit-* headers; sliding window). Affects ONLY /v1 — /api/v1 runs
       # on the `:api` pipeline, which has no rate-limit plug.
       CALL_PUSH_ENABLED: ${CALL_PUSH_ENABLED:-}
+      # Auto-reply engine (102): evaluates inbound 1:1s against recipients' away/greeting settings.
+      AUTO_REPLY_CONSUMER_ENABLED: ${AUTO_REPLY_CONSUMER_ENABLED:-false}
       KAFKA_PRODUCER_ADAPTER: brod
       KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
       V1_RATE_LIMIT: "3000"

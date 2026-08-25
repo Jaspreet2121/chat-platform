@@ -110,6 +110,18 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Nearby.respond(body(conn)))
   end
 
+  post "/internal/auto_replies/get" do
+    send_result(conn, UserService.AutoReplies.get_settings(body(conn)))
+  end
+
+  post "/internal/auto_replies/update" do
+    send_result(conn, UserService.AutoReplies.update_settings(body(conn)))
+  end
+
+  post "/internal/auto_replies/claim" do
+    send_result(conn, UserService.AutoReplies.claim(body(conn)))
+  end
+
   get "/internal/health" do
     send_result(conn, {:ok, %{service: "user", status: "ok", deps: %{}}})
   end

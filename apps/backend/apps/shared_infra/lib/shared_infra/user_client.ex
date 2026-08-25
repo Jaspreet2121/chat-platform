@@ -41,6 +41,10 @@ defmodule SharedInfra.UserClient do
   @callback send_nearby_request(attrs()) :: result()
   @callback list_nearby_requests(attrs()) :: result()
   @callback respond_nearby_request(attrs()) :: result()
+  # Auto-replies (102): settings + the engine's at-least-once claim.
+  @callback get_auto_replies(attrs()) :: result()
+  @callback update_auto_replies(attrs()) :: result()
+  @callback claim_auto_reply(attrs()) :: result()
 
   # Optional so a partial test stub of this behaviour doesn't need to implement everything; the real adapters do.
   @optional_callbacks get_privacy: 1,
@@ -57,7 +61,10 @@ defmodule SharedInfra.UserClient do
                       stop_nearby: 1,
                       send_nearby_request: 1,
                       list_nearby_requests: 1,
-                      respond_nearby_request: 1
+                      respond_nearby_request: 1,
+                      get_auto_replies: 1,
+                      update_auto_replies: 1,
+                      claim_auto_reply: 1
 
   def get_current_profile(attrs), do: adapter().get_current_profile(attrs)
   def list_favourites(attrs), do: adapter().list_favourites(attrs)
@@ -88,6 +95,9 @@ defmodule SharedInfra.UserClient do
   def send_nearby_request(attrs), do: adapter().send_nearby_request(attrs)
   def list_nearby_requests(attrs), do: adapter().list_nearby_requests(attrs)
   def respond_nearby_request(attrs), do: adapter().respond_nearby_request(attrs)
+  def get_auto_replies(attrs), do: adapter().get_auto_replies(attrs)
+  def update_auto_replies(attrs), do: adapter().update_auto_replies(attrs)
+  def claim_auto_reply(attrs), do: adapter().claim_auto_reply(attrs)
 
   @doc "The configured User client adapter (default `UserService.UserClientInProcess`)."
   def adapter do

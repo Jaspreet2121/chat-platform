@@ -54,6 +54,7 @@ event is pure noise.
 | `GET /usernames/:u/availability` | 30 | 3600s | user | OPEN | Namespace prober. Availability is advisory UX, not a gate. |
 | `POST/PATCH/DELETE/PUT /quick-replies*` | 30 | 60s | user | OPEN | Quick-reply writes (100) — user data, not an oracle; a Redis blip must not block saving a reply. Reads unlimited. |
 | `GET /users/search` | 30 | 60s | user | **CLOSED** | The name-substring directory search (098) — a wider enumeration oracle than by-phone (one query returns up to 50 accounts). 30/min is generous for a human typing a name; the limiter *is* the control, so an outage rejects (contacts-sync precedent). |
+| `PATCH /auto-replies` | 30 | 60s | user | OPEN | Auto-reply settings writes (102) — user data, not an oracle; a Redis blip must not block toggling Away. Reads unlimited. |
 | `POST /nearby/discover` | 6 | 60s | user | **CLOSED** | Proximity discovery returns up to 30 identity cards. 6/min (audit 2026-08-26; was 30) starves movement-based trilateration alongside per-pair bucket pinning, and a human refreshing a modal never reaches it. |
 | `POST /nearby/requests` | 10 | 60s | user | **CLOSED** | Bounds unsolicited connection requests. A limiter outage must not turn a proximity surface into an unbounded spam path. |
 | `POST /link/qr` | 10 | 60s | client IP | **CLOSED** | QR link mint (099) — unauthenticated and writes server state per call. 10/min covers every legitimate retry of a 60s-TTL code; an outage rejects (linking is optional, state-writing must not open up). |

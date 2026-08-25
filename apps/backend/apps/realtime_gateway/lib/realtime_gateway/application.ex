@@ -46,6 +46,7 @@ defmodule RealtimeGateway.Application do
   """
   def kafka_children do
     client = if kafka_client_needed?(), do: [brod_client_child_spec()], else: []
+    consumer = if auto_reply_consumer_startable?(), do: [auto_reply_consumer_spec()], else: []
 
     # The boot-time audit the other producing services already have — a silent supervision tree is
     # precisely how this misconfiguration class stays invisible.
@@ -54,12 +55,41 @@ defmodule RealtimeGateway.Application do
         "brod client #{if client == [], do: "OFF", else: "ON"} (realtime_gateway)"
     )
 
-    client
+    client ++ consumer
   end
 
-  @doc "True iff the gateway needs a brod client: brod adapter selected AND call push enabled."
+  @doc """
+  True iff the gateway needs a brod client: brod adapter selected AND (call push OR the auto-reply
+  consumer, 102) enabled — the consumer group rides the same client the producer uses.
+  """
   def kafka_client_needed? do
-    brod_producer_selected?() and RealtimeGateway.CallSignaling.call_push_enabled?()
+    brod_producer_selected?() and
+      (RealtimeGateway.CallSignaling.call_push_enabled?() or
+         RealtimeGateway.AutoReplyConsumer.enabled?())
+  end
+
+  # The auto-reply engine (102): consumes message.events.v1 in ITS OWN group. Startable only when
+  # both the flag and the brod client are on (the subscriber needs the client process).
+  defp auto_reply_consumer_startable? do
+    brod_producer_selected?() and RealtimeGateway.AutoReplyConsumer.enabled?()
+  end
+
+  defp auto_reply_consumer_spec do
+    %{
+      id: RealtimeGateway.AutoReplyConsumer,
+      start:
+        {:brod, :start_link_group_subscriber_v2,
+         [
+           %{
+             client: @kafka_client,
+             group_id: "gateway_auto_reply",
+             topics: ["message.events.v1"],
+             cb_module: RealtimeGateway.AutoReplyConsumer,
+             consumer_config: [begin_offset: :latest],
+             message_type: :message
+           }
+         ]}
+    }
   end
 
   defp brod_producer_selected? do
