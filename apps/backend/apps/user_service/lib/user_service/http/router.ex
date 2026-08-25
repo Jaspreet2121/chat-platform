@@ -114,6 +114,42 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Nearby.update_settings(body(conn)))
   end
 
+  post "/internal/dating/profile/get" do
+    send_result(conn, UserService.Dating.get_profile(body(conn)))
+  end
+
+  post "/internal/dating/profile/update" do
+    send_result(conn, UserService.Dating.update_profile(body(conn)))
+  end
+
+  post "/internal/dating/deck" do
+    send_result(conn, UserService.Dating.deck(body(conn)))
+  end
+
+  post "/internal/dating/swipe" do
+    send_result(conn, UserService.Dating.swipe(body(conn)))
+  end
+
+  post "/internal/dating/likes" do
+    send_result(conn, UserService.Dating.likes(body(conn)))
+  end
+
+  post "/internal/dating/matches" do
+    send_result(conn, UserService.Dating.matches(body(conn)))
+  end
+
+  post "/internal/dating/unmatch" do
+    send_result(conn, UserService.Dating.unmatch(body(conn)))
+  end
+
+  post "/internal/dating/unmatch_pair" do
+    send_result(conn, UserService.Dating.unmatch_pair(body(conn)))
+  end
+
+  post "/internal/dating/attach_conversation" do
+    send_result(conn, UserService.Dating.attach_match_conversation(body(conn)))
+  end
+
   post "/internal/nearby/ble/admit" do
     send_result(conn, UserService.Nearby.admit_ble_targets(body(conn)))
   end

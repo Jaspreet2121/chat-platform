@@ -147,6 +147,34 @@ defmodule UserService.UserSearchTest do
     end
   end
 
+  @tag :postgres_integration
+  test "DATING LEAK LOCK (105): the search card's key set is exact — dating data never rides it" do
+    caller = user!("Caller")
+    target = user!("Dating Person")
+
+    # The target HAS a dating profile — the search card must still carry only its own fields.
+    Repo.query!(
+      "INSERT INTO dating_profiles (user_id, app_id, enabled, dob, gender, bio) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, true, '1999-01-01', 'woman', 'DATING-ONLY BIO')",
+      [target, @tenant_zero]
+    )
+
+    assert [card] = search!("Dating Person", caller)
+
+    assert Map.keys(card) |> Enum.sort() ==
+             [
+               :app_id,
+               :avatar_media_id,
+               :avatar_object_key,
+               :bio,
+               :display_name,
+               :user_id,
+               :username
+             ]
+
+    refute card.bio == "DATING-ONLY BIO"
+  end
+
   test "persistence off → empty result, never an error (unit-tier default)" do
     Application.put_env(:user_service, :user_profile_persistence, false)
 

@@ -23,6 +23,15 @@ defmodule ApiGatewayWeb.BlockController do
              "blocker_user_id" => session.user_id,
              "blocked_user_id" => user_id
            }) do
+      # DATING AUTO-UNMATCH (105): a blocked pair must not stay matched. Best-effort AFTER the
+      # block committed (the block never fails on a dating hiccup); every dating read also excludes
+      # blocked pairs at store level as the belt behind this.
+      ApiGatewayWeb.DatingController.unmatch_on_block(
+        session.user_id,
+        user_id,
+        session_app(session)
+      )
+
       send_resp(conn, :no_content, "")
     else
       {:error, :session_invalid} ->

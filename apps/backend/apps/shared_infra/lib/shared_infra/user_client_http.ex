@@ -81,6 +81,33 @@ defmodule SharedInfra.UserClientHttp do
   def admit_ble_targets(attrs), do: post("/internal/nearby/ble/admit", attrs)
 
   @impl true
+  def get_dating_profile(attrs), do: post("/internal/dating/profile/get", attrs)
+
+  @impl true
+  def update_dating_profile(attrs), do: post("/internal/dating/profile/update", attrs)
+
+  @impl true
+  def dating_deck(attrs), do: post("/internal/dating/deck", attrs)
+
+  @impl true
+  def dating_swipe(attrs), do: post("/internal/dating/swipe", attrs)
+
+  @impl true
+  def dating_likes(attrs), do: post("/internal/dating/likes", attrs)
+
+  @impl true
+  def dating_matches(attrs), do: post("/internal/dating/matches", attrs)
+
+  @impl true
+  def dating_unmatch(attrs), do: post("/internal/dating/unmatch", attrs)
+
+  @impl true
+  def dating_unmatch_pair(attrs), do: post("/internal/dating/unmatch_pair", attrs)
+
+  @impl true
+  def dating_attach_conversation(attrs), do: post("/internal/dating/attach_conversation", attrs)
+
+  @impl true
   def get_auto_replies(attrs), do: post("/internal/auto_replies/get", attrs)
 
   @impl true

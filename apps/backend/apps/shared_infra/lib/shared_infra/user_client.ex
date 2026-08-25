@@ -44,6 +44,15 @@ defmodule SharedInfra.UserClient do
   @callback get_nearby_settings(attrs()) :: result()
   @callback update_nearby_settings(attrs()) :: result()
   @callback admit_ble_targets(attrs()) :: result()
+  @callback get_dating_profile(attrs()) :: result()
+  @callback update_dating_profile(attrs()) :: result()
+  @callback dating_deck(attrs()) :: result()
+  @callback dating_swipe(attrs()) :: result()
+  @callback dating_likes(attrs()) :: result()
+  @callback dating_matches(attrs()) :: result()
+  @callback dating_unmatch(attrs()) :: result()
+  @callback dating_unmatch_pair(attrs()) :: result()
+  @callback dating_attach_conversation(attrs()) :: result()
   # Auto-replies (102): settings + the engine's at-least-once claim.
   @callback get_auto_replies(attrs()) :: result()
   @callback update_auto_replies(attrs()) :: result()
@@ -68,6 +77,15 @@ defmodule SharedInfra.UserClient do
                       get_nearby_settings: 1,
                       update_nearby_settings: 1,
                       admit_ble_targets: 1,
+                      get_dating_profile: 1,
+                      update_dating_profile: 1,
+                      dating_deck: 1,
+                      dating_swipe: 1,
+                      dating_likes: 1,
+                      dating_matches: 1,
+                      dating_unmatch: 1,
+                      dating_unmatch_pair: 1,
+                      dating_attach_conversation: 1,
                       get_auto_replies: 1,
                       update_auto_replies: 1,
                       claim_auto_reply: 1
@@ -104,6 +122,15 @@ defmodule SharedInfra.UserClient do
   def get_nearby_settings(attrs), do: adapter().get_nearby_settings(attrs)
   def update_nearby_settings(attrs), do: adapter().update_nearby_settings(attrs)
   def admit_ble_targets(attrs), do: adapter().admit_ble_targets(attrs)
+  def get_dating_profile(attrs), do: adapter().get_dating_profile(attrs)
+  def update_dating_profile(attrs), do: adapter().update_dating_profile(attrs)
+  def dating_deck(attrs), do: adapter().dating_deck(attrs)
+  def dating_swipe(attrs), do: adapter().dating_swipe(attrs)
+  def dating_likes(attrs), do: adapter().dating_likes(attrs)
+  def dating_matches(attrs), do: adapter().dating_matches(attrs)
+  def dating_unmatch(attrs), do: adapter().dating_unmatch(attrs)
+  def dating_unmatch_pair(attrs), do: adapter().dating_unmatch_pair(attrs)
+  def dating_attach_conversation(attrs), do: adapter().dating_attach_conversation(attrs)
   def get_auto_replies(attrs), do: adapter().get_auto_replies(attrs)
   def update_auto_replies(attrs), do: adapter().update_auto_replies(attrs)
   def claim_auto_reply(attrs), do: adapter().claim_auto_reply(attrs)

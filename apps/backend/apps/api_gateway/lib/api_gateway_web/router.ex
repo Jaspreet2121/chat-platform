@@ -249,6 +249,20 @@ defmodule ApiGatewayWeb.Router do
     patch "/", AutoReplyController, :update
   end
 
+  # Dating (105) — a separate opt-in section with its own card; profile + chosen location, deck,
+  # swipes, visible likes, matches. Unmatch keeps the conversation (recorded decision).
+  scope "/api/v1/dating", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/profile", DatingController, :profile
+    patch "/profile", DatingController, :update_profile
+    get "/deck", DatingController, :deck
+    post "/swipes", DatingController, :swipe
+    get "/likes", DatingController, :likes
+    get "/matches", DatingController, :matches
+    delete "/matches/:match_id", DatingController, :unmatch
+  end
+
   scope "/api/v1/nearby", ApiGatewayWeb do
     pipe_through :api
 

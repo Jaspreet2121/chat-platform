@@ -88,6 +88,33 @@ defmodule UserService.UserClientInProcess do
   def admit_ble_targets(attrs), do: UserService.Nearby.admit_ble_targets(attrs)
 
   @impl true
+  def get_dating_profile(attrs), do: UserService.Dating.get_profile(attrs)
+
+  @impl true
+  def update_dating_profile(attrs), do: UserService.Dating.update_profile(attrs)
+
+  @impl true
+  def dating_deck(attrs), do: UserService.Dating.deck(attrs)
+
+  @impl true
+  def dating_swipe(attrs), do: UserService.Dating.swipe(attrs)
+
+  @impl true
+  def dating_likes(attrs), do: UserService.Dating.likes(attrs)
+
+  @impl true
+  def dating_matches(attrs), do: UserService.Dating.matches(attrs)
+
+  @impl true
+  def dating_unmatch(attrs), do: UserService.Dating.unmatch(attrs)
+
+  @impl true
+  def dating_unmatch_pair(attrs), do: UserService.Dating.unmatch_pair(attrs)
+
+  @impl true
+  def dating_attach_conversation(attrs), do: UserService.Dating.attach_match_conversation(attrs)
+
+  @impl true
   def get_auto_replies(attrs), do: UserService.AutoReplies.get_settings(attrs)
 
   @impl true
