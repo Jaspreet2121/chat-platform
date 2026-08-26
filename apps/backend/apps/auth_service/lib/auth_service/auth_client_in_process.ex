@@ -95,6 +95,12 @@ defmodule AuthService.AuthClientInProcess do
   def rename_app(attrs), do: AuthService.Apps.rename_app(attrs)
 
   @impl true
+  def save_device_keys(attrs), do: AuthService.DeviceKeys.save_keys(attrs)
+
+  @impl true
+  def fetch_device_keys(attrs), do: AuthService.DeviceKeys.fetch_keys(attrs)
+
+  @impl true
   def list_apps(attrs), do: AuthService.Apps.list_apps(attrs)
 
   @impl true

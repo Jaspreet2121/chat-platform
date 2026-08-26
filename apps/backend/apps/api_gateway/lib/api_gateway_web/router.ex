@@ -249,6 +249,15 @@ defmodule ApiGatewayWeb.Router do
     patch "/", AutoReplyController, :update
   end
 
+  # Device public keys (107) — the offline-messaging foundation. Upload binds to the SESSION's
+  # device; fetch is membership-gated at the store.
+  scope "/api/v1/keys", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/device", KeyController, :upload
+    get "/users", KeyController, :users
+  end
+
   # Dating (105) — a separate opt-in section with its own card; profile + chosen location, deck,
   # swipes, visible likes, matches. Unmatch keeps the conversation (recorded decision).
   scope "/api/v1/dating", ApiGatewayWeb do

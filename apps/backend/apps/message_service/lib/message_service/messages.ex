@@ -224,39 +224,186 @@ defmodule MessageService.Messages do
     with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
          {:ok, sender_user_id} <- required_attr(attrs, "sender_user_id"),
          {:ok, message_type} <- required_attr(attrs, "message_type"),
+         {:ok, client_msg_id} <- client_msg_id(attrs),
          {:ok, media_id} <- media_id(attrs, message_type),
          {:ok, caption} <- caption(attrs, message_type),
          {:ok, body} <- message_body(attrs, message_type, caption),
          {:ok, metadata} <- metadata(attrs, message_type, media_id, caption) do
       created_at = now()
-      metadata = apply_forward_depth(metadata, attrs)
 
-      message_attrs = %{
-        "conversation_id" => conversation_id,
-        "bucket_date" => bucket_date(created_at),
-        "message_id" => generate_timeuuid(),
-        "sender_user_id" => sender_user_id,
-        "message_type" => message_type,
-        "body" => body,
-        "media_id" => media_id,
-        "reply_to_message_id" => get_attr(attrs, "reply_to_message_id"),
-        "status" => "active",
-        "metadata" => metadata,
-        "created_at" => created_at,
-        "edited_at" => nil,
-        "deleted_at" => nil
-      }
+      with {:ok, metadata} <- decorate_metadata(metadata, attrs, created_at) do
+        # IDEMPOTENT SEND (107): with a client_msg_id, claim-before-create in the Postgres ledger —
+        # a duplicate returns the FIRST write's message as a SUCCESS and touches nothing downstream
+        # (no store write, no outbox staging, no publish — those all live below this branch).
+        # Without one, byte-identical to the pre-107 path.
+        case claim_client_msg(conversation_id, sender_user_id, client_msg_id) do
+          {:existing, message} ->
+            {:ok, message_response(message)}
 
-      case MessageStore.put_message(message_attrs) do
-        {:ok, message} ->
-          response = message_response(message) |> with_fresh_poll(message_type, metadata)
-          publish_message_created(response)
-          {:ok, response}
+          {:new, message_id} ->
+            message_attrs = %{
+              "conversation_id" => conversation_id,
+              "bucket_date" => bucket_date(created_at),
+              "message_id" => message_id,
+              "sender_user_id" => sender_user_id,
+              "message_type" => message_type,
+              "body" => body,
+              "media_id" => media_id,
+              "reply_to_message_id" => get_attr(attrs, "reply_to_message_id"),
+              "status" => "active",
+              "metadata" => apply_forward_depth(metadata, attrs),
+              "created_at" => created_at,
+              "edited_at" => nil,
+              "deleted_at" => nil
+            }
 
-        {:error, reason} ->
-          {:error, reason}
+            case MessageStore.put_message(message_attrs) do
+              {:ok, message} ->
+                response = message_response(message) |> with_fresh_poll(message_type, metadata)
+                publish_message_created(response)
+                {:ok, response}
+
+              {:error, reason} ->
+                {:error, reason}
+            end
+        end
       end
     end
+  end
+
+  # ---- offline foundation (107) -----------------------------------------------------------------
+
+  defp client_msg_id(attrs) do
+    case get_attr(attrs, "client_msg_id") do
+      nil ->
+        {:ok, nil}
+
+      value when is_binary(value) ->
+        case Ecto.UUID.cast(value) do
+          {:ok, normalized} -> {:ok, normalized}
+          :error -> {:error, :message_invalid}
+        end
+
+      _ ->
+        {:error, :message_invalid}
+    end
+  end
+
+  # composed_at (client compose time, CLAMPED to [now-7d, now]) is surfaced in metadata for display
+  # ONLY. SERVER ORDERING STAYS BY SERVER RECEIPT — the message_id is the server-minted timeuuid and
+  # Scylla clusters by it; history is NEVER reordered by client clocks (a device with a wrong clock,
+  # or a week-old offline backlog syncing in, must not rewrite everyone's timeline). The offline
+  # delivery hint becomes the {"offline": true} metadata marker (the existing content-kind
+  # convention) — everything downstream sees a perfectly normal message.
+  defp decorate_metadata(metadata, attrs, created_at) do
+    with {:ok, metadata} <-
+           apply_composed_at(metadata, get_attr(attrs, "composed_at"), created_at) do
+      if get_attr(attrs, "delivery_hint") == "nearby_sync" do
+        {:ok, Map.put(metadata, "offline", true)}
+      else
+        {:ok, metadata}
+      end
+    end
+  end
+
+  defp apply_composed_at(metadata, nil, _created_at), do: {:ok, metadata}
+
+  defp apply_composed_at(metadata, value, created_at) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, composed, _offset} ->
+        {:ok,
+         Map.put(
+           metadata,
+           "composed_at",
+           composed |> clamp_composed_at(created_at) |> DateTime.to_iso8601()
+         )}
+
+      _ ->
+        {:error, :message_invalid}
+    end
+  end
+
+  defp apply_composed_at(_metadata, _value, _created_at), do: {:error, :message_invalid}
+
+  @doc false
+  # Public (doc false) for the pure boundary tests: clamp into [now - 7d, now].
+  def clamp_composed_at(%DateTime{} = composed, %DateTime{} = now) do
+    floor = DateTime.add(now, -7 * 86_400, :second)
+
+    cond do
+      DateTime.compare(composed, floor) == :lt -> floor
+      DateTime.compare(composed, now) == :gt -> now
+      true -> composed
+    end
+  end
+
+  # nil client id → a fresh server timeuuid, exactly the pre-107 behaviour.
+  defp claim_client_msg(_conversation_id, _sender_user_id, nil), do: {:new, generate_timeuuid()}
+
+  defp claim_client_msg(conversation_id, sender_user_id, client_msg_id) do
+    app_id =
+      MessageService.WebhookEvents.conversation_app_id(conversation_id) ||
+        SharedInfra.Tenancy.default_app_id()
+
+    fresh_id = generate_timeuuid()
+
+    {:ok, outcome} =
+      MessageService.Repo.transaction(fn ->
+        # Serializes only this (conversation, sender, client id) tuple — the claim precedent.
+        MessageService.Repo.query!(
+          "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2 || ':' || $3, 0))",
+          [conversation_id, sender_user_id, client_msg_id]
+        )
+
+        # Opportunistic 30d sweep (indexed range; the ledger is dedup state, not history).
+        MessageService.Repo.query!(
+          "DELETE FROM message_client_ids WHERE created_at < now() - interval '30 days'",
+          []
+        )
+
+        %{rows: rows} =
+          MessageService.Repo.query!(
+            "SELECT message_id::text FROM message_client_ids " <>
+              "WHERE app_id = $1::text::uuid AND conversation_id = $2::text::uuid " <>
+              "AND sender_user_id = $3::text::uuid AND client_msg_id = $4::text::uuid",
+            [app_id, conversation_id, sender_user_id, client_msg_id]
+          )
+
+        case rows do
+          [[existing_id]] ->
+            # A claim whose message never landed (a crashed create) self-heals: re-point the claim
+            # at a fresh id and create anew — still under the lock, so concurrent retries serialize.
+            case MessageStore.get_message(%{
+                   "conversation_id" => conversation_id,
+                   "message_id" => existing_id
+                 }) do
+              {:ok, message} ->
+                {:existing, message}
+
+              _ ->
+                MessageService.Repo.query!(
+                  "UPDATE message_client_ids SET message_id = $5::text::uuid, created_at = now() " <>
+                    "WHERE app_id = $1::text::uuid AND conversation_id = $2::text::uuid " <>
+                    "AND sender_user_id = $3::text::uuid AND client_msg_id = $4::text::uuid",
+                  [app_id, conversation_id, sender_user_id, client_msg_id, fresh_id]
+                )
+
+                {:new, fresh_id}
+            end
+
+          [] ->
+            MessageService.Repo.query!(
+              "INSERT INTO message_client_ids " <>
+                "(app_id, conversation_id, sender_user_id, client_msg_id, message_id) " <>
+                "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5::text::uuid)",
+              [app_id, conversation_id, sender_user_id, client_msg_id, fresh_id]
+            )
+
+            {:new, fresh_id}
+        end
+      end)
+
+    outcome
   end
 
   # The block-drop ack: a CANONICAL message (byte-identical shape to a real create's message_response, per

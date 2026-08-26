@@ -90,6 +90,12 @@ defmodule SharedInfra.AuthClientHttp do
   def rename_app(attrs), do: post("/internal/apps/rename", attrs)
 
   @impl true
+  def save_device_keys(attrs), do: post("/internal/device_keys/save", attrs)
+
+  @impl true
+  def fetch_device_keys(attrs), do: post("/internal/device_keys/fetch", attrs)
+
+  @impl true
   def list_apps(attrs), do: post("/internal/apps/list", attrs)
 
   @impl true

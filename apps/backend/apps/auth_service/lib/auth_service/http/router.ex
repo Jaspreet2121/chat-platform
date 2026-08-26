@@ -91,6 +91,14 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Apps.create_app(body(conn)))
   end
 
+  post "/internal/device_keys/save" do
+    send_result(conn, AuthService.DeviceKeys.save_keys(body(conn)))
+  end
+
+  post "/internal/device_keys/fetch" do
+    send_result(conn, AuthService.DeviceKeys.fetch_keys(body(conn)))
+  end
+
   post "/internal/apps/rename" do
     send_result(conn, AuthService.Apps.rename_app(body(conn)))
   end
