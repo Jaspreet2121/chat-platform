@@ -1,4 +1,5 @@
-import { ArrowLeft, MoreVertical, Phone, Video } from "lucide-react";
+import { ArrowLeft, Lock, MoreVertical, Phone, ShieldCheck, Video } from "lucide-react";
+import { useState } from "react";
 import { Avatar, IconButton } from "@/components";
 
 export type ChatHeaderProps = {
@@ -20,6 +21,12 @@ export type ChatHeaderProps = {
   onStartCall?: () => void;
   /** DM-only: start a 1:1 video call. When set, the video icon becomes a live call button (Phase 2). */
   onStartVideoCall?: () => void;
+  /** 108: true for a secret (E2EE) conversation — shows the lock + hides "Turn on encryption". */
+  secret?: boolean;
+  /** 108: DM-only — offer "Turn on encryption" (opens the confirm sheet in the page). */
+  onTurnOnEncryption?: () => void;
+  /** 108: open the safety-number screen (secret chats only). */
+  onOpenSafetyNumbers?: () => void;
 };
 
 export function ChatHeader({
@@ -33,8 +40,12 @@ export function ChatHeader({
   onOpenDetails,
   online,
   onStartCall,
-  onStartVideoCall
+  onStartVideoCall,
+  secret,
+  onTurnOnEncryption,
+  onOpenSafetyNumbers
 }: ChatHeaderProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
   return (
     <header className="flex items-center gap-1.5 border-b border-border bg-surface px-2 py-2.5 sm:px-4">
       {onBack && (
@@ -101,17 +112,94 @@ export function ChatHeader({
               <Video className="h-[18px] w-[18px]" />
             </span>
           )}
-          <IconButton
-            label="Conversation details"
-            variant="ghost"
-            onClick={onOpenDetails}
-            type="button"
-            disabled={!onOpenDetails}
-          >
-            <MoreVertical className="h-5 w-5" aria-hidden />
-          </IconButton>
+          {secret ? (
+            <span
+              className="hidden h-9 items-center gap-1 rounded-lg bg-brand-subtle/40 px-2 text-[11px] font-medium text-brand-hover sm:inline-flex"
+              title="End-to-end encrypted"
+            >
+              <Lock className="h-3.5 w-3.5" aria-hidden />
+              Encrypted
+            </span>
+          ) : null}
+          <div className="relative">
+            <IconButton
+              label="Conversation options"
+              variant="ghost"
+              onClick={() => setMenuOpen((open) => !open)}
+              type="button"
+            >
+              <MoreVertical className="h-5 w-5" aria-hidden />
+            </IconButton>
+            {menuOpen ? (
+              <>
+                <button
+                  type="button"
+                  aria-hidden
+                  tabIndex={-1}
+                  className="fixed inset-0 z-30 cursor-default"
+                  onClick={() => setMenuOpen(false)}
+                />
+                <div className="absolute right-0 top-11 z-40 w-56 rounded-xl border border-border bg-surface p-1 shadow-elevated">
+                  {onOpenDetails ? (
+                    <MenuItem
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onOpenDetails();
+                      }}
+                    >
+                      Conversation details
+                    </MenuItem>
+                  ) : null}
+                  {secret ? (
+                    onOpenSafetyNumbers ? (
+                      <MenuItem
+                        icon={<ShieldCheck className="h-4 w-4" aria-hidden />}
+                        onClick={() => {
+                          setMenuOpen(false);
+                          onOpenSafetyNumbers();
+                        }}
+                      >
+                        Safety numbers
+                      </MenuItem>
+                    ) : null
+                  ) : onTurnOnEncryption ? (
+                    <MenuItem
+                      icon={<Lock className="h-4 w-4" aria-hidden />}
+                      onClick={() => {
+                        setMenuOpen(false);
+                        onTurnOnEncryption();
+                      }}
+                    >
+                      Turn on encryption
+                    </MenuItem>
+                  ) : null}
+                </div>
+              </>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </header>
+  );
+}
+
+function MenuItem({
+  children,
+  icon,
+  onClick
+}: {
+  children: React.ReactNode;
+  icon?: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-fg hover:bg-elevated"
+    >
+      {icon}
+      {children}
+    </button>
   );
 }

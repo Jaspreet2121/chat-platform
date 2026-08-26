@@ -7,12 +7,16 @@ const defaultRealtimeUrl = "ws://localhost:4000/socket";
 export type ConversationChannel = {
   channel: Channel;
   sendMessage: (payload: {
-    message_type: "text" | "media" | "location" | "live_location";
+    message_type: "text" | "media" | "location" | "live_location" | "sealed";
     body?: string;
     media_id?: string;
     caption?: string;
     metadata?: Record<string, unknown>;
     reply_to_message_id?: string;
+    // 108: sealed E2EE payload + the 107 dedup id (only when message_type === "sealed").
+    sealed?: Record<string, unknown>;
+    client_msg_id?: string;
+    composed_at?: string;
   }) => Promise<unknown>;
   editMessage: (messageId: string, body: string) => Promise<unknown>;
   deleteMessage: (messageId: string) => Promise<unknown>;
@@ -205,6 +209,8 @@ export type UserChannel = {
   onCall: (event: CallServerEvent, callback: (payload: CallEventPayload) => void) => () => void;
   /** Dating (105): dating_matched / dating_like_received / dating_unmatched / dating_profile_changed. */
   onDating: (event: DatingServerEvent, callback: (payload: DatingEventPayload) => void) => () => void;
+  /** 108: a 1:1 turned on encryption — refresh the conversation so the composer switches to sealed. */
+  onEncryptionChanged: (callback: (payload: { conversation_id?: string }) => void) => () => void;
   /** Push a call:* control event; `call:invite` resolves with the `{ call_id, room }` ack. */
   pushCall: (event: CallClientEvent, payload: Record<string, unknown>) => Promise<unknown>;
   leave: () => void;
@@ -266,6 +272,8 @@ export function joinUserChannel(socket: Socket, userId: string): Promise<UserCha
           onSessionRevoked: (callback) => subscribe(channel, "session_revoked", callback),
           onCall: (event, callback) => subscribe(channel, event, callback),
           onDating: (event, callback) => subscribe(channel, event, callback),
+          onEncryptionChanged: (callback) =>
+            subscribe(channel, "conversation_encryption_changed", callback),
           pushCall: (event, payload) => push(channel, event, payload),
           leave: () => {
             stopHeartbeat();

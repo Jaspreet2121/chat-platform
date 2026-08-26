@@ -18,8 +18,7 @@ import {
   Trash2,
   Users,
   Video,
-  X
-} from "lucide-react";
+  X, Lock, ShieldAlert} from "lucide-react";
 import type { Message } from "@/lib/api";
 import { getMediaDownloadUrl } from "@/lib/api";
 import { Avatar } from "@/components";
@@ -42,6 +41,8 @@ const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 export type MessageBubbleProps = {
   message: Message;
   isOwn: boolean;
+  /** 108: for a sealed message, the decrypted result (or a stub) — computed by the chat page. */
+  sealedDecryption?: { ok: boolean; body?: string } | null;
   /** Briefly flash this message (e.g. after jumping to it from a search/starred result). */
   isHighlighted?: boolean;
   /** In a grouped run, the avatar is shown once in the group header — hide the per-bubble avatar. */
@@ -80,7 +81,8 @@ export function MessageBubble({
   onRemoveReaction,
   onStar,
   onUnstar,
-  onStopLiveLocation
+  onStopLiveLocation,
+  sealedDecryption
 }: MessageBubbleProps) {
   // Resolve the sender's profile (cached, deduped) to show their real avatar on others' messages.
   const senderProfile = useUserProfile(isOwn ? null : message.sender_user_id);
@@ -245,7 +247,58 @@ export function MessageBubble({
   // Missed-call entry (Slice-5b): a minimal, non-interactive system pill — NO bubble chrome, reactions,
   // edit, or read-ticks. Aligned by sender (own = right) like a normal message, red accent, phone/video
   // icon + label from metadata. (All hooks above have already run, so this early return is hook-safe.)
-  if (message.message_type === "call") {
+  // 108: ENCRYPTION SYSTEM MESSAGES — a centred pill, no bubble chrome. "enabled" and
+  // "keys_changed" (Security code changed) are the only kinds today.
+  if (message.message_type === "system" && metadataString(message.metadata, "kind") === "encryption") {
+    const state = metadataString(message.metadata, "state");
+    const label = state === "keys_changed" ? "Security code changed" : "Encryption enabled";
+    const Icon = state === "keys_changed" ? ShieldAlert : Lock;
+    return (
+      <div className="flex justify-center px-1 py-1">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-brand-subtle/40 px-3 py-1 text-[11px] font-medium text-brand-hover">
+          <Icon className="h-3 w-3 shrink-0" aria-hidden />
+          {label}
+        </span>
+      </div>
+    );
+  }
+
+  // 108: SEALED messages — render the DECRYPTED body as a normal text bubble with a lock badge, or
+  // an inline stub. Never crash the list on an undecryptable message.
+  if (message.message_type === "sealed") {
+    const decrypted = sealedDecryption;
+    const failed = decrypted && !decrypted.ok;
+    return (
+      <div className={cn("flex px-1 py-0.5", isOwn ? "justify-end" : "justify-start")}>
+        <div
+          className={cn(
+            "max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-subtle",
+            isOwn ? "bg-brand text-white" : "bg-elevated text-fg",
+            failed && "italic opacity-70"
+          )}
+        >
+          {decrypted?.ok ? (
+            <p className="whitespace-pre-wrap break-words">
+              <LinkifiedText text={decrypted.body ?? ""} />
+            </p>
+          ) : failed ? (
+            <p className="whitespace-pre-wrap break-words">
+              {"Couldn't decrypt this message"}
+            </p>
+          ) : (
+            <p className="opacity-60">Decrypting…</p>
+          )}
+          <span className={cn("mt-0.5 flex items-center gap-1 text-[10px]", isOwn ? "text-white/70" : "text-faint")}>
+            <Lock className="h-2.5 w-2.5" aria-hidden />
+            {formatTime(message.created_at)}
+            {isOwn ? <ReadTicks message={message} inline /> : null}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+    if (message.message_type === "call") {
     const isVideoCall = metadataString(message.metadata, "call_type") === "video";
     const isGroupCall = metadataString(message.metadata, "call_kind") === "group";
     const CallIcon = isGroupCall ? Users : isVideoCall ? Video : Phone;

@@ -102,6 +102,8 @@ export type ConversationDetail = {
   only_admins_can_send?: boolean;
   // Who may start a group call — "everyone" (default) or "admins_only" (server-enforced; Phase 3).
   call_start_permission?: "everyone" | "admins_only";
+  // 108: secret (E2EE) conversation — composer sends sealed, header shows the lock.
+  secret?: boolean;
   participants?: Array<{
     user_id: string;
     role: string;
@@ -1615,5 +1617,73 @@ export function deleteDatingMatch(matchId: string) {
   return request<{ unmatched: boolean }>(
     `/api/v1/dating/matches/${encodeURIComponent(matchId)}`,
     { method: "DELETE" }
+  );
+}
+
+// ---- Secret chats / device keys (107 + 108) -----------------------------------------------------
+
+export type DeviceKey = {
+  device_id: string;
+  platform: string | null;
+  ed25519_public: string;
+  x25519_public: string;
+  key_fingerprint: string;
+  updated_at: string;
+};
+
+export type UserDeviceKeys = { user_id: string; devices: DeviceKey[] };
+
+/** POST /api/v1/keys/device — upload/rotate THIS browser's public keys (base64 32-byte each). */
+export function uploadDeviceKeys(input: { ed25519_public: string; x25519_public: string }) {
+  return request<{ saved: boolean; changed?: boolean }>("/api/v1/keys/device", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+/** GET /api/v1/keys/users?ids= — membership-gated device keys for the safety screen + sealing. */
+export function fetchUserKeys(userIds: string[]) {
+  const qs = new URLSearchParams({ ids: userIds.join(",") });
+  return request<{ users: UserDeviceKeys[] }>(`/api/v1/keys/users?${qs.toString()}`).then(
+    (r) => r.users ?? []
+  );
+}
+
+/** POST /api/v1/conversations/{id}/encryption — turn on E2EE (1:1, one-way). */
+export function enableEncryption(conversationId: string) {
+  return request<{ enabled: boolean }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/encryption`,
+    { method: "POST", body: JSON.stringify({ enabled: true }) }
+  );
+}
+
+export type SealedRecipientWire = { device_id: string; envelope_b64: string };
+
+export type SealedWire = {
+  v: 1;
+  alg: string;
+  sender_device_id: string;
+  sig_b64: string;
+  recipients: SealedRecipientWire[];
+};
+
+/** POST a sealed message. client_msg_id is required by the server (the 107 dedup). */
+export function sendSealedMessage(input: {
+  conversationId: string;
+  clientMsgId: string;
+  composedAt: string;
+  sealed: SealedWire;
+}) {
+  return request<Message>(
+    `/api/v1/conversations/${encodeURIComponent(input.conversationId)}/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        message_type: "sealed",
+        client_msg_id: input.clientMsgId,
+        composed_at: input.composedAt,
+        sealed: input.sealed
+      })
+    }
   );
 }

@@ -27,6 +27,8 @@ export type ComposerProps = {
   onSendVoice: (file: File) => Promise<void>;
   /** Share the user's current location as a location message (geolocation → lat/lng). */
   onShareLocation?: () => void;
+  /** 108: in a secret chat, attachments aren't supported yet — disable "+" with a note. */
+  attachmentsDisabled?: boolean;
 };
 
 export function Composer({
@@ -38,6 +40,7 @@ export function Composer({
   isSending,
   selectedFile,
   onPickFile,
+  attachmentsDisabled,
   onFileChange,
   onClearFile,
   mediaStatus,
@@ -261,7 +264,8 @@ export function Composer({
             <IconButton
               label="Add an attachment"
               variant="ghost"
-              disabled={!hasConversation || isSending}
+              disabled={!hasConversation || isSending || attachmentsDisabled}
+              title={attachmentsDisabled ? "Not available in encrypted chats yet" : undefined}
               onClick={() => setAttachOpen((v) => !v)}
               type="button"
               aria-expanded={attachOpen}

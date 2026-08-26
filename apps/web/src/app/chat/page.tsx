@@ -14,6 +14,7 @@ import {
   createMessage,
   deleteMessage,
   editMessage,
+  ApiRequestError,
   getConversation,
   getCurrentSession,
   getMe,
@@ -41,6 +42,8 @@ import type { Socket } from "phoenix";
 import {
   ChatHeader,
   Composer,
+  EncryptionConfirmSheet,
+  SafetyNumberModal,
   ConversationDetailsPanel,
   ConversationSidebar,
   MessageList,
@@ -56,6 +59,13 @@ import {
 } from "@/components/chat";
 import { primeUserProfile, useUserProfile } from "@/components/chat/useUserProfile";
 import { pickDirectPeer, primeConversationDetail } from "@/components/chat/useDirectPeer";
+import {
+  decryptMessage,
+  registerDeviceKeys,
+  sendSecretText,
+  turnOnEncryption,
+  type DecryptOutcome
+} from "@/lib/e2ee/secretChat";
 import { cn } from "@/lib/cn";
 import imageCompression from "browser-image-compression";
 import { reuploadMediaForForward } from "@/lib/forward";
@@ -112,6 +122,12 @@ export default function ChatPage() {
     useState<ConversationDetail | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [channel, setChannel] = useState<ConversationChannel | null>(null);
+  // 108: message_id → decrypted sealed result (or stub), rebuilt in-memory (no plaintext at rest).
+  const [sealedDecryptions, setSealedDecryptions] = useState<Map<string, DecryptOutcome>>(new Map());
+  const [encryptSheetOpen, setEncryptSheetOpen] = useState(false);
+  const [encryptBusy, setEncryptBusy] = useState(false);
+  const [encryptError, setEncryptError] = useState<string | null>(null);
+  const [safetyOpen, setSafetyOpen] = useState(false);
   // Stable handle to the current channel for long-lived callbacks (the live-location watch outlives a
   // single render). Updated in the channel effect (not during render).
   const channelRef = useRef<ConversationChannel | null>(null);
@@ -183,7 +199,33 @@ export default function ChatPage() {
   // reflects who has THIS conversation open, not global online state. Reset on conversation switch.
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
 
-  const selectedTitle = useMemo(() => {
+  // 108: decrypt sealed messages as they appear (in-memory LRU inside secretChat; here we mirror
+  // the outcome into render state). Runs off the message list; never blocks it.
+  useEffect(() => {
+    const pending = messages.filter(
+      (m) => m.message_type === "sealed" && !sealedDecryptions.has(m.message_id)
+    );
+    if (pending.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      const resolved = await Promise.all(
+        pending.map(async (m) => [m.message_id, await decryptMessage(m)] as const)
+      );
+      if (cancelled) return;
+      setSealedDecryptions((current) => {
+        const next = new Map(current);
+        for (const [id, outcome] of resolved) next.set(id, outcome);
+        return next;
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [messages, sealedDecryptions]);
+
+    const selectedTitle = useMemo(() => {
     return selectedConversation?.title || selectedConversationId || "Select a conversation";
   }, [selectedConversation?.title, selectedConversationId]);
 
@@ -193,6 +235,10 @@ export default function ChatPage() {
         const currentSession = await getCurrentSession();
         setSession(currentSession);
         setStatus(`Signed in as ${currentSession.user_id}`);
+
+        // 108: register this browser's E2EE public keys (best-effort, retried) so peers can seal to
+        // us. Never blocks login.
+        void registerDeviceKeys().catch(() => undefined);
 
         getMe()
           .then((profile) => {
@@ -597,14 +643,26 @@ export default function ChatPage() {
     const replyToId = replyingTo?.message_id;
 
     try {
-      const message = selectedFile
-        ? await uploadAndSendMediaMessage(selectedFile, body, replyToId)
-        : await sendCreate({
-            conversationId: selectedConversationId,
-            messageType: "text",
-            body,
-            replyToMessageId: replyToId
-          });
+      // 108: a secret conversation ALWAYS sends sealed (the guard makes plaintext unreachable here);
+      // attachments are refused in the composer, so a secret send is text-only.
+      const message =
+        selectedConversation?.secret === true
+          ? await sendSecretText({
+              conversationId: selectedConversationId,
+              memberIds: (selectedConversation?.participants ?? [])
+                .filter((p) => !p.left_at)
+                .map((p) => p.user_id),
+              senderUserId: session?.user_id ?? "",
+              body
+            })
+          : selectedFile
+            ? await uploadAndSendMediaMessage(selectedFile, body, replyToId)
+            : await sendCreate({
+                conversationId: selectedConversationId,
+                messageType: "text",
+                body,
+                replyToMessageId: replyToId
+              });
 
       setMessages((current) => mergeMessage(current, message));
       bumpConversationActivity(message);
@@ -1255,6 +1313,34 @@ export default function ChatPage() {
   const directPeerProfile = useUserProfile(directPeerId);
   // Direct-chat title = the OTHER person. NEVER fall back to selectedConversation.title: for a direct
   // chat the stored title is the creator-set peer name, so on the RECIPIENT's side it's their OWN name.
+  // 108: turn on encryption for the selected 1:1. Registers keys, calls the server, refreshes the
+  // conversation so the composer switches to sealed. Maps the peer-keys-missing error to guidance.
+  async function handleTurnOnEncryption() {
+    if (!selectedConversationId) return;
+    setEncryptBusy(true);
+    setEncryptError(null);
+    try {
+      await turnOnEncryption(selectedConversationId);
+      const detail = await getConversation(selectedConversationId);
+      setSelectedConversation(detail);
+      setEncryptSheetOpen(false);
+      setStatus("Encryption is on for this chat.");
+    } catch (error) {
+      const code = error instanceof ApiRequestError ? error.code : undefined;
+      setEncryptError(
+        code === "secret.peer_keys_missing"
+          ? "Ask them to open Skifi once so their keys register, then try again."
+          : code === "secret.not_supported"
+            ? "Encryption is only available in 1:1 chats."
+            : error instanceof Error
+              ? error.message
+              : "Couldn't turn on encryption."
+      );
+    } finally {
+      setEncryptBusy(false);
+    }
+  }
+
   // Use the peer's live display_name, else a stable handle from their id — never self.
   const headerTitle = selectedIsDirect
     ? directPeerProfile?.display_name?.trim() ||
@@ -1327,6 +1413,7 @@ export default function ChatPage() {
     if (!session?.user_id) return;
     let isActive = true;
     let unsubscribe: (() => void) | null = null;
+    let encryptionUnsub: (() => void) | null = null;
     let leave: (() => void) | null = null;
 
     (async () => {
@@ -1369,6 +1456,16 @@ export default function ChatPage() {
           setToasts([{ id: `${message.message_id}:${Date.now()}`, message }]);
           if (notificationSoundEnabled()) playNotificationBlip();
         });
+
+        // 108: a 1:1 turned on encryption elsewhere — refresh THIS conversation if it's the one
+        // open, so the composer switches to sealed and the lock appears.
+        encryptionUnsub = joined.onEncryptionChanged((payload) => {
+          if (payload?.conversation_id && payload.conversation_id === selectedConversationRef.current) {
+            void getConversation(payload.conversation_id)
+              .then(setSelectedConversation)
+              .catch(() => undefined);
+          }
+        });
       } catch {
         // Notifications are best-effort — chat works without the user topic.
       }
@@ -1377,6 +1474,7 @@ export default function ChatPage() {
     return () => {
       isActive = false;
       unsubscribe?.();
+      encryptionUnsub?.();
       leave?.();
       setUserChannel(null);
     };
@@ -1601,6 +1699,20 @@ export default function ChatPage() {
           onOpenDetails={() => setIsDetailsOpen(true)}
           onStartCall={onStartVoice}
           onStartVideoCall={onStartVideo}
+          secret={selectedConversation?.secret === true}
+          onTurnOnEncryption={
+            selectedIsDirect && selectedConversation?.secret !== true
+              ? () => {
+                  setEncryptError(null);
+                  setEncryptSheetOpen(true);
+                }
+              : undefined
+          }
+          onOpenSafetyNumbers={
+            selectedConversation?.secret === true && directPeerId
+              ? () => setSafetyOpen(true)
+              : undefined
+          }
         />
 
         {/* Live "join group call" banner (Slice C1) — only for a group thread with an ongoing call the
@@ -1610,6 +1722,7 @@ export default function ChatPage() {
         ) : null}
 
         <MessageList
+          sealedDecryptions={sealedDecryptions}
           messages={messages}
           isDirect={selectedIsDirect}
           currentUserId={session?.user_id}
@@ -1633,6 +1746,7 @@ export default function ChatPage() {
           onSubmit={handleSend}
           hasConversation={Boolean(selectedConversationId)}
           lockedNote={composerLockedNote}
+          attachmentsDisabled={selectedConversation?.secret === true}
           isSending={isSending}
           selectedFile={selectedFile}
           onPickFile={() => fileInputRef.current?.click()}
@@ -1738,6 +1852,22 @@ export default function ChatPage() {
         />
       ) : null}
       </div>
+      {encryptSheetOpen ? (
+        <EncryptionConfirmSheet
+          busy={encryptBusy}
+          error={encryptError}
+          onConfirm={() => void handleTurnOnEncryption()}
+          onCancel={() => setEncryptSheetOpen(false)}
+        />
+      ) : null}
+
+      {safetyOpen && directPeerId ? (
+        <SafetyNumberModal
+          peerUserId={directPeerId}
+          peerName={headerTitle}
+          onClose={() => setSafetyOpen(false)}
+        />
+      ) : null}
     </main>
     </CallProvider>
   );

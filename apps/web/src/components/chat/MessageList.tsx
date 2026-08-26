@@ -82,6 +82,8 @@ export type MessageListProps = {
   onStopLiveLocation?: (messageId: string) => void;
   /** A message to scroll to + highlight (from a search / starred result). The nonce re-triggers. */
   scrollTarget?: { id: string; n: number } | null;
+  /** 108: message_id → decrypted sealed result (or stub). */
+  sealedDecryptions?: Map<string, { ok: boolean; body?: string }>;
 };
 
 export function MessageList({
@@ -98,6 +100,7 @@ export function MessageList({
   onRemoveReaction,
   onStar,
   onUnstar,
+  sealedDecryptions,
   onStopLiveLocation,
   scrollTarget
 }: MessageListProps) {
@@ -238,6 +241,7 @@ export function MessageList({
               onStar={onStar}
               onUnstar={onUnstar}
               onStopLiveLocation={onStopLiveLocation}
+              sealedDecryptions={sealedDecryptions}
             />
           </div>
         );
@@ -263,6 +267,7 @@ type MessageGroupProps = {
   | "onStar"
   | "onUnstar"
   | "onStopLiveLocation"
+  | "sealedDecryptions"
 >;
 
 // One run of consecutive same-sender messages (WhatsApp grouping): in GROUP chats, others' runs get a
@@ -282,7 +287,8 @@ function MessageGroup({
   onRemoveReaction,
   onStar,
   onUnstar,
-  onStopLiveLocation
+  onStopLiveLocation,
+  sealedDecryptions
 }: MessageGroupProps) {
   const first = group[0];
   const isOwn = first.sender_user_id === currentUserId;
@@ -332,6 +338,7 @@ function MessageGroup({
             onStar={onStar}
             onUnstar={onUnstar}
             onStopLiveLocation={onStopLiveLocation}
+            sealedDecryption={sealedDecryptions?.get(message.message_id) ?? null}
           />
         ))}
       </div>

@@ -34,3 +34,7 @@ export { CallHistoryList } from "./CallHistoryList";
 export type { CallHistoryListProps } from "./CallHistoryList";
 export { NotificationToasts, notificationSoundEnabled, setNotificationSoundEnabled, playNotificationBlip } from "./NotificationToasts";
 export type { MessageToast } from "./NotificationToasts";
+export { EncryptionConfirmSheet } from "./EncryptionConfirmSheet";
+export type { EncryptionConfirmSheetProps } from "./EncryptionConfirmSheet";
+export { SafetyNumberModal } from "./SafetyNumberModal";
+export type { SafetyNumberModalProps } from "./SafetyNumberModal";
