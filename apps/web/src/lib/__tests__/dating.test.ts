@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { DatingCard, DatingMatchEntry } from "@/lib/api";
+import type { DatingCard, DatingMatchEntry, DatingTagCatalog, DatingTagsResponse } from "@/lib/api";
 import {
   DECK_PREFETCH_AT,
+  MAX_TURN_ONS,
   computeAge,
+  fetchTagCatalog,
+  partitionTurnOns,
+  prefsPayload,
+  sharedChips,
+  tagLabels,
+  toggleTurnOn,
   deckNeedsPrefetch,
   deckReducer,
   fallbackLocationName,
@@ -23,7 +30,10 @@ const card = (id: string): DatingCard => ({
   age: 25,
   bio: null,
   photos: [],
-  distance_km: 3
+  distance_km: 3,
+  intention: "open",
+  turn_ons: [],
+  shared_turn_ons: []
 });
 
 const match = (id: string): DatingMatchEntry => ({
@@ -37,6 +47,7 @@ const validDraft = (over: Partial<SetupDraft> = {}): SetupDraft => ({
   dob: "1999-01-01",
   gender: "woman",
   interestedIn: ["man"],
+  intention: "open",
   bio: "hi",
   photos: ["p1", "p2"],
   locationName: "Delhi",
@@ -69,6 +80,7 @@ describe("validateSetup", () => {
     expect(validateSetup(validDraft({ dob: "" }), TODAY).dob).toBeTruthy();
     expect(validateSetup(validDraft({ gender: "" }), TODAY).gender).toBeTruthy();
     expect(validateSetup(validDraft({ interestedIn: [] }), TODAY).interestedIn).toBeTruthy();
+    expect(validateSetup(validDraft({ intention: "" }), TODAY).intention).toBeTruthy();
     expect(validateSetup(validDraft({ photos: ["only-one"] }), TODAY).photos).toBeTruthy();
     expect(validateSetup(validDraft({ hasLocation: false }), TODAY).location).toBeTruthy();
     expect(validateSetup(validDraft({ bio: "x".repeat(501) }), TODAY).bio).toBeTruthy();
@@ -167,5 +179,152 @@ describe("matches reducer + realtime", () => {
 
     state = matchesReducer(state, { type: "unmatched", matchId: "m2" });
     expect(state.matches.map((m) => m.match_id)).toEqual(["m1"]);
+  });
+});
+
+// ---- v2 (106): catalog + tags ----
+
+const CATALOG: DatingTagCatalog = {
+  intentions: [
+    { key: "serious", label: "Serious relationship" },
+    { key: "open", label: "Open to either" }
+  ],
+  turn_ons: [
+    { key: "kissing", label: "Kissing", category: "romance" },
+    { key: "cuddling", label: "Cuddling", category: "romance" },
+    { key: "deep_talks", label: "Deep talks", category: "vibes" },
+    { key: "chai_dates", label: "Chai dates", category: "vibes" }
+  ]
+};
+
+function memoryStorage(initial: Record<string, string> = {}) {
+  const store = new Map(Object.entries(initial));
+  return {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => void store.set(key, value),
+    dump: () => store
+  };
+}
+
+describe("tag catalog ETag cache", () => {
+  const ok = (etag: string): DatingTagsResponse => ({ status: 200, etag, body: CATALOG });
+
+  it("200 stores etag+body; the next request sends If-None-Match and 304 serves the copy", async () => {
+    const storage = memoryStorage();
+    const seen: Array<string | null> = [];
+
+    const first = await fetchTagCatalog({
+      request: async (etag) => {
+        seen.push(etag);
+        return ok('"abc"');
+      },
+      storage
+    });
+    expect(first).toEqual(CATALOG);
+    expect(seen).toEqual([null]);
+
+    const second = await fetchTagCatalog({
+      request: async (etag) => {
+        seen.push(etag);
+        return { status: 304, etag: '"abc"', body: null };
+      },
+      storage
+    });
+    expect(second).toEqual(CATALOG);
+    expect(seen).toEqual([null, '"abc"']);
+  });
+
+  it("a failed refresh falls back to the stored copy; with nothing stored it throws", async () => {
+    const storage = memoryStorage();
+    await fetchTagCatalog({ request: async () => ok('"abc"'), storage });
+
+    const fallback = await fetchTagCatalog({
+      request: async () => {
+        throw new Error("offline");
+      },
+      storage
+    });
+    expect(fallback).toEqual(CATALOG);
+
+    await expect(
+      fetchTagCatalog({
+        request: async () => {
+          throw new Error("offline");
+        },
+        storage: memoryStorage()
+      })
+    ).rejects.toThrow();
+  });
+});
+
+describe("turn-on selection", () => {
+  it("keeps TAP ORDER (the wire order) and toggles off in place", () => {
+    let selected: string[] = [];
+    selected = toggleTurnOn(selected, "chai_dates");
+    selected = toggleTurnOn(selected, "kissing");
+    selected = toggleTurnOn(selected, "deep_talks");
+    expect(selected).toEqual(["chai_dates", "kissing", "deep_talks"]);
+
+    selected = toggleTurnOn(selected, "kissing");
+    expect(selected).toEqual(["chai_dates", "deep_talks"]);
+  });
+
+  it("caps at 15 — adding the 16th is a no-op; removing reopens the slot", () => {
+    let selected = Array.from({ length: MAX_TURN_ONS }, (_, i) => `t${i}`);
+    expect(toggleTurnOn(selected, "one_more")).toBe(selected);
+
+    selected = toggleTurnOn(selected, "t0");
+    selected = toggleTurnOn(selected, "one_more");
+    expect(selected).toHaveLength(MAX_TURN_ONS);
+    expect(selected.at(-1)).toBe("one_more");
+  });
+});
+
+describe("catalog rendering helpers", () => {
+  it("partitions the two labelled groups preserving catalog order", () => {
+    const { romance, vibes } = partitionTurnOns(CATALOG);
+    expect(romance.map((t) => t.key)).toEqual(["kissing", "cuddling"]);
+    expect(vibes.map((t) => t.key)).toEqual(["deep_talks", "chai_dates"]);
+  });
+
+  it("tagLabels spans intentions + turn-ons; null catalog is empty", () => {
+    const labels = tagLabels(CATALOG);
+    expect(labels.serious).toBe("Serious relationship");
+    expect(labels.chai_dates).toBe("Chai dates");
+    expect(tagLabels(null)).toEqual({});
+  });
+
+  it("sharedChips shows up to the max and folds the rest into +n; empty stays empty", () => {
+    expect(sharedChips(["a", "b", "c", "d", "e", "f"], 4)).toEqual({
+      visible: ["a", "b", "c", "d"],
+      extra: 2
+    });
+    expect(sharedChips(["a"], 4)).toEqual({ visible: ["a"], extra: 0 });
+    expect(sharedChips([], 4)).toEqual({ visible: [], extra: 0 });
+  });
+});
+
+describe("prefs payload", () => {
+  it("carries the intention filter and the explicit boolean (false is a value)", () => {
+    expect(
+      prefsPayload({
+        minAge: 21,
+        maxAge: 35,
+        maxDistance: 50,
+        intentions: ["serious", "open"],
+        requireSharedTurnOn: false
+      })
+    ).toEqual({
+      min_age: 21,
+      max_age: 35,
+      max_distance_km: 50,
+      intentions: ["serious", "open"],
+      require_shared_turn_on: false
+    });
+
+    expect(
+      prefsPayload({ minAge: 18, maxAge: 100, maxDistance: 100, intentions: [], requireSharedTurnOn: true })
+        .require_shared_turn_on
+    ).toBe(true);
   });
 });

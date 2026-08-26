@@ -6,13 +6,22 @@ import { Button } from "@/components";
 export type MatchModalProps = {
   name: string | null;
   photo: string | null;
+  /** Common ground for the "You both like …" line (first two labels; empty → no line). */
+  sharedLabels: string[];
   conversationId: string | null;
   onSayHi: (conversationId: string) => void;
   onDismiss: () => void;
 };
 
 /** "It's a match!" — shown from the deck AND from a like-back in Likes. */
-export function MatchModal({ name, photo, conversationId, onSayHi, onDismiss }: MatchModalProps) {
+export function MatchModal({
+  name,
+  photo,
+  sharedLabels,
+  conversationId,
+  onSayHi,
+  onDismiss
+}: MatchModalProps) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6 backdrop-blur-sm"
@@ -33,6 +42,11 @@ export function MatchModal({ name, photo, conversationId, onSayHi, onDismiss }: 
           It&apos;s a match{name ? ` with ${name}` : ""}!
         </h2>
         <p className="mt-1 text-sm text-muted">You liked each other. Say something.</p>
+        {sharedLabels.length > 0 && (
+          <p className="mt-1 text-sm font-medium text-brand-hover">
+            You both like {sharedLabels.slice(0, 2).join(" and ")}
+          </p>
+        )}
         <div className="mt-5 flex flex-col gap-2">
           {conversationId && (
             <Button type="button" onClick={() => onSayHi(conversationId)}>

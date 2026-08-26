@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft, Flame, Heart, MessageCircle, UserRound } from "lucide-react";
 import {
   deleteDatingMatch,
+  fetchDatingTagsRaw,
   getCurrentSession,
   getDatingDeck,
   getDatingLikes,
@@ -15,6 +16,7 @@ import {
   type DatingMatchEntry,
   type DatingProfile,
   type DatingSwipeResult,
+  type DatingTagCatalog,
   type Session
 } from "@/lib/api";
 import { clearSessionTokens } from "@/lib/session";
@@ -22,6 +24,9 @@ import { createSocket, joinUserChannel, type UserChannel } from "@/lib/realtime"
 import {
   deckNeedsPrefetch,
   deckReducer,
+  fetchTagCatalog,
+  sharedChips,
+  tagLabels,
   initialDeckState,
   initialLikesState,
   initialMatchesState,
@@ -42,6 +47,8 @@ const DECK_PAGE = 25;
 type MatchToast = {
   name: string | null;
   photo: string | null;
+  /** Common-ground labels for the modal's "You both like …" line. */
+  sharedLabels: string[];
   conversationId: string | null;
 };
 
@@ -61,6 +68,8 @@ export default function DatingPage() {
   const [likes, dispatchLikes] = useReducer(likesReducer, initialLikesState);
   const [matches, dispatchMatches] = useReducer(matchesReducer, initialMatchesState);
   const [matchToast, setMatchToast] = useState<MatchToast | null>(null);
+  const [catalog, setCatalog] = useState<DatingTagCatalog | null>(null);
+  const catalogRef = useRef<DatingTagCatalog | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const channelRef = useRef<UserChannel | null>(null);
   const deckLoadingRef = useRef(false);
@@ -113,6 +122,16 @@ export default function DatingPage() {
         const current = await getCurrentSession();
         if (cancelled) return;
         setSession(current);
+
+        // The tag catalog (106) — ETag-cached in localStorage; failure degrades to raw keys.
+        void fetchTagCatalog({ request: fetchDatingTagsRaw, storage: window.localStorage })
+          .then((tags) => {
+            if (!cancelled) {
+              catalogRef.current = tags;
+              setCatalog(tags);
+            }
+          })
+          .catch(() => {});
         const dating = await getDatingProfile();
         if (cancelled) return;
         setProfile(dating);
@@ -172,7 +191,10 @@ export default function DatingPage() {
                   age: null,
                   bio: null,
                   photos: [],
-                  distance_km: null
+                  distance_km: null,
+                  intention: null,
+                  turn_ons: [],
+                  shared_turn_ons: []
                 }
               });
             }
@@ -226,6 +248,9 @@ export default function DatingPage() {
         setMatchToast({
           name: card.display_name,
           photo: card.photos[0] ?? null,
+          sharedLabels: sharedChips(card.shared_turn_ons, 2).visible.map(
+            (key) => tagLabels(catalogRef.current)[key] ?? key
+          ),
           conversationId: result.conversation_id ?? null
         });
       }
@@ -248,6 +273,8 @@ export default function DatingPage() {
       </main>
     );
   }
+
+  const labels = tagLabels(catalog);
 
   const tabs: Array<{ id: Tab; label: string; icon: typeof Flame; badge?: number }> = [
     { id: "deck", label: "Deck", icon: Flame },
@@ -315,6 +342,7 @@ export default function DatingPage() {
         {tab === "profile" && (
           <DatingSetup
             profile={profile}
+            catalog={catalog}
             onSaved={(saved) => {
               const turnedOn = !profile.enabled && saved.enabled;
               setProfile(saved);
@@ -323,6 +351,10 @@ export default function DatingPage() {
                 void loadDeck();
                 void loadLikes();
                 void loadMatches();
+              } else if (saved.enabled) {
+                // Prefs (intention filter / require-shared) change what the deck contains — refetch.
+                dispatchDeck({ type: "reset" });
+                void loadDeck();
               }
             }}
           />
@@ -330,13 +362,19 @@ export default function DatingPage() {
         {tab === "deck" && enabled && (
           <DatingDeck
             cards={deck.cards}
+            tagLabels={labels}
             loading={deck.loading}
             onSwipe={handleSwipe}
             onOpenPrefs={() => setTab("profile")}
           />
         )}
         {tab === "likes" && enabled && (
-          <DatingLikes cards={likes.cards} loaded={likes.loaded} onAct={handleSwipe} />
+          <DatingLikes
+            cards={likes.cards}
+            tagLabels={labels}
+            loaded={likes.loaded}
+            onAct={handleSwipe}
+          />
         )}
         {tab === "matches" && enabled && (
           <DatingMatches
@@ -352,6 +390,7 @@ export default function DatingPage() {
         <MatchModal
           name={matchToast.name}
           photo={matchToast.photo}
+          sharedLabels={matchToast.sharedLabels}
           conversationId={matchToast.conversationId}
           onSayHi={openConversation}
           onDismiss={() => setMatchToast(null)}

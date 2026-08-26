@@ -1484,6 +1484,10 @@ export type DatingPrefs = {
   max_age: number;
   max_distance_km: number;
   genders: string[];
+  /** v2: intention filter for MY deck (empty = all). */
+  intentions: string[];
+  /** v2: exclude candidates with zero turn-on overlap. */
+  require_shared_turn_on: boolean;
 };
 
 export type DatingProfile = {
@@ -1492,6 +1496,10 @@ export type DatingProfile = {
   age: number | null;
   gender: string | null;
   interested_in: string[];
+  /** v2 (106): one of the five intention keys; required to enable. */
+  intention: string | null;
+  /** v2 (106): 0..15 turn-on keys, order = the user's tap order. */
+  turn_ons: string[];
   bio: string | null;
   /** Ordered media ids (first = main). */
   photos: string[];
@@ -1507,6 +1515,11 @@ export type DatingCard = {
   bio: string | null;
   photos: string[];
   distance_km: number | null;
+  /** v2 (106) */
+  intention: string | null;
+  turn_ons: string[];
+  /** Intersection with MY turn-ons, in the TARGET's order — render "You both like: …" directly. */
+  shared_turn_ons: string[];
 };
 
 export type DatingMatchEntry = DatingCard & {
@@ -1520,6 +1533,8 @@ export type DatingProfilePatch = {
   dob?: string;
   gender?: string;
   interested_in?: string[];
+  intention?: string;
+  turn_ons?: string[];
   bio?: string;
   photos?: string[];
   location?: { lat: number; lng: number; name: string };
@@ -1531,6 +1546,34 @@ export type DatingSwipeResult = {
   match_id?: string;
   conversation_id?: string | null;
 };
+
+export type DatingIntentionTag = { key: string; label: string };
+export type DatingTurnOnTag = { key: string; label: string; category: "romance" | "vibes" };
+export type DatingTagCatalog = { intentions: DatingIntentionTag[]; turn_ons: DatingTurnOnTag[] };
+
+export type DatingTagsResponse = {
+  status: number;
+  etag: string | null;
+  body: DatingTagCatalog | null;
+};
+
+/** GET /api/v1/dating/tags with optional If-None-Match — the raw leg under the pure ETag cache in
+ *  lib/dating.ts (304 → body null; the cache supplies the stored copy). */
+export async function fetchDatingTagsRaw(etag?: string | null): Promise<DatingTagsResponse> {
+  const headers = new Headers({ Accept: "application/json" });
+  const token = getAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (etag) headers.set("If-None-Match", etag);
+
+  const response = await fetch(`${apiBaseUrl()}/api/v1/dating/tags`, { headers });
+  const nextEtag = response.headers.get("etag");
+
+  if (response.status === 304) return { status: 304, etag: nextEtag, body: null };
+  if (!response.ok) return { status: response.status, etag: null, body: null };
+
+  const body = (await response.json()) as DatingTagCatalog;
+  return { status: response.status, etag: nextEtag, body };
+}
 
 export function getDatingProfile() {
   return request<DatingProfile>("/api/v1/dating/profile");

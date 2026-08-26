@@ -5,10 +5,13 @@ import { ChevronLeft, ChevronRight, Heart, SlidersHorizontal, X } from "lucide-r
 import { Button } from "@/components";
 import { EmptyState } from "@/components/chat";
 import { ApiRequestError, type DatingCard, type DatingSwipeResult } from "@/lib/api";
+import { sharedChips } from "@/lib/dating";
 import { cn } from "@/lib/cn";
 
 export type DatingDeckProps = {
   cards: DatingCard[];
+  /** key → label from the tag catalog (106); unknown keys render as their key. */
+  tagLabels: Record<string, string>;
   /** Swipe the TOP card. Resolves with the server result so the match modal can fire. */
   onSwipe: (card: DatingCard, action: "like" | "pass") => Promise<DatingSwipeResult>;
   onOpenPrefs: () => void;
@@ -20,7 +23,7 @@ export type DatingDeckProps = {
  * dependency-free pointer drag (translate + rotate, threshold 96px) — pointer events only, no
  * library. 429 renders as a gentle cooldown note, not an error wall.
  */
-export function DatingDeck({ cards, onSwipe, onOpenPrefs, loading }: DatingDeckProps) {
+export function DatingDeck({ cards, tagLabels, onSwipe, onOpenPrefs, loading }: DatingDeckProps) {
   const top = cards[0] ?? null;
   const [busy, setBusy] = useState(false);
   const [cooldown, setCooldown] = useState<string | null>(null);
@@ -83,7 +86,12 @@ export function DatingDeck({ cards, onSwipe, onOpenPrefs, loading }: DatingDeckP
           <div className="absolute inset-0 translate-y-2 scale-[0.97] rounded-3xl bg-elevated shadow-subtle" aria-hidden />
         )}
         {/* key: all per-card state (photo index, bio, drag) resets WITH the card — no effects. */}
-        <TopCard key={top.user_id} card={top} onCommit={(action) => void act(action)} />
+        <TopCard
+          key={top.user_id}
+          card={top}
+          tagLabels={tagLabels}
+          onCommit={(action) => void act(action)}
+        />
       </div>
 
       {cooldown && (
@@ -121,9 +129,11 @@ export function DatingDeck({ cards, onSwipe, onOpenPrefs, loading }: DatingDeckP
  *  born fresh with each card — the React-idiomatic reset, no setState-in-effect. */
 function TopCard({
   card,
+  tagLabels,
   onCommit
 }: {
   card: DatingCard;
+  tagLabels: Record<string, string>;
   onCommit: (action: "like" | "pass") => void;
 }) {
   const [photoIndex, setPhotoIndex] = useState(0);
@@ -222,13 +232,21 @@ function TopCard({
         </span>
       )}
 
-      {/* Name / age / distance / bio */}
-      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/75 via-black/30 to-transparent p-4 pt-12 text-white">
-        <p className="text-xl font-semibold">
-          {card.display_name ?? "Someone"}
-          {card.age != null && <span className="font-normal">, {card.age}</span>}
-        </p>
+      {/* Name / age / distance / intention / common ground / bio */}
+      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-4 pt-14 text-white">
+        <div className="flex items-center gap-2">
+          <p className="text-xl font-semibold">
+            {card.display_name ?? "Someone"}
+            {card.age != null && <span className="font-normal">, {card.age}</span>}
+          </p>
+          {card.intention && (
+            <span className="rounded-full bg-white/20 px-2 py-0.5 text-[10px] font-medium backdrop-blur-sm">
+              {tagLabels[card.intention] ?? card.intention}
+            </span>
+          )}
+        </div>
         {card.distance_km != null && <p className="text-xs text-white/80">{card.distance_km} km away</p>}
+        <SharedRow shared={card.shared_turn_ons} tagLabels={tagLabels} />
         {card.bio && (
           <button
             type="button"
@@ -238,7 +256,53 @@ function TopCard({
             {card.bio}
           </button>
         )}
+        {bioOpen && card.turn_ons.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {card.turn_ons.map((key) => {
+              const shared = card.shared_turn_ons.includes(key);
+              return (
+                <span
+                  key={key}
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-[10px]",
+                    shared
+                      ? "accent-gradient font-medium text-white shadow-accent-glow"
+                      : "bg-white/15 text-white/85"
+                  )}
+                >
+                  {tagLabels[key] ?? key}
+                </span>
+              );
+            })}
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+/** "You both like:" — up to four highlighted chips + "+n" (nothing renders when empty). */
+function SharedRow({
+  shared,
+  tagLabels
+}: {
+  shared: string[];
+  tagLabels: Record<string, string>;
+}) {
+  const { visible, extra } = sharedChips(shared);
+  if (visible.length === 0) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+      <span className="text-[10px] uppercase tracking-wide text-white/70">You both like</span>
+      {visible.map((key) => (
+        <span
+          key={key}
+          className="accent-gradient rounded-full px-2 py-0.5 text-[10px] font-medium text-white shadow-accent-glow"
+        >
+          {tagLabels[key] ?? key}
+        </span>
+      ))}
+      {extra > 0 && <span className="text-[10px] text-white/80">+{extra}</span>}
     </div>
   );
 }

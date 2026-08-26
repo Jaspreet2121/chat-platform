@@ -7,17 +7,22 @@ import {
   ApiRequestError,
   updateDatingProfile,
   type DatingProfile,
-  type DatingProfilePatch
+  type DatingProfilePatch,
+  type DatingTagCatalog
 } from "@/lib/api";
 import {
   BIO_MAX,
   DATING_GENDERS,
   MAX_PHOTOS,
+  MAX_TURN_ONS,
   MIN_PHOTOS,
   computeAge,
   fallbackLocationName,
+  partitionTurnOns,
+  prefsPayload,
   reorderPhotos,
   setupServerError,
+  toggleTurnOn,
   validateSetup,
   type SetupErrors
 } from "@/lib/dating";
@@ -40,6 +45,8 @@ const GENDER_LABEL: Record<string, string> = {
 
 export type DatingSetupProps = {
   profile: DatingProfile;
+  /** The tag catalog (106), ETag-cached by the page; null while loading. */
+  catalog: DatingTagCatalog | null;
   /** Called with the fresh profile after every successful PATCH. */
   onSaved: (profile: DatingProfile) => void;
 };
@@ -48,10 +55,15 @@ export type DatingSetupProps = {
  * Setup / My profile — one form for both: first-time enable (the gate) and later edits. The DOB is
  * called out as permanent up front; disabling asks for confirmation and takes effect instantly.
  */
-export function DatingSetup({ profile, onSaved }: DatingSetupProps) {
+export function DatingSetup({ profile, catalog, onSaved }: DatingSetupProps) {
   const [dob, setDob] = useState(profile.dob ?? "");
   const [gender, setGender] = useState(profile.gender ?? "");
   const [interestedIn, setInterestedIn] = useState<string[]>(profile.interested_in ?? []);
+  // v2 (106) — grandfathered enabled profiles arrive with a backfilled intention; keep it.
+  const [intention, setIntention] = useState(profile.intention ?? "");
+  const [turnOns, setTurnOns] = useState<string[]>(profile.turn_ons ?? []);
+  const [prefIntentions, setPrefIntentions] = useState<string[]>(profile.prefs.intentions ?? []);
+  const [requireShared, setRequireShared] = useState(profile.prefs.require_shared_turn_on === true);
   const [bio, setBio] = useState(profile.bio ?? "");
   const [photos, setPhotos] = useState<PhotoEntry[]>(
     (profile.photos ?? []).map((mediaId) => ({ mediaId, preview: null }))
@@ -132,13 +144,17 @@ export function DatingSetup({ profile, onSaved }: DatingSetupProps) {
     const body: DatingProfilePatch = {
       gender: gender || undefined,
       interested_in: interestedIn.length > 0 ? interestedIn : undefined,
+      intention: intention || undefined,
+      turn_ons: turnOns,
       bio,
       photos: photos.map((photo) => photo.mediaId),
-      prefs: {
-        min_age: minAge,
-        max_age: maxAge,
-        max_distance_km: maxDistance
-      }
+      prefs: prefsPayload({
+        minAge,
+        maxAge,
+        maxDistance,
+        intentions: prefIntentions,
+        requireSharedTurnOn: requireShared
+      })
     };
     if (dob && !dobLocked) body.dob = dob;
     if (location) {
@@ -149,7 +165,7 @@ export function DatingSetup({ profile, onSaved }: DatingSetupProps) {
       };
     }
     return body;
-  }, [dob, dobLocked, gender, interestedIn, bio, photos, location, locationName, minAge, maxAge, maxDistance]);
+  }, [dob, dobLocked, gender, interestedIn, intention, turnOns, bio, photos, location, locationName, minAge, maxAge, maxDistance, prefIntentions, requireShared]);
 
   async function save(enable: boolean | null) {
     setServerError(null);
@@ -160,6 +176,7 @@ export function DatingSetup({ profile, onSaved }: DatingSetupProps) {
         dob,
         gender,
         interestedIn,
+        intention,
         bio,
         photos: photos.map((photo) => photo.mediaId),
         locationName,
@@ -256,6 +273,68 @@ export function DatingSetup({ profile, onSaved }: DatingSetupProps) {
           </div>
           {errors.interestedIn && <p className="mt-1 text-xs text-red-500">{errors.interestedIn}</p>}
         </div>
+      </section>
+
+      {/* Intention (106) — required to enable */}
+      <section>
+        <p className="text-sm font-medium text-muted">What are you looking for?</p>
+        <div className="mt-1.5 flex flex-wrap gap-2">
+          {(catalog?.intentions ?? []).map(({ key, label }) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setIntention(key)}
+              className={chipClass(intention === key)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {errors.intention && <p className="mt-1 text-xs text-red-500">{errors.intention}</p>}
+      </section>
+
+      {/* Turn-ons (106) — two labelled groups; SELECTION KEEPS TAP ORDER (the wire order). */}
+      <section>
+        <div className="flex items-baseline justify-between">
+          <p className="text-sm font-medium text-muted">Turn-ons</p>
+          <p
+            className={cn(
+              "text-xs",
+              turnOns.length >= MAX_TURN_ONS ? "text-red-500" : "text-faint"
+            )}
+          >
+            {turnOns.length}/{MAX_TURN_ONS}
+          </p>
+        </div>
+        {catalog ? (
+          <>
+            {(
+              [
+                ["Romance & chemistry", partitionTurnOns(catalog).romance],
+                ["Interests & vibes", partitionTurnOns(catalog).vibes]
+              ] as const
+            ).map(([group, tags]) => (
+              <div key={group} className="mt-2">
+                <p className="text-xs font-medium uppercase tracking-wide text-faint">{group}</p>
+                <div className="mt-1.5 flex flex-wrap gap-2">
+                  {tags.map(({ key, label }) => (
+                    <button
+                      key={key}
+                      type="button"
+                      aria-pressed={turnOns.includes(key)}
+                      onClick={() => setTurnOns((current) => toggleTurnOn(current, key))}
+                      className={chipClass(turnOns.includes(key))}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </>
+        ) : (
+          <p className="mt-1 text-xs text-faint">Loading tags…</p>
+        )}
       </section>
 
       {/* Bio */}
@@ -429,6 +508,36 @@ export function DatingSetup({ profile, onSaved }: DatingSetupProps) {
             className="mt-1 w-full accent-brand"
           />
         </div>
+        <div>
+          <p className="text-xs text-muted">Show me people looking for</p>
+          <div className="mt-1.5 flex flex-wrap gap-2">
+            {(catalog?.intentions ?? []).map(({ key, label }) => (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={prefIntentions.includes(key)}
+                onClick={() =>
+                  setPrefIntentions((current) =>
+                    current.includes(key) ? current.filter((k) => k !== key) : [...current, key]
+                  )
+                }
+                className={chipClass(prefIntentions.includes(key))}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-[11px] text-faint">Nothing selected = everyone.</p>
+        </div>
+        <label className="flex items-center gap-2 text-sm text-muted">
+          <input
+            type="checkbox"
+            checked={requireShared}
+            onChange={(event) => setRequireShared(event.target.checked)}
+            className="h-4 w-4 accent-brand"
+          />
+          Only show people who share a turn-on with me
+        </label>
       </section>
 
       {serverError && (
