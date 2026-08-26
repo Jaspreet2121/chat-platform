@@ -22,6 +22,30 @@ export type DeviceIdentity = {
 };
 
 let cached: DeviceIdentity | null = null;
+// In-flight guard. WITHOUT this, two concurrent callers in the SAME tab (login fires
+// registerDeviceKeys while the first decrypt calls loadOrCreateIdentity) both see an empty store,
+// both generate a keypair, and both write — last put wins while the loser keeps a DIFFERENT key in
+// memory. The registry then holds a key this tab cannot decrypt with, so EVERY envelope addressed to
+// this device fails to open, including the user's own messages.
+let inFlight: Promise<DeviceIdentity> | null = null;
+
+const LOCK_NAME = "skifi-e2ee-identity";
+
+/** True when this browser can serialise across TABS, not just within one. */
+function hasWebLocks(): boolean {
+  return typeof navigator !== "undefined" && typeof navigator.locks?.request === "function";
+}
+
+/**
+ * Run `work` under a cross-tab exclusive lock when the browser has the Web Locks API. Two tabs on a
+ * first login otherwise race exactly as described above, except the loser's key is unrecoverable
+ * because the winner's upload ROTATED the registry (that is a "Security code changed" pill).
+ * Safari 16+/Chrome/Firefox all have Web Locks; without it we still hold the in-tab guard.
+ */
+async function withIdentityLock<T>(work: () => Promise<T>): Promise<T> {
+  if (!hasWebLocks()) return work();
+  return (await navigator.locks.request(LOCK_NAME, work)) as T;
+}
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -61,33 +85,83 @@ type StoredIdentity = {
   x25519Private: Uint8Array;
 };
 
-/** Load this device's identity, generating + persisting it on first use. Idempotent + cached. */
+/**
+ * Load this device's identity, generating + persisting it on first use.
+ *
+ * SINGLE-FLIGHT, by construction: exactly one keypair is ever generated per browser profile. The
+ * in-memory promise collapses concurrent callers in this tab; the Web Locks request serialises
+ * across tabs; and the store is re-read INSIDE the lock so a tab that loses the race adopts the
+ * winner's key instead of minting a second one.
+ */
 export async function loadOrCreateIdentity(): Promise<DeviceIdentity> {
   if (cached) return cached;
+  if (inFlight) return inFlight;
 
-  const sodium = await sodiumReady();
-  const deviceId = getOrCreateDeviceId();
-  const db = await openDb();
+  inFlight = withIdentityLock(async () => {
+    // Re-check under the lock: another tab may have generated + stored while we queued.
+    if (cached) return cached;
 
-  const stored = await idbGet<StoredIdentity>(db, KEY);
-  if (stored && stored.deviceId === deviceId) {
-    cached = stored;
-    return stored;
+    const sodium = await sodiumReady();
+    const deviceId = getOrCreateDeviceId();
+    const db = await openDb();
+
+    const stored = await idbGet<StoredIdentity>(db, KEY);
+    if (stored && stored.deviceId === deviceId) {
+      cached = stored;
+      return stored;
+    }
+
+    // SAFARI ITP / storage eviction: the device_id lives in localStorage and the keys in IndexedDB,
+    // and Safari can evict IndexedDB while keeping localStorage. We then regenerate under the SAME
+    // device_id, which rotates the registry — history sealed to the old key is unrecoverable. That
+    // loss is unavoidable here; being silent about it is not.
+    if (!stored && knownDeviceId(deviceId)) {
+      console.warn(
+        `[e2ee] identity store was empty for a KNOWN device_id (${deviceId}) — regenerating keys. ` +
+          "Storage was likely evicted (Safari ITP); messages sealed to the old key can't be opened, " +
+          "and this rotation shows as a 'Security code changed' notice."
+      );
+    }
+
+    const sign = sodium.crypto_sign_keypair();
+    const box = sodium.crypto_box_keypair();
+    const identity: DeviceIdentity = {
+      deviceId,
+      ed25519Public: sign.publicKey,
+      ed25519Private: sign.privateKey,
+      x25519Public: box.publicKey,
+      x25519Private: box.privateKey
+    };
+
+    await idbPut(db, KEY, identity);
+    markDeviceIdSeen(deviceId);
+    cached = identity;
+    return identity;
+  }).finally(() => {
+    inFlight = null;
+  });
+
+  return inFlight;
+}
+
+// A marker written the first time we mint keys for a device_id. Its presence with an EMPTY identity
+// store is the eviction signature (vs a genuinely first-ever run, which is silent and normal).
+const SEEN_KEY = "skifi-e2ee-device-seen";
+
+function knownDeviceId(deviceId: string): boolean {
+  try {
+    return window.localStorage.getItem(SEEN_KEY) === deviceId;
+  } catch {
+    return false;
   }
+}
 
-  const sign = sodium.crypto_sign_keypair();
-  const box = sodium.crypto_box_keypair();
-  const identity: DeviceIdentity = {
-    deviceId,
-    ed25519Public: sign.publicKey,
-    ed25519Private: sign.privateKey,
-    x25519Public: box.publicKey,
-    x25519Private: box.privateKey
-  };
-
-  await idbPut(db, KEY, identity);
-  cached = identity;
-  return identity;
+function markDeviceIdSeen(deviceId: string): void {
+  try {
+    window.localStorage.setItem(SEEN_KEY, deviceId);
+  } catch {
+    /* private mode / storage disabled — the warn simply won't fire next time. */
+  }
 }
 
 /** base64 of the two PUBLIC keys, for the registry upload. */

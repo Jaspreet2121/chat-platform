@@ -70,7 +70,10 @@ import { pickDirectPeer, primeConversationDetail } from "@/components/chat/useDi
 import {
   decryptMessage,
   maybeUpgradeConversation,
+  invalidateKeyCaches,
+  realignOwnKeys,
   registerDeviceKeys,
+  setOwnUserId,
   setSealedTransport,
   sendSecretMedia,
   sendSecretText,
@@ -352,7 +355,13 @@ export default function ChatPage() {
 
         // 108: register this browser's E2EE public keys (best-effort, retried) so peers can seal to
         // us. Never blocks login.
-        void registerDeviceKeys().catch(() => undefined);
+        setOwnUserId(currentSession.user_id);
+        void registerDeviceKeys()
+          // Then CHECK the registry actually holds this browser's key. A mismatch (another tab won a
+          // first-login race, or storage was evicted and we regenerated) means every envelope sealed
+          // to us is unopenable — realign re-uploads so future traffic works, and says so loudly.
+          .then(() => realignOwnKeys("startup"))
+          .catch(() => undefined);
 
         getMe()
           .then((profile) => {
@@ -427,7 +436,11 @@ export default function ChatPage() {
         // Seed the shared detail cache so the sidebar row derives this chat's peer with no refetch.
         primeConversationDetail(detail);
         setSelectedConversation(detail);
-        setMessages(timeline.messages ?? []);
+        const rows = timeline.messages ?? [];
+        // Backfill can also be the first time this tab learns of a rotation (it happened while we
+        // were away), so apply the same invalidation before those rows are decrypted.
+        if (rows.some(isKeyRotationPill)) invalidateKeyCaches();
+        setMessages(rows);
         setStatus(`Opened ${detail.title || detail.conversation_id}`);
       } catch (error) {
         if (isCurrent) {
@@ -488,6 +501,9 @@ export default function ChatPage() {
 
         cleanupEvents = [
           joinedChannel.onMessageCreated((message) => {
+            // A "Security code changed" pill IS the rotation notice. Anything we cached about the
+            // old keys is now wrong, so drop it before the next send/decrypt reads it.
+            if (isKeyRotationPill(message)) invalidateKeyCaches();
             setMessages((current) => mergeMessage(current, message));
             bumpConversationActivity(message);
           }),
@@ -2129,6 +2145,13 @@ function mediaKind(message: Message): string {
 // md breakpoint — the same 768px the layout splits panes on. Guarded for SSR.
 function isDesktopViewport(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(min-width: 768px)").matches;
+}
+
+/** The server's rotation notice: a system message whose metadata says the security code changed. */
+function isKeyRotationPill(message: Message): boolean {
+  if (message.message_type !== "system") return false;
+  const metadata = (message.metadata ?? {}) as Record<string, unknown>;
+  return metadata.kind === "encryption" && metadata.state === "keys_changed";
 }
 
 function mergeMessage(messages: Message[], message: Message) {

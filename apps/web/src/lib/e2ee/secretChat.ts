@@ -25,10 +25,47 @@ type KeyCache = Map<string, DeviceKey>;
 const decryptLru = new Map<string, DecryptOutcome>();
 const LRU_MAX = 500;
 
+/**
+ * WHY a sealed message could not be opened. These used to collapse into one opaque stub, which made
+ * a production failure unreadable from a screenshot — the four classes have completely different
+ * causes and only one of them is ever "expected":
+ *
+ *   * missing_envelope   — no envelope addressed to MY device_id. Expected + permanent: the message
+ *                          was sealed before this device was linked. Gets its own copy.
+ *   * open_failed        — my envelope is there but crypto_box_seal_open fails, i.e. my private key
+ *                          is not the pair of the public key the sender sealed to. That is a key
+ *                          MISALIGNMENT (registry rotated away from what this browser holds).
+ *   * sig_failed         — opened, but the sender's signature doesn't verify against the registry
+ *                          key we have for their device (usually a stale cached key after rotation).
+ *   * inner_parse_failed — the frame opened and verified, but the cleartext isn't a valid frame.
+ *                          That is OUR bug (a canonicalisation/shape mismatch), never the network's.
+ *   * no_frame           — the row carries no sealed payload at all.
+ */
+export type DecryptFailure =
+  | "missing_envelope"
+  | "open_failed"
+  | "sig_failed"
+  | "inner_parse_failed"
+  | "no_frame";
+
 export type DecryptOutcome =
   | { ok: true; kind: "text"; body: string; senderDeviceId: string }
   | { ok: true; kind: "media"; media: MediaDescriptor; senderDeviceId: string }
-  | { ok: false; reason: string };
+  | { ok: false; reason: DecryptFailure };
+
+/** frame.ts's vocabulary → the classes above. */
+function classify(reason: "no_envelope" | "bad_sig" | "decrypt_failed" | "malformed"): DecryptFailure {
+  switch (reason) {
+    case "no_envelope":
+      return "missing_envelope";
+    case "decrypt_failed":
+      return "open_failed";
+    case "bad_sig":
+      return "sig_failed";
+    default:
+      return "inner_parse_failed";
+  }
+}
 
 /** Upload this browser's public keys with a small retry — key registration must not silently fail
  *  (a peer can't seal to us without it). */
@@ -262,7 +299,7 @@ export async function decryptMessage(message: Message): Promise<DecryptOutcome> 
   if (cached) return cached;
 
   const sealed = extractSealed(message);
-  if (!sealed) return remember(message.message_id, { ok: false, reason: "malformed" });
+  if (!sealed) return fail(message.message_id, "no_frame");
 
   const identity = await loadOrCreateIdentity();
   const senderKey = await senderEd25519(message.sender_user_id, sealed.sender_device_id, false);
@@ -285,17 +322,46 @@ export async function decryptMessage(message: Message): Promise<DecryptOutcome> 
       identity.x25519Private,
       refetched
     );
+
+    if (!retry.ok) return fail(message.message_id, classify(retry.reason), sealed.sender_device_id);
     return remember(message.message_id, toOutcome(retry, sealed.sender_device_id));
   }
 
+  if (!result.ok) {
+    const reason = classify(result.reason);
+
+    // open_failed means the registry holds a key this browser cannot decrypt with. THIS message is
+    // lost either way, but a one-shot re-align repairs the registry so FUTURE messages arrive
+    // openable — the same shape as the signature path's single forced refetch above.
+    if (reason === "open_failed") void realignOwnKeys("open_failed");
+
+    return fail(message.message_id, reason, sealed.sender_device_id);
+  }
+
   return remember(message.message_id, toOutcome(result, sealed.sender_device_id));
+}
+
+/** Cache a failure AND say so in the console — the class plus the id is what makes a screenshot of a
+ *  broken thread diagnosable without a repro. */
+function fail(
+  messageId: string,
+  reason: DecryptFailure,
+  senderDeviceId?: string
+): DecryptOutcome {
+  console.warn(
+    `[e2ee] decrypt ${reason} message=${messageId}` +
+      (senderDeviceId ? ` sender_device=${senderDeviceId}` : "")
+  );
+  return remember(messageId, { ok: false, reason });
 }
 
 function toOutcome(
   result: Awaited<ReturnType<typeof openFrame>>,
   senderDeviceId: string
 ): DecryptOutcome {
-  if (!result.ok) return { ok: false, reason: result.reason };
+  // Failures never reach here — every caller routes them through fail() so they are classified and
+  // logged. Kept total for the type system.
+  if (!result.ok) return { ok: false, reason: classify(result.reason) };
   const frame = result.frame;
   if (frame.message_type === "media") {
     return { ok: true, kind: "media", media: frame.media, senderDeviceId };
@@ -311,6 +377,98 @@ function extractSealed(message: Message): SealedPayload | null {
 
 // sender_user_id → device_id → ed25519 public (b64). Refetched on `force`.
 const senderKeyCache = new Map<string, string>();
+
+/**
+ * Drop cached key material after a ROTATION.
+ *
+ * Two things must go, and only one of them is obvious:
+ *   1. `senderKeyCache` — the ed25519 key we verify signatures against. Keeping a rotated-away key
+ *      makes every NEW message from that peer fail as sig_failed.
+ *   2. the NEGATIVE entries in the decrypt LRU — a failure was cached for the session, so a message
+ *      that failed during the misaligned window would keep rendering its stub even after keys
+ *      re-align. Successful decrypts are kept (they cost CPU and can't go stale).
+ *
+ * The SEND path needs no invalidation: memberDeviceKeys() calls fetchUserKeys() on every send and
+ * `request` is cache:"no-store", so a send always seals to the registry's current keys.
+ */
+export function invalidateKeyCaches(userId?: string): void {
+  if (userId) {
+    for (const key of Array.from(senderKeyCache.keys())) {
+      if (key.startsWith(`${userId}:`)) senderKeyCache.delete(key);
+    }
+  } else {
+    senderKeyCache.clear();
+  }
+
+  for (const [messageId, outcome] of Array.from(decryptLru.entries())) {
+    if (!outcome.ok) decryptLru.delete(messageId);
+  }
+
+  // A rotation may have moved the registry away from THIS browser's key too (another tab, or an
+  // eviction+regenerate). Re-align once so future traffic is sealed to what we actually hold.
+  void realignOwnKeys("rotation");
+}
+
+/**
+ * Compare this browser's PUBLIC keys against what the registry holds for this device, and re-upload
+ * when they differ. A mismatch means the registry rotated away from the key we can decrypt with —
+ * every envelope sealed to us would fail to open (open_failed), including our own messages, because
+ * a sender seals to the REGISTRY's key. Re-uploading rotates in place and un-breaks FUTURE traffic;
+ * anything already sealed to the old key stays unrecoverable, which is correct.
+ *
+ * One-shot per session unless `force`.
+ */
+let realignDone = false;
+// Who I am, published by the app once the session resolves. The identity itself is user-agnostic (it
+// is a BROWSER key), so the registry lookup needs the signed-in user id from outside.
+let ownUserId: string | null = null;
+
+/** Publish the signed-in user id so the registry self-check knows whose keys to read. */
+export function setOwnUserId(userId: string | null): void {
+  ownUserId = userId;
+}
+
+export async function realignOwnKeys(trigger: string, force = false): Promise<boolean> {
+  if (!ownUserId) return false;
+  if (realignDone && !force) return false;
+  realignDone = true;
+
+  try {
+    const identity = await loadOrCreateIdentity();
+    const mine = await publicKeysBase64();
+    const users = await fetchUserKeys([ownUserId]);
+    const registered = users
+      .flatMap((user) => user.devices)
+      .find((device) => device.device_id === identity.deviceId);
+
+    if (!registered) {
+      console.warn(
+        `[e2ee] this device (${identity.deviceId}) has no registry entry (trigger: ${trigger}) — uploading keys.`
+      );
+      await registerDeviceKeys();
+      return true;
+    }
+
+    const aligned =
+      registered.ed25519_public === mine.ed25519 && registered.x25519_public === mine.x25519;
+
+    if (!aligned) {
+      console.warn(
+        `[e2ee] REGISTRY MISMATCH for ${identity.deviceId} (trigger: ${trigger}): the server holds a ` +
+          "different public key than this browser. Another tab or a storage eviction rotated it. " +
+          "Re-uploading local keys — new messages will decrypt; ones sealed to the old key cannot."
+      );
+      await registerDeviceKeys();
+      invalidateKeyCaches();
+      return true;
+    }
+
+    return false;
+  } catch {
+    // Never let alignment break the app — a failed check just means we try again next session.
+    return false;
+  }
+}
 
 async function senderEd25519(
   userId: string,

@@ -251,8 +251,10 @@ describe("BUG 1 — a socket-DELIVERED sealed row decrypts on arrival", () => {
   });
 
   it("a row whose metadata carries no sealed frame is a stub, never a crash", async () => {
+    // Classified as no_frame since the reason codes landed — the row has no sealed payload at all,
+    // which is a different (and differently-actionable) thing from a frame that failed to open.
     const outcome = await decryptMessage(serverRow(undefined, { message_id: "bad-1" }));
-    expect(outcome).toEqual({ ok: false, reason: "malformed" });
+    expect(outcome).toEqual({ ok: false, reason: "no_frame" });
   });
 });
 

@@ -27,7 +27,25 @@ import { formatTime, metadataString, senderDisplayName } from "./format";
 import { VoiceMessagePlayer } from "./VoiceMessagePlayer";
 import { LinkifiedText } from "./LinkifiedText";
 import { SealedMediaBubble } from "./SealedMediaBubble";
-import type { DecryptOutcome } from "@/lib/e2ee/secretChat";
+import type { DecryptFailure, DecryptOutcome } from "@/lib/e2ee/secretChat";
+
+/**
+ * Distinct copy per failure class. missing_envelope is the ONLY expected one — the message was
+ * sealed before this device was linked, so it is not an error and must not read like one. The rest
+ * are genuine failures and say so without leaking crypto vocabulary into the thread.
+ */
+export function sealedStubCopy(reason: DecryptFailure): string {
+  switch (reason) {
+    case "missing_envelope":
+      return "Messages before this device was linked aren't available here";
+    case "open_failed":
+      return "Couldn't decrypt this message — this device's key has changed";
+    case "sig_failed":
+      return "Couldn't verify who sent this message";
+    default:
+      return "Couldn't decrypt this message";
+  }
+}
 
 // Leaflet needs `window` — load the interactive map client-side only (no SSR) so the build/SSR never
 // touch it. A neutral skeleton reserves the space while the chunk loads.
@@ -295,9 +313,9 @@ export function MessageBubble({
                 <p className="whitespace-pre-wrap break-words">
                   <LinkifiedText text={decrypted.body} />
                 </p>
-              ) : failed ? (
+              ) : failed && decrypted && !decrypted.ok ? (
                 <p className="whitespace-pre-wrap break-words">
-                  {"Couldn't decrypt this message"}
+                  {sealedStubCopy(decrypted.reason)}
                 </p>
               ) : (
                 <p className="opacity-60">Decrypting…</p>
