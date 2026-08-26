@@ -5,13 +5,18 @@ import { Check, Loader2, MapPin, RefreshCw, UserPlus, X, XCircle } from "lucide-
 import { Avatar, Button, Card } from "@/components";
 import {
   discoverNearby,
+  getNearbySettings,
   listNearbyRequests,
+  NearbyAudience,
+  NearbyBucket,
   NearbyConnection,
   NearbyPerson,
   NearbyRequest,
+  NearbySettings,
   respondNearbyRequest,
   sendNearbyRequest,
   stopNearbyDiscovery,
+  updateNearbySettings,
   UserProfile
 } from "@/lib/api";
 
@@ -19,6 +24,12 @@ export type NearbyPeopleModalProps = {
   onClose: () => void;
   onStartDirectChat: (profile: UserProfile) => void | Promise<void>;
 };
+
+/** v2: a Bluetooth-confirmed row arrives as the STRING "ble" instead of a metre bucket — it means
+ *  "closer than GPS can tell", so it gets its own label rather than a distance. */
+export function bucketLabel(bucket: NearbyBucket): string {
+  return bucket === "ble" ? "Very close" : `Within ${bucket} m`;
+}
 
 export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleModalProps) {
   const [radius, setRadius] = useState<100 | 200>(200);
@@ -30,6 +41,10 @@ export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleMo
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
   const [hasScanned, setHasScanned] = useState(false);
+  // v2 settings (104). null until loaded; a failed load leaves the panel hidden rather than showing
+  // controls that would write a guessed state.
+  const [settings, setSettings] = useState<NearbySettings | null>(null);
+  const [settingsBusy, setSettingsBusy] = useState(false);
 
   const refreshRequests = useCallback(async () => {
     const result = await listNearbyRequests();
@@ -41,6 +56,9 @@ export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleMo
   useEffect(() => {
     const refreshHandle = window.setTimeout(() => {
       void refreshRequests().catch(() => undefined);
+      void getNearbySettings()
+        .then(setSettings)
+        .catch(() => undefined);
     }, 0);
 
     return () => {
@@ -58,6 +76,20 @@ export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleMo
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // Sparse PATCH — the server merges, so only the changed key is sent. The response is authoritative
+  // (it may normalise), so we render what came back rather than the optimistic value.
+  async function saveSettings(patch: Partial<NearbySettings>) {
+    setSettingsBusy(true);
+    setError("");
+    try {
+      setSettings(await updateNearbySettings(patch));
+    } catch {
+      setError("Couldn't save that setting.");
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
 
   function scan() {
     if (!navigator.geolocation) {
@@ -201,6 +233,46 @@ export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleMo
             </p>
           </div>
 
+          {/* v2 settings (104): who may discover me, and the BLE assist flag. Hidden until loaded so
+              a failed GET never renders a control writing a guessed state. */}
+          {settings ? (
+            <div className="space-y-3 rounded-xl border border-border bg-elevated p-3">
+              <ToggleRow
+                label="Discoverable nearby"
+                hint="Turn off to stop appearing in anyone's nearby list."
+                checked={settings.enabled}
+                disabled={settingsBusy}
+                onChange={(next) => void saveSettings({ enabled: next })}
+              />
+
+              <label className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-fg">Who can find me</span>
+                <select
+                  className="rounded-lg border border-border bg-surface px-2 py-1.5 text-xs text-fg outline-none focus:border-brand focus:ring-2 focus:ring-brand-ring disabled:opacity-60"
+                  value={settings.audience}
+                  disabled={settingsBusy || !settings.enabled}
+                  onChange={(event) =>
+                    void saveSettings({ audience: event.target.value as NearbyAudience })
+                  }
+                >
+                  <option value="everyone">Everyone</option>
+                  <option value="contacts">My contacts</option>
+                </select>
+              </label>
+
+              {/* Shown, never operable on web: the BLE scan loop needs a native radio the browser
+                  has no API for. Rendering it read-only keeps the setting discoverable instead of
+                  silently absent, and the copy says exactly where it works. */}
+              <ToggleRow
+                label="Bluetooth precision"
+                hint="Bluetooth precision works in the mobile app."
+                checked={settings.ble_assist}
+                disabled
+                onChange={() => undefined}
+              />
+            </div>
+          ) : null}
+
           {error ? <p className="rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{error}</p> : null}
 
           {incoming.length > 0 ? (
@@ -235,7 +307,7 @@ export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleMo
                   <PersonRow
                     key={person.user_id}
                     profile={person}
-                    subtitle={`Within ${person.distance_bucket_m} m`}
+                    subtitle={bucketLabel(person.distance_bucket_m)}
                   >
                     {person.relationship === "connected" ? (
                       <Button size="sm" variant="ghost" onClick={() => void onStartDirectChat(person)}>
@@ -343,5 +415,47 @@ function IconAction({
     >
       {children}
     </button>
+  );
+}
+
+// A settings switch. `disabled` is a first-class state here: the BLE row is rendered permanently
+// off-limits on web, so it must still read clearly rather than looking broken.
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  disabled,
+  onChange
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <span className="min-w-0">
+        <span className="block text-sm text-fg">{label}</span>
+        <span className="block text-[11px] leading-relaxed text-faint">{hint}</span>
+      </span>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+          checked ? "accent-gradient" : "bg-border-strong"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-subtle transition-all ${
+            checked ? "left-[22px]" : "left-0.5"
+          }`}
+        />
+      </button>
+    </div>
   );
 }

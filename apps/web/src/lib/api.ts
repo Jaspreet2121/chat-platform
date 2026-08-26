@@ -182,10 +182,15 @@ export type UserProfile = {
 };
 
 export type NearbyPerson = UserProfile & {
-  // 100/200 only — the 50 m bucket was dropped (trilateration hardening, audit 2026-08-26).
-  distance_bucket_m: 100 | 200;
+  // 100/200 — the 50 m bucket was dropped (trilateration hardening, audit 2026-08-26). v2 (104) adds
+  // the STRING "ble": when a live Bluetooth proximity marker exists the gateway overwrites the GPS
+  // bucket with it (and sorts those rows first). Rendering must branch on it — interpolating it into
+  // "Within {n} m" produced "Within ble m".
+  distance_bucket_m: NearbyBucket;
   relationship: "none" | "sent" | "received" | "connected";
 };
+
+export type NearbyBucket = 100 | 200 | "ble";
 
 export type NearbyRequest = UserProfile & {
   request_id: string;
@@ -845,6 +850,29 @@ export function sendNearbyRequest(userId: string) {
   return request<{ request_id: string; status: "pending" }>("/api/v1/nearby/requests", {
     method: "POST",
     body: JSON.stringify({ user_id: userId })
+  });
+}
+
+/** Nearby v2 (104) settings. `ble_assist` is stored per-user but the BLE scan loop is mobile-only —
+ *  the web UI shows the toggle read-only so the setting is discoverable, not silently missing. */
+export type NearbySettings = {
+  enabled: boolean;
+  ble_assist: boolean;
+  /** Nearby's own audience enum — only two values (auto-replies has a WIDER, unrelated one). */
+  audience: NearbyAudience;
+};
+
+export type NearbyAudience = "everyone" | "contacts";
+
+export function getNearbySettings() {
+  return request<NearbySettings>("/api/v1/nearby/settings");
+}
+
+/** Sparse update — only the keys provided change (server-side partial merge). */
+export function updateNearbySettings(input: Partial<NearbySettings>) {
+  return request<NearbySettings>("/api/v1/nearby/settings", {
+    method: "PATCH",
+    body: JSON.stringify(input)
   });
 }
 
