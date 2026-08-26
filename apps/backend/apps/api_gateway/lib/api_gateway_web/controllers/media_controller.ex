@@ -183,10 +183,23 @@ defmodule ApiGatewayWeb.MediaController do
     end
   end
 
+  # The purpose passthrough. An unrecognised value coerces to "message" rather than 400-ing, so a
+  # client sending nothing (or junk) still gets the ordinary attachment path.
+  #
+  # THAT COERCION IS ALSO A TRAP: a purpose the media service supports but that is MISSING here is not
+  # rejected, it is silently rewritten — and then fails downstream against the wrong purpose's rules.
+  # "sealed_media" (110) hit exactly that: it became "message", whose content-type allow-list refuses
+  # the application/octet-stream that MediaService.Media REQUIRES for sealed media, so every E2EE
+  # attachment 400'd as media.invalid_request. Adding a purpose to the media service means adding it
+  # here too (and to authorize_upload/3 above, which already had its sealed_media clause).
   defp upload_purpose(params) do
     case params["purpose"] do
-      purpose when purpose in ["message", "user_avatar", "group_avatar", "status"] -> purpose
-      _ -> "message"
+      purpose
+      when purpose in ["message", "user_avatar", "group_avatar", "status", "sealed_media"] ->
+        purpose
+
+      _ ->
+        "message"
     end
   end
 

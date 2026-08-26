@@ -149,6 +149,55 @@ defmodule ApiGatewayWeb.MediaControllerAuthzTest do
       assert body(conn)["echo_conversation_id"] == nil
     end
 
+    # THE PURPOSE PASSTHROUGH (110). upload_purpose/1 coerces anything unrecognised to "message"
+    # instead of 400-ing, so a purpose missing from its whitelist is not rejected — it is silently
+    # REWRITTEN, then judged by the wrong purpose's rules downstream. That is exactly how every E2EE
+    # attachment broke in production: "sealed_media" became "message", and MediaService.Media's
+    # content-type allow-list for "message" refuses the application/octet-stream that sealed media
+    # REQUIRES → 400 media.invalid_request. These two tests pin both halves of that behaviour.
+    test "sealed_media reaches the media client as sealed_media (NOT coerced to message)" do
+      params =
+        create_params(%{
+          "purpose" => "sealed_media",
+          # Ciphertext: opaque bytes, and the only content type the media service accepts here.
+          "content_type" => "application/octet-stream",
+          "conversation_id" => @convo
+        })
+
+      conn = MediaController.create_upload(upload_conn(@member), params)
+
+      assert conn.status == 201
+      # Drop "sealed_media" from upload_purpose/1's whitelist and this reads "message" — the
+      # production failure, caught here instead of on a user's phone.
+      assert body(conn)["echo_purpose"] == "sealed_media"
+      # It is membership-scoped like a normal attachment (authorize_upload's sealed_media clause).
+      assert body(conn)["echo_conversation_id"] == @convo
+    end
+
+    test "sealed_media by a NON-participant → 404, same membership scope as a message attachment" do
+      params =
+        create_params(%{
+          "purpose" => "sealed_media",
+          "content_type" => "application/octet-stream",
+          "conversation_id" => @convo
+        })
+
+      conn = MediaController.create_upload(upload_conn(@stranger), params)
+
+      assert conn.status == 404
+      assert body(conn)["error"]["code"] == "media.not_found"
+    end
+
+    test "an UNKNOWN purpose still coerces to message (the deliberate fallback, unchanged)" do
+      for unknown <- ["nonsense", "", nil] do
+        params = create_params(%{"purpose" => unknown})
+        conn = MediaController.create_upload(upload_conn(@member), params)
+
+        assert conn.status == 201
+        assert body(conn)["echo_purpose"] == "message"
+      end
+    end
+
     test "create response STILL returns object_key (TODO(phase-5) — the live frontend depends on it)" do
       params = create_params(%{"purpose" => "message", "conversation_id" => @convo})
       conn = MediaController.create_upload(upload_conn(@member), params)
