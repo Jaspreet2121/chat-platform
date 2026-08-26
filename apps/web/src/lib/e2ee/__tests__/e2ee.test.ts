@@ -10,17 +10,18 @@ beforeAll(async () => {
   sodium = await sodiumReady();
 });
 
-const frame = (over: Partial<FrameCleartext> = {}): FrameCleartext => ({
-  v: 1,
-  sender_user_id: "11111111-1111-1111-1111-111111111111",
+const frame = (over: Partial<FrameCleartext> = {}): FrameCleartext =>
+  ({
+    v: 1,
+    sender_user_id: "11111111-1111-1111-1111-111111111111",
   sender_device_id: "web-aaaa",
   conversation_id: "33333333-3333-3333-3333-333333333333",
   client_msg_id: "44444444-4444-4444-4444-444444444444",
   composed_at: "2026-08-26T09:00:00.000Z",
-  message_type: "text",
-  body: "hello 🔒",
-  ...over
-});
+    message_type: "text",
+    body: "hello 🔒",
+    ...over
+  }) as FrameCleartext;
 
 describe("canonical bytes", () => {
   it("is fixed-field-order JSON, insensitive to input key order (fixture-locked)", () => {

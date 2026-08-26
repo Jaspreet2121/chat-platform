@@ -39,7 +39,7 @@ export type CreateMessageInput = {
 // The REAL server-side whitelist (media.ex fetch_purpose + MediaAsset @purposes + the 089 CHECK,
 // all three agreeing since e58c642). "status" is accepted by the backend; web has no status
 // upload today, but the type reflects the server rather than a stale subset of it.
-export type MediaUploadPurpose = "message" | "user_avatar" | "group_avatar" | "status";
+export type MediaUploadPurpose = "message" | "user_avatar" | "group_avatar" | "status" | "sealed_media";
 
 export type CreateMediaUploadInput = {
   filename: string;
@@ -1060,6 +1060,12 @@ export function getMediaDownloadUrl(mediaId: string, objectKey: string) {
   );
 }
 
+/** Sealed media (108/109): the recipient has only the media_id (from the decrypted frame) — the
+ *  server resolves the object_key from the row and ignores any client value. */
+export function getSealedMediaDownloadUrl(mediaId: string) {
+  return request<MediaDownload>(`/api/v1/media/${encodeURIComponent(mediaId)}/download`);
+}
+
 export function createMessage(input: CreateMessageInput) {
   return request<Message>(
     `/api/v1/conversations/${encodeURIComponent(input.conversationId)}/messages`,
@@ -1647,6 +1653,11 @@ export function fetchUserKeys(userIds: string[]) {
   return request<{ users: UserDeviceKeys[] }>(`/api/v1/keys/users?${qs.toString()}`).then(
     (r) => r.users ?? []
   );
+}
+
+/** GET /api/v1/client-config — per-app context (e2ee_default). Cacheable (server sets max-age=300). */
+export function fetchClientConfig() {
+  return request<{ e2ee_default: boolean }>("/api/v1/client-config");
 }
 
 /** POST /api/v1/conversations/{id}/encryption — turn on E2EE (1:1, one-way). */

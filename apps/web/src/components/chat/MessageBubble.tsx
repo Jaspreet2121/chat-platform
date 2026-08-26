@@ -26,6 +26,8 @@ import { cn } from "@/lib/cn";
 import { formatTime, metadataString, senderDisplayName } from "./format";
 import { VoiceMessagePlayer } from "./VoiceMessagePlayer";
 import { LinkifiedText } from "./LinkifiedText";
+import { SealedMediaBubble } from "./SealedMediaBubble";
+import type { DecryptOutcome } from "@/lib/e2ee/secretChat";
 
 // Leaflet needs `window` — load the interactive map client-side only (no SSR) so the build/SSR never
 // touch it. A neutral skeleton reserves the space while the chunk loads.
@@ -41,8 +43,9 @@ const QUICK_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🙏"];
 export type MessageBubbleProps = {
   message: Message;
   isOwn: boolean;
-  /** 108: for a sealed message, the decrypted result (or a stub) — computed by the chat page. */
-  sealedDecryption?: { ok: boolean; body?: string } | null;
+  /** 108/109: for a sealed message, the decrypted outcome (text, media, or a stub) — computed by
+   *  the chat page. */
+  sealedDecryption?: DecryptOutcome | null;
   /** Briefly flash this message (e.g. after jumping to it from a search/starred result). */
   isHighlighted?: boolean;
   /** In a grouped run, the avatar is shown once in the group header — hide the per-bubble avatar. */
@@ -268,6 +271,13 @@ export function MessageBubble({
   if (message.message_type === "sealed") {
     const decrypted = sealedDecryption;
     const failed = decrypted && !decrypted.ok;
+    const isMedia = decrypted?.ok && decrypted.kind === "media";
+    const footer = (
+      <>
+        {formatTime(message.created_at)}
+        {isOwn ? <ReadTicks message={message} inline /> : null}
+      </>
+    );
     return (
       <div className={cn("flex px-1 py-0.5", isOwn ? "justify-end" : "justify-start")}>
         <div
@@ -277,22 +287,32 @@ export function MessageBubble({
             failed && "italic opacity-70"
           )}
         >
-          {decrypted?.ok ? (
-            <p className="whitespace-pre-wrap break-words">
-              <LinkifiedText text={decrypted.body ?? ""} />
-            </p>
-          ) : failed ? (
-            <p className="whitespace-pre-wrap break-words">
-              {"Couldn't decrypt this message"}
-            </p>
+          {isMedia && decrypted?.ok && decrypted.kind === "media" ? (
+            <SealedMediaBubble media={decrypted.media} isOwn={isOwn} footer={footer} />
           ) : (
-            <p className="opacity-60">Decrypting…</p>
+            <>
+              {decrypted?.ok && decrypted.kind === "text" ? (
+                <p className="whitespace-pre-wrap break-words">
+                  <LinkifiedText text={decrypted.body} />
+                </p>
+              ) : failed ? (
+                <p className="whitespace-pre-wrap break-words">
+                  {"Couldn't decrypt this message"}
+                </p>
+              ) : (
+                <p className="opacity-60">Decrypting…</p>
+              )}
+              <span
+                className={cn(
+                  "mt-0.5 flex items-center gap-1 text-[10px]",
+                  isOwn ? "text-white/70" : "text-faint"
+                )}
+              >
+                <Lock className="h-2.5 w-2.5" aria-hidden />
+                {footer}
+              </span>
+            </>
           )}
-          <span className={cn("mt-0.5 flex items-center gap-1 text-[10px]", isOwn ? "text-white/70" : "text-faint")}>
-            <Lock className="h-2.5 w-2.5" aria-hidden />
-            {formatTime(message.created_at)}
-            {isOwn ? <ReadTicks message={message} inline /> : null}
-          </span>
         </div>
       </div>
     );

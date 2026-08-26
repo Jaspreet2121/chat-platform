@@ -15,3 +15,13 @@ describe("send-path guard", () => {
     expect(sealedMessageType({ secret: false })).toBe("text");
   });
 });
+
+import { attachmentSendGuard } from "@/lib/e2ee/sendGuard";
+
+describe("attachment send-path guard (v2)", () => {
+  it("a secret conversation forces sealed_media; a normal one uses the plaintext media path", () => {
+    expect(attachmentSendGuard({ secret: true })).toEqual({ mode: "sealed_media" });
+    expect(attachmentSendGuard({ secret: false })).toEqual({ mode: "plaintext_media" });
+    expect(attachmentSendGuard({})).toEqual({ mode: "plaintext_media" });
+  });
+});

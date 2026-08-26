@@ -109,6 +109,18 @@ export async function openFrame(
   try {
     const frame = JSON.parse(new TextDecoder().decode(plaintext)) as FrameCleartext;
     if (frame.v !== 1 || typeof frame.body !== "string") return { ok: false, reason: "malformed" };
+    // A media frame must carry a well-formed descriptor; anything else is malformed (never rendered).
+    if (frame.message_type === "media") {
+      const media = frame.media as unknown;
+      if (
+        !media ||
+        typeof (media as { media_id?: unknown }).media_id !== "string" ||
+        typeof (media as { key_b64?: unknown }).key_b64 !== "string" ||
+        !(media as { enc?: unknown }).enc
+      ) {
+        return { ok: false, reason: "malformed" };
+      }
+    }
     return { ok: true, frame };
   } catch {
     return { ok: false, reason: "malformed" };

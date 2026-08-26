@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, MessageSquare, MessagesSquare } from "lucide-react";
 import type { Message } from "@/lib/api";
+import type { DecryptOutcome } from "@/lib/e2ee/secretChat";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { EmptyState } from "./EmptyState";
@@ -82,8 +83,8 @@ export type MessageListProps = {
   onStopLiveLocation?: (messageId: string) => void;
   /** A message to scroll to + highlight (from a search / starred result). The nonce re-triggers. */
   scrollTarget?: { id: string; n: number } | null;
-  /** 108: message_id → decrypted sealed result (or stub). */
-  sealedDecryptions?: Map<string, { ok: boolean; body?: string }>;
+  /** 108/109: message_id → decrypted sealed outcome (text, media, or stub). */
+  sealedDecryptions?: Map<string, DecryptOutcome>;
 };
 
 export function MessageList({

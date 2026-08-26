@@ -61,11 +61,14 @@ import { primeUserProfile, useUserProfile } from "@/components/chat/useUserProfi
 import { pickDirectPeer, primeConversationDetail } from "@/components/chat/useDirectPeer";
 import {
   decryptMessage,
+  maybeUpgradeConversation,
   registerDeviceKeys,
+  sendSecretMedia,
   sendSecretText,
   turnOnEncryption,
   type DecryptOutcome
 } from "@/lib/e2ee/secretChat";
+import { makeImageThumb } from "@/lib/e2ee/thumbnail";
 import { cn } from "@/lib/cn";
 import imageCompression from "browser-image-compression";
 import { reuploadMediaForForward } from "@/lib/forward";
@@ -643,18 +646,38 @@ export default function ChatPage() {
     const replyToId = replyingTo?.message_id;
 
     try {
-      // 108: a secret conversation ALWAYS sends sealed (the guard makes plaintext unreachable here);
-      // attachments are refused in the composer, so a secret send is text-only.
+      // 108/109: a secret conversation ALWAYS sends sealed (the guard makes plaintext unreachable
+      // here). An attachment is sealed via sendSecretMedia (encrypt → upload ciphertext → sealed
+      // frame); otherwise the send is sealed text.
+      const secretMemberIds = () =>
+        (selectedConversation?.participants ?? [])
+          .filter((p) => !p.left_at)
+          .map((p) => p.user_id);
+
       const message =
         selectedConversation?.secret === true
-          ? await sendSecretText({
-              conversationId: selectedConversationId,
-              memberIds: (selectedConversation?.participants ?? [])
-                .filter((p) => !p.left_at)
-                .map((p) => p.user_id),
-              senderUserId: session?.user_id ?? "",
-              body
-            })
+          ? selectedFile
+            ? await sendSecretMedia({
+                conversationId: selectedConversationId,
+                memberIds: secretMemberIds(),
+                senderUserId: session?.user_id ?? "",
+                file: selectedFile,
+                thumb: await makeImageThumb(selectedFile),
+                onStage: (stage) =>
+                  setMediaStatus(
+                    stage === "encrypting"
+                      ? "Encrypting…"
+                      : stage === "uploading"
+                        ? "Uploading…"
+                        : ""
+                  )
+              })
+            : await sendSecretText({
+                conversationId: selectedConversationId,
+                memberIds: secretMemberIds(),
+                senderUserId: session?.user_id ?? "",
+                body
+              })
           : selectedFile
             ? await uploadAndSendMediaMessage(selectedFile, body, replyToId)
             : await sendCreate({
@@ -1311,6 +1334,21 @@ export default function ChatPage() {
     return pickDirectPeer(selectedConversation?.participants, session?.user_id) ?? null;
   }, [selectedIsDirect, selectedConversation?.participants, session?.user_id]);
   const directPeerProfile = useUserProfile(directPeerId);
+
+  // 109 §9(ii): opening an existing plaintext 1:1 in a default-on app silently upgrades it to secret
+  // when the peer has device keys (enable is idempotent; the system pill + lock flip in live via
+  // onEncryptionChanged). All guards + the once-per-conversation dedupe live in the helper, and it
+  // never throws — a keyless peer or a disabled default simply leaves the chat plaintext.
+  useEffect(() => {
+    if (!selectedConversation || !directPeerId) return;
+    void maybeUpgradeConversation({
+      conversationId: selectedConversation.conversation_id,
+      peerUserId: directPeerId,
+      isDirect: selectedIsDirect,
+      alreadySecret: selectedConversation.secret === true
+    });
+  }, [selectedConversation, directPeerId, selectedIsDirect]);
+
   // Direct-chat title = the OTHER person. NEVER fall back to selectedConversation.title: for a direct
   // chat the stored title is the creator-set peer name, so on the RECIPIENT's side it's their OWN name.
   // 108: turn on encryption for the selected 1:1. Registers keys, calls the server, refreshes the
@@ -1746,7 +1784,7 @@ export default function ChatPage() {
           onSubmit={handleSend}
           hasConversation={Boolean(selectedConversationId)}
           lockedNote={composerLockedNote}
-          attachmentsDisabled={selectedConversation?.secret === true}
+          attachmentsDisabled={false}
           isSending={isSending}
           selectedFile={selectedFile}
           onPickFile={() => fileInputRef.current?.click()}
