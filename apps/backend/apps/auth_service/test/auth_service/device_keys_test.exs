@@ -83,10 +83,14 @@ defmodule AuthService.DeviceKeysTest do
     me = user!()
     device!(me, "phone-1")
 
-    assert {:ok, %{saved: true}} = save!(me, "phone-1")
+    # First upload IS a change (108: drives the secret-chat keys_changed system message)…
+    assert {:ok, %{saved: true, changed: true}} = save!(me, "phone-1")
 
-    # Rotation replaces the keys under the SAME row (updated_at moves).
-    assert {:ok, _} = save!(me, "phone-1", ed: key64(9), x: key64(8))
+    # …an identical re-upload is NOT (no keys_changed spam)…
+    assert {:ok, %{changed: false}} = save!(me, "phone-1")
+
+    # …and a rotation replaces the keys under the SAME row and IS a change.
+    assert {:ok, %{changed: true}} = save!(me, "phone-1", ed: key64(9), x: key64(8))
 
     %{rows: [[count, ed]]} =
       Repo.query!(
@@ -141,6 +145,9 @@ defmodule AuthService.DeviceKeysTest do
     assert phone.platform == "android"
     assert phone.ed25519_public == key64(3)
     assert phone.x25519_public == key64(4)
+    # Safety-number fingerprint (108): sha256 of the SIGNING key, hex.
+    assert phone.key_fingerprint ==
+             Base.encode16(:crypto.hash(:sha256, :binary.copy(<<3>>, 32)), case: :lower)
 
     # THE GATE: the stranger is SILENTLY OMITTED — absent, not an error (no existence oracle).
     refute Map.has_key?(by_id, stranger)

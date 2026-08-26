@@ -50,6 +50,14 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Conversations.get_conversation_app(body(conn)))
   end
 
+  post "/internal/conversations/set_encryption" do
+    send_result(conn, ConversationService.Encryption.set_encryption(body(conn)))
+  end
+
+  post "/internal/conversations/secret_of" do
+    send_result(conn, ConversationService.Encryption.secret_conversations_of(body(conn)))
+  end
+
   post "/internal/conversations/call_conversation" do
     send_result(conn, ConversationService.Conversations.get_call_conversation(body(conn)))
   end

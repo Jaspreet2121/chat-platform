@@ -104,6 +104,29 @@ defmodule ApiGatewayWeb.MessageController do
           "Only admins can send messages"
         )
 
+      # SECRET CHATS (108): plaintext into a secret chat / sealed into a normal one / a malformed
+      # sealed envelope — all 422, all before anything is stored.
+      {:error, :secret_plaintext_rejected} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "secret.plaintext_rejected",
+          "This chat is end-to-end encrypted — send sealed messages only"
+        )
+
+      {:error, :secret_sealed_rejected} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "secret.sealed_rejected",
+          "Sealed messages are only accepted in secret chats"
+        )
+
+      {:error, :secret_sealed_invalid} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "secret.sealed_invalid",
+          "Sealed payload is malformed, too large, or addresses unknown devices"
+        )
+
       # Malformed polls are rejected with SPECIFIC codes — never stored broken.
       {:error, poll_error}
       when poll_error in [

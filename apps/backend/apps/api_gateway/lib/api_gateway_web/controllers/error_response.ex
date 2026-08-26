@@ -82,6 +82,20 @@ defmodule ApiGatewayWeb.ErrorResponse do
     })
   end
 
+  # 409 with structured extra fields (e.g. WHICH side is missing device keys — secret chats, 108).
+  def conflict_with(conn, code, message, extra) when is_map(extra) do
+    conn
+    |> put_status(:conflict)
+    |> json(%{
+      error:
+        Map.merge(extra, %{
+          code: code,
+          message: message,
+          correlation_id: correlation_id(conn)
+        })
+    })
+  end
+
   # 413 for an upload whose declared size exceeds the server cap (MEDIA_MAX_SIZE_BYTES).
   def payload_too_large(conn, code, message) do
     conn

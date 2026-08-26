@@ -54,7 +54,10 @@ defmodule MessageService.WebhookEvents do
           "conversation_id" => field(message, :conversation_id),
           "sender_external_id" => external_id,
           "message_type" => field(message, :message_type),
-          "body" => field(message, :body),
+          # SECRET CHATS (108): a sealed message's webhook says a message HAPPENED, never what —
+          # body is forced nil (it already is in the store; this guard makes the promise explicit)
+          # and the sealed envelope never rides a webhook (the payload has no metadata field).
+          "body" => payload_body(field(message, :message_type), field(message, :body)),
           "created_at" => to_iso(field(message, :created_at))
         })
 
@@ -66,6 +69,9 @@ defmodule MessageService.WebhookEvents do
         :ok
     end
   end
+
+  defp payload_body("sealed", _body), do: nil
+  defp payload_body(_type, body), do: body
 
   defp sender_external_id(app_id, user_id)
        when is_binary(app_id) and app_id != "" and is_binary(user_id) and user_id != "" do

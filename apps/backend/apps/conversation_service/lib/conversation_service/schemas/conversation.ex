@@ -24,6 +24,9 @@ defmodule ConversationService.Schemas.Conversation do
     # Canonical "min:max" pair key for type='direct' (NULL otherwise). A partial unique index
     # (idx_conversations_direct_key_unique, migration 047) makes direct chats one-per-pair.
     field(:direct_key, :string)
+
+    # 108: opt-in E2EE — content is client-sealed; the server relays ciphertext only. One-way in v1.
+    field(:secret, :boolean, default: false)
     field(:created_at, :utc_datetime_usec)
     field(:updated_at, :utc_datetime_usec)
   end

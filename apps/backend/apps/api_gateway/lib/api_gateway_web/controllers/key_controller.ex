@@ -29,6 +29,12 @@ defmodule ApiGatewayWeb.KeyController do
              "ed25519_public" => Map.get(params, "ed25519_public"),
              "x25519_public" => Map.get(params, "x25519_public")
            }) do
+      # SECRET CHATS (108): a genuine key change (first upload or rotation — the store says which)
+      # notifies every secret conversation this user is in. Best-effort; the upload already stands.
+      if Map.get(result, :changed) == true or Map.get(result, "changed") == true do
+        ApiGatewayWeb.SecretChatEvents.emit_keys_changed(session.user_id)
+      end
+
       json(conn, result)
     else
       error -> handle_error(conn, error)

@@ -61,6 +61,15 @@ defmodule RealtimeGateway.AutoReplyTest do
     assert AutoReply.decide(context(live)) == {:send, :greeting}
   end
 
+  test "SECRET CHATS (108): a secret conversation is a hard skip — even with both features live" do
+    live = context(%{settings: %{away: away(), greeting: greeting()}})
+    assert AutoReply.decide(live) == {:send, :greeting}
+
+    assert AutoReply.decide(Map.put(live, :conversation_secret?, true)) == :skip
+    # Explicit boolean discipline: absent or non-true never skips.
+    assert AutoReply.decide(Map.put(live, :conversation_secret?, false)) == {:send, :greeting}
+  end
+
   test "BOTH DUE → greeting only; away alone → away" do
     both = context(%{settings: %{away: away(), greeting: greeting()}})
     assert AutoReply.decide(both) == {:send, :greeting}

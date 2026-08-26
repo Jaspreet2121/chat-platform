@@ -326,6 +326,9 @@ defmodule NotificationService.PushContext do
   """
   def preview(body, message_type, content_type)
 
+  # SECRET CHATS (108): a sealed message's push preview is GENERIC — no body, no hint of content.
+  def preview(_body, "sealed", _content_type), do: "New message"
+
   def preview(body, "text", _content_type) when is_binary(body) and body != "", do: body
 
   def preview(_body, "location", _content_type), do: "📍 Location"

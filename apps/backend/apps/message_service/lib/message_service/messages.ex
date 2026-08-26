@@ -224,6 +224,7 @@ defmodule MessageService.Messages do
     with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
          {:ok, sender_user_id} <- required_attr(attrs, "sender_user_id"),
          {:ok, message_type} <- required_attr(attrs, "message_type"),
+         :ok <- check_secret_policy(conversation_id, message_type, attrs),
          {:ok, client_msg_id} <- client_msg_id(attrs),
          {:ok, media_id} <- media_id(attrs, message_type),
          {:ok, caption} <- caption(attrs, message_type),
@@ -335,6 +336,97 @@ defmodule MessageService.Messages do
       DateTime.compare(composed, now) == :gt -> now
       true -> composed
     end
+  end
+
+  # ---- secret chats (108) -----------------------------------------------------------------------
+
+  @sealed_types ["sealed", "system"]
+  @sealed_max_bytes 64 * 1024
+
+  # In a SECRET conversation only sealed (+ plaintext-free system) messages are accepted — the
+  # plaintext rejection is defense against a buggy/old client leaking content into a chat both
+  # sides believe is E2EE. Sealed outside a secret conversation is equally rejected. System
+  # messages in a secret chat stay plaintext BY DESIGN: they carry protocol state (encryption
+  # enabled / keys changed), never user content.
+  defp check_secret_policy(conversation_id, message_type, attrs) do
+    secret? = conversation_secret?(conversation_id)
+
+    cond do
+      secret? and message_type not in @sealed_types ->
+        {:error, :secret_plaintext_rejected}
+
+      not secret? and message_type == "sealed" ->
+        {:error, :secret_sealed_rejected}
+
+      message_type == "sealed" ->
+        validate_sealed(conversation_id, attrs)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp conversation_secret?(conversation_id) do
+    case MessageService.Repo.query(
+           "SELECT secret FROM conversations WHERE id = $1::text::uuid",
+           [conversation_id]
+         ) do
+      {:ok, %{rows: [[true]]}} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp validate_sealed(conversation_id, attrs) do
+    sealed = get_attr(attrs, "sealed")
+
+    with true <- is_binary(get_attr(attrs, "client_msg_id")) || {:error, :secret_sealed_invalid},
+         true <- is_map(sealed) || {:error, :secret_sealed_invalid},
+         true <- Map.get(sealed, "v") == 1 || {:error, :secret_sealed_invalid},
+         true <- nonempty?(Map.get(sealed, "alg")) || {:error, :secret_sealed_invalid},
+         true <-
+           nonempty?(Map.get(sealed, "sender_device_id")) || {:error, :secret_sealed_invalid},
+         true <- nonempty?(Map.get(sealed, "sig_b64")) || {:error, :secret_sealed_invalid},
+         true <-
+           valid_recipients?(Map.get(sealed, "recipients")) || {:error, :secret_sealed_invalid},
+         true <-
+           byte_size(Jason.encode!(sealed)) <= @sealed_max_bytes ||
+             {:error, :secret_sealed_invalid},
+         true <-
+           recipients_are_member_devices?(conversation_id, Map.get(sealed, "recipients")) ||
+             {:error, :secret_sealed_invalid} do
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp nonempty?(value), do: is_binary(value) and value != ""
+
+  defp valid_recipients?(recipients) do
+    is_list(recipients) and recipients != [] and
+      Enum.all?(recipients, fn recipient ->
+        is_map(recipient) and nonempty?(Map.get(recipient, "device_id")) and
+          nonempty?(Map.get(recipient, "envelope_b64"))
+      end)
+  end
+
+  # Every recipient device must be a LIVE device of one of the conversation's members — a foreign
+  # device_id in the envelope list is either a bug or an exfiltration attempt; both are refused.
+  defp recipients_are_member_devices?(conversation_id, recipients) do
+    %{rows: rows} =
+      MessageService.Repo.query!(
+        "SELECT ds.device_id FROM conversation_participants p " <>
+          "JOIN device_sessions ds ON ds.user_id = p.user_id AND ds.revoked_at IS NULL " <>
+          "WHERE p.conversation_id = $1::text::uuid AND p.left_at IS NULL",
+        [conversation_id]
+      )
+
+    allowed = MapSet.new(rows, fn [device_id] -> device_id end)
+    Enum.all?(recipients, &MapSet.member?(allowed, Map.get(&1, "device_id")))
+  rescue
+    _ -> false
   end
 
   # nil client id → a fresh server timeuuid, exactly the pre-107 behaviour.
@@ -878,6 +970,8 @@ defmodule MessageService.Messages do
     end
   end
 
+  # Sealed messages carry NO plaintext body — content lives only in metadata.sealed (ciphertext).
+  defp message_body(_attrs, "sealed", _caption), do: {:ok, nil}
   defp message_body(attrs, _message_type, _caption), do: {:ok, get_attr(attrs, "body")}
 
   defp media_id(attrs, "media"), do: required_attr(attrs, "media_id")
@@ -913,6 +1007,11 @@ defmodule MessageService.Messages do
       {:ok, %{"poll" => definition}}
     end
   end
+
+  # The sealed envelope, stored OPAQUELY (shape/device validation happened in check_secret_policy;
+  # the server never parses recipients[].envelope_b64).
+  defp metadata(attrs, "sealed", _media_id, _caption),
+    do: {:ok, %{"sealed" => get_attr(attrs, "sealed")}}
 
   defp metadata(attrs, _message_type, _media_id, _caption), do: metadata(attrs)
 

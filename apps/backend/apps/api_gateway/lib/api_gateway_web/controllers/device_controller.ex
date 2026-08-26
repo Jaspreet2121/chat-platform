@@ -62,6 +62,9 @@ defmodule ApiGatewayWeb.DeviceController do
       # ride the payload: a QR-linked browser only knows its session_id (its device_id was minted
       # server-side and never told to it as an identity), an OTP browser matches on device_id —
       # the live-test 2026-08-18 found the device_id-only payload matched neither for linked tabs.
+      # SECRET CHATS (108): a revoked device changes the user's key set — notify their secret chats.
+      ApiGatewayWeb.SecretChatEvents.emit_keys_changed(session.user_id)
+
       ApiGatewayWeb.Endpoint.broadcast("user:" <> session.user_id, "session_revoked", %{
         device_id: device_id,
         session_id: cget(result, :session_id)

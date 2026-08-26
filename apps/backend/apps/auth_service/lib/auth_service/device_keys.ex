@@ -22,6 +22,21 @@ defmodule AuthService.DeviceKeys do
          {:ok, app_id} <- required(attrs, "app_id"),
          {:ok, ed25519} <- key_of(attrs, "ed25519_public"),
          {:ok, x25519} <- key_of(attrs, "x25519_public") do
+      # `changed` drives the secret-chat keys_changed system message (108): a first upload or a
+      # byte-different key is a change; re-uploading identical keys is not (no spam).
+      %{rows: previous} =
+        Repo.query!(
+          "SELECT ed25519_public, x25519_public FROM device_keys " <>
+            "WHERE user_id = $1::text::uuid AND device_id = $2",
+          [user_id, device_id]
+        )
+
+      changed =
+        case previous do
+          [[^ed25519, ^x25519]] -> false
+          _ -> true
+        end
+
       Repo.query!(
         """
         INSERT INTO device_keys (user_id, device_id, app_id, ed25519_public, x25519_public)
@@ -35,7 +50,7 @@ defmodule AuthService.DeviceKeys do
         [user_id, device_id, app_id, ed25519, x25519]
       )
 
-      {:ok, %{saved: true}}
+      {:ok, %{saved: true, changed: changed}}
     end
   rescue
     Ecto.Query.CastError -> {:error, :device_keys_invalid}
@@ -90,6 +105,9 @@ defmodule AuthService.DeviceKeys do
                   platform: platform,
                   ed25519_public: Base.encode64(ed),
                   x25519_public: Base.encode64(x),
+                  # Safety-number convenience (108): sha256 of the SIGNING key, hex — what clients
+                  # display; deriving client-side from ed25519_public gives the same value.
+                  key_fingerprint: Base.encode16(:crypto.hash(:sha256, ed), case: :lower),
                   updated_at: iso(updated_at)
                 }
               end)

@@ -26,6 +26,8 @@ defmodule SharedInfra.ConversationClient do
   # Voluntary leave (078) — self-removal, distinct from the moderation remove path.
   @callback leave_conversation(attrs()) :: result()
   @callback get_conversation_app(attrs()) :: result()
+  @callback set_encryption(attrs()) :: result()
+  @callback secret_conversations_of(attrs()) :: result()
   @callback clear_history(attrs()) :: result()
   @callback set_auto_delete(attrs()) :: result()
   @callback set_mute(attrs()) :: result()
@@ -102,6 +104,8 @@ defmodule SharedInfra.ConversationClient do
 
   # Optional so existing test stubs of this behaviour don't all need it; the real adapters implement it.
   @optional_callbacks get_conversation_app: 1,
+                      set_encryption: 1,
+                      secret_conversations_of: 1,
                       get_call_conversation: 1,
                       admin_list_conversations: 1,
                       admin_user_conversations: 1,
@@ -166,6 +170,8 @@ defmodule SharedInfra.ConversationClient do
   def remove_participant(attrs), do: adapter().remove_participant(attrs)
   def leave_conversation(attrs), do: adapter().leave_conversation(attrs)
   def get_conversation_app(attrs), do: adapter().get_conversation_app(attrs)
+  def set_encryption(attrs), do: adapter().set_encryption(attrs)
+  def secret_conversations_of(attrs), do: adapter().secret_conversations_of(attrs)
   def clear_history(attrs), do: adapter().clear_history(attrs)
   def set_auto_delete(attrs), do: adapter().set_auto_delete(attrs)
   def set_mute(attrs), do: adapter().set_mute(attrs)

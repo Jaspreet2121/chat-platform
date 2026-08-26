@@ -36,6 +36,9 @@ defmodule RealtimeGateway.AutoReply do
 
     cond do
       context.conversation_type != "direct" -> :skip
+      # SECRET CHATS (108): the engine cannot read intent in a sealed conversation — greeting and
+      # away must never fire there. Explicit true match (the falsy-mget discipline).
+      Map.get(context, :conversation_secret?) == true -> :skip
       is_nil(context.sender_id) or is_nil(context.recipient_id) -> :skip
       context.sender_id == context.recipient_id -> :skip
       context.sender_auto? -> :skip

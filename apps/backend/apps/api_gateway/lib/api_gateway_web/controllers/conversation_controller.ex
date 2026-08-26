@@ -43,11 +43,36 @@ defmodule ApiGatewayWeb.ConversationController do
       |> put_status(:created)
       |> json(ApiGatewayWeb.ConversationBroadcast.strip_internal(response))
     else
-      {:error, :session_invalid} -> session_invalid(conn)
-      {:error, :auth_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_unavailable} -> service_unavailable(conn)
-      {:error, :conversation_invalid} -> invalid_request(conn)
-      _ -> invalid_request(conn)
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_unavailable} ->
+        service_unavailable(conn)
+
+      # SECRET CHATS (108): "secret": true at create — same preconditions as the toggle.
+      {:error, :secret_not_supported} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "secret.not_supported",
+          "Secret chats are 1:1 only"
+        )
+
+      {:error, {:secret_peer_keys_missing, missing}} ->
+        ErrorResponse.conflict_with(
+          conn,
+          "secret.peer_keys_missing",
+          "Both sides need registered device keys first",
+          %{missing_user_ids: missing}
+        )
+
+      {:error, :conversation_invalid} ->
+        invalid_request(conn)
+
+      _ ->
+        invalid_request(conn)
     end
   end
 

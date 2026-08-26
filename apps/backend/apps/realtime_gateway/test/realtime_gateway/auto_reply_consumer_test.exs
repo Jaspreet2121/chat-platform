@@ -43,6 +43,8 @@ defmodule RealtimeGateway.AutoReplyConsumerTest do
        %{
          conversation_id: "33333333-3333-3333-3333-333333333333",
          type: "direct",
+         # 108: flips to true in the secret-skip test below.
+         secret: Application.get_env(:realtime_gateway, :test_conversation_secret, false),
          # Old last activity → greeting's idle condition holds.
          updated_at: "2026-07-01T00:00:00Z",
          participants: [
@@ -165,6 +167,15 @@ defmodule RealtimeGateway.AutoReplyConsumerTest do
     assert :ok = AutoReplyConsumer.handle_value(event())
     refute_receive {:claim, _}, 100
     refute_receive {:reply_sent, _}, 100
+  end
+
+  test "SECRET CHATS (108): the engine skips a secret conversation outright — no claim, no reply" do
+    Application.put_env(:realtime_gateway, :test_conversation_secret, true)
+    on_exit(fn -> Application.delete_env(:realtime_gateway, :test_conversation_secret) end)
+
+    assert :ok = AutoReplyConsumer.handle_value(event())
+    refute_receive {:claim, _}, 100
+    refute_receive {:reply_sent, _}, 50
   end
 
   test "both features disabled → nothing happens (the default state is invisible)" do

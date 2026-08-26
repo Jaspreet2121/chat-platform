@@ -40,6 +40,12 @@ defmodule SharedInfra.ConversationClientHttp do
   def get_conversation_app(attrs), do: post("/internal/conversations/get_app", attrs)
 
   @impl true
+  def set_encryption(attrs), do: post("/internal/conversations/set_encryption", attrs)
+
+  @impl true
+  def secret_conversations_of(attrs), do: post("/internal/conversations/secret_of", attrs)
+
+  @impl true
   def get_call_conversation(attrs), do: post("/internal/conversations/call_conversation", attrs)
 
   @impl true

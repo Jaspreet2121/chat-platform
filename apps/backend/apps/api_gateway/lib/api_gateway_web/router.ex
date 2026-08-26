@@ -249,6 +249,13 @@ defmodule ApiGatewayWeb.Router do
     patch "/", AutoReplyController, :update
   end
 
+  # Secret chats (108): the one-way E2EE toggle on a 1:1.
+  scope "/api/v1/conversations", ApiGatewayWeb do
+    pipe_through :api
+
+    post "/:conversation_id/encryption", EncryptionController, :update
+  end
+
   # Device public keys (107) — the offline-messaging foundation. Upload binds to the SESSION's
   # device; fetch is membership-gated at the store.
   scope "/api/v1/keys", ApiGatewayWeb do

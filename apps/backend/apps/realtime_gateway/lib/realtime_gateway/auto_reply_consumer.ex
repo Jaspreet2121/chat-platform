@@ -80,6 +80,8 @@ defmodule RealtimeGateway.AutoReplyConsumer do
            SharedInfra.UserClient.get_auto_replies(%{"user_id" => recipient_id}) do
       context = %{
         conversation_type: mget(conversation, :type),
+        # SECRET CHATS (108): EXPLICIT boolean (the falsy-mget trap) — the engine must skip.
+        conversation_secret?: conversation_secret_flag(conversation),
         sender_id: sender_id,
         recipient_id: recipient_id,
         sender_auto?: auto_message?(message),
@@ -174,6 +176,14 @@ defmodule RealtimeGateway.AutoReplyConsumer do
   # Fail CLOSED on a block-check error — a broken check must not cause a reply to a blocked party.
   # Explicit matches, NOT mget: `false` is a legal value and the `||` fallback would swallow it
   # (false || nil → nil), reading every unblocked pair as blocked.
+  defp conversation_secret_flag(conversation) do
+    case {Map.get(conversation, :secret), Map.get(conversation, "secret")} do
+      {value, _} when is_boolean(value) -> value
+      {_, value} when is_boolean(value) -> value
+      _ -> false
+    end
+  end
+
   defp blocked?(sender_id, recipient_id) do
     case SharedInfra.ConversationClient.either_blocked?(%{
            "user_a" => sender_id,

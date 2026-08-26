@@ -132,12 +132,43 @@ defmodule MessageService.Projections.SearchIndex do
 
   def refresh_text(_message_id, _body, _edited_at), do: :ok
 
+  # Sealed rows carry no plaintext; and even a SYSTEM row inside a secret conversation stays out.
+  defp secret_content?(message) do
+    Map.get(message, :message_type) == "sealed" or
+      conversation_secret?(Map.get(message, :conversation_id))
+  end
+
+  defp conversation_secret?(conversation_id) when is_binary(conversation_id) do
+    case Repo.query(
+           "SELECT secret FROM conversations WHERE id = $1::text::uuid",
+           [conversation_id]
+         ) do
+      {:ok, %{rows: [[true]]}} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp conversation_secret?(_), do: false
+
   @doc """
   Upsert one message into the index from a store-shaped map (atom keys, `%DateTime{}` created_at).
   OVERWRITE semantics — consumer and edit path always carry the current body. The backfill
   deliberately does NOT use this (it must never overwrite; see `MessageService.SearchBackfill`).
   """
   def upsert(%{} = message) do
+    if secret_content?(message) do
+      # SECRET CHATS (108): a secret conversation's messages NEVER enter the search index — the
+      # index stores plaintext (search_text) and would defeat the sealing. The conversation itself
+      # remains findable by NAME through the conversation list; its content does not exist here.
+      :ok
+    else
+      do_upsert(message)
+    end
+  end
+
+  defp do_upsert(message) do
     Repo.query!(
       "INSERT INTO message_search (message_id, conversation_id, sender_user_id, created_at, search_text) " <>
         "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4, $5) " <>

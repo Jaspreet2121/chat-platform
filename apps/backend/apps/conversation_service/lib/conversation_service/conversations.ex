@@ -379,7 +379,9 @@ defmodule ConversationService.Conversations do
       # Group admin setting — the client locks the composer for non-admins when true.
       only_admins_can_send: only_admins_can_send,
       # Group-call permission — the client gates the "start call" button (Phase-3).
-      call_start_permission: call_start_permission
+      call_start_permission: call_start_permission,
+      # 108: secret (E2EE) flag — clients switch to sealed sends; the auto-reply engine skips.
+      secret: conversation.secret == true
     }
   end
 
@@ -720,57 +722,116 @@ defmodule ConversationService.Conversations do
         |> Enum.reject(&is_nil/1)
         |> Enum.uniq()
 
-      # The app (tenant) this conversation belongs to. The existing single-tenant gateway passes none →
-      # tenant zero. Set explicitly so direct dedup keys + the (app_id, direct_key) unique index scope
-      # per-app (and future per-app callers just pass their app_id).
-      app_id = SharedInfra.Tenancy.app_id_or_default(get_attr(attrs, "app_id"))
+      # SECRET CHATS (108): "secret": true at create runs the SAME preconditions as the toggle —
+      # 1:1 only, every member holds at least one live device key — CHECKED BEFORE the insert so a
+      # refused secret request creates nothing. The flag is stamped right after the insert.
+      secret_requested? = get_attr(attrs, "secret") == true
 
-      base_attrs = %{
-        "id" => conversation_id,
-        "tenant_id" => get_attr(attrs, "tenant_id"),
-        "app_id" => app_id,
-        "type" => type,
-        "title" => get_attr(attrs, "title"),
-        "avatar_media_id" => get_attr(attrs, "avatar_media_id"),
-        "created_by" => created_by,
-        "status" => "active",
-        "created_at" => now,
-        "updated_at" => now
-      }
+      secret_check =
+        cond do
+          not secret_requested? ->
+            :ok
 
-      # A 1:1 direct chat (exactly two distinct participants) is idempotent per user-pair WITHIN the app:
-      # return the existing thread for the pair if there is one, else create it. Everything else inserts.
-      result =
-        if type == "direct" and length(participant_user_ids) == 2 do
-          find_or_create_direct(app_id, base_attrs, created_by, participant_user_ids, now)
-        else
-          insert_conversation(base_attrs, created_by, participant_user_ids, now)
+          type != "direct" ->
+            {:error, :secret_not_supported}
+
+          true ->
+            case ConversationService.Encryption.members_without_keys(participant_user_ids) do
+              [] -> :ok
+              missing -> {:error, {:secret_peer_keys_missing, missing}}
+            end
         end
 
-      case result do
-        {:ok, response, :created} ->
-          # Emit one participant_added per initial participant ONLY for a newly created conversation
-          # (fire-and-forget; never affects the result). Returning an existing thread stays silent.
-          ParticipantEvents.publish_initial_participants(
-            response.conversation_id,
-            response.created_by,
-            response.participant_user_ids
-          )
-
-          # Surface whether this was a genuine INSERT vs. a returned-existing direct, so the gateway can
-          # broadcast conversation_created ONLY on a real insert (never on an idempotent direct return).
-          # `created` MUST live here as a MAP FIELD (not in conversation_response/2 — that builder is SHARED
-          # by both the :created and :existing paths, so it can't set it) and NOT as a 3rd tuple element (a
-          # tuple element can't cross the ConversationClientHttp boundary; a map field does — see the
-          # round-trip test). This is the value ApiGatewayWeb.ConversationBroadcast gates the broadcast on.
-          {:ok, Map.put(response, :created, true)}
-
-        {:ok, response, :existing} ->
-          {:ok, Map.put(response, :created, false)}
-
-        {:error, _reason} ->
-          {:error, :conversation_invalid}
+      if secret_check != :ok do
+        secret_check
+      else
+        create_conversation_row(
+          attrs,
+          type,
+          created_by,
+          participant_user_ids,
+          now,
+          conversation_id,
+          secret_requested?
+        )
       end
+    end
+  end
+
+  defp create_conversation_row(
+         attrs,
+         type,
+         created_by,
+         participant_user_ids,
+         now,
+         conversation_id,
+         secret_requested?
+       ) do
+    # The app (tenant) this conversation belongs to. The existing single-tenant gateway passes none →
+    # tenant zero. Set explicitly so direct dedup keys + the (app_id, direct_key) unique index scope
+    # per-app (and future per-app callers just pass their app_id).
+    app_id = SharedInfra.Tenancy.app_id_or_default(get_attr(attrs, "app_id"))
+
+    base_attrs = %{
+      "id" => conversation_id,
+      "tenant_id" => get_attr(attrs, "tenant_id"),
+      "app_id" => app_id,
+      "type" => type,
+      "title" => get_attr(attrs, "title"),
+      "avatar_media_id" => get_attr(attrs, "avatar_media_id"),
+      "created_by" => created_by,
+      "status" => "active",
+      "created_at" => now,
+      "updated_at" => now
+    }
+
+    # A 1:1 direct chat (exactly two distinct participants) is idempotent per user-pair WITHIN the app:
+    # return the existing thread for the pair if there is one, else create it. Everything else inserts.
+    result =
+      if type == "direct" and length(participant_user_ids) == 2 do
+        find_or_create_direct(app_id, base_attrs, created_by, participant_user_ids, now)
+      else
+        insert_conversation(base_attrs, created_by, participant_user_ids, now)
+      end
+
+    case result do
+      {:ok, response, :created} ->
+        # Emit one participant_added per initial participant ONLY for a newly created conversation
+        # (fire-and-forget; never affects the result). Returning an existing thread stays silent.
+        ParticipantEvents.publish_initial_participants(
+          response.conversation_id,
+          response.created_by,
+          response.participant_user_ids
+        )
+
+        # SECRET CHATS (108): stamp the flag on the freshly inserted row (preconditions already
+        # passed before the insert). An idempotent existing-direct return is NOT flipped — the
+        # pair's existing thread keeps its state; the caller can toggle explicitly.
+        response =
+          if secret_requested? do
+            Repo.query!(
+              "UPDATE conversations SET secret = true WHERE id = $1::text::uuid",
+              [response.conversation_id]
+            )
+
+            Map.put(response, :secret, true)
+          else
+            response
+          end
+
+        # Surface whether this was a genuine INSERT vs. a returned-existing direct, so the gateway can
+        # broadcast conversation_created ONLY on a real insert (never on an idempotent direct return).
+        # `created` MUST live here as a MAP FIELD (not in conversation_response/2 — that builder is SHARED
+        # by both the :created and :existing paths, so it can't set it) and NOT as a 3rd tuple element (a
+        # tuple element can't cross the ConversationClientHttp boundary; a map field does — see the
+        # round-trip test). This is the value ApiGatewayWeb.ConversationBroadcast gates the broadcast on.
+        {:ok, Map.put(response, :created, true)}
+
+      {:ok, response, :existing} ->
+        {:ok, Map.put(response, :created, false)}
+
+      {:error, _reason} ->
+        {:error, :conversation_invalid}
     end
   rescue
     Ecto.Query.CastError -> {:error, :conversation_invalid}

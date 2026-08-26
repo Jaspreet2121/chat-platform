@@ -52,7 +52,9 @@ defmodule MessageService.InboxProjection do
           message.conversation_id,
           message.message_id,
           created_at,
-          message.body,
+          # SECRET CHATS (108): the list preview for sealed content is a fixed marker, never a body
+          # (the stored body is nil anyway; the marker is what clients render).
+          if(message.message_type == "sealed", do: "🔒 Message", else: message.body),
           message.message_type,
           content_type(message),
           message.sender_user_id
