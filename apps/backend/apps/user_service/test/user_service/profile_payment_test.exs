@@ -1,10 +1,12 @@
 defmodule UserService.ProfilePaymentTest do
   @moduledoc """
-  The profile payment flow (100) on real SQL, with the media writer stubbed at its seam: a scanned
-  payload sets upi_id/payment_name + the merchant passthrough and generates the QR from the LOCKED
-  canonical payload; changing the identity regenerates (new asset, old purged); clearing nulls the
-  block and purges; manual VPA entry works; junk payloads are typed errors; visibility updates are
-  validated, merged, and defaulted.
+  The profile payment flow (100 → async QR) on real SQL, with the media writer stubbed at its seam.
+
+  The PATCH request path does NO media work: it stores the identity fields, nulls any stale QR id,
+  and flags `upi_qr_pending` — it must never render/upload in-request (a slow or down media service
+  can't 503 a profile save). The QR PNG is rendered + stored by the separate, async
+  `regenerate_upi_qr/1` (which the gateway retries + broadcasts around). The LOCKED canonical payload
+  is unchanged — the renderer still produces the byte-identical PNG.
   """
   use UserService.DataCase, async: false
 
@@ -23,6 +25,16 @@ defmodule UserService.ProfilePaymentTest do
       )
 
       {:ok, id}
+    end
+  end
+
+  defmodule ErroringWriter do
+    @moduledoc false
+    # Announces every call so a test can prove the PATCH path NEVER invokes it, and fails so the
+    # async regenerate returns an error (feeding the gateway's retry).
+    def store_png(_user_id, _app_id, _png) do
+      send(:profile_payment_test, {:writer_called})
+      {:error, :media_down}
     end
   end
 
@@ -80,67 +92,125 @@ defmodule UserService.ProfilePaymentTest do
     response
   end
 
+  defp regenerate!(user_id) do
+    Profiles.regenerate_upi_qr(%{"user_id" => user_id, "app_id" => @tenant_zero})
+  end
+
   @scanned "upi://pay?pa=shop@okaxis&pn=Sharma%20Stores&mc=5411&tr=INV42"
 
   @tag :postgres_integration
-  test "scan → identity + passthrough stored; the QR renders from the LOCKED canonical payload" do
+  test "PATCH stores identity + passthrough and flags pending — but does NO media work in-request" do
     user = user!()
     response = patch!(user, %{"upi_qr_payload" => @scanned})
 
     assert response.upi_id == "shop@okaxis"
     assert response.payment_name == "Sharma Stores"
     assert response.upi_merchant == %{"mc" => "5411", "tr" => "INV42"}
-    assert is_binary(response.upi_qr_media_id)
+
+    # No synchronous generation: the QR id is not set yet, the caller is told regeneration is pending.
+    assert is_nil(response.upi_qr_media_id)
+    assert response.upi_qr_pending == true
+    refute_receive {:stored, _}, 50
+  end
+
+  @tag :postgres_integration
+  test "PATCH latency is independent of the store: a writer that would error/announce is never called" do
+    # Even a writer that fails loudly on every call must never run in the PATCH path.
+    Application.put_env(:user_service, :upi_media_writer, ErroringWriter)
+
+    user = user!()
+    response = patch!(user, %{"upi_qr_payload" => @scanned})
+
+    # Fields stored, request succeeds, pending flagged — and the media writer was NOT invoked.
+    assert response.upi_id == "shop@okaxis"
+    assert response.upi_qr_pending == true
+    assert is_nil(response.upi_qr_media_id)
+    refute_receive {:writer_called}, 100
+
+    # The failure only surfaces in the async regenerate — never as a PATCH error.
+    assert {:error, :upi_qr_failed} = regenerate!(user)
+    assert_receive {:writer_called}
+  end
+
+  @tag :postgres_integration
+  test "async regenerate renders the LOCKED canonical payload, stores it, and persists the id" do
+    user = user!()
+    patch!(user, %{"upi_qr_payload" => @scanned})
+
+    assert {:ok, %{upi_qr_media_id: media_id}} = regenerate!(user)
+    assert is_binary(media_id)
 
     assert_receive {:stored, stored}
     assert stored.user_id == user
     assert stored.app_id == @tenant_zero
+    assert stored.id == media_id
 
-    # The writer received the PNG of the canonical payload — locked via the deterministic renderer.
     {:ok, expected_png} =
       UserService.UpiQr.render_png(
         "upi://pay?pa=shop%40okaxis&pn=Sharma%20Stores&cu=INR&mc=5411&tr=INV42"
       )
 
     assert stored.png == expected_png
+
+    # The freshly-generated id is now readable on the profile (what the broadcast tells clients to refetch).
+    {:ok, current} = Profiles.get_current_profile(%{"user_id" => user})
+    assert current.upi_qr_media_id == media_id
   end
 
   @tag :postgres_integration
-  test "changing the identity REGENERATES (new asset id) and purges the replaced one" do
-    user = user!()
-    first = patch!(user, %{"upi_qr_payload" => @scanned})
-    assert_receive {:stored, %{id: first_id}}
-    assert first.upi_qr_media_id == first_id
-
-    second = patch!(user, %{"upi_qr_payload" => "upi://pay?pa=new@icici&pn=New"})
-    assert_receive {:stored, %{id: second_id}}
-    assert second.upi_qr_media_id == second_id
-    refute second_id == first_id
-    assert_receive {:purged, ^first_id}
-  end
-
-  @tag :postgres_integration
-  test "clearing nulls the whole payment block and purges the asset" do
+  test "changing the identity purges the replaced asset in-request and regenerates a NEW one" do
     user = user!()
     patch!(user, %{"upi_qr_payload" => @scanned})
-    assert_receive {:stored, %{id: qr_id}}
+    assert {:ok, %{upi_qr_media_id: first_id}} = regenerate!(user)
+    assert_receive {:stored, %{id: ^first_id}}
+
+    # The change nulls the stale id (no wrong QR served in the gap), purges the old asset off-path,
+    # and re-flags pending — still no synchronous generation.
+    changed = patch!(user, %{"upi_qr_payload" => "upi://pay?pa=new@icici&pn=New"})
+    assert changed.upi_id == "new@icici"
+    assert is_nil(changed.upi_qr_media_id)
+    assert changed.upi_qr_pending == true
+    assert_receive {:purged, ^first_id}
+    refute_receive {:stored, _}, 50
+
+    assert {:ok, %{upi_qr_media_id: second_id}} = regenerate!(user)
+    assert_receive {:stored, %{id: ^second_id}}
+    refute second_id == first_id
+  end
+
+  @tag :postgres_integration
+  test "clearing nulls the whole payment block, purges the asset, and does NOT regenerate" do
+    user = user!()
+    patch!(user, %{"upi_qr_payload" => @scanned})
+    assert {:ok, %{upi_qr_media_id: qr_id}} = regenerate!(user)
+    assert_receive {:stored, %{id: ^qr_id}}
 
     cleared = patch!(user, %{"upi_qr_payload" => nil})
     assert is_nil(cleared.upi_id)
     assert is_nil(cleared.payment_name)
     assert is_nil(cleared.upi_merchant)
     assert is_nil(cleared.upi_qr_media_id)
+    # Clearing needs no regeneration.
+    assert cleared.upi_qr_pending == false
     assert_receive {:purged, ^qr_id}
+    refute_receive {:stored, _}, 50
+
+    # Even if a regenerate fires (race), a cleared identity yields nothing to generate.
+    assert {:ok, %{upi_qr_media_id: nil}} = regenerate!(user)
     refute_receive {:stored, _}, 50
   end
 
   @tag :postgres_integration
-  test "manual VPA entry generates too (no merchant params); junk inputs are typed errors" do
+  test "manual VPA entry flags pending + regenerates (no merchant params); junk inputs are typed errors" do
     user = user!()
     response = patch!(user, %{"upi_id" => "manual@paytm", "payment_name" => "Manual Name"})
 
     assert response.upi_id == "manual@paytm"
     assert response.upi_merchant == %{}
+    assert response.upi_qr_pending == true
+
+    assert {:ok, %{upi_qr_media_id: id}} = regenerate!(user)
+    assert is_binary(id)
     assert_receive {:stored, _}
 
     base = %{"user_id" => user, "app_id" => @tenant_zero, "display_name" => "X"}
@@ -153,6 +223,17 @@ defmodule UserService.ProfilePaymentTest do
 
     assert {:error, :invalid_vpa} =
              Profiles.update_current_profile(Map.put(base, "upi_id", "not a vpa"))
+  end
+
+  @tag :postgres_integration
+  test "a non-payment PATCH neither flags pending nor touches media" do
+    user = user!()
+    response = patch!(user, %{"bio" => "hello"})
+
+    assert response.bio == "hello"
+    assert response.upi_qr_pending == false
+    refute_receive {:stored, _}, 50
+    refute_receive {:purged, _}, 50
   end
 
   @tag :postgres_integration

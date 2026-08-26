@@ -17,6 +17,9 @@ defmodule SharedInfra.UserClient do
   @callback get_current_profile(attrs()) :: result()
   @callback get_public_profile(attrs()) :: result()
   @callback update_current_profile(attrs()) :: result()
+  # UPI QR (re)generation, run ASYNC by the gateway off the PATCH /me path (media work must not 503 a
+  # profile save). → %{upi_qr_media_id: id | nil} | {:error, ...}.
+  @callback regenerate_upi_qr(attrs()) :: result()
   @callback last_seen_visibility(attrs()) :: result()
   # Full privacy settings read + sparse update (the first-party GET/PATCH /api/v1/privacy surface + enforcement).
   @callback get_privacy(attrs()) :: result()
@@ -59,7 +62,8 @@ defmodule SharedInfra.UserClient do
   @callback claim_auto_reply(attrs()) :: result()
 
   # Optional so a partial test stub of this behaviour doesn't need to implement everything; the real adapters do.
-  @optional_callbacks get_privacy: 1,
+  @optional_callbacks regenerate_upi_qr: 1,
+                      get_privacy: 1,
                       update_privacy: 1,
                       lookup_by_username: 1,
                       check_username: 1,
@@ -97,6 +101,9 @@ defmodule SharedInfra.UserClient do
   def reorder_favourites(attrs), do: adapter().reorder_favourites(attrs)
   def get_public_profile(attrs), do: adapter().get_public_profile(attrs)
   def update_current_profile(attrs), do: adapter().update_current_profile(attrs)
+
+  @doc "Async UPI QR (re)generation — see the callback. Off the PATCH path; the gateway retries."
+  def regenerate_upi_qr(attrs), do: adapter().regenerate_upi_qr(attrs)
 
   @doc "A user's last_seen_visibility (everyone|contacts|nobody) for presence gating. %{last_seen_visibility: v}."
   def last_seen_visibility(attrs), do: adapter().last_seen_visibility(attrs)

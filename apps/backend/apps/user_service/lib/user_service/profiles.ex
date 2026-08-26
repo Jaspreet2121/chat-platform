@@ -158,8 +158,10 @@ defmodule UserService.Profiles do
          {:ok, attrs} <- resolve_visibility_attrs(user_id, attrs),
          {:ok, profile} <- upsert_profile(user_id, attrs),
          {:ok, profile} <- maybe_set_username(user_id, profile, attrs),
-         {:ok, profile} <- maybe_regenerate_upi_qr(user_id, profile, attrs) do
-      {:ok, updated_profile_response(user_id, profile)}
+         {:ok, profile, qr_pending?} <- prepare_upi_qr(profile, attrs) do
+      # `upi_qr_pending` tells the gateway to kick off async QR (re)generation + the profile-changed
+      # broadcast. No media work happened in THIS request — a slow/down media service can't 503 here.
+      {:ok, Map.put(updated_profile_response(user_id, profile), :upi_qr_pending, qr_pending?)}
     end
   rescue
     Ecto.Query.CastError -> {:error, :profile_invalid}
@@ -265,42 +267,92 @@ defmodule UserService.Profiles do
     |> Map.put("upi_qr_media_id", nil)
   end
 
-  # Regenerate the QR PNG when the payment identity changed (new asset, old purged); purge on clear.
-  # A generation failure fails the WRITE (the client retries) — a profile claiming a QR it doesn't
-  # have would break /qr silently.
-  defp maybe_regenerate_upi_qr(user_id, profile, attrs) do
+  # The PATCH request path does NO media work (no create-upload → PUT → complete): a slow or down
+  # media service must NEVER make PATCH /me 503 or leave the profile half-written. When the payment
+  # identity changes we (a) null the now-stale upi_qr_media_id so no WRONG QR is served in the gap,
+  # (b) purge the replaced/cleared asset OFF the request path (best-effort), and (c) return
+  # `pending? = true` so the caller triggers async regeneration (regenerate_upi_qr/1) + the
+  # profile-changed broadcast. On clear there is nothing to regenerate (pending? = false).
+  defp prepare_upi_qr(profile, attrs) do
     payment_touched? = Map.has_key?(attrs, "upi_qr_payload") or Map.has_key?(attrs, "upi_id")
+    app_id = get_attr(attrs, :app_id) || profile.app_id
+    old_qr = previous_qr_id(attrs)
 
     cond do
       not payment_touched? ->
-        {:ok, profile}
+        {:ok, profile, false}
 
       is_nil(profile.upi_id) ->
-        # Cleared: drop the stored asset (best-effort) — the column was nulled by clear_payment.
-        if old_qr = previous_qr_id(attrs),
-          do: UserService.UpiQr.purge(old_qr, get_attr(attrs, :app_id) || profile.app_id)
-
-        {:ok, profile}
+        # Cleared: clear_payment already nulled the column; drop the stored asset off the path.
+        async_purge(old_qr, app_id)
+        {:ok, profile, false}
 
       true ->
-        payload =
-          UserService.Upi.canonical_payload(
-            profile.upi_id,
-            profile.payment_name || profile.display_name,
-            profile.upi_merchant || %{}
-          )
-
-        app_id = get_attr(attrs, :app_id) || profile.app_id
-
-        case UserService.UpiQr.generate_and_store(user_id, app_id, payload) do
-          {:ok, media_id} ->
-            if old_qr = previous_qr_id(attrs), do: UserService.UpiQr.purge(old_qr, app_id)
-            ProfileStore.update_profile(profile, %{"upi_qr_media_id" => media_id})
-
-          {:error, _reason} ->
-            {:error, :upi_qr_failed}
-        end
+        # Identity set/changed: purge the replaced asset and drop the stale id NOW; the fresh QR is
+        # rendered + stored asynchronously by regenerate_upi_qr/1.
+        async_purge(old_qr, app_id)
+        {:ok, profile} = ProfileStore.update_profile(profile, %{"upi_qr_media_id" => nil})
+        {:ok, profile, true}
     end
+  end
+
+  # Best-effort delete of a replaced/cleared QR asset, OFF the request path. UpiQr.purge is itself
+  # rescue-wrapped; the fire-and-forget Task keeps a slow media DELETE out of the PATCH latency.
+  defp async_purge(media_id, app_id) when is_binary(media_id) and media_id != "" do
+    Task.start(fn -> UserService.UpiQr.purge(media_id, app_id) end)
+    :ok
+  end
+
+  defp async_purge(_media_id, _app_id), do: :ok
+
+  @doc """
+  Render + store the UPI QR for a user whose payment identity was just set/changed. Called
+  ASYNCHRONOUSLY (off the PATCH path) by the gateway, which retries with backoff. ONE attempt:
+  rebuild the LOCKED canonical payload from the stored profile, render the PNG, upload it through the
+  INTERNAL media path, and store the new `upi_qr_media_id`.
+
+  → `{:ok, %{upi_qr_media_id: id}}` on success, `{:ok, %{upi_qr_media_id: nil}}` when there is
+  nothing to generate (identity cleared, or a racing clear landed first — not a failure), or
+  `{:error, reason}` when the media round-trip fails (the gateway retries; a permanent failure leaves
+  the profile consistent — fields set, no URL — and the next UPI PATCH regenerates).
+  """
+  def regenerate_upi_qr(attrs) do
+    if user_profile_persistence_enabled?() do
+      regenerate_upi_qr_in_db(attrs)
+    else
+      {:ok, %{upi_qr_media_id: nil}}
+    end
+  end
+
+  defp regenerate_upi_qr_in_db(attrs) do
+    with {:ok, user_id} <- required_user_id(attrs) do
+      profile = ProfileStore.get_profile(user_id)
+      app_id = get_attr(attrs, :app_id) || (profile && profile.app_id)
+
+      cond do
+        is_nil(profile) or is_nil(profile.upi_id) ->
+          {:ok, %{upi_qr_media_id: nil}}
+
+        true ->
+          payload =
+            UserService.Upi.canonical_payload(
+              profile.upi_id,
+              profile.payment_name || profile.display_name,
+              profile.upi_merchant || %{}
+            )
+
+          case UserService.UpiQr.generate_and_store(user_id, app_id, payload) do
+            {:ok, media_id} ->
+              {:ok, _} = ProfileStore.update_profile(profile, %{"upi_qr_media_id" => media_id})
+              {:ok, %{upi_qr_media_id: media_id}}
+
+            {:error, _reason} ->
+              {:error, :upi_qr_failed}
+          end
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :profile_invalid}
   end
 
   # The pre-write QR id (the upsert stashes it before overwriting the row) — read-once.

@@ -78,7 +78,10 @@ defmodule MediaService.Storage.MinioAdapter do
 
   @impl true
   def create_upload(attrs) do
+    # A server-side uploader (attrs["internal"]) signs against the INTERNAL endpoint so its PUT
+    # reaches MinIO directly on the docker network; a browser upload keeps the public-host signature.
     with {:ok, config} <- config(),
+         config = if(attrs["internal"], do: internal(config), else: config),
          {:ok, upload_url} <- presigned_url("PUT", attrs["object_key"], config) do
       {:ok,
        %{

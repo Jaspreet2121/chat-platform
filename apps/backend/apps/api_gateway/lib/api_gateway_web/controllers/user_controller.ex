@@ -504,7 +504,15 @@ defmodule ApiGatewayWeb.UserController do
              # may be an unloaded column default on a fresh row).
              |> Map.put("app_id", session_app(session))
            ) do
-      json(conn, response |> ProfilePresenter.with_avatar_url() |> put_email(email))
+      # The fields are stored; respond immediately. If the payment identity changed, QR (re)generation
+      # + the profile-changed broadcast run asynchronously — NEVER in this request (media must not 503
+      # a profile save). `upi_qr_pending` is an internal signal; strip it before the client sees it.
+      if Map.get(response, :upi_qr_pending) == true do
+        ApiGatewayWeb.UpiQr.regenerate_async(session.user_id, session_app(session))
+      end
+
+      client_response = Map.delete(response, :upi_qr_pending)
+      json(conn, client_response |> ProfilePresenter.with_avatar_url() |> put_email(email))
     else
       {:error, :session_invalid} ->
         session_invalid(conn)

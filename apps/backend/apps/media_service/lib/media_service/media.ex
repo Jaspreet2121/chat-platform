@@ -61,7 +61,12 @@ defmodule MediaService.Media do
         "content_type" => content_type,
         "size_bytes" => size_bytes,
         "object_key" => object_key,
-        "expires_at" => expires_at()
+        "expires_at" => expires_at(),
+        # A SERVER-SIDE uploader (e.g. UserService.UpiQr, "the server as media client") sets
+        # "internal": the presigned PUT is then signed against the INTERNAL MinIO host so the put
+        # travels the docker network, not the public Caddy/TLS edge a browser uses. The download
+        # presign is unaffected — clients still get a public-host URL. See Storage.MinioAdapter.
+        "internal" => optional_attr(attrs, "internal") in [true, "true"]
       }
 
       if media_persistence_enabled?() do

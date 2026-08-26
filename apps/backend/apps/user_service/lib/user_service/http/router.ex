@@ -53,6 +53,10 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Profiles.update_current_profile(body(conn)))
   end
 
+  post "/internal/profiles/regenerate_upi_qr" do
+    send_result(conn, UserService.Profiles.regenerate_upi_qr(body(conn)))
+  end
+
   post "/internal/privacy/last_seen_visibility" do
     send_result(conn, UserService.Privacy.last_seen_visibility(body(conn)))
   end

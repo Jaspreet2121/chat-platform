@@ -120,7 +120,11 @@ defmodule UserService.UpiQr do
                "purpose" => "message",
                "filename" => "upi-qr.png",
                "content_type" => "image/png",
-               "size_bytes" => byte_size(png)
+               "size_bytes" => byte_size(png),
+               # The server IS the uploading client here: sign the PUT against the internal MinIO host
+               # so the upload stays on the docker network (the public presign is browser-only, and is
+               # unreachable/slow from inside the user container — the prod failure this fixes).
+               "internal" => true
              }),
            media_id when is_binary(media_id) <- fetch(upload, :media_id),
            upload_url when is_binary(upload_url) <- fetch(upload, :upload_url),

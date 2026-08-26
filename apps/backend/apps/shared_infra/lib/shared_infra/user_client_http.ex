@@ -24,6 +24,9 @@ defmodule SharedInfra.UserClientHttp do
   def update_current_profile(attrs), do: post("/internal/profiles/update", attrs)
 
   @impl true
+  def regenerate_upi_qr(attrs), do: post("/internal/profiles/regenerate_upi_qr", attrs)
+
+  @impl true
   def lookup_by_username(attrs), do: post("/internal/usernames/lookup", attrs)
 
   @impl true
