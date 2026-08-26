@@ -147,6 +147,13 @@ services:
       USER_HTTP_API_ENABLED: "true"
       USER_HTTP_PORT: "4103"
       USER_PROFILE_DB_BACKED: "true"
+      # The user_service release does NOT contain MediaService.MediaClientInProcess (that module only
+      # exists where media_service is co-loaded), so its media-client seam MUST use the HTTP adapter —
+      # same mechanism as every other cross-service seam. Without these two lines the UPI-QR generator
+      # crashes UndefinedFunctionError on MediaClientInProcess.create_upload. The internal API token
+      # rides in via *secrets; MinIO the user container reaches at minio:9000 (chatnet).
+      MEDIA_CLIENT_ADAPTER: http
+      MEDIA_SERVICE_URL: http://media:4105
     expose: ["4103"]
 
   message:

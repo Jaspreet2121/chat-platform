@@ -66,7 +66,9 @@ defmodule MediaService.Media do
         # "internal": the presigned PUT is then signed against the INTERNAL MinIO host so the put
         # travels the docker network, not the public Caddy/TLS edge a browser uses. The download
         # presign is unaffected — clients still get a public-host URL. See Storage.MinioAdapter.
-        "internal" => optional_attr(attrs, "internal") in [true, "true"]
+        # NB: read the RAW attr (not optional_attr, which is binary-only) — a server-side caller sends
+        # the boolean `true`, which survives the JSON round-trip over the internal HTTP API.
+        "internal" => get_attr(attrs, "internal") in [true, "true"]
       }
 
       if media_persistence_enabled?() do

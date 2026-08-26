@@ -40,6 +40,38 @@ defmodule MediaService.MediaTest do
     def head_object(_attrs), do: {:ok, %{size_bytes: 123}}
   end
 
+  # Captures the `internal` flag the domain hands the storage adapter, so the server-side-upload
+  # passthrough (MediaClientHttp forwards it → Media.create_upload threads it → adapter presigns
+  # against the internal host) is proven without networking or MinIO.
+  defmodule CapturingStorage do
+    @moduledoc false
+    @behaviour MediaService.Storage
+
+    @impl true
+    def create_upload(attrs) do
+      send(:media_internal_flag_test, {:internal_seen, attrs["internal"]})
+
+      {:ok,
+       %{
+         media_id: attrs["media_id"],
+         owner_user_id: attrs["owner_user_id"],
+         object_key: attrs["object_key"],
+         upload_url: "http://minio:9000/chat-media/#{attrs["object_key"]}",
+         expires_at: attrs["expires_at"],
+         status: "pending"
+       }}
+    end
+
+    @impl true
+    def complete_upload(attrs), do: {:ok, Map.put(attrs, :status, "ready")}
+    @impl true
+    def get_download_url(_attrs), do: {:error, :media_storage_unavailable}
+    @impl true
+    def head_object(_attrs), do: {:ok, %{size_bytes: 123}}
+    @impl true
+    def delete_object(_attrs), do: :ok
+  end
+
   setup do
     previous_persistence = Application.get_env(:media_service, :media_persistence, false)
 
@@ -128,6 +160,27 @@ defmodule MediaService.MediaTest do
                "content_type" => "image/png",
                "size_bytes" => 123
              })
+  end
+
+  test "create_upload threads the server-side `internal` flag through to the storage adapter" do
+    Process.register(self(), :media_internal_flag_test)
+    Application.put_env(:media_service, :media_storage_adapter, CapturingStorage)
+
+    base = %{
+      "owner_user_id" => @owner_user_id,
+      "app_id" => @app,
+      "filename" => "upi-qr.png",
+      "content_type" => "image/png",
+      "size_bytes" => 123
+    }
+
+    # A server-side uploader marks the request internal → the adapter presigns against MinIO's
+    # internal host (the UPI-QR fix). A browser upload leaves it off.
+    assert {:ok, _} = Media.create_upload(Map.put(base, "internal", true))
+    assert_receive {:internal_seen, true}
+
+    assert {:ok, _} = Media.create_upload(base)
+    assert_receive {:internal_seen, false}
   end
 
   test "create_upload rejects unsupported content type" do
