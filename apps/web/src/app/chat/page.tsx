@@ -71,6 +71,7 @@ import {
   decryptMessage,
   maybeUpgradeConversation,
   registerDeviceKeys,
+  setSealedTransport,
   sendSecretMedia,
   sendSecretText,
   turnOnEncryption,
@@ -471,6 +472,20 @@ export default function ChatPage() {
           return;
         }
 
+        // Sealed messages must ride the SOCKET, not HTTP: only the channel's create path emits
+        // message_created to conversation:<id>, which is what wakes a recipient's OPEN chat. Over
+        // HTTP the message persisted but nothing was broadcast, so it appeared only on reopen.
+        const sealedChannel = joinedChannel;
+        setSealedTransport(async (sealedInput) => {
+          const reply = await sealedChannel.sendMessage({
+            message_type: "sealed",
+            sealed: sealedInput.sealed as unknown as Record<string, unknown>,
+            client_msg_id: sealedInput.clientMsgId,
+            composed_at: sealedInput.composedAt
+          });
+          return reply as Message;
+        });
+
         cleanupEvents = [
           joinedChannel.onMessageCreated((message) => {
             setMessages((current) => mergeMessage(current, message));
@@ -565,6 +580,9 @@ export default function ChatPage() {
       // broadcast goes out over the still-open socket). Live sharing is scoped to the open conversation.
       endLiveShare(true);
       cleanupEvents.forEach((cleanup) => cleanup());
+      // Drop the socket transport with the channel — a sealed send must never be pushed at a channel
+      // we've left. sendSecretText/Media fall back to HTTP until the next channel installs its own.
+      setSealedTransport(null);
       joinedChannel?.leave();
       channelRef.current = null;
       setChannel(null);

@@ -68,6 +68,37 @@ async function memberDeviceKeys(memberIds: string[]): Promise<KeyCache> {
  * Seal a text body for every active device of the two members (incl. my own other devices) and
  * send it. Returns the created Message (already decryptable locally, cached below).
  */
+/**
+ * How a sealed frame reaches the server.
+ *
+ * THE BUG THIS EXISTS FOR: `sendSealedMessage` is an HTTP POST, and the gateway's HTTP create path
+ * broadcasts only the conversation-LIST row — it never emits `message_created` on the
+ * `conversation:<id>` topic (that fan-out lives in the realtime channel's own create path). So a
+ * sealed message sent over HTTP was invisible in a recipient's OPEN chat until they reopened it and
+ * hit the backfill. Plaintext never showed this because it already sends over the socket.
+ *
+ * The chat page installs the joined channel's sender here, so sealed rides the SAME transport as
+ * every other message type and gets the same fan-out. HTTP stays the fallback for when no channel is
+ * connected (the message still persists; the recipient sees it on next load).
+ */
+export type SealedSender = (input: {
+  conversationId: string;
+  clientMsgId: string;
+  composedAt: string;
+  sealed: Awaited<ReturnType<typeof sealFrame>>;
+}) => Promise<Message>;
+
+let sealedSender: SealedSender | null = null;
+
+/** Install (or clear, with null) the socket transport for sealed sends. */
+export function setSealedTransport(sender: SealedSender | null): void {
+  sealedSender = sender;
+}
+
+function sendSealed(input: Parameters<SealedSender>[0]): Promise<Message> {
+  return (sealedSender ?? sendSealedMessage)(input);
+}
+
 export async function sendSecretText(input: {
   conversationId: string;
   memberIds: string[];
@@ -98,7 +129,7 @@ export async function sendSecretText(input: {
 
   const sealed = await sealFrame(frame, identity.ed25519Private, identity.deviceId, recipients);
 
-  const message = await sendSealedMessage({
+  const message = await sendSealed({
     conversationId: input.conversationId,
     clientMsgId,
     composedAt,
@@ -171,7 +202,7 @@ export async function sendSecretMedia(input: {
   }));
   const sealed = await sealFrame(frame, identity.ed25519Private, identity.deviceId, recipients);
 
-  const message = await sendSealedMessage({
+  const message = await sendSealed({
     conversationId: input.conversationId,
     clientMsgId,
     composedAt,
