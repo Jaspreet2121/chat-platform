@@ -975,6 +975,10 @@ defmodule MessageService.Messages do
   defp message_body(attrs, _message_type, _caption), do: {:ok, get_attr(attrs, "body")}
 
   defp media_id(attrs, "media"), do: required_attr(attrs, "media_id")
+  # SEALED (108/110): the attachment's media_id rides INSIDE the encrypted envelope, never as a
+  # top-level attr — forcing nil here guarantees the gallery/link projections (driven by a top-level
+  # media_id) never fire for a sealed message, whatever the client sends.
+  defp media_id(_attrs, "sealed"), do: {:ok, nil}
   defp media_id(attrs, _message_type), do: {:ok, get_attr(attrs, "media_id")}
 
   defp caption(attrs, "media") do

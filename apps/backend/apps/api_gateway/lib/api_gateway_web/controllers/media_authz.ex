@@ -22,6 +22,9 @@ defmodule ApiGatewayWeb.MediaAuthz do
   def authorize_download(media_id, asset, user_id) do
     case aget(asset, :purpose) do
       "message" -> authorize_message_media(media_id, asset, user_id)
+      # sealed_media (110): identical to message media — a member of a conversation whose message
+      # (sent by the asset's owner) references this id may download the ciphertext.
+      "sealed_media" -> authorize_message_media(media_id, asset, user_id)
       "group_avatar" -> authorize_group_avatar(asset, user_id)
       "user_avatar" -> :ok
       # Status media: the owning POST authorizes — it must be LIVE (expired/deleted → denied even with

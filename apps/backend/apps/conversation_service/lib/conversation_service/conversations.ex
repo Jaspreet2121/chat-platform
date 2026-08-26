@@ -725,11 +725,22 @@ defmodule ConversationService.Conversations do
       # SECRET CHATS (108): "secret": true at create runs the SAME preconditions as the toggle —
       # 1:1 only, every member holds at least one live device key — CHECKED BEFORE the insert so a
       # refused secret request creates nothing. The flag is stamped right after the insert.
-      secret_requested? = get_attr(attrs, "secret") == true
+      explicit_secret? = get_attr(attrs, "secret") == true
+      app_id = SharedInfra.Tenancy.app_id_or_default(get_attr(attrs, "app_id"))
+
+      # OPPORTUNISTIC UPGRADE (109, trigger i): in an e2ee_default app, a 1:1 whose BOTH members
+      # already have device keys is born secret — WITHOUT a `secret` flag from the client. Unlike an
+      # explicit request, a keyless pair here is NOT an error: it silently stays a normal chat
+      # (old clients keep working, plaintext keeps flowing). Explicit request wins and still errors
+      # on missing keys.
+      auto_secret? =
+        not explicit_secret? and type == "direct" and
+          length(participant_user_ids) == 2 and app_e2ee_default?(app_id) and
+          ConversationService.Encryption.members_without_keys(participant_user_ids) == []
 
       secret_check =
         cond do
-          not secret_requested? ->
+          not explicit_secret? ->
             :ok
 
           type != "direct" ->
@@ -752,10 +763,19 @@ defmodule ConversationService.Conversations do
           participant_user_ids,
           now,
           conversation_id,
-          secret_requested?
+          explicit_secret? or auto_secret?
         )
       end
     end
+  end
+
+  defp app_e2ee_default?(app_id) do
+    case Repo.query("SELECT e2ee_default FROM apps WHERE id = $1::text::uuid", [app_id]) do
+      {:ok, %{rows: [[true]]}} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
   end
 
   defp create_conversation_row(

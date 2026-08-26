@@ -111,6 +111,10 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Apps.admin_list_apps(body(conn)))
   end
 
+  post "/internal/apps/client_config" do
+    send_result(conn, AuthService.Apps.client_config(body(conn)))
+  end
+
   post "/internal/apps/owns" do
     send_result(conn, AuthService.Apps.owns_app(body(conn)))
   end

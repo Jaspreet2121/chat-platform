@@ -130,6 +130,10 @@ defmodule ApiGatewayWeb.MediaController do
   defp authorize_upload("message", conversation_id, user_id),
     do: membership(conversation_id, user_id)
 
+  # sealed_media (110): same conversation-membership scope as a normal message attachment.
+  defp authorize_upload("sealed_media", conversation_id, user_id),
+    do: membership(conversation_id, user_id)
+
   defp authorize_upload("group_avatar", conversation_id, user_id),
     do: group_admin(conversation_id, user_id)
 

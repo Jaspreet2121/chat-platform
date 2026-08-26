@@ -18,7 +18,7 @@ defmodule MediaService.Schemas.MediaAsset do
   # must agree; the whitelist-enumeration test in MediaService.MediaTest creates through the real
   # path per purpose, so a purpose missing at ANY layer fails the gate. "status" was missing at all
   # three while its authz arm shipped — photo/video status never worked.
-  @purposes ~w(message user_avatar group_avatar status)
+  @purposes ~w(message user_avatar group_avatar status sealed_media)
   @providers ~w(s3 minio)
 
   schema "media_assets" do

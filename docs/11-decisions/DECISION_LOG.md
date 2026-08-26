@@ -2,6 +2,22 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-08-26] Secret chats default-on: auto-replies won't fire in E2EE chats (product note)
+
+- **Context:** Secret chats v2 (109) makes E2EE the DEFAULT for the first-party apps (tenant-zero +
+  Skifi live/twin). The auto-reply engine (102) already HARD-SKIPS secret conversations — it reads
+  the recipient's stored settings but cannot read a sealed message's intent, and firing a
+  greeting/away would both be meaningless and leak presence semantics into an E2EE thread.
+- **Decision — accepted, no code change:** with default-on, away/greeting simply do not fire in
+  E2EE 1:1s. This is correct: the server must never see plaintext, so it cannot decide an auto-reply
+  belongs. Users on default-on apps who rely on auto-replies get them only in NON-secret
+  conversations (groups, or 1:1s where a side has no keys and the chat stayed plaintext).
+- **Named follow-up — client-side auto-reply via push wake:** to restore auto-replies in E2EE
+  chats, the RECIPIENT'S device would evaluate its own away/greeting rules on an inbound
+  (push-woken) sealed message and send a sealed auto-reply locally — the only place the plaintext
+  and the intent both exist. Deferred; needs the push-wake + background-send client machinery.
+- **Status:** noted; the engine's existing secret-skip (108) is the whole server-side behaviour.
+
 ## [2026-08-26] B2C allocation hardening: per-owner cap, rename-only mutation, claim-flow regression seal
 
 - **Context:** The 2026-08-10 verification stands — per-integrator live allocation is shipped

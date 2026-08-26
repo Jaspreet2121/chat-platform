@@ -27,6 +27,35 @@ defmodule ApiGatewayWeb.ConversationController do
     end
   end
 
+  # Born-secret side effects, best-effort (mirrors the manual toggle's gateway half). Only when the
+  # response is a genuine insert AND secret — an idempotent existing-direct return does neither.
+  defp maybe_born_secret(response, actor_id) do
+    created? = Map.get(response, :created) == true || Map.get(response, "created") == true
+    secret? = Map.get(response, :secret) == true || Map.get(response, "secret") == true
+    conversation_id = Map.get(response, :conversation_id) || Map.get(response, "conversation_id")
+
+    members =
+      Map.get(response, :participant_user_ids) || Map.get(response, "participant_user_ids") || []
+
+    if created? and secret? and is_binary(conversation_id) do
+      ApiGatewayWeb.SecretChatEvents.system_message(conversation_id, actor_id, %{
+        "kind" => "encryption",
+        "state" => "enabled",
+        "by" => actor_id
+      })
+
+      for member <- members, is_binary(member) do
+        ApiGatewayWeb.Endpoint.broadcast("user:" <> member, "conversation_encryption_changed", %{
+          "type" => "conversation_encryption_changed",
+          "conversation_id" => conversation_id,
+          "enabled" => true
+        })
+      end
+    end
+
+    :ok
+  end
+
   defp create_conversation_from_db(conn, params) do
     with :ok <- require_fields(params, ["type", "participant_user_ids"]),
          {:ok, authorization} <- authorization_header(conn),
@@ -38,6 +67,10 @@ defmodule ApiGatewayWeb.ConversationController do
            |> SharedInfra.ConversationClient.create_conversation() do
       # Live-update each non-creator participant's inbox on a genuine insert (idempotent direct → no-op).
       ApiGatewayWeb.ConversationBroadcast.broadcast_created(response)
+
+      # SECRET CHATS v2 (109): a conversation BORN secret (auto-upgrade at create) gets the SAME
+      # encryption-enabled system message + fan-out as a manual toggle — only on a genuine insert.
+      maybe_born_secret(response, session.user_id)
 
       conn
       |> put_status(:created)

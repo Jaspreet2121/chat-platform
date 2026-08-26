@@ -110,6 +110,9 @@ defmodule AuthService.AuthClientInProcess do
   def owns_app(attrs), do: AuthService.Apps.owns_app(attrs)
 
   @impl true
+  def client_config(attrs), do: AuthService.Apps.client_config(attrs)
+
+  @impl true
   def persistence_enabled?, do: Sessions.persistence_enabled?()
 
   @impl true

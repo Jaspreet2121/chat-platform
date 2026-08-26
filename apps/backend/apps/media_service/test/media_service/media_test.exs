@@ -90,17 +90,21 @@ defmodule MediaService.MediaTest do
   # months before it was uploadable: the upload whitelist was never told, every status test
   # fabricated media ids, and photo/video status 400'd in production while text status worked.
   # Rule: a purpose that exists ANYWHERE downstream must be creatable HERE, through the REAL path.
-  @valid_purposes ["message", "user_avatar", "group_avatar", "status"]
+  @valid_purposes ["message", "user_avatar", "group_avatar", "status", "sealed_media"]
 
   test "EVERY valid purpose uploads through the real create path; an unknown one is rejected" do
     for purpose <- @valid_purposes do
+      # sealed_media declares the opaque ciphertext type; every other purpose is a real image here.
+      content_type =
+        if purpose == "sealed_media", do: "application/octet-stream", else: "image/png"
+
       assert {:ok, upload} =
                Media.create_upload(%{
                  "owner_user_id" => @owner_user_id,
                  "app_id" => @app,
                  "purpose" => purpose,
                  "filename" => "asset.png",
-                 "content_type" => "image/png",
+                 "content_type" => content_type,
                  "size_bytes" => 123
                }),
              "purpose #{purpose} must be uploadable — it exists downstream (authz/presign)"
@@ -214,6 +218,50 @@ defmodule MediaService.MediaTest do
     assert download.media_id == upload.media_id
     assert download.download_url =~ "action=download"
     assert is_binary(download.expires_at)
+  end
+
+  test "SEALED_MEDIA (110) is stored + served OPAQUELY: the download object_key is byte-for-byte the " <>
+         "upload's, and NO derived asset is created (mutation target: any future transform hook)" do
+    assert {:ok, upload} =
+             Media.create_upload(%{
+               "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
+               "purpose" => "sealed_media",
+               # The ciphertext's declared type — the server MUST NOT sniff or reject on it.
+               "content_type" => "application/octet-stream",
+               "filename" => "photo.enc",
+               "size_bytes" => 4096
+             })
+
+    assert {:ok, _} =
+             Media.complete_upload(%{
+               "media_id" => upload.media_id,
+               "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
+               "object_key" => upload.object_key
+             })
+
+    # The download presign resolves the SAME object_key from the row — the bytes at that key are the
+    # client's ciphertext, untouched (the server only presigns; it never reads or rewrites bytes).
+    assert {:ok, download} =
+             Media.get_download_url(%{
+               "media_id" => upload.media_id,
+               "app_id" => @app
+             })
+
+    # The presigned URL points at the upload's object_key (URL-encoded) — same bytes, no rewrite.
+    assert download.download_url =~ URI.encode(upload.object_key)
+    assert download.mime_type == "application/octet-stream"
+
+    # OPACITY: exactly ONE media_assets row for this upload — no thumbnail / derived / sniffed row.
+    # A future purpose-branched transform that spawned a derived asset would make this > 1 → red.
+    %{rows: [[count]]} =
+      MediaRepo.query!(
+        "SELECT count(*)::int FROM media_assets WHERE object_key = $1 OR object_key LIKE $2",
+        [upload.object_key, upload.object_key <> "%"]
+      )
+
+    assert count == 1
   end
 
   test "default query-plan adapter documents live MinIO storage as unavailable" do

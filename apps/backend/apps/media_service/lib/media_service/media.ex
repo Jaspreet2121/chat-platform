@@ -48,7 +48,7 @@ defmodule MediaService.Media do
     with {:ok, owner_user_id} <- required_attr(attrs, "owner_user_id"),
          {:ok, purpose} <- fetch_purpose(attrs),
          {:ok, filename} <- required_attr(attrs, "filename"),
-         {:ok, content_type} <- required_content_type(attrs),
+         {:ok, content_type} <- required_content_type(attrs, purpose),
          {:ok, size_bytes} <- required_size(attrs) do
       media_id = generate_uuid()
       object_key = object_key(owner_user_id, media_id, filename)
@@ -361,7 +361,9 @@ defmodule MediaService.Media do
       # create while every status test fabricated media ids. Adding a purpose ANYWHERE downstream
       # (authz, presign TTL, gateway assertion) requires adding it here AND to the upload-path
       # purpose test in MediaService.MediaTest, which now enumerates this list.
-      purpose when purpose in ["message", "user_avatar", "group_avatar", "status"] ->
+      # sealed_media (110): an E2EE attachment — ciphertext bytes, stored + served opaquely (the
+      # media service never processes any purpose's bytes). Download ACL = message media.
+      purpose when purpose in ["message", "user_avatar", "group_avatar", "status", "sealed_media"] ->
         {:ok, purpose}
 
       _ ->
@@ -424,7 +426,20 @@ defmodule MediaService.Media do
     }
   end
 
-  defp required_content_type(attrs) do
+  # sealed_media (110): the uploaded bytes are CIPHERTEXT; the declared type is the opaque
+  # application/octet-stream and the real mime rides INSIDE the sealed frame — so the plaintext
+  # content-type whitelist does not apply. Every other purpose keeps the strict whitelist.
+  defp required_content_type(attrs, "sealed_media") do
+    with {:ok, content_type} <- required_attr(attrs, "content_type"),
+         base_type = base_content_type(content_type),
+         true <- base_type == "application/octet-stream" do
+      {:ok, base_type}
+    else
+      _ -> {:error, :media_invalid}
+    end
+  end
+
+  defp required_content_type(attrs, _purpose) do
     with {:ok, content_type} <- required_attr(attrs, "content_type"),
          base_type = base_content_type(content_type),
          true <- MapSet.member?(@allowed_content_types, base_type) do

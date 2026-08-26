@@ -180,4 +180,98 @@ defmodule ConversationService.EncryptionTest do
 
     assert secret?(created.conversation_id)
   end
+
+  # ---- v2 (109): opportunistic auto-secret at create -----------------------------------------------
+
+  # A fresh live app; `e2ee_default` toggled per case.
+  defp app!(e2ee_default) do
+    id = Ecto.UUID.generate()
+
+    Repo.query!(
+      "INSERT INTO apps (id, name, slug, mode, e2ee_default) " <>
+        "VALUES ($1::text::uuid, 'T', $2, 'live', $3)",
+      [id, "t-#{id}", e2ee_default]
+    )
+
+    id
+  end
+
+  defp create_direct(app_id, creator, peer) do
+    Conversations.create_conversation(%{
+      "type" => "direct",
+      "app_id" => app_id,
+      "created_by" => creator,
+      "participant_user_ids" => [peer]
+    })
+  end
+
+  defp appuser!(app_id, with_keys?) do
+    id = Ecto.UUID.generate()
+
+    Repo.query!(
+      "INSERT INTO users_auth (id, app_id, phone_number, password_hash, status, created_at, updated_at) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, $3, 'x', 'active', now(), now())",
+      [id, app_id, "+1#{System.unique_integer([:positive])}"]
+    )
+
+    if with_keys? do
+      device = "dev-#{System.unique_integer([:positive])}"
+
+      Repo.query!(
+        "INSERT INTO device_sessions (id, user_id, device_id, platform, refresh_token_hash, created_at) " <>
+          "VALUES ($1::text::uuid, $2::text::uuid, $3, 'android', 'h', now())",
+        [Ecto.UUID.generate(), id, device]
+      )
+
+      Repo.query!(
+        "INSERT INTO device_keys (user_id, device_id, app_id, ed25519_public, x25519_public) " <>
+          "VALUES ($1::text::uuid, $2, $3::text::uuid, $4, $5)",
+        [id, device, app_id, :binary.copy(<<1>>, 32), :binary.copy(<<2>>, 32)]
+      )
+    end
+
+    id
+  end
+
+  @tag :postgres_integration
+  test "AUTO-SECRET matrix (109): born secret ONLY when app flag on AND both members have keys" do
+    on_app = app!(true)
+    off_app = app!(false)
+
+    # flag ON, both keyed → BORN SECRET (no explicit "secret" flag).
+    a1 = appuser!(on_app, true)
+    b1 = appuser!(on_app, true)
+    assert {:ok, c1} = create_direct(on_app, a1, b1)
+    assert c1.created == true
+    assert secret?(c1.conversation_id)
+
+    # flag ON, one keyless → stays NORMAL (NOT an error — old clients keep working).
+    a2 = appuser!(on_app, true)
+    b2 = appuser!(on_app, false)
+    assert {:ok, c2} = create_direct(on_app, a2, b2)
+    refute secret?(c2.conversation_id)
+
+    # flag OFF, both keyed → stays NORMAL.
+    a3 = appuser!(off_app, true)
+    b3 = appuser!(off_app, true)
+    assert {:ok, c3} = create_direct(off_app, a3, b3)
+    refute secret?(c3.conversation_id)
+  end
+
+  @tag :postgres_integration
+  test "KEYLESS pair in a default-on app never upgrades; plaintext send is accepted there" do
+    on_app = app!(true)
+    a = appuser!(on_app, false)
+    b = appuser!(on_app, false)
+
+    assert {:ok, conversation} = create_direct(on_app, a, b)
+    refute secret?(conversation.conversation_id)
+
+    # The keyless-pair conversation is a NORMAL chat: the send-gate policy accepts plaintext (proven
+    # by the message-service secret suite; here we assert the conversation itself never flipped, even
+    # on a second open — no create-time upgrade, and the client-driven trigger has no keys to act on).
+    assert {:ok, again} = create_direct(on_app, a, b)
+    assert again.conversation_id == conversation.conversation_id
+    refute secret?(conversation.conversation_id)
+  end
 end

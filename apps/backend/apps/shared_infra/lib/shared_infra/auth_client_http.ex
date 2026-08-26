@@ -105,6 +105,9 @@ defmodule SharedInfra.AuthClientHttp do
   def owns_app(attrs), do: post("/internal/apps/owns", attrs)
 
   @impl true
+  def client_config(attrs), do: post("/internal/apps/client_config", attrs)
+
+  @impl true
   def request_otp(attrs), do: post("/internal/otp/request", attrs)
 
   @impl true

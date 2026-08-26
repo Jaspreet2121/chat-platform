@@ -86,6 +86,7 @@ defmodule SharedInfra.AuthClient do
   @callback list_apps(attrs()) :: result()
   @callback admin_list_apps(attrs()) :: result()
   @callback owns_app(attrs()) :: result()
+  @callback client_config(attrs()) :: result()
 
   # Optional so the many test stubs that implement this behaviour don't all need to add them; the real
   # adapters (in-process + HTTP) both implement them, which is all the dispatcher ever resolves to.
@@ -118,6 +119,7 @@ defmodule SharedInfra.AuthClient do
                       list_apps: 1,
                       admin_list_apps: 1,
                       owns_app: 1,
+                      client_config: 1,
                       create_report: 1,
                       list_devices: 1,
                       revoke_device: 1,
@@ -164,6 +166,7 @@ defmodule SharedInfra.AuthClient do
   @doc "Cross-tenant operator app list (admin console) — counts + metadata only, never secrets."
   def admin_list_apps(attrs), do: adapter().admin_list_apps(attrs)
   def owns_app(attrs), do: adapter().owns_app(attrs)
+  def client_config(attrs), do: adapter().client_config(attrs)
   def request_otp(attrs), do: adapter().request_otp(attrs)
   def verify_otp(attrs), do: adapter().verify_otp(attrs)
   def refresh(attrs), do: adapter().refresh(attrs)

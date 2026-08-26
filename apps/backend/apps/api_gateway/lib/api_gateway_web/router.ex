@@ -256,6 +256,13 @@ defmodule ApiGatewayWeb.Router do
     post "/:conversation_id/encryption", EncryptionController, :update
   end
 
+  # Client-config (109) — tiny per-app context (e2ee_default).
+  scope "/api/v1", ApiGatewayWeb do
+    pipe_through :api
+
+    get "/client-config", ClientConfigController, :show
+  end
+
   # Device public keys (107) — the offline-messaging foundation. Upload binds to the SESSION's
   # device; fetch is membership-gated at the store.
   scope "/api/v1/keys", ApiGatewayWeb do

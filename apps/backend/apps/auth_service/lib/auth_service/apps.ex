@@ -157,6 +157,23 @@ defmodule AuthService.Apps do
     _ -> {:error, :forbidden}
   end
 
+  @doc """
+  Client-config for an app (109): the small, cacheable per-app context capable clients read on
+  open. Just `e2ee_default` today — deliberately a standalone lookup, NOT a join on the hot
+  conversation-list path (a value that never varies per conversation should not cost a join per
+  fetch). Absent app / unknown → the safe default (false).
+  """
+  def client_config(attrs) do
+    with {:ok, app_id} <- fetch(attrs, "app_id") do
+      case Repo.query("SELECT e2ee_default FROM apps WHERE id = $1::text::uuid", [app_id]) do
+        {:ok, %{rows: [[flag]]}} -> {:ok, %{e2ee_default: flag == true}}
+        _ -> {:ok, %{e2ee_default: false}}
+      end
+    end
+  rescue
+    _ -> {:ok, %{e2ee_default: false}}
+  end
+
   # --- internals -------------------------------------------------------------------------------
 
   # Non-secret internal slug; name-derived prefix + random suffix so it never collides (slug is UNIQUE).
