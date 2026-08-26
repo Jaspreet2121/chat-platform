@@ -22,15 +22,15 @@ const spaceGrotesk = Space_Grotesk({
 });
 
 export const metadata: Metadata = {
-  title: "Chat Platform",
-  description: "Chat Platform web MVP",
+  title: "Skifi",
+  description: "Skifi — messaging that feels effortless.",
   // PWA (web-push phase 2): installable manifest + iOS home-screen metadata. iOS Safari only allows
   // web-push AFTER Add-to-Home-Screen, and reads these to install cleanly.
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "Growblic"
+    title: "Skifi"
   },
   icons: {
     icon: "/icon-192.png",

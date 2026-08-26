@@ -132,7 +132,7 @@ export default function LinkPage() {
   return (
     <AuthLayout
       icon={<QrCode className="h-6 w-6" aria-hidden />}
-      title="Chat Platform"
+      title="Skifi"
       tagline="Link this browser to your phone."
       footnote="The code changes every 60 seconds and works only once."
     >

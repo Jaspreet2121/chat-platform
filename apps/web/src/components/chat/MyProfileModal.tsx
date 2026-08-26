@@ -238,7 +238,7 @@ export function MyProfileModal({ onClose, profile, userId, onSaved }: MyProfileM
               className="min-h-[72px] w-full resize-none rounded-lg border border-border bg-elevated px-3 py-2 text-sm text-fg outline-none transition-colors focus:border-brand focus:ring-2 focus:ring-brand-ring"
               value={bio}
               maxLength={BIO_MAX}
-              placeholder="Hey there! I'm using Chat Platform."
+              placeholder="Hey there! I'm using Skifi."
               onChange={(event) => setBio(event.target.value)}
             />
             <p className="mt-1 text-right text-[11px] text-faint">
