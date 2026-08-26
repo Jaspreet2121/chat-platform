@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Laptop,
   LogOut,
+  MessageSquareReply,
   Moon,
   Pencil,
   Share,
@@ -33,6 +34,8 @@ export type ProfileTabProps = {
   /** Opens the existing profile editor (name / about / avatar). */
   onEditProfile: () => void;
   onOpenStarred: () => void;
+  /** Settings → Automated replies (102). */
+  onOpenAutoReplies: () => void;
   /** Focuses the phone search (the invite flow's entry point). */
   onInvite: () => void;
   onLogout: () => void;
@@ -50,6 +53,7 @@ export function ProfileTab({
   currentProfile,
   onEditProfile,
   onOpenStarred,
+  onOpenAutoReplies,
   onInvite,
   onLogout
 }: ProfileTabProps) {
@@ -162,6 +166,12 @@ export function ProfileTab({
             icon={<Star className="h-[18px] w-[18px]" aria-hidden />}
             label="Starred messages"
             onClick={onOpenStarred}
+          />
+          <Divider />
+          <Row
+            icon={<MessageSquareReply className="h-[18px] w-[18px]" aria-hidden />}
+            label="Automated replies"
+            onClick={onOpenAutoReplies}
           />
           <Divider />
           <Row

@@ -211,6 +211,8 @@ export type UserChannel = {
   onDating: (event: DatingServerEvent, callback: (payload: DatingEventPayload) => void) => () => void;
   /** 108: a 1:1 turned on encryption — refresh the conversation so the composer switches to sealed. */
   onEncryptionChanged: (callback: (payload: { conversation_id?: string }) => void) => () => void;
+  /** 102: this user's auto-reply settings changed (any device). Payload is EMPTY — refetch. */
+  onAutoRepliesChanged: (callback: () => void) => () => void;
   /** Push a call:* control event; `call:invite` resolves with the `{ call_id, room }` ack. */
   pushCall: (event: CallClientEvent, payload: Record<string, unknown>) => Promise<unknown>;
   leave: () => void;
@@ -274,6 +276,8 @@ export function joinUserChannel(socket: Socket, userId: string): Promise<UserCha
           onDating: (event, callback) => subscribe(channel, event, callback),
           onEncryptionChanged: (callback) =>
             subscribe(channel, "conversation_encryption_changed", callback),
+          onAutoRepliesChanged: (callback) =>
+            subscribe(channel, "auto_replies_changed", () => callback()),
           pushCall: (event, payload) => push(channel, event, payload),
           leave: () => {
             stopHeartbeat();

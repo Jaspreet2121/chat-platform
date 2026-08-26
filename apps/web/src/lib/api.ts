@@ -853,6 +853,78 @@ export function sendNearbyRequest(userId: string) {
   });
 }
 
+/**
+ * Display-name / username substring search inside the caller's app (098). Rate-limited server-side
+ * (it is an enumeration oracle), so callers must debounce. Cards are the same redacted public shape
+ * every other directory lookup returns.
+ */
+export function searchUsers(query: string, limit = 20) {
+  const params = new URLSearchParams({ q: query, limit: String(limit) });
+  return request<{ users: UserProfile[] }>(`/api/v1/users/search?${params.toString()}`);
+}
+
+// --- Auto-replies (102) -------------------------------------------------------------------------
+// Away + greeting auto-responders. The engine only fires in DIRECT, NON-ENCRYPTED conversations
+// (a secret chat's contents are unreadable server-side), which the UI states plainly.
+
+/** Auto-replies' audience enum — WIDER than nearby's. Do not share the two. */
+export type AutoReplyAudience = "everyone" | "contacts" | "non_contacts" | "except";
+
+export type AutoReplyRange = {
+  /** ISO weekday numbers, 1 = Monday … 7 = Sunday. Non-empty. */
+  days: number[];
+  /** "HH:MM", 24h. start > end legally means the window crosses midnight. */
+  start: string;
+  end: string;
+};
+
+export type AutoReplySchedule = {
+  /** IANA zone, e.g. "Asia/Kolkata" — the server validates it. */
+  timezone: string;
+  ranges: AutoReplyRange[];
+};
+
+export type AutoReplyAway = {
+  enabled: boolean;
+  mode: "always" | "custom";
+  /** null for "always"; required (and non-empty) for "custom". */
+  schedule: AutoReplySchedule | null;
+  audience: AutoReplyAudience;
+  except_ids?: string[];
+  body: string | null;
+};
+
+export type AutoReplyGreeting = {
+  enabled: boolean;
+  audience: AutoReplyAudience;
+  except_ids?: string[];
+  body: string | null;
+  /** Integer 1..365. */
+  resend_after_days: number;
+};
+
+export type AutoReplies = { away: AutoReplyAway; greeting: AutoReplyGreeting };
+
+/** Server-enforced body cap for both blocks. */
+export const AUTO_REPLY_BODY_MAX = 500;
+/** Server-enforced cap on the `except` list. */
+export const AUTO_REPLY_EXCEPT_MAX = 100;
+
+export function getAutoReplies() {
+  return request<AutoReplies>("/api/v1/auto-replies");
+}
+
+/**
+ * Each block provided REPLACES that block wholesale server-side; an omitted block is left untouched.
+ * So always send a complete `away` (or `greeting`) object, never a partial one.
+ */
+export function updateAutoReplies(input: { away?: AutoReplyAway; greeting?: AutoReplyGreeting }) {
+  return request<AutoReplies>("/api/v1/auto-replies", {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
 /** Nearby v2 (104) settings. `ble_assist` is stored per-user but the BLE scan loop is mobile-only —
  *  the web UI shows the toggle read-only so the setting is discoverable, not silently missing. */
 export type NearbySettings = {

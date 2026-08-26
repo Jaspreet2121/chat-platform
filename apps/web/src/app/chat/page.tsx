@@ -53,6 +53,7 @@ import {
   NotificationToasts,
   notificationSoundEnabled,
   playNotificationBlip,
+  AutoRepliesModal,
   ProfileTab,
   StarredPanel,
   StatusBanner
@@ -150,6 +151,10 @@ export default function ChatPage() {
   } | null>(null);
   const [draft, setDraft] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  // 102: Automated replies settings screen + a nonce bumped by the realtime auto_replies_changed
+  // event (payload is empty, so a refetch is the only correct response).
+  const [autoRepliesOpen, setAutoRepliesOpen] = useState(false);
+  const [autoRepliesNonce, setAutoRepliesNonce] = useState(0);
   // The message currently being replied to (quoted), and the one being forwarded (picker target).
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
@@ -1452,6 +1457,7 @@ export default function ChatPage() {
     let isActive = true;
     let unsubscribe: (() => void) | null = null;
     let encryptionUnsub: (() => void) | null = null;
+    let autoRepliesUnsub: (() => void) | null = null;
     let leave: (() => void) | null = null;
 
     (async () => {
@@ -1495,6 +1501,10 @@ export default function ChatPage() {
           if (notificationSoundEnabled()) playNotificationBlip();
         });
 
+        // 102: settings changed on another device — the payload is empty, so bump the nonce and let
+        // the open settings screen refetch.
+        autoRepliesUnsub = joined.onAutoRepliesChanged(() => setAutoRepliesNonce((n) => n + 1));
+
         // 108: a 1:1 turned on encryption elsewhere — refresh THIS conversation if it's the one
         // open, so the composer switches to sealed and the lock appears.
         encryptionUnsub = joined.onEncryptionChanged((payload) => {
@@ -1513,6 +1523,7 @@ export default function ChatPage() {
       isActive = false;
       unsubscribe?.();
       encryptionUnsub?.();
+      autoRepliesUnsub?.();
       leave?.();
       setUserChannel(null);
     };
@@ -1637,6 +1648,7 @@ export default function ChatPage() {
               currentProfile={currentProfile}
               onEditProfile={() => setIsProfileOpen(true)}
               onOpenStarred={() => setIsStarredOpen(true)}
+              onOpenAutoReplies={() => setAutoRepliesOpen(true)}
               onInvite={() => {
                 setMobileView("chats");
                 setSearchFocusNonce((n) => n + 1);
@@ -1694,6 +1706,7 @@ export default function ChatPage() {
             currentProfile={currentProfile}
             onEditProfile={() => setIsProfileOpen(true)}
             onOpenStarred={() => setIsStarredOpen(true)}
+            onOpenAutoReplies={() => setAutoRepliesOpen(true)}
             onInvite={() => {
               setMobileView("chats");
               setSearchFocusNonce((n) => n + 1);
@@ -1904,6 +1917,13 @@ export default function ChatPage() {
           peerUserId={directPeerId}
           peerName={headerTitle}
           onClose={() => setSafetyOpen(false)}
+        />
+      ) : null}
+
+      {autoRepliesOpen ? (
+        <AutoRepliesModal
+          onClose={() => setAutoRepliesOpen(false)}
+          refreshNonce={autoRepliesNonce}
         />
       ) : null}
     </main>

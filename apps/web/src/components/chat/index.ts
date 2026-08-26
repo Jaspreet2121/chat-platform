@@ -36,5 +36,7 @@ export { NotificationToasts, notificationSoundEnabled, setNotificationSoundEnabl
 export type { MessageToast } from "./NotificationToasts";
 export { EncryptionConfirmSheet } from "./EncryptionConfirmSheet";
 export type { EncryptionConfirmSheetProps } from "./EncryptionConfirmSheet";
+export { AutoRepliesModal } from "./AutoRepliesModal";
+export type { AutoRepliesModalProps } from "./AutoRepliesModal";
 export { SafetyNumberModal } from "./SafetyNumberModal";
 export type { SafetyNumberModalProps } from "./SafetyNumberModal";
