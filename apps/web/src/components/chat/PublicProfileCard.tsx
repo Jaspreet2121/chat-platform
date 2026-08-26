@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Loader2, X } from "lucide-react";
+import { IndianRupee, Loader2, X } from "lucide-react";
 import { UserProfile, getPublicProfile } from "@/lib/api";
 import { Avatar, Card } from "@/components";
+import { PayViaUpiModal } from "./PayViaUpiModal";
 import { cn } from "@/lib/cn";
 
 export type PublicProfileCardProps = {
@@ -25,6 +26,7 @@ export function PublicProfileCard({ userId, role, online, isSelf, onClose }: Pub
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [payOpen, setPayOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -106,12 +108,59 @@ export function PublicProfileCard({ userId, role, online, isSelf, onClose }: Pub
               <p className="text-sm text-faint">No bio yet.</p>
             )}
 
+            {/* 100: payment fields are visibility-gated server-side and simply ABSENT when hidden,
+                so their presence is the whole permission check. Never shown on your own card. */}
+            {!isSelf && profile?.upi_id ? (
+              <button
+                type="button"
+                onClick={() => setPayOpen(true)}
+                className="accent-gradient flex w-full items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium text-white shadow-accent-glow transition-transform active:scale-95"
+              >
+                <IndianRupee className="h-4 w-4" aria-hidden />
+                Pay via UPI
+              </button>
+            ) : null}
+
+            {profile?.address || profile?.website || profile?.business_email || profile?.business_hours ? (
+              <dl className="space-y-1 rounded-xl border border-border bg-elevated p-3 text-left text-xs">
+                {profile.address ? <BusinessRow label="Address" value={profile.address} /> : null}
+                {profile.website ? <BusinessRow label="Website" value={profile.website} link /> : null}
+                {profile.business_email ? (
+                  <BusinessRow label="Email" value={profile.business_email} />
+                ) : null}
+                {profile.business_hours ? (
+                  <BusinessRow label="Hours" value={profile.business_hours} />
+                ) : null}
+              </dl>
+            ) : null}
+
             {error ? (
               <p className="text-xs text-faint">Limited profile — couldn&apos;t load full details.</p>
             ) : null}
           </div>
         )}
       </Card>
+
+      {payOpen && profile ? (
+        <PayViaUpiModal profile={profile} onClose={() => setPayOpen(false)} />
+      ) : null}
+    </div>
+  );
+}
+
+function BusinessRow({ label, value, link }: { label: string; value: string; link?: boolean }) {
+  return (
+    <div className="flex gap-2">
+      <dt className="w-16 shrink-0 text-faint">{label}</dt>
+      <dd className="min-w-0 flex-1 truncate text-fg">
+        {link ? (
+          <a href={value} target="_blank" rel="noreferrer noopener" className="text-brand hover:underline">
+            {value}
+          </a>
+        ) : (
+          value
+        )}
+      </dd>
     </div>
   );
 }

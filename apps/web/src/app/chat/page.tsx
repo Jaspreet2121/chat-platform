@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ConversationDetail,
@@ -17,7 +17,11 @@ import {
   ApiRequestError,
   getConversation,
   getCurrentSession,
+  fetchCommands,
   getMe,
+  listQuickReplies,
+  type QuickReply,
+  type SlashCommand,
   listConversations,
   listMessages,
   reactToMessage,
@@ -54,7 +58,10 @@ import {
   notificationSoundEnabled,
   playNotificationBlip,
   AutoRepliesModal,
+  PaymentsModal,
   ProfileTab,
+  QuickRepliesModal,
+  SlashPicker,
   StarredPanel,
   StatusBanner
 } from "@/components/chat";
@@ -70,6 +77,12 @@ import {
   type DecryptOutcome
 } from "@/lib/e2ee/secretChat";
 import { makeImageThumb } from "@/lib/e2ee/thumbnail";
+import {
+  qrCaption,
+  resolveTemplate,
+  slashFragment,
+  type PickerItem
+} from "@/lib/slashCommands";
 import { cn } from "@/lib/cn";
 import imageCompression from "browser-image-compression";
 import { reuploadMediaForForward } from "@/lib/forward";
@@ -155,6 +168,14 @@ export default function ChatPage() {
   // event (payload is empty, so a refetch is the only correct response).
   const [autoRepliesOpen, setAutoRepliesOpen] = useState(false);
   const [autoRepliesNonce, setAutoRepliesNonce] = useState(0);
+  // 100: the composer "/" palette. Commands are ETag-cached in lib/api (one fetch per release);
+  // quick replies are cached here and refetched on the quick_replies_changed realtime event.
+  const [commands, setCommands] = useState<SlashCommand[]>([]);
+  const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const [quickRepliesOpen, setQuickRepliesOpen] = useState(false);
+  const [quickRepliesNonce, setQuickRepliesNonce] = useState(0);
+  const [paymentsOpen, setPaymentsOpen] = useState(false);
   // The message currently being replied to (quoted), and the one being forwarded (picker target).
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
@@ -207,6 +228,90 @@ export default function ChatPage() {
   // reflects who has THIS conversation open, not global online state. Reset on conversation switch.
   const [onlineUserIds, setOnlineUserIds] = useState<string[]>([]);
 
+
+  // 100: act on a "/" palette choice. A quick reply or a resolved text template fills the DRAFT (the
+  // user still reviews and sends); the two supported actions run immediately.
+  async function handleSlashSelect(item: PickerItem) {
+    setSlashDismissed(true);
+
+    if (item.source === "quick_reply") {
+      setDraft(item.reply.body);
+      return;
+    }
+
+    const command = item.command;
+
+    if (command.kind === "text" && command.template) {
+      // resolveTemplate returns null only when a placeholder is unresolved, and the picker already
+      // gated on that — but never put a literal "{upi_id}" in the draft if it somehow happens.
+      const filled = resolveTemplate(command.template, currentProfile);
+      setDraft(filled ?? "");
+      return;
+    }
+
+    if (command.name === "location") {
+      setDraft("");
+      setLocationSheetOpen(true);
+      return;
+    }
+
+    if (command.name === "qr") {
+      // The QR is an ordinary "message"-purpose image asset the server generated, so it sends by id
+      // down the normal media path — no upload, no re-encoding.
+      const mediaId = currentProfile?.upi_qr_media_id;
+      if (!selectedConversationId || !mediaId) {
+        setStatus(
+          currentProfile?.upi_id
+            ? "Your UPI QR is still being prepared — try again in a moment."
+            : "Add your UPI ID in Settings → Payments first."
+        );
+        return;
+      }
+
+      setDraft("");
+      setIsSending(true);
+      try {
+        const message = await sendCreate({
+          conversationId: selectedConversationId,
+          messageType: "media",
+          mediaId,
+          caption: qrCaption(currentProfile)
+        });
+        setMessages((current) => mergeMessage(current, message));
+        bumpConversationActivity(message);
+        setStatus("UPI QR sent.");
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not send your UPI QR.");
+      } finally {
+        setIsSending(false);
+      }
+    }
+  }
+
+  // The palette is open while the draft is a single "/"-prefixed token (see slashFragment).
+  const slashFragmentValue = useMemo(() => slashFragment(draft), [draft]);
+
+  // 100: the palette's quick replies, and a refetch of MY profile. Both are called from events
+  // (sign-in, realtime), never synchronously inside an effect body.
+  const refreshQuickReplies = useCallback(async () => {
+    try {
+      const response = await listQuickReplies();
+      setQuickReplies(response.quick_replies ?? []);
+    } catch {
+      // A failed list just means the palette shows built-ins only.
+    }
+  }, []);
+
+  const refreshMe = useCallback(async () => {
+    try {
+      const profile = await getMe();
+      setCurrentProfile(profile);
+      primeUserProfile(profile);
+    } catch {
+      // Keep whatever we already had.
+    }
+  }, []);
+
   // 108: decrypt sealed messages as they appear (in-memory LRU inside secretChat; here we mirror
   // the outcome into render state). Runs off the message list; never blocks it.
   useEffect(() => {
@@ -255,6 +360,12 @@ export default function ChatPage() {
           })
           .catch(() => setCurrentProfile(null));
 
+        // 100: the "/" palette's two sources. Both are best-effort — a failure just means no palette.
+        void fetchCommands()
+          .then(setCommands)
+          .catch(() => undefined);
+        void refreshQuickReplies();
+
         const response = await listConversations();
         const loadedConversations = response.conversations ?? [];
         setConversations(loadedConversations);
@@ -287,6 +398,9 @@ export default function ChatPage() {
     }
 
     void loadInitialData();
+    // Bootstrap once per mount. The helpers it calls are stable useCallbacks declared BELOW this
+    // effect, so naming them in the dep array would be a temporal-dead-zone read at render time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   useEffect(() => {
@@ -1236,6 +1350,8 @@ export default function ChatPage() {
 
   function handleDraftChange(value: string) {
     setDraft(value);
+    // Re-open the palette whenever the user starts a fresh "/" token (dismissing is per-token).
+    if (!value.startsWith("/")) setSlashDismissed(false);
 
     if (!channel) {
       return;
@@ -1458,6 +1574,8 @@ export default function ChatPage() {
     let unsubscribe: (() => void) | null = null;
     let encryptionUnsub: (() => void) | null = null;
     let autoRepliesUnsub: (() => void) | null = null;
+    let quickRepliesUnsub: (() => void) | null = null;
+    let profileUnsub: (() => void) | null = null;
     let leave: (() => void) | null = null;
 
     (async () => {
@@ -1501,6 +1619,17 @@ export default function ChatPage() {
           if (notificationSoundEnabled()) playNotificationBlip();
         });
 
+        // 100: quick replies changed on another device — refetch (the payload is empty).
+        quickRepliesUnsub = joined.onQuickRepliesChanged(() => {
+          void refreshQuickReplies();
+          setQuickRepliesNonce((n) => n + 1);
+        });
+
+        // 100: the server generates the UPI QR ASYNCHRONOUSLY after a payment PATCH and broadcasts
+        // this when it lands. The QR url is NOT in the PATCH response, so without refetching here it
+        // would only appear after a manual reload.
+        profileUnsub = joined.onProfileChanged(() => void refreshMe());
+
         // 102: settings changed on another device — the payload is empty, so bump the nonce and let
         // the open settings screen refetch.
         autoRepliesUnsub = joined.onAutoRepliesChanged(() => setAutoRepliesNonce((n) => n + 1));
@@ -1524,6 +1653,8 @@ export default function ChatPage() {
       unsubscribe?.();
       encryptionUnsub?.();
       autoRepliesUnsub?.();
+      quickRepliesUnsub?.();
+      profileUnsub?.();
       leave?.();
       setUserChannel(null);
     };
@@ -1649,6 +1780,8 @@ export default function ChatPage() {
               onEditProfile={() => setIsProfileOpen(true)}
               onOpenStarred={() => setIsStarredOpen(true)}
               onOpenAutoReplies={() => setAutoRepliesOpen(true)}
+              onOpenQuickReplies={() => setQuickRepliesOpen(true)}
+              onOpenPayments={() => setPaymentsOpen(true)}
               onInvite={() => {
                 setMobileView("chats");
                 setSearchFocusNonce((n) => n + 1);
@@ -1707,6 +1840,8 @@ export default function ChatPage() {
             onEditProfile={() => setIsProfileOpen(true)}
             onOpenStarred={() => setIsStarredOpen(true)}
             onOpenAutoReplies={() => setAutoRepliesOpen(true)}
+            onOpenQuickReplies={() => setQuickRepliesOpen(true)}
+            onOpenPayments={() => setPaymentsOpen(true)}
             onInvite={() => {
               setMobileView("chats");
               setSearchFocusNonce((n) => n + 1);
@@ -1826,6 +1961,18 @@ export default function ChatPage() {
           onCancelReply={() => setReplyingTo(null)}
           onSendVoice={handleSendVoice}
           onShareLocation={() => setLocationSheetOpen(true)}
+          slashPicker={
+            slashFragmentValue !== null && !slashDismissed ? (
+              <SlashPicker
+                fragment={slashFragmentValue}
+                commands={commands}
+                quickReplies={quickReplies}
+                profile={currentProfile}
+                onSelect={(item) => void handleSlashSelect(item)}
+                onDismiss={() => setSlashDismissed(true)}
+              />
+            ) : null
+          }
         />
 
         <LocationShareSheet
@@ -1917,6 +2064,25 @@ export default function ChatPage() {
           peerUserId={directPeerId}
           peerName={headerTitle}
           onClose={() => setSafetyOpen(false)}
+        />
+      ) : null}
+
+      {quickRepliesOpen ? (
+        <QuickRepliesModal
+          onClose={() => setQuickRepliesOpen(false)}
+          refreshNonce={quickRepliesNonce}
+          onChanged={setQuickReplies}
+        />
+      ) : null}
+
+      {paymentsOpen ? (
+        <PaymentsModal
+          profile={currentProfile}
+          onClose={() => setPaymentsOpen(false)}
+          onSaved={(profile) => {
+            setCurrentProfile(profile);
+            primeUserProfile(profile);
+          }}
         />
       ) : null}
 

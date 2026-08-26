@@ -1,4 +1,4 @@
-import { FormEvent, RefObject, useEffect, useRef, useState } from "react";
+import { FormEvent, ReactNode, RefObject, useEffect, useRef, useState } from "react";
 import { Camera, CornerUpLeft, FileText, Image as ImageIcon, MapPin, Mic, Plus, Send, Smile, Square, X } from "lucide-react";
 import { Button, IconButton } from "@/components";
 import { cn } from "@/lib/cn";
@@ -30,6 +30,8 @@ export type ComposerProps = {
   /** Disable "+" with a note when attachments can't be sent (kept generic; 109 enabled encrypted
    *  attachments, so secret chats no longer set this). */
   attachmentsDisabled?: boolean;
+  /** 100: the "/" palette, rendered above the input. Absent = the feature is simply not offered. */
+  slashPicker?: ReactNode;
 };
 
 export function Composer({
@@ -50,7 +52,8 @@ export function Composer({
   replyPreview,
   onCancelReply,
   onSendVoice,
-  onShareLocation
+  onShareLocation,
+  slashPicker
 }: ComposerProps) {
   const canSend = hasConversation && (Boolean(draft.trim()) || Boolean(selectedFile)) && !isSending;
 
@@ -134,6 +137,8 @@ export function Composer({
       className="border-t border-border bg-surface p-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:p-3"
       onSubmit={onSubmit}
     >
+      {slashPicker}
+
       {replyPreview ? (
         <div className="mb-2 flex items-center gap-2 rounded-lg border-l-2 border-brand bg-elevated px-3 py-2">
           <CornerUpLeft className="h-4 w-4 shrink-0 text-brand-hover" aria-hidden />

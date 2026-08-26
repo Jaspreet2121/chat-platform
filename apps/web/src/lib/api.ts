@@ -179,6 +179,29 @@ export type UserProfile = {
     profile_photo_visibility?: string;
     read_receipts_enabled?: boolean;
   };
+  // --- Payment + business card (100). On the OWNER's profile all of these are present; on another
+  // user's card they are visibility-gated and DROPPED when hidden (absent == hidden == unset, by
+  // design). upi_merchant / upi_qr_media_id / profile_visibility are owner-only and never appear on
+  // someone else's card; a viewer gets upi_qr_url (presigned) but never the raw media id.
+  upi_id?: string | null;
+  payment_name?: string | null;
+  /** Presigned PNG of the generated UPI QR. Written ASYNCHRONOUSLY after a payment PATCH — it is NOT
+   *  in that PATCH's response, so clients refetch on the `profile_changed` realtime event. */
+  upi_qr_url?: string | null;
+  upi_qr_media_id?: string | null;
+  /** Owner-only passthrough of the merchant params from a scanned QR (mc/tr/tn/sign/...). */
+  upi_merchant?: Record<string, string> | null;
+  address?: string | null;
+  website?: string | null;
+  business_email?: string | null;
+  business_hours?: string | null;
+  profile_visibility?: ProfileVisibility;
+};
+
+/** Owner-only. `payment` also allows "contacts" (the shares-a-conversation rule); `business` does not. */
+export type ProfileVisibility = {
+  payment?: "everyone" | "contacts" | "nobody";
+  business?: "everyone" | "nobody";
 };
 
 export type NearbyPerson = UserProfile & {
@@ -462,10 +485,26 @@ export type UpdateProfileInput = {
   // A normal id sets it; omitted = unchanged. avatar_object_key is NO LONGER sent — the server resolves
   // object_key from the media_assets row (bee9562); the gateway strips any key the client sends.
   avatar_media_id?: string;
+  username?: string;
+  // --- Payment (100). THREE input shapes, and the server prefers upi_qr_payload when both are sent:
+  //   * upi_qr_payload: a scanned "upi://pay?..." string — pa→upi_id, pn→payment_name, everything
+  //     else preserved verbatim as the merchant map (never invented, never dropped);
+  //   * upi_qr_payload: null — CLEARS the whole payment block (and deletes the generated QR);
+  //     * upi_id (+ payment_name): a manually typed VPA; the merchant map becomes empty.
+  // upi_qr_media_id and upi_merchant are NOT client-writable.
+  upi_qr_payload?: string | null;
+  upi_id?: string | null;
+  payment_name?: string | null;
+  // Business card. website must be https://; business_email must look like an address. "" clears.
+  address?: string | null;
+  website?: string | null;
+  business_email?: string | null;
+  business_hours?: string | null;
+  profile_visibility?: ProfileVisibility;
 };
 
 // Update the signed-in user's profile (PATCH /me). Only send the fields being changed (the gateway
-// allow-lists display_name/bio/avatar_media_id and rejects an empty body).
+// allow-lists the fields above and rejects an empty body OR any unknown key).
 export function updateMe(input: UpdateProfileInput) {
   return request<UserProfile>("/api/v1/users/me", {
     method: "PATCH",
@@ -861,6 +900,110 @@ export function sendNearbyRequest(userId: string) {
 export function searchUsers(query: string, limit = 20) {
   const params = new URLSearchParams({ q: query, limit: String(limit) });
   return request<{ users: UserProfile[] }>(`/api/v1/users/search?${params.toString()}`);
+}
+
+// --- Slash commands + quick replies (100) -------------------------------------------------------
+
+/**
+ * A built-in slash command. `kind` decides what selecting it does:
+ *   * "text"   — carries a `template` whose {placeholders} resolve CLIENT-SIDE from the caller's own
+ *                profile (there is no server-side template engine);
+ *   * "action" — carries a `label`; the client implements the behaviour (/qr, /location, /contact).
+ * `requires` names a profile field that must be set before the command is offered at all.
+ */
+export type SlashCommand = {
+  name: string;
+  kind: "text" | "action";
+  label?: string;
+  template?: string;
+  requires?: string;
+};
+
+// The list only changes with a deploy, so the server serves it with a strong ETag + a 1h max-age.
+// `request<T>` discards the Response (and so the ETag), hence this bespoke fetch: we keep the last
+// etag + body in module memory and send If-None-Match, turning every later call into a 304.
+let commandsCache: { etag: string; commands: SlashCommand[] } | null = null;
+
+export async function fetchCommands(): Promise<SlashCommand[]> {
+  const headers = new Headers({ Accept: "application/json" });
+  const token = getAccessToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (commandsCache) headers.set("If-None-Match", commandsCache.etag);
+
+  const response = await fetch(`${apiBaseUrl()}/api/v1/commands`, { headers, cache: "no-store" });
+
+  // 304 — the cached list is still current (the body is empty, so there is nothing to parse).
+  if (response.status === 304 && commandsCache) return commandsCache.commands;
+
+  if (!response.ok) {
+    // A failed command list must never break the composer — fall back to what we have, else nothing.
+    if (commandsCache) return commandsCache.commands;
+    throw new ApiRequestError(`Request failed with ${response.status}`, response.status);
+  }
+
+  const data = (await response.json().catch(() => ({}))) as { commands?: SlashCommand[] };
+  const commands = data.commands ?? [];
+  const etag = response.headers.get("etag");
+  if (etag) commandsCache = { etag, commands };
+
+  return commands;
+}
+
+/** Test seam — drops the in-memory ETag cache. */
+export function __resetCommandsCache() {
+  commandsCache = null;
+}
+
+export type QuickReply = {
+  id: string;
+  /** lowercase a-z0-9_ , 1–25 chars, stored WITHOUT the leading slash. Unique per user. */
+  shortcut: string;
+  body: string;
+  media_id?: string | null;
+  position: number;
+  updated_at?: string | null;
+};
+
+/** Server-enforced limits. */
+export const QUICK_REPLY_MAX = 50;
+export const QUICK_REPLY_BODY_MAX = 1000;
+export const QUICK_REPLY_SHORTCUT_PATTERN = /^[a-z0-9_]{1,25}$/;
+
+export function listQuickReplies() {
+  return request<{ quick_replies: QuickReply[] }>("/api/v1/quick-replies");
+}
+
+export function createQuickReply(input: { shortcut: string; body: string; media_id?: string }) {
+  // 201 with the BARE object (not wrapped), unlike the list.
+  return request<QuickReply>("/api/v1/quick-replies", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function updateQuickReply(
+  id: string,
+  input: { shortcut?: string; body?: string; media_id?: string | null }
+) {
+  return request<QuickReply>(`/api/v1/quick-replies/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input)
+  });
+}
+
+export function deleteQuickReply(id: string) {
+  return request<{ deleted: boolean; id: string }>(
+    `/api/v1/quick-replies/${encodeURIComponent(id)}`,
+    { method: "DELETE" }
+  );
+}
+
+/** Order is the index in `ids`; ids the caller doesn't own are ignored server-side. */
+export function reorderQuickReplies(ids: string[]) {
+  return request<{ quick_replies: QuickReply[] }>("/api/v1/quick-replies/order", {
+    method: "PUT",
+    body: JSON.stringify({ ids })
+  });
 }
 
 // --- Auto-replies (102) -------------------------------------------------------------------------

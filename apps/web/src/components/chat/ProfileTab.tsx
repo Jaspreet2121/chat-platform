@@ -5,6 +5,7 @@ import {
   Bell,
   BellRing,
   ChevronRight,
+  IndianRupee,
   Laptop,
   LogOut,
   MessageSquareReply,
@@ -15,7 +16,8 @@ import {
   Smartphone,
   Star,
   Sun,
-  UserPlus
+  UserPlus,
+  Zap
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import {
@@ -36,6 +38,10 @@ export type ProfileTabProps = {
   onOpenStarred: () => void;
   /** Settings → Automated replies (102). */
   onOpenAutoReplies: () => void;
+  /** Settings → Quick replies (100). */
+  onOpenQuickReplies: () => void;
+  /** Settings → Payments (100). */
+  onOpenPayments: () => void;
   /** Focuses the phone search (the invite flow's entry point). */
   onInvite: () => void;
   onLogout: () => void;
@@ -54,6 +60,8 @@ export function ProfileTab({
   onEditProfile,
   onOpenStarred,
   onOpenAutoReplies,
+  onOpenQuickReplies,
+  onOpenPayments,
   onInvite,
   onLogout
 }: ProfileTabProps) {
@@ -169,9 +177,21 @@ export function ProfileTab({
           />
           <Divider />
           <Row
+            icon={<Zap className="h-[18px] w-[18px]" aria-hidden />}
+            label="Quick replies"
+            onClick={onOpenQuickReplies}
+          />
+          <Divider />
+          <Row
             icon={<MessageSquareReply className="h-[18px] w-[18px]" aria-hidden />}
             label="Automated replies"
             onClick={onOpenAutoReplies}
+          />
+          <Divider />
+          <Row
+            icon={<IndianRupee className="h-[18px] w-[18px]" aria-hidden />}
+            label="Payments"
+            onClick={onOpenPayments}
           />
           <Divider />
           <Row

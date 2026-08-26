@@ -213,6 +213,14 @@ export type UserChannel = {
   onEncryptionChanged: (callback: (payload: { conversation_id?: string }) => void) => () => void;
   /** 102: this user's auto-reply settings changed (any device). Payload is EMPTY — refetch. */
   onAutoRepliesChanged: (callback: () => void) => () => void;
+  /** 100: this user's quick replies changed (any device). Payload is EMPTY — refetch. */
+  onQuickRepliesChanged: (callback: () => void) => () => void;
+  /**
+   * The user's own profile changed server-side. Emitted after the ASYNC UPI-QR generation that
+   * follows a payment PATCH — the QR url is absent from that PATCH's response, so without refetching
+   * on this the QR only appears after a manual reload.
+   */
+  onProfileChanged: (callback: () => void) => () => void;
   /** Push a call:* control event; `call:invite` resolves with the `{ call_id, room }` ack. */
   pushCall: (event: CallClientEvent, payload: Record<string, unknown>) => Promise<unknown>;
   leave: () => void;
@@ -278,6 +286,9 @@ export function joinUserChannel(socket: Socket, userId: string): Promise<UserCha
             subscribe(channel, "conversation_encryption_changed", callback),
           onAutoRepliesChanged: (callback) =>
             subscribe(channel, "auto_replies_changed", () => callback()),
+          onQuickRepliesChanged: (callback) =>
+            subscribe(channel, "quick_replies_changed", () => callback()),
+          onProfileChanged: (callback) => subscribe(channel, "profile_changed", () => callback()),
           pushCall: (event, payload) => push(channel, event, payload),
           leave: () => {
             stopHeartbeat();

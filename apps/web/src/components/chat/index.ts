@@ -36,6 +36,14 @@ export { NotificationToasts, notificationSoundEnabled, setNotificationSoundEnabl
 export type { MessageToast } from "./NotificationToasts";
 export { EncryptionConfirmSheet } from "./EncryptionConfirmSheet";
 export type { EncryptionConfirmSheetProps } from "./EncryptionConfirmSheet";
+export { QuickRepliesModal } from "./QuickRepliesModal";
+export type { QuickRepliesModalProps } from "./QuickRepliesModal";
+export { PaymentsModal } from "./PaymentsModal";
+export type { PaymentsModalProps } from "./PaymentsModal";
+export { PayViaUpiModal } from "./PayViaUpiModal";
+export type { PayViaUpiModalProps } from "./PayViaUpiModal";
+export { SlashPicker } from "./SlashPicker";
+export type { SlashPickerProps } from "./SlashPicker";
 export { AutoRepliesModal } from "./AutoRepliesModal";
 export type { AutoRepliesModalProps } from "./AutoRepliesModal";
 export { SafetyNumberModal } from "./SafetyNumberModal";
