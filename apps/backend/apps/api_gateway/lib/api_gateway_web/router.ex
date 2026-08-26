@@ -254,6 +254,7 @@ defmodule ApiGatewayWeb.Router do
   scope "/api/v1/dating", ApiGatewayWeb do
     pipe_through :api
 
+    get "/tags", DatingController, :tags
     get "/profile", DatingController, :profile
     patch "/profile", DatingController, :update_profile
     get "/deck", DatingController, :deck

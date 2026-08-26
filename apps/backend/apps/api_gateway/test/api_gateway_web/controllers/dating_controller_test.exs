@@ -152,6 +152,58 @@ defmodule ApiGatewayWeb.DatingControllerTest do
     |> put_req_header("authorization", "Bearer token")
   end
 
+  test "TAGS (106): exact catalog shape, strong ETag, If-None-Match 304 with no body" do
+    conn = authed(:get, "/api/v1/dating/tags") |> DatingController.tags(%{})
+    assert conn.status == 200
+    [etag] = get_resp_header(conn, "etag")
+    assert String.starts_with?(etag, "\"")
+
+    %{"intentions" => intentions, "turn_ons" => turn_ons} = Jason.decode!(conn.resp_body)
+
+    # The five intentions, exactly, in order — keys are the wire contract.
+    assert Enum.map(intentions, & &1["key"]) == [
+             "serious",
+             "casual",
+             "open",
+             "friends",
+             "figuring"
+           ]
+
+    assert %{"key" => "serious", "label" => "Serious relationship"} = hd(intentions)
+
+    # 15 romance + 28 vibes = 43, each with key/label/category and nothing else.
+    assert length(turn_ons) == 43
+    assert Enum.count(turn_ons, &(&1["category"] == "romance")) == 15
+    assert Enum.count(turn_ons, &(&1["category"] == "vibes")) == 28
+    assert %{"key" => "kissing", "label" => "Kissing", "category" => "romance"} = hd(turn_ons)
+    assert Enum.all?(turn_ons, &(Map.keys(&1) |> Enum.sort() == ["category", "key", "label"]))
+
+    assert %{"key" => "poetry_shayari", "label" => "Poetry & shayari"} =
+             Enum.find(turn_ons, &(&1["key"] == "poetry_shayari"))
+
+    # Cache round-trip: the SAME payload answers 304 with an empty body.
+    conn2 =
+      authed(:get, "/api/v1/dating/tags")
+      |> put_req_header("if-none-match", etag)
+      |> DatingController.tags(%{})
+
+    assert conn2.status == 304
+    assert conn2.resp_body == ""
+    assert get_resp_header(conn2, "etag") == [etag]
+  end
+
+  test "TAG error mapping: dating.invalid_tag is a 422" do
+    Application.put_env(:api_gateway, :test_dating_update, {:error, :dating_invalid_tag})
+    params = %{"turn_ons" => ["nonsense"]}
+
+    conn =
+      authed(:patch, "/api/v1/dating/profile", params)
+      |> DatingController.update_profile(params)
+
+    assert conn.status == 422
+    assert %{"error" => %{"code" => "dating.invalid_tag"}} = Jason.decode!(conn.resp_body)
+  end
+
   test "PATCH profile rides identity+tenant and broadcasts dating_profile_changed; errors map" do
     ApiGatewayWeb.Endpoint.subscribe("user:" <> @me)
     params = %{"enabled" => true, "dob" => "1999-01-01", "user_id" => "attacker"}

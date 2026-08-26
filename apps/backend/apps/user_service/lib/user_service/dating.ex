@@ -22,6 +22,7 @@ defmodule UserService.Dating do
   @genders ~w(woman man nonbinary other)
   @bio_max 500
   @max_photos 6
+  @max_turn_ons 15
   @min_photos_to_enable 2
   @deck_limit_max 25
   @page_limit 25
@@ -89,6 +90,9 @@ defmodule UserService.Dating do
       %{rows: rows} =
         Repo.query!(
           """
+          SELECT c.user_id, c.display_name, c.age, c.bio, c.photos, c.distance_km,
+                 c.intention, c.turn_ons, c.shared_turn_ons
+          FROM (
           SELECT p.user_id::text, up.display_name,
                  EXTRACT(YEAR FROM age(p.dob))::int AS age, p.bio,
                  ARRAY(SELECT ph::text FROM unnest(p.photos) ph) AS photos,
@@ -96,7 +100,13 @@ defmodule UserService.Dating do
                    power(sin(radians((p.latitude - $3) / 2.0)), 2) +
                    cos(radians($3)) * cos(radians(p.latitude)) *
                    power(sin(radians((p.longitude - $4) / 2.0)), 2)
-                 ))))::int AS distance_km
+                 ))))::int AS distance_km,
+                 p.intention, p.turn_ons,
+                 -- COMMON GROUND (106): the intersection with the VIEWER's turn-ons, kept in the
+                 -- TARGET's order — the client renders "You both like: …" without recomputing.
+                 ARRAY(SELECT t.tag FROM unnest(p.turn_ons) WITH ORDINALITY AS t(tag, ord)
+                       WHERE t.tag = ANY($12::text[]) ORDER BY t.ord) AS shared_turn_ons,
+                 p.last_active_at
           FROM dating_profiles p
           JOIN users_auth a ON a.id = p.user_id AND a.status = 'active'
           LEFT JOIN user_profiles up ON up.user_id = p.user_id
@@ -137,7 +147,16 @@ defmodule UserService.Dating do
                 AND m.user_low_id = LEAST($1::text::uuid, p.user_id)
                 AND m.user_high_id = GREATEST($1::text::uuid, p.user_id)
             )
-          ORDER BY p.last_active_at DESC, random()
+            -- INTENTION FILTER, VIEWER-SIDE ONLY (asymmetric BY DESIGN): my pref narrows MY deck;
+            -- a candidate's pref narrows only THEIR deck. Applying the candidate's pref here would
+            -- remove people from decks because they answered honestly about what they want —
+            -- honesty must never cost reach. Empty pref = all intentions.
+            AND ($13::text[] = '{}'::text[] OR p.intention = ANY($13::text[]))
+          ) c
+          -- Opt-in hard filter: only people we share at least one turn-on with.
+          WHERE ($14 = false OR cardinality(c.shared_turn_ons) > 0)
+          -- Common ground first, then the existing recency, then the random tiebreak.
+          ORDER BY cardinality(c.shared_turn_ons) DESC, c.last_active_at DESC, random()
           LIMIT #{@deck_limit_max}
           """,
           [
@@ -151,11 +170,14 @@ defmodule UserService.Dating do
             me.min_age,
             me.max_age,
             age_of(me.dob),
-            me.max_distance_km * 1.0
+            me.max_distance_km * 1.0,
+            me.turn_ons,
+            me.pref_intentions,
+            me.pref_require_shared_turn_on
           ]
         )
 
-      {:ok, %{cards: rows |> Enum.take(limit) |> Enum.map(&card_row/1)}}
+      {:ok, %{cards: rows |> Enum.take(limit) |> Enum.map(&tagged_card_row/1)}}
     end
   rescue
     Ecto.Query.CastError -> {:error, :dating_invalid}
@@ -273,6 +295,9 @@ defmodule UserService.Dating do
                    cos(radians($3)) * cos(radians(p.latitude)) *
                    power(sin(radians((p.longitude - $4) / 2.0)), 2)
                  ))))::int AS distance_km,
+                 p.intention, p.turn_ons,
+                 ARRAY(SELECT t.tag FROM unnest(p.turn_ons) WITH ORDINALITY AS t(tag, ord)
+                       WHERE t.tag = ANY($7::text[]) ORDER BY t.ord) AS shared_turn_ons,
                  s.updated_at, s.id::text
           FROM dating_swipes s
           JOIN dating_profiles p ON p.user_id = s.swiper_id AND p.enabled
@@ -293,11 +318,11 @@ defmodule UserService.Dating do
           ORDER BY s.updated_at DESC, s.id DESC
           LIMIT #{@page_limit}
           """,
-          [user_id, app_id, me.latitude, me.longitude, cursor_ts, cursor_id]
+          [user_id, app_id, me.latitude, me.longitude, cursor_ts, cursor_id, me.turn_ons]
         )
 
-      cards = Enum.map(rows, fn row -> card_row(Enum.take(row, 6)) end)
-      {:ok, %{cards: cards, next_cursor: next_cursor(rows)}}
+      cards = Enum.map(rows, fn row -> tagged_card_row(Enum.take(row, 9)) end)
+      {:ok, %{cards: cards, next_cursor: next_cursor(rows, 9)}}
     end
   rescue
     Ecto.Query.CastError -> {:error, :dating_invalid}
@@ -363,7 +388,7 @@ defmodule UserService.Dating do
           })
         end)
 
-      {:ok, %{matches: matches, next_cursor: next_cursor(rows)}}
+      {:ok, %{matches: matches, next_cursor: next_cursor(rows, 6)}}
     end
   rescue
     Ecto.Query.CastError -> {:error, :dating_invalid}
@@ -450,7 +475,8 @@ defmodule UserService.Dating do
         """
         SELECT enabled, dob::text, dob_set_at, dob_corrected_at, gender, interested_in, bio,
                ARRAY(SELECT ph::text FROM unnest(photos) ph), latitude, longitude, location_name,
-               min_age, max_age, max_distance_km, pref_genders
+               min_age, max_age, max_distance_km, pref_genders,
+               intention, turn_ons, pref_intentions, pref_require_shared_turn_on
         FROM dating_profiles WHERE user_id = $1::text::uuid
         """,
         [user_id]
@@ -473,7 +499,11 @@ defmodule UserService.Dating do
           min_age,
           max_age,
           max_distance_km,
-          pref_genders
+          pref_genders,
+          intention,
+          turn_ons,
+          pref_intentions,
+          pref_require_shared_turn_on
         ]
       ] ->
         %{
@@ -492,6 +522,10 @@ defmodule UserService.Dating do
           max_age: max_age,
           max_distance_km: max_distance_km,
           pref_genders: pref_genders,
+          intention: intention,
+          turn_ons: turn_ons || [],
+          pref_intentions: pref_intentions || [],
+          pref_require_shared_turn_on: pref_require_shared_turn_on == true,
           age: age_of(dob)
         }
 
@@ -512,6 +546,10 @@ defmodule UserService.Dating do
           max_age: 100,
           max_distance_km: 100,
           pref_genders: [],
+          intention: nil,
+          turn_ons: [],
+          pref_intentions: [],
+          pref_require_shared_turn_on: false,
           age: nil
         }
     end
@@ -534,6 +572,27 @@ defmodule UserService.Dating do
       photos: photos || [],
       distance_km: distance_km
     }
+  end
+
+  # The v2 card: the base card + intention/turn_ons/shared_turn_ons — and NOTHING else new.
+  defp tagged_card_row([
+         user_id,
+         display_name,
+         age,
+         bio,
+         photos,
+         distance_km,
+         intention,
+         turn_ons,
+         shared_turn_ons
+       ]) do
+    [user_id, display_name, age, bio, photos, distance_km]
+    |> card_row()
+    |> Map.merge(%{
+      intention: intention,
+      turn_ons: turn_ons || [],
+      shared_turn_ons: shared_turn_ons || []
+    })
   end
 
   defp first_word(nil), do: nil
@@ -565,6 +624,8 @@ defmodule UserService.Dating do
          {:ok, bio} <- opt_bio(attrs),
          {:ok, photos} <- opt_photos(attrs),
          {:ok, location} <- opt_location(attrs),
+         {:ok, intention} <- opt_intention(attrs),
+         {:ok, turn_ons} <- opt_turn_ons(attrs),
          {:ok, prefs} <- opt_prefs(attrs) do
       {:ok,
        %{
@@ -575,6 +636,8 @@ defmodule UserService.Dating do
          bio: bio,
          photos: photos,
          location: location,
+         intention: intention,
+         turn_ons: turn_ons,
          prefs: prefs
        }}
     end
@@ -623,6 +686,7 @@ defmodule UserService.Dating do
       interested_in: updates.interested_in || current.interested_in,
       photos: updates.photos || current.photos,
       latitude: (updates.location && updates.location.lat) || current.latitude,
+      intention: updates.intention || current.intention,
       min_age: (updates.prefs && updates.prefs[:min_age]) || current.min_age
     }
   end
@@ -638,7 +702,8 @@ defmodule UserService.Dating do
         :ok
 
       merged.dob == nil or merged.gender == nil or merged.interested_in == [] or
-        merged.latitude == nil or length(merged.photos) < @min_photos_to_enable ->
+        merged.latitude == nil or length(merged.photos) < @min_photos_to_enable or
+          merged.intention == nil ->
         {:error, :dating_profile_incomplete}
 
       true ->
@@ -656,12 +721,15 @@ defmodule UserService.Dating do
       INSERT INTO dating_profiles
         (user_id, app_id, enabled, dob, dob_set_at, gender, interested_in, bio, photos,
          latitude, longitude, location_name, min_age, max_age, max_distance_km, pref_genders,
+         intention, turn_ons, pref_intentions, pref_require_shared_turn_on,
          last_active_at, updated_at)
       VALUES ($1::text::uuid, $2::text::uuid, COALESCE($3, false), ($4::text)::date,
               CASE WHEN ($4::text)::date IS NOT NULL THEN now() END,
               $5, COALESCE($6::text[], '{}'), $7, COALESCE(($8::text[])::uuid[], '{}'),
               $9, $10, $11, COALESCE($12, 18), COALESCE($13, 100), COALESCE($14, 100),
-              COALESCE($15::text[], '{}'), now(), now())
+              COALESCE($15::text[], '{}'),
+              $16, COALESCE($17::text[], '{}'), COALESCE($18::text[], '{}'), COALESCE($19, false),
+              now(), now())
       ON CONFLICT (user_id) DO UPDATE SET
         app_id = EXCLUDED.app_id,
         enabled = COALESCE($3, dating_profiles.enabled),
@@ -683,6 +751,10 @@ defmodule UserService.Dating do
         max_age = COALESCE($13, dating_profiles.max_age),
         max_distance_km = COALESCE($14, dating_profiles.max_distance_km),
         pref_genders = COALESCE($15::text[], dating_profiles.pref_genders),
+        intention = COALESCE($16, dating_profiles.intention),
+        turn_ons = COALESCE($17::text[], dating_profiles.turn_ons),
+        pref_intentions = COALESCE($18::text[], dating_profiles.pref_intentions),
+        pref_require_shared_turn_on = COALESCE($19, dating_profiles.pref_require_shared_turn_on),
         last_active_at = now(),
         updated_at = now()
       """,
@@ -701,7 +773,11 @@ defmodule UserService.Dating do
         updates.prefs && prefs[:min_age],
         updates.prefs && prefs[:max_age],
         updates.prefs && prefs[:max_distance_km],
-        updates.prefs && prefs[:genders]
+        updates.prefs && prefs[:genders],
+        updates.intention,
+        updates.turn_ons,
+        updates.prefs && prefs[:intentions],
+        updates.prefs && prefs[:require_shared_turn_on]
       ]
     )
   end
@@ -870,6 +946,47 @@ defmodule UserService.Dating do
     end
   end
 
+  # Tag keys are the wire contract (SharedInfra.DatingTags) — an unknown key is a distinct 422,
+  # never silently dropped. Dedupe keeps FIRST occurrence, order preserved as sent.
+  defp opt_intention(attrs) do
+    case get(attrs, "intention") do
+      nil ->
+        {:ok, nil}
+
+      key when is_binary(key) ->
+        if SharedInfra.DatingTags.valid_intention?(key),
+          do: {:ok, key},
+          else: {:error, :dating_invalid_tag}
+
+      _ ->
+        {:error, :dating_invalid_tag}
+    end
+  end
+
+  defp opt_turn_ons(attrs) do
+    case get(attrs, "turn_ons") do
+      nil ->
+        {:ok, nil}
+
+      list when is_list(list) ->
+        deduped = Enum.uniq(list)
+
+        cond do
+          not Enum.all?(deduped, &(is_binary(&1) and SharedInfra.DatingTags.valid_turn_on?(&1))) ->
+            {:error, :dating_invalid_tag}
+
+          length(deduped) > @max_turn_ons ->
+            {:error, :dating_invalid}
+
+          true ->
+            {:ok, deduped}
+        end
+
+      _ ->
+        {:error, :dating_invalid}
+    end
+  end
+
   defp opt_prefs(attrs) do
     case get(attrs, "prefs") do
       nil ->
@@ -880,6 +997,13 @@ defmodule UserService.Dating do
         max_age = Map.get(prefs, "max_age")
         max_distance = Map.get(prefs, "max_distance_km")
         genders = Map.get(prefs, "genders")
+        intentions = Map.get(prefs, "intentions")
+        # BOOLEAN — fetched explicitly, never via a truthiness helper (the falsy-mget trap).
+        require_shared =
+          case Map.fetch(prefs, "require_shared_turn_on") do
+            {:ok, value} -> value
+            :error -> nil
+          end
 
         cond do
           min_age != nil and (not is_integer(min_age) or min_age < 18) ->
@@ -896,13 +1020,25 @@ defmodule UserService.Dating do
               not (is_list(genders) and Enum.all?(genders, &(&1 in @genders))) ->
             {:error, :dating_invalid}
 
+          intentions != nil and not is_list(intentions) ->
+            {:error, :dating_invalid}
+
+          intentions != nil and
+              not Enum.all?(intentions, &SharedInfra.DatingTags.valid_intention?/1) ->
+            {:error, :dating_invalid_tag}
+
+          require_shared != nil and not is_boolean(require_shared) ->
+            {:error, :dating_invalid}
+
           true ->
             {:ok,
              %{
                min_age: min_age,
                max_age: max_age,
                max_distance_km: max_distance,
-               genders: genders
+               genders: genders,
+               intentions: intentions && Enum.uniq(intentions),
+               require_shared_turn_on: require_shared
              }}
         end
 
@@ -948,10 +1084,10 @@ defmodule UserService.Dating do
   end
 
   # Rows carry [.. 6 card cols .., order_ts, order_id | _]; the cursor points at the LAST row.
-  defp next_cursor(rows) when length(rows) < @page_limit, do: nil
+  defp next_cursor(rows, _lead) when length(rows) < @page_limit, do: nil
 
-  defp next_cursor(rows) do
-    [ts, id | _] = rows |> List.last() |> Enum.drop(6)
+  defp next_cursor(rows, lead) do
+    [ts, id | _] = rows |> List.last() |> Enum.drop(lead)
     Base.url_encode64(iso(ts) <> "|" <> id, padding: false)
   end
 

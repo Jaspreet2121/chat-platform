@@ -154,8 +154,9 @@ defmodule UserService.UserSearchTest do
 
     # The target HAS a dating profile — the search card must still carry only its own fields.
     Repo.query!(
-      "INSERT INTO dating_profiles (user_id, app_id, enabled, dob, gender, bio) " <>
-        "VALUES ($1::text::uuid, $2::text::uuid, true, '1999-01-01', 'woman', 'DATING-ONLY BIO')",
+      "INSERT INTO dating_profiles (user_id, app_id, enabled, dob, gender, bio, intention, turn_ons) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, true, '1999-01-01', 'woman', 'DATING-ONLY BIO', " <>
+        "'serious', '{kissing,chai_dates}')",
       [target, @tenant_zero]
     )
 

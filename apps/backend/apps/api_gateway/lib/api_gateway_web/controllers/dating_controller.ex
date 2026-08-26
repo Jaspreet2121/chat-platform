@@ -16,6 +16,35 @@ defmodule ApiGatewayWeb.DatingController do
   @window_seconds 60
   @limiter_outage_retry 30
 
+  # GET /api/v1/dating/tags (106) — the static intention/turn-on catalog, session-authed and
+  # CACHEABLE: strong ETag over the payload, If-None-Match -> 304 (the /api/v1/commands pattern).
+  # Keys are the wire contract; the list changes only with a deploy.
+  def tags(conn, _params) do
+    with {:ok, _session} <- session(conn) do
+      body =
+        Jason.encode!(%{
+          intentions: SharedInfra.DatingTags.intentions(),
+          turn_ons: SharedInfra.DatingTags.turn_ons()
+        })
+
+      etag = ~s("#{Base.encode16(:crypto.hash(:sha256, body), case: :lower)}")
+
+      if etag in get_req_header(conn, "if-none-match") do
+        conn
+        |> put_resp_header("etag", etag)
+        |> send_resp(304, "")
+      else
+        conn
+        |> put_resp_header("etag", etag)
+        |> put_resp_header("cache-control", "private, max-age=3600")
+        |> put_resp_content_type("application/json")
+        |> send_resp(200, body)
+      end
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
   # GET /api/v1/dating/profile
   def profile(conn, _params) do
     with {:ok, session} <- session(conn),
@@ -41,6 +70,8 @@ defmodule ApiGatewayWeb.DatingController do
              "bio" => Map.get(params, "bio"),
              "photos" => Map.get(params, "photos"),
              "location" => Map.get(params, "location"),
+             "intention" => Map.get(params, "intention"),
+             "turn_ons" => Map.get(params, "turn_ons"),
              "prefs" => Map.get(params, "prefs")
            }) do
       ApiGatewayWeb.Endpoint.broadcast("user:" <> session.user_id, "dating_profile_changed", %{
@@ -319,6 +350,8 @@ defmodule ApiGatewayWeb.DatingController do
       gender: mget(profile, :gender),
       interested_in: mget(profile, :interested_in) || [],
       bio: mget(profile, :bio),
+      intention: mget(profile, :intention),
+      turn_ons: mget(profile, :turn_ons) || [],
       photos: mget(profile, :photos) || [],
       location: %{
         lat: mget(profile, :latitude),
@@ -329,7 +362,9 @@ defmodule ApiGatewayWeb.DatingController do
         min_age: mget(profile, :min_age),
         max_age: mget(profile, :max_age),
         max_distance_km: mget(profile, :max_distance_km),
-        genders: mget(profile, :pref_genders) || []
+        genders: mget(profile, :pref_genders) || [],
+        intentions: mget(profile, :pref_intentions) || [],
+        require_shared_turn_on: bool_of(profile, :pref_require_shared_turn_on, false)
       }
     }
   end
@@ -405,6 +440,14 @@ defmodule ApiGatewayWeb.DatingController do
         conn,
         "dating.photo_not_owned",
         "Photos must be your own uploads"
+      )
+
+  defp handle_error(conn, {:error, :dating_invalid_tag}),
+    do:
+      ErrorResponse.unprocessable_entity(
+        conn,
+        "dating.invalid_tag",
+        "One of those tags isn't in the catalog"
       )
 
   defp handle_error(conn, {:error, :dating_self_swipe}),

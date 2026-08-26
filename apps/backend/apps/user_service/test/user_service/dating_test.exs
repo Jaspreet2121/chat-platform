@@ -71,6 +71,7 @@ defmodule UserService.DatingTest do
         "interested_in" => ["man"],
         "photos" => [media!(user_id), media!(user_id)],
         "location" => %{"lat" => @lat, "lng" => @lng, "name" => "Delhi"},
+        "intention" => "open",
         "bio" => "hello"
       },
       overrides
@@ -114,7 +115,7 @@ defmodule UserService.DatingTest do
   test "ENABLE GATE: every missing field refuses; under-18 hard-refuses incl. the boundary; min_age<18 invalid" do
     me = user!()
 
-    for missing <- ["dob", "gender", "interested_in", "location"] do
+    for missing <- ["dob", "gender", "interested_in", "location", "intention"] do
       assert {:error, :dating_profile_incomplete} =
                Dating.update_profile(valid_attrs(me, %{missing => nil})),
              "expected incomplete without #{missing}"
@@ -226,7 +227,10 @@ defmodule UserService.DatingTest do
              :bio,
              :display_name,
              :distance_km,
+             :intention,
              :photos,
+             :shared_turn_ons,
+             :turn_ons,
              :user_id
            ]
 
@@ -439,5 +443,209 @@ defmodule UserService.DatingTest do
 
     assert {:ok, %{unmatched: false, match_id: nil}} =
              Dating.unmatch_pair(%{"user_id" => a, "app_id" => @app_id, "peer_user_id" => b})
+  end
+
+  # ---- v2 (106): intention + turn-ons -----------------------------------------------------------
+
+  defp patch!(user_id, fields) do
+    Dating.update_profile(Map.merge(%{"user_id" => user_id, "app_id" => @app_id}, fields))
+  end
+
+  defp pair!(overrides_a \\ %{}, overrides_b \\ %{}) do
+    a = user!("Asha Sharma")
+    b = user!("Bharat Kumar")
+    enable!(a, overrides_a)
+
+    enable!(
+      b,
+      Map.merge(
+        %{
+          "gender" => "man",
+          "interested_in" => ["woman"],
+          "location" => %{"lat" => @lat + 0.001, "lng" => @lng, "name" => "Delhi"}
+        },
+        overrides_b
+      )
+    )
+
+    {a, b}
+  end
+
+  @tag :postgres_integration
+  test "TAGS (106): unknown key 422, >15 refused, dedupe preserves order as sent" do
+    me = user!()
+
+    assert {:error, :dating_invalid_tag} = patch!(me, %{"turn_ons" => ["kissing", "nonsense"]})
+    assert {:error, :dating_invalid_tag} = patch!(me, %{"intention" => "married"})
+
+    sixteen =
+      SharedInfra.DatingTags.turn_on_keys() |> Enum.take(16)
+
+    assert {:error, :dating_invalid} = patch!(me, %{"turn_ons" => sixteen})
+
+    # Dedupe keeps FIRST occurrence; order preserved as sent.
+    assert {:ok, saved} =
+             patch!(me, %{"turn_ons" => ["chai_dates", "kissing", "chai_dates", "deep_talks"]})
+
+    assert saved.turn_ons == ["chai_dates", "kissing", "deep_talks"]
+
+    # Prefs: unknown intention key in the filter is the same 422.
+    assert {:error, :dating_invalid_tag} = patch!(me, %{"prefs" => %{"intentions" => ["nope"]}})
+  end
+
+  @tag :postgres_integration
+  test "GRANDFATHER (106): a 105-era enabled row backfills to figuring; a disabled row must state one to enable" do
+    # A row enabled BEFORE 106 (intention NULL) — the migration's backfill statement stamps it.
+    legacy = user!()
+
+    Repo.query!(
+      "INSERT INTO dating_profiles (user_id, app_id, enabled, dob, gender, interested_in, photos, " <>
+        "latitude, longitude, location_name) VALUES ($1::text::uuid, $2::text::uuid, true, " <>
+        "'1999-01-01', 'woman', '{man}', ('{' || gen_random_uuid() || ',' || gen_random_uuid() || '}')::uuid[], " <>
+        "28.6, 77.2, 'Delhi')",
+      [legacy, @app_id]
+    )
+
+    Repo.query!(
+      "UPDATE dating_profiles SET intention = 'figuring' WHERE enabled AND intention IS NULL",
+      []
+    )
+
+    assert {:ok, %{intention: "figuring", enabled: true}} =
+             Dating.get_profile(%{"user_id" => legacy})
+
+    # Their next ordinary save keeps working (intention already present in the merged state).
+    assert {:ok, %{enabled: true}} = patch!(legacy, %{"bio" => "still here"})
+
+    # A DISABLED profile with no intention cannot enable without stating one...
+    fresh = user!()
+
+    incomplete =
+      valid_attrs(fresh) |> Map.delete("intention")
+
+    assert {:error, :dating_profile_incomplete} = Dating.update_profile(incomplete)
+
+    # ...and can with one.
+    assert {:ok, %{enabled: true, intention: "serious"}} =
+             Dating.update_profile(Map.put(incomplete, "intention", "serious"))
+  end
+
+  @tag :postgres_integration
+  test "CARDS (106): shared_turn_ons is the intersection in the TARGET's order; empty when disjoint" do
+    {a, b} =
+      pair!(
+        %{"turn_ons" => ["kissing", "deep_talks", "chai_dates"]},
+        %{"turn_ons" => ["long_drives", "chai_dates", "gaming", "kissing"]}
+      )
+
+    {:ok, %{cards: [card]}} = Dating.deck(%{"user_id" => a, "app_id" => @app_id})
+    assert card.user_id == b
+    assert card.intention == "open"
+    assert card.turn_ons == ["long_drives", "chai_dates", "gaming", "kissing"]
+    # Intersection with MY tags, in THE TARGET'S order (chai_dates before kissing — B's order).
+    assert card.shared_turn_ons == ["chai_dates", "kissing"]
+
+    # Disjoint sets → empty, never nil.
+    {:ok, _} = patch!(a, %{"turn_ons" => ["yoga"]})
+    {:ok, %{cards: [card2]}} = Dating.deck(%{"user_id" => a, "app_id" => @app_id})
+    assert card2.shared_turn_ons == []
+
+    # The v2 card adds EXACTLY three keys — nothing else new leaks.
+    assert Map.keys(card) |> Enum.sort() ==
+             [
+               :age,
+               :bio,
+               :display_name,
+               :distance_km,
+               :intention,
+               :photos,
+               :shared_turn_ons,
+               :turn_ons,
+               :user_id
+             ]
+
+    # Likes cards carry the same trio.
+    assert {:ok, %{matched: false}} = swipe(b, a, "like")
+    {:ok, %{cards: [like_card]}} = Dating.likes(%{"user_id" => a, "app_id" => @app_id})
+    assert like_card.user_id == b
+    assert like_card.turn_ons == ["long_drives", "chai_dates", "gaming", "kissing"]
+    assert like_card.shared_turn_ons == []
+  end
+
+  @tag :postgres_integration
+  test "DECK ORDERING (106): overlap count desc, then recency, then random — locked with a tiebreak" do
+    viewer = user!("Viewer")
+    enable!(viewer, %{"turn_ons" => ["kissing", "chai_dates", "deep_talks"]})
+
+    make = fn name, turn_ons, active_shift ->
+      candidate = user!(name)
+
+      enable!(candidate, %{
+        "gender" => "man",
+        "interested_in" => ["woman"],
+        "location" => %{"lat" => @lat + 0.001, "lng" => @lng, "name" => "Delhi"},
+        "turn_ons" => turn_ons
+      })
+
+      Repo.query!(
+        "UPDATE dating_profiles SET last_active_at = now() - make_interval(secs => $2) " <>
+          "WHERE user_id = $1::text::uuid",
+        [candidate, active_shift]
+      )
+
+      candidate
+    end
+
+    two_shared = make.("Two Shared", ["kissing", "chai_dates"], 3600)
+    one_shared_fresh = make.("One Fresh", ["kissing"], 60)
+    one_shared_stale = make.("One Stale", ["kissing", "gaming"], 7200)
+    zero_shared = make.("Zero", ["yoga"], 10)
+
+    {:ok, %{cards: cards}} = Dating.deck(%{"user_id" => viewer, "app_id" => @app_id})
+
+    # Overlap 2 first; the two overlap-1 candidates by recency (fresh before stale); zero last —
+    # even though zero_shared is the most recently active overall.
+    assert Enum.map(cards, & &1.user_id) == [
+             two_shared,
+             one_shared_fresh,
+             one_shared_stale,
+             zero_shared
+           ]
+
+    # REQUIRE_SHARED_TURN_ON: the zero-overlap candidate drops; the rest stay.
+    {:ok, _} = patch!(viewer, %{"prefs" => %{"require_shared_turn_on" => true}})
+    {:ok, %{cards: filtered}} = Dating.deck(%{"user_id" => viewer, "app_id" => @app_id})
+    assert Enum.map(filtered, & &1.user_id) == [two_shared, one_shared_fresh, one_shared_stale]
+
+    # And off again (the boolean false must STICK — the falsy trap).
+    {:ok, saved} = patch!(viewer, %{"prefs" => %{"require_shared_turn_on" => false}})
+    assert saved.pref_require_shared_turn_on == false
+    {:ok, %{cards: back}} = Dating.deck(%{"user_id" => viewer, "app_id" => @app_id})
+    assert length(back) == 4
+  end
+
+  @tag :postgres_integration
+  test "INTENTION FILTER (106): my pref narrows MY deck only — the candidate's pref never hides them from me" do
+    {a, b} = pair!(%{"intention" => "serious"}, %{"intention" => "casual"})
+
+    # My pref filters my deck: A wants serious-only → B (casual) leaves A's deck.
+    {:ok, _} = patch!(a, %{"prefs" => %{"intentions" => ["serious"]}})
+    {:ok, %{cards: a_deck}} = Dating.deck(%{"user_id" => a, "app_id" => @app_id})
+    assert a_deck == []
+
+    # ASYMMETRY: A's pref does NOT hide A from B's deck (their pref governs their deck alone) —
+    # and B's own empty pref admits everyone.
+    {:ok, %{cards: b_deck}} = Dating.deck(%{"user_id" => b, "app_id" => @app_id})
+    assert Enum.map(b_deck, & &1.user_id) == [a]
+
+    # B's pref, in turn, narrows only B's deck.
+    {:ok, _} = patch!(b, %{"prefs" => %{"intentions" => ["casual", "open"]}})
+    {:ok, %{cards: b_deck2}} = Dating.deck(%{"user_id" => b, "app_id" => @app_id})
+    assert b_deck2 == []
+
+    # Widening A's pref brings B back — B's pref still irrelevant to A's deck.
+    {:ok, _} = patch!(a, %{"prefs" => %{"intentions" => []}})
+    {:ok, %{cards: a_deck2}} = Dating.deck(%{"user_id" => a, "app_id" => @app_id})
+    assert Enum.map(a_deck2, & &1.user_id) == [b]
   end
 end
