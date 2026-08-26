@@ -7,6 +7,8 @@ defmodule UserService.Profiles do
   opt-in through `:user_profile_persistence` or `USER_PROFILE_DB_BACKED=true`.
   """
 
+  require Logger
+
   alias UserService.ProfileStore
 
   @avatar_fields ["avatar_media_id", "avatar_object_key"]
@@ -346,7 +348,15 @@ defmodule UserService.Profiles do
               {:ok, _} = ProfileStore.update_profile(profile, %{"upi_qr_media_id" => media_id})
               {:ok, %{upi_qr_media_id: media_id}}
 
-            {:error, _reason} ->
+            {:error, reason} ->
+              # The internal API collapses this to the atom :upi_qr_failed, and the gateway's retry
+              # only logs that atom — so the ACTUAL cause ({:qr_store_failed, {:error, "media_invalid"}},
+              # a transport error, a presign failure) is invisible without rpc archaeology. Log it
+              # HERE, at the only place that still holds it, under the stable [upi_qr] grep tag.
+              Logger.error(
+                "[upi_qr] store failed user=#{user_id} app=#{app_id}: #{inspect(reason)}"
+              )
+
               {:error, :upi_qr_failed}
           end
       end

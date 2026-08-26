@@ -137,7 +137,11 @@ defmodule UserService.UpiQr do
            {:ok, _} <-
              SharedInfra.MediaClient.complete_upload(%{
                "media_id" => media_id,
-               "app_id" => app_id
+               "app_id" => app_id,
+               # REQUIRED by MediaService.Media.complete_upload: it verifies the caller OWNS the row
+               # before flipping it to "ready". Omitting it returned :media_invalid, so the asset
+               # stayed "created" forever and the profile never got a QR id.
+               "owner_user_id" => user_id
              }) do
         {:ok, media_id}
       else
