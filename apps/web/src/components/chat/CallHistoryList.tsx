@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, Link2, Phone, Users, Video } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Link2, Lock, Phone, Users, Video } from "lucide-react";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
 import { fetchCallHistory, type CallRecord } from "@/lib/api";
@@ -77,6 +77,12 @@ function CallHistoryRow({ call, currentUserId }: { call: CallRecord; currentUser
           {showDirection ? <DirectionIcon className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
           <TypeIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
           <span className="truncate">{label}</span>
+          {/* §10: the badge reads the row's durable flag — the envelopes were scrubbed when the call
+              ended, but whether it ran encrypted is remembered. Only shown when the two sides actually
+              agreed, so it never over-claims on a call that fell back to plain. */}
+          {call.e2ee && call.e2ee_accepted ? (
+            <Lock className="h-3 w-3 shrink-0 text-brand" aria-label="End-to-end encrypted" />
+          ) : null}
         </div>
       </div>
     </div>

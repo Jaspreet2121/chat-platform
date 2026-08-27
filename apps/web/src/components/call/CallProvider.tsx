@@ -1,6 +1,16 @@
 "use client";
 
 import {
+  buildCallOffer,
+  callE2eeSupported,
+  callKeyToProviderKey,
+  generateCallKey,
+  logCallE2ee,
+  openCallKey,
+  wipeCallKey
+} from "@/lib/e2ee/callKey";
+import { getCallState } from "@/lib/api";
+import {
   createContext,
   useCallback,
   useContext,
@@ -48,6 +58,14 @@ type ActiveCall = {
   /** Presigned caller avatar from the ring payload (incoming only) — falls back to initials when absent. */
   peerAvatarUrl?: string;
   type: CallType;
+  /**
+   * E2EE (§10). `callKey` is the raw 32 bytes, IN MEMORY ONLY — never IndexedDB, never localStorage,
+   * never logged — and wiped when the call ends. `offered` says an offer exists for this call (the
+   * ring lock hint); `encrypted` is the FINAL agreed mode, set only once both sides confirmed.
+   */
+  callKey?: Uint8Array | null;
+  offered?: boolean;
+  encrypted?: boolean;
 };
 
 type GroupCall = {
@@ -233,6 +251,10 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       const conn = connectionRef.current;
       connectionRef.current = null;
       if (conn) void conn.disconnect();
+      // §10.6 / guard rail: the call key dies with the call. It never touched IndexedDB or
+      // localStorage, and the buffer is overwritten here so nothing still holding the view can read
+      // it. The server has scrubbed its envelopes at the same terminal transition.
+      wipeCallKey(callRef.current?.callKey);
       setStatus("idle");
       setCall(null);
       setMuted(false);
@@ -280,8 +302,16 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       const isVideo = active.type === "video";
       setCameraOn(isVideo);
       try {
+        // §10.4/§10.5: E2EE goes on ONLY when `encrypted` is true, which happens exclusively after
+        // BOTH sides confirmed (caller: accept came back e2ee_accepted true; callee: it opened its
+        // own envelope). Enabling unilaterally would publish encrypted frames a plain peer decodes
+        // as garbage audio — a broken call is worse than an honestly-unencrypted one.
+        const providerKey =
+          active.encrypted && active.callKey ? await callKeyToProviderKey(active.callKey) : undefined;
+
         const conn = await connectToRoom(active.room, audioEl, {
           video: isVideo,
+          e2eeProviderKey: providerKey,
           onLocalVideo: setLocalVideo,
           onFacingChange: setCameraFacing,
           onRemoteVideo: setRemoteVideo,
@@ -327,30 +357,116 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       // Carry the DM id so the server can post a "missed call" entry to this thread (Slice-5b). Omitted
       // (undefined) when unknown → the call still works; only the in-thread missed entry is skipped.
       if (conversationId) invite.conversation_id = conversationId;
-      userChannel
-        .pushCall("call:invite", invite)
-        .then((ack) => {
+
+      // §10.2: mint a call key and seal it to the callee's devices + my own others, IF this browser can
+      // do frame encryption and the peer has keys. Every failure path here means "no offer", which is
+      // an ordinary call — never an error the user sees.
+      void (async () => {
+        let callKey: Uint8Array | null = null;
+
+        try {
+          if (await callE2eeSupported()) {
+            const key = await generateCallKey();
+            const offer = await buildCallOffer({
+              callKey: key,
+              myUserId: currentUserId ?? "",
+              calleeUserId: peerId
+            });
+
+            if (offer) {
+              invite.e2ee_offer = offer;
+              callKey = key;
+            } else {
+              wipeCallKey(key);
+            }
+          } else {
+            logCallE2ee("unsupported_browser");
+          }
+        } catch {
+          // Identity unavailable or sealing failed → plain call, zero noise.
+          logCallE2ee("no_identity");
+          wipeCallKey(callKey);
+          callKey = null;
+        }
+
+        userChannel
+          .pushCall("call:invite", invite)
+          .then((ack) => {
           const { call_id, room } = ack as CallInviteAck;
           if (!call_id || !room) throw new Error("bad invite ack");
           // A late accept/reject may have arrived; only arm if we're still meant to be ringing.
-          if (statusRef.current !== "idle") return;
-          const active: ActiveCall = { callId: call_id, room, peerId, peerName, type };
+          if (statusRef.current !== "idle") {
+            wipeCallKey(callKey);
+            return;
+          }
+          // The key is HELD but E2EE is NOT on yet — it turns on only if the accept confirms it.
+          const active: ActiveCall = {
+            callId: call_id,
+            room,
+            peerId,
+            peerName,
+            type,
+            callKey,
+            offered: Boolean(callKey),
+            encrypted: false
+          };
           setCall(active);
           setStatus("outgoing");
           clearRingTimer();
           ringTimerRef.current = setTimeout(() => reset("ring-timeout", "No answer"), RING_TIMEOUT_MS);
-        })
-        .catch(() => flashNote("Couldn't start the call"));
+          })
+          .catch(() => {
+            wipeCallKey(callKey);
+            flashNote("Couldn't start the call");
+          });
+      })();
     },
-    [userChannel, clearRingTimer, reset, flashNote]
+    [userChannel, clearRingTimer, reset, flashNote, currentUserId]
   );
 
   // ---- user actions on the active call ----------------------------------------------------------
   const acceptIncoming = useCallback(() => {
     const active = callRef.current;
     if (!active || !userChannel) return;
-    void userChannel.pushCall("call:accept", { call_id: active.callId });
-    void connect(active); // Accept IS the gesture that unlocks mic/audio.
+
+    // §10.3 — decide the mode BEFORE answering, then tell the caller which it is. Every failure is a
+    // plain call, never a broken one: we answer with e2ee_accepted false and connect unencrypted.
+    void (async () => {
+      let callKey: Uint8Array | null = null;
+
+      try {
+        if (!(await callE2eeSupported())) {
+          // Safari and friends: behave exactly like a keyless client for calls.
+          logCallE2ee("unsupported_browser");
+        } else {
+          // The envelopes are NOT on the push (FCM size limits) — fetch the call state for them. The
+          // socket ring carries them too, but fetching is what makes a push-woken accept work.
+          const state = await getCallState(active.callId);
+          const opened = await openCallKey(state.e2ee_offer ?? null);
+
+          if (opened.ok) {
+            callKey = opened.callKey;
+          } else {
+            // missing_envelope = this device was linked after the offer was sealed; open_failed = our
+            // key no longer matches the registry. Both are logged by class, like message decrypts.
+            logCallE2ee(opened.reason, active.callId);
+          }
+        }
+      } catch {
+        logCallE2ee("no_offer", `state fetch failed for ${active.callId}`);
+      }
+
+      const encrypted = Boolean(callKey);
+      const agreed: ActiveCall = { ...active, callKey, encrypted };
+      setCall(agreed);
+
+      void userChannel.pushCall("call:accept", {
+        call_id: active.callId,
+        e2ee_accepted: encrypted
+      });
+
+      void connect(agreed); // Accept IS the gesture that unlocks mic/audio.
+    })();
   }, [userChannel, connect]);
 
   const rejectIncoming = useCallback(() => {
@@ -701,7 +817,11 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           peerId: p.caller_id ?? "",
           peerName: p.caller_name?.trim() || "Unknown caller",
           peerAvatarUrl: typeof p.caller_avatar_url === "string" ? p.caller_avatar_url : undefined,
-          type: p.type ?? "voice"
+          type: p.type ?? "voice",
+          // The ring's lock HINT: an offer rode the broadcast. Not yet a guarantee — we still have to
+          // open our envelope on accept, and either side can end up plain.
+          offered: Boolean((p as { e2ee_offer?: unknown }).e2ee_offer),
+          encrypted: false
         });
         setStatus("incoming");
         clearRingTimer();
@@ -709,7 +829,26 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
       }),
       // The callee accepted → I'm the caller, join the room now.
       userChannel.onCall("call:accepted", (p) => {
-        if (statusRef.current === "outgoing" && matches(p) && callRef.current) connect(callRef.current);
+        if (statusRef.current !== "outgoing" || !matches(p) || !callRef.current) return;
+
+        // §10.5 — THE AGREEMENT. The callee reports whether it opened its envelope; only a true
+        // here turns frame encryption on. Anything else (false, absent, an old client) means the
+        // peer is sending plaintext frames, so we must too: encrypting unilaterally would give
+        // them garbage audio. A held key with no agreement is wiped immediately.
+        const accepted = (p as { e2ee_accepted?: boolean }).e2ee_accepted === true;
+        const active = callRef.current;
+
+        if (!accepted && active.callKey) {
+          logCallE2ee("no_offer", "peer declined E2EE — connecting plain");
+          wipeCallKey(active.callKey);
+        }
+
+        const agreed: ActiveCall = accepted
+          ? { ...active, encrypted: Boolean(active.callKey) }
+          : { ...active, callKey: null, encrypted: false };
+
+        setCall(agreed);
+        connect(agreed);
       }),
       // "No answer", NOT "Call declined" — this handler runs on the CALLER's client, and a decline must
       // never be revealed to them. The server already hides it in both the chat pill and the Calls tab
@@ -918,6 +1057,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           callerId={call.peerId}
           callerAvatarUrl={call.peerAvatarUrl}
           video={call.type === "video"}
+          e2eeOffered={call.offered === true}
           onAccept={acceptIncoming}
           onReject={rejectIncoming}
         />
@@ -942,6 +1082,7 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
           onSwitchCamera={switchCamera}
           onAddParticipants={() => setAddSheetOpen(true)}
           cameraFacing={cameraFacing}
+          encrypted={call.encrypted === true}
         />
       )}
 

@@ -274,9 +274,33 @@ send `e2ee_accepted: false` (or omit it entirely — absent is false).
 Both sides, before publishing or subscribing:
 
 1. Create the room with E2EE enabled and an external key provider.
-2. Set the RAW 32 bytes as the shared key (`setKey`) — do NOT pass it through a passphrase/KDF, and
-   do NOT base64 it: both peers must arrive at byte-identical key material.
+2. Set the shared key as the **base64 of the raw 32 bytes** (RFC 4648 standard, padded — the same
+   convention as every other `_b64` field here), passed as a **STRING**. See the note below: this is
+   a deliberate amendment, not an encoding accident.
 3. Enable frame encryption for the local participant, then join.
+
+**AMENDMENT (2026-08-27, when the web client was built).** This section originally said to pass the
+RAW 32 bytes and explicitly not to base64 them. That is wrong against the actual SDK contract, and
+every platform must change together or calls will not decrypt across clients.
+
+LiveKit's `ExternalE2EEKeyProvider.setKey()` accepts `string | ArrayBuffer`, and the two derive key
+material DIFFERENTLY:
+
+- `ArrayBuffer` → **HKDF**. livekit-client's own documentation warns: *"Not all client SDKS support
+  HKDF."*
+- `string` → **PBKDF2**, which the same documentation calls *"recommended for maximum compatibility
+  across SDKs."*
+
+Since web, Android and iOS must all arrive at byte-identical key material, the normative mapping is
+the compatible one:
+
+    providerKey = base64(callKey)        // 32 raw bytes in, 44-character padded ASCII out
+    keyProvider.setKey(providerKey)      // string  → PBKDF2
+
+Implementations MUST NOT override the key provider's default options (salt, key size, ratchet
+settings). Both peers run the same KDF over the same ASCII string with the same defaults, which is
+what makes the derived keys equal. Passing an `ArrayBuffer` anywhere would silently select HKDF and
+produce a room whose participants cannot decode each other.
 
 Both sides MUST have the key set BEFORE the first frame is published. A participant that joins with
 the wrong key produces undecryptable media, not a downgrade — clients SHOULD surface that as a call

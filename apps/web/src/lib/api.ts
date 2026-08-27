@@ -317,6 +317,42 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   return data as T;
 }
 
+/**
+ * One call's live state (111 / E2EE_FRAME.md §10). THE PUSH-WOKEN CALLEE'S ROUTE TO ITS ENVELOPE:
+ * the incoming-call push is data-only and small, so the sealed key envelopes cannot ride it — the
+ * client wakes on the push and fetches here. Scoped to the two parties; a stranger gets 404.
+ *
+ * `e2ee_offer` is null once the call has ended (the server scrubs the envelopes at every terminal
+ * status — the key died with the call), while the booleans survive for the history badge.
+ */
+export type CallState = {
+  id: string;
+  room_name: string;
+  kind: string;
+  caller_id: string;
+  callee_id?: string | null;
+  conversation_id?: string | null;
+  type: "voice" | "video";
+  status: string;
+  created_at?: string | null;
+  answered_at?: string | null;
+  ended_at?: string | null;
+  e2ee: boolean;
+  e2ee_accepted?: boolean | null;
+  e2ee_offer?: CallE2eeOfferWire | null;
+};
+
+/** The wire shape of §10.2's offer — relayed opaquely by the server, never parsed by it. */
+export type CallE2eeOfferWire = {
+  v: number;
+  sender_device_id: string;
+  envelopes: Array<{ device_id: string; envelope_b64: string }>;
+};
+
+export function getCallState(callId: string) {
+  return request<CallState>(`/api/v1/calls/${encodeURIComponent(callId)}`);
+}
+
 // Phase-1 calling: mint a room-scoped LiveKit access token for the current user (Slice 1 endpoint).
 // Returns the SFU url + a short-lived JWT that livekit-client uses to join the room.
 export function createCallToken(room: string) {
@@ -344,6 +380,10 @@ export type CallRecord = {
   // The OTHER party in a DIRECT call (enriched server-side). Absent on group rows.
   counterpart_id?: string;
   counterpart_name?: string | null;
+  /** §10: an E2EE call key was OFFERED. Survives the end-of-call envelope scrub — this is what draws
+   *  the history lock badge. `e2ee_accepted` is the mode the two clients actually agreed. */
+  e2ee?: boolean;
+  e2ee_accepted?: boolean | null;
 };
 
 // Call history for the current user, newest first. DB flag off → the server returns an empty list (200).

@@ -47,6 +47,12 @@ export type ConnectOptions = {
    * undefined callback and nothing changes.
    */
   onParticipants?: (participants: GroupParticipant[]) => void;
+  /**
+   * E2EE (§10.4): the provider key derived from the sealed 32-byte call key. Present ONLY when BOTH
+   * sides confirmed E2EE — the caller must never enable it unilaterally, because encrypted frames
+   * sent to a plain peer decode as garbage audio. Absent = an ordinary unencrypted call.
+   */
+  e2eeProviderKey?: string;
 };
 
 // One tag so all call-media diagnostics are greppable in the browser console during a two-device test.
@@ -74,7 +80,26 @@ export async function connectToRoom(
   opts: ConnectOptions = {}
 ): Promise<CallConnection> {
   const { url, token } = await createCallToken(roomName);
-  const { Room, RoomEvent, DisconnectReason, Track, VideoPresets } = await import("livekit-client");
+  const { Room, RoomEvent, DisconnectReason, Track, VideoPresets, ExternalE2EEKeyProvider } =
+    await import("livekit-client");
+
+  // Frame encryption (§10.4). The provider is created and keyed BEFORE the Room, so the key is in
+  // place before the first frame is published — a participant that joins with the wrong key produces
+  // undecryptable media, not a downgrade. Provider defaults (salt, key size) are NOT overridden:
+  // both platforms must derive byte-identical material from the same base64 string.
+  let e2ee: { keyProvider: InstanceType<typeof ExternalE2EEKeyProvider>; worker: Worker } | undefined;
+
+  if (opts.e2eeProviderKey) {
+    const keyProvider = new ExternalE2EEKeyProvider();
+    await keyProvider.setKey(opts.e2eeProviderKey);
+    // The E2EE worker is bundled by livekit-client; `new Worker(new URL(...))` is the form Next's
+    // bundler can statically resolve.
+    const worker = new Worker(
+      new URL("livekit-client/e2ee-worker", import.meta.url),
+      { type: "module" }
+    );
+    e2ee = { keyProvider, worker };
+  }
 
   const reasonName = (reason?: number) =>
     reason === undefined ? "unknown" : `${DisconnectReason[reason] ?? "?"}(${reason})`;
@@ -85,6 +110,7 @@ export async function connectToRoom(
   const room: LiveKitRoom = new Room({
     adaptiveStream: true,
     dynacast: true,
+    ...(e2ee ? { e2ee } : {}),
     videoCaptureDefaults: { resolution: VideoPresets.h720.resolution },
     publishDefaults: {
       videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360, VideoPresets.h720]
@@ -215,6 +241,14 @@ export async function connectToRoom(
   try {
     console.info(TAG, "connecting to room", roomName);
     await room.connect(url, token);
+
+    // Turn frame encryption ON for our own published tracks. Done AFTER connect (the room must exist)
+    // but BEFORE the mic is published below, so no plaintext frame is ever sent.
+    if (e2ee) {
+      await room.setE2EEEnabled(true);
+      console.info(`${TAG} end-to-end encryption enabled for ${roomName}`);
+    }
+
     // Any remote track already subscribed at connect time → surface it now (TrackSubscribed only fires
     // for tracks that arrive AFTER the listener is set).
     room.remoteParticipants.forEach((participant) => {

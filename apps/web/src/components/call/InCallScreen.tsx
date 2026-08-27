@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Mic, MicOff, PhoneOff, SwitchCamera, UserPlus, Video, VideoOff } from "lucide-react";
+import { Lock, LockOpen, Mic, MicOff, PhoneOff, SwitchCamera, UserPlus, Video, VideoOff } from "lucide-react";
 import type { LocalVideoTrack, RemoteVideoTrack } from "livekit-client";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
@@ -9,6 +9,12 @@ import { useUserProfile } from "../chat/useUserProfile";
 
 export type InCallScreenProps = {
   peerName: string;
+  /**
+   * §10 — TRUE only when BOTH sides confirmed AND frame encryption is actually on for this Room.
+   * When false the indicator says so plainly rather than staying silent: a user who believes a call
+   * is private when it is not is worse off than one who is simply told.
+   */
+  encrypted?: boolean;
   peerId: string;
   /** True while connecting to the room (before media flows); shows "Connecting…" instead of the timer. */
   connecting: boolean;
@@ -43,8 +49,29 @@ function formatElapsed(totalSeconds: number) {
 /** Active-call screen: voice = avatar + timer + mute + hangup (unchanged); video = full-screen remote +
  *  self-view PiP + mute/camera/hangup. Owns the <video> elements; the remote AUDIO sink lives in the
  *  provider and is never touched here. */
+/**
+ * The honest call-privacy line. Not scary when unencrypted — no red, no warning icon: an ordinary
+ * SFU call is the normal state for an old or Safari peer, and alarming the user about it would be
+ * dishonest in the other direction.
+ */
+function EncryptionNote({ encrypted, dim }: { encrypted?: boolean; dim?: boolean }) {
+  return (
+    <p
+      className={cn(
+        "mt-1 inline-flex items-center gap-1 text-[11px] font-medium",
+        encrypted ? "text-white/80" : "text-white/45",
+        dim && "drop-shadow"
+      )}
+    >
+      {encrypted ? <Lock className="h-3 w-3" aria-hidden /> : <LockOpen className="h-3 w-3" aria-hidden />}
+      {encrypted ? "End-to-end encrypted" : "Not end-to-end encrypted"}
+    </p>
+  );
+}
+
 export function InCallScreen({
   peerName,
+  encrypted,
   peerId,
   connecting,
   muted,
@@ -123,6 +150,7 @@ export function InCallScreen({
                 <span className="tabular-nums">{formatElapsed(elapsed)}</span>
               )}
             </p>
+            <EncryptionNote encrypted={encrypted} />
           </div>
         </div>
 
@@ -265,6 +293,7 @@ export function InCallScreen({
         <p className="mt-0.5 text-xs font-medium text-white/80 drop-shadow" aria-live="polite">
           {connecting ? "Connecting…" : <span className="tabular-nums">{formatElapsed(elapsed)}</span>}
         </p>
+        <EncryptionNote encrypted={encrypted} dim />
       </div>
 
       {/* Controls: Mute · [Switch] · Camera · Hang up. */}

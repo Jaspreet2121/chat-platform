@@ -1,6 +1,6 @@
 "use client";
 
-import { Phone, PhoneOff } from "lucide-react";
+import { Lock, Phone, PhoneOff } from "lucide-react";
 import { Avatar } from "@/components";
 
 export type IncomingCallModalProps = {
@@ -13,6 +13,8 @@ export type IncomingCallModalProps = {
   video: boolean;
   /** Phase-3: a group ring — tweaks the label to "Incoming group … call". */
   group?: boolean;
+  /** §10: an E2EE offer rode the ring. A HINT only — the mode is settled when we open our envelope. */
+  e2eeOffered?: boolean;
   onAccept: () => void;
   onReject: () => void;
 };
@@ -27,6 +29,7 @@ export function IncomingCallModal({
   callerAvatarUrl,
   video,
   group,
+  e2eeOffered,
   onAccept,
   onReject
 }: IncomingCallModalProps) {
@@ -43,6 +46,12 @@ export function IncomingCallModal({
           <Avatar id={callerId} name={callerName} imageUrl={callerAvatarUrl ?? null} size="lg" />
         </span>
         <div>
+          {e2eeOffered ? (
+            <p className="mb-1 inline-flex items-center gap-1 text-[11px] font-medium text-white/80">
+              <Lock className="h-3 w-3" aria-hidden />
+              End-to-end encrypted
+            </p>
+          ) : null}
           <p className="text-sm font-medium uppercase tracking-wide text-white/70">
             Incoming {group ? "group " : ""}{video ? "video" : "voice"} call
           </p>
