@@ -64,6 +64,9 @@ export type ConnectOptions = {
 // One tag so all call-media diagnostics are greppable in the browser console during a two-device test.
 const TAG = "[call]";
 
+/** The vendored livekit E2EE worker (public/livekit-e2ee-worker.mjs). See buildRoom() for why. */
+export const E2EE_WORKER_URL = "/livekit-e2ee-worker.mjs";
+
 /**
  * Connect to the LiveKit room for `roomName` and start a voice call: fetch a room-scoped token
  * (POST /calls/token), join the SFU, publish the mic, and route the remote participant's audio into
@@ -129,11 +132,20 @@ export async function connectToRoom(
 
     let worker: Worker | undefined;
     try {
-      // `new Worker(new URL(...))` is the form the bundler statically resolves (it emits the worker
-      // as its own chunk); a bare import would not be rewritten and would 404 at runtime.
-      worker = new Worker(new URL("livekit-client/e2ee-worker", import.meta.url), {
-        type: "module"
-      });
+      // A PLAIN STATIC URL, deliberately — no bundler involvement.
+      //
+      // The obvious form, `new Worker(new URL("livekit-client/e2ee-worker", import.meta.url))`, is
+      // what turbopack is supposed to rewrite into an emitted chunk. It does emit the chunk, but for
+      // a BARE specifier it emits a call into its module-map resolver with a URL OBJECT where that
+      // resolver requires a string, so the production runtime throws
+      // `TypeError: e.indexOf is not a function` (turbopack runtime `w()` → `e.indexOf("#")`) at
+      // worker construction. Reproduced in a prod-mode browser; dev never showed it.
+      //
+      // The worker is therefore VENDORED into public/ by scripts/vendor-e2ee-worker.mjs (run from
+      // `prebuild`, hash-locked to the installed livekit-client by e2eeWorkerBuild.test.ts) and
+      // fetched from a fixed same-origin path. No rewriting, so dev, `next start` and the standalone
+      // image all behave identically.
+      worker = new Worker(E2EE_WORKER_URL, { type: "module" });
       // A worker that dies later cannot be recovered mid-call, but it must be visible.
       worker.onerror = (event) =>
         console.error(`${TAG} e2ee worker error`, (event as ErrorEvent).message ?? event);

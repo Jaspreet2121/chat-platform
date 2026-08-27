@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/vendor-e2ee-worker.mjs",
     "build": "next build",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
