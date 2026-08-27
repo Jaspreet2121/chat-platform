@@ -326,6 +326,12 @@ export function CallProvider({ userChannel, currentUserId, controllerRef, childr
         });
         connectionRef.current = conn;
         connectingRef.current = false;
+        // HONEST INDICATOR: read what the Room actually negotiated, not what we hoped for. If E2EE
+        // setup degraded to plain (unsupported worker, key rejected), the call still connected and
+        // the header must say "Not end-to-end encrypted" rather than show a lock it hasn't earned.
+        if (active.encrypted !== conn.encrypted) {
+          setCall((current) => (current ? { ...current, encrypted: conn.encrypted } : current));
+        }
         setMuted(false);
         setStatus("in-call");
         // Video call → can we offer a front/back switch? (>1 videoinput). Best-effort, non-blocking.

@@ -10,6 +10,12 @@ import type {
 } from "livekit-client";
 
 export type CallConnection = {
+  /**
+   * Whether frame encryption is ACTUALLY on for this Room — not what we hoped for. The UI reads this
+   * so the lock can never over-claim: if E2EE setup degraded to plain, this is false and the header
+   * says so honestly.
+   */
+  encrypted: boolean;
   /** Toggle the local mic (true = muted). */
   setMuted: (muted: boolean) => Promise<void>;
   /** Toggle the local camera (Phase-2 video). Publishes/unpublishes the camera track + fires onLocalVideo. */
@@ -83,39 +89,70 @@ export async function connectToRoom(
   const { Room, RoomEvent, DisconnectReason, Track, VideoPresets, ExternalE2EEKeyProvider } =
     await import("livekit-client");
 
-  // Frame encryption (§10.4). The provider is created and keyed BEFORE the Room, so the key is in
-  // place before the first frame is published — a participant that joins with the wrong key produces
-  // undecryptable media, not a downgrade. Provider defaults (salt, key size) are NOT overridden:
-  // both platforms must derive byte-identical material from the same base64 string.
-  let e2ee: { keyProvider: InstanceType<typeof ExternalE2EEKeyProvider>; worker: Worker } | undefined;
-
-  if (opts.e2eeProviderKey) {
-    const keyProvider = new ExternalE2EEKeyProvider();
-    await keyProvider.setKey(opts.e2eeProviderKey);
-    // The E2EE worker is bundled by livekit-client; `new Worker(new URL(...))` is the form Next's
-    // bundler can statically resolve.
-    const worker = new Worker(
-      new URL("livekit-client/e2ee-worker", import.meta.url),
-      { type: "module" }
-    );
-    e2ee = { keyProvider, worker };
-  }
-
   const reasonName = (reason?: number) =>
     reason === undefined ? "unknown" : `${DisconnectReason[reason] ?? "?"}(${reason})`;
 
   // adaptiveStream + dynacast + simulcast → the peer auto-receives the best layer their network can handle
   // (adaptive/"auto" quality, no hard cap). These are Room-level but only affect VIDEO subscription — a
   // voice call publishes no camera track, so its behavior is unchanged (audio path untouched).
-  const room: LiveKitRoom = new Room({
+  const baseRoomOptions = {
     adaptiveStream: true,
     dynacast: true,
-    ...(e2ee ? { e2ee } : {}),
     videoCaptureDefaults: { resolution: VideoPresets.h720.resolution },
     publishDefaults: {
       videoSimulcastLayers: [VideoPresets.h180, VideoPresets.h360, VideoPresets.h720]
     }
-  });
+  };
+
+  /**
+   * Build the Room, with frame encryption when a provider key was agreed (§10.4).
+   *
+   * THE ORDER HERE IS THE CONTRACT, and getting it wrong is silent. livekit-client's E2EEManager
+   * subscribes to the key provider's SetKey event inside the ROOM CONSTRUCTOR; a `setKey()` call made
+   * before the Room exists fires with no listener and the key NEVER reaches the worker. The room then
+   * runs encryption with no key — which is how a Chrome↔Chrome call failed to connect after the ring.
+   * Verified by spying on worker.postMessage: pre-Room setKey posts only `init`, post-Room setKey
+   * posts `init` AND `setKey`.
+   *
+   * So, exactly as livekit documents it:
+   *   1. worker + key provider,
+   *   2. Room with `e2ee: { keyProvider, worker }`,
+   *   3. keyProvider.setKey(...)   — AFTER the Room, so the manager is listening,
+   *   4. room.setE2EEEnabled(true) — BEFORE connect, so no plaintext frame is ever published.
+   *
+   * DEGRADE TO PLAIN: if ANY of that throws (unsupported browser, worker blocked, key rejected), we
+   * return a plain Room instead. A call that connects unencrypted with an honest indicator is always
+   * better than one that fails to connect.
+   */
+  async function buildRoom(): Promise<{ room: LiveKitRoom; encrypted: boolean }> {
+    if (!opts.e2eeProviderKey) return { room: new Room(baseRoomOptions), encrypted: false };
+
+    let worker: Worker | undefined;
+    try {
+      // `new Worker(new URL(...))` is the form the bundler statically resolves (it emits the worker
+      // as its own chunk); a bare import would not be rewritten and would 404 at runtime.
+      worker = new Worker(new URL("livekit-client/e2ee-worker", import.meta.url), {
+        type: "module"
+      });
+      // A worker that dies later cannot be recovered mid-call, but it must be visible.
+      worker.onerror = (event) =>
+        console.error(`${TAG} e2ee worker error`, (event as ErrorEvent).message ?? event);
+
+      const keyProvider = new ExternalE2EEKeyProvider();
+      const room = new Room({ ...baseRoomOptions, e2ee: { keyProvider, worker } });
+
+      await keyProvider.setKey(opts.e2eeProviderKey);
+      await room.setE2EEEnabled(true);
+
+      return { room, encrypted: true };
+    } catch (error) {
+      console.error(`${TAG} e2ee setup failed — connecting WITHOUT encryption`, error);
+      worker?.terminate();
+      return { room: new Room(baseRoomOptions), encrypted: false };
+    }
+  }
+
+  const { room, encrypted } = await buildRoom();
 
   // Camera-switch state, tracked BY US for the connection's life. The bug fix: cycling reads OUR
   // currentCameraId / currentFacing rather than re-reading room.getActiveDevice() each time (which stops
@@ -241,13 +278,7 @@ export async function connectToRoom(
   try {
     console.info(TAG, "connecting to room", roomName);
     await room.connect(url, token);
-
-    // Turn frame encryption ON for our own published tracks. Done AFTER connect (the room must exist)
-    // but BEFORE the mic is published below, so no plaintext frame is ever sent.
-    if (e2ee) {
-      await room.setE2EEEnabled(true);
-      console.info(`${TAG} end-to-end encryption enabled for ${roomName}`);
-    }
+    if (encrypted) console.info(`${TAG} end-to-end encryption active for ${roomName}`);
 
     // Any remote track already subscribed at connect time → surface it now (TrackSubscribed only fires
     // for tracks that arrive AFTER the listener is set).
@@ -310,6 +341,8 @@ export async function connectToRoom(
   };
 
   return {
+    // What the Room actually ended up with, after any degrade-to-plain.
+    encrypted,
     setMuted: async (muted) => {
       await room.localParticipant.setMicrophoneEnabled(!muted);
     },
