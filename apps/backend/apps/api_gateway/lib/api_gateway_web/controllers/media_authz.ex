@@ -7,6 +7,10 @@ defmodule ApiGatewayWeb.MediaAuthz do
 
     * message      → the conversation the media was SENT to (`messages.media_id` → conversation_id) →
                      membership; if it isn't attached to a message yet (uploaded, not sent) → owner-only.
+    * sealed_media → the asset's `conversation_id` (set on upload) → membership. It CANNOT use the
+                     message rule: a sealed message's `media_id` column is forced NULL (the descriptor
+                     rides inside the encrypted envelope), so the message-anchored oracle finds no
+                     reference and denies every recipient.
     * group_avatar → the asset's `conversation_id` (set on upload) → membership.
     * user_avatar  → any authenticated same-app caller (`get_asset` already scoped `app_id`).
 
@@ -22,9 +26,8 @@ defmodule ApiGatewayWeb.MediaAuthz do
   def authorize_download(media_id, asset, user_id) do
     case aget(asset, :purpose) do
       "message" -> authorize_message_media(media_id, asset, user_id)
-      # sealed_media (110): identical to message media — a member of a conversation whose message
-      # (sent by the asset's owner) references this id may download the ciphertext.
-      "sealed_media" -> authorize_message_media(media_id, asset, user_id)
+      # sealed_media: CANNOT use the message-media rule — see authorize_sealed_media/2.
+      "sealed_media" -> authorize_sealed_media(asset, user_id)
       "group_avatar" -> authorize_group_avatar(asset, user_id)
       "user_avatar" -> :ok
       # Status media: the owning POST authorizes — it must be LIVE (expired/deleted → denied even with
@@ -81,6 +84,38 @@ defmodule ApiGatewayWeb.MediaAuthz do
       {:owner, true} -> :ok
       {:error, :message_unavailable} -> {:error, :conversation_unavailable}
       _ -> {:error, :not_a_member}
+    end
+  end
+
+  # SEALED MEDIA IS AUTHORIZED BY THE ASSET'S CONVERSATION, NOT BY A MESSAGE.
+  #
+  # This was a total outage for E2EE attachments: sealed_media originally routed to
+  # authorize_message_media/3, whose oracle asks "is there a message referencing this media_id whose
+  # sender is the owner?". For a sealed message there is never such a row — `media_id` is forced NULL
+  # at creation (MessageService.Messages.media_id/2) because the descriptor lives INSIDE the encrypted
+  # frame and the server cannot read it. So the oracle returned allowed:false for every recipient and
+  # the controller collapsed that to 404. The OWNER short-circuit hid it from the sender, which is why
+  # it looked purpose-specific rather than transport-specific: sealed photo AND sealed video both
+  # 404'd for the recipient, while plaintext of either kind worked.
+  #
+  # The asset's conversation_id is the right anchor, and it is exactly as tight: it was written at
+  # UPLOAD time from the authenticated uploader's request, and MediaController.authorize_upload/3
+  # already refused that upload unless the uploader was an active member of it. So downloading
+  # requires active membership of the same conversation the ciphertext was uploaded for. A planted
+  # asset grants nothing: its uploader can only name a conversation they belong to, and only members
+  # of THAT conversation can read it.
+  #
+  # No conversation_id (an older or non-conversational sealed upload) → owner-only, the safe default.
+  defp authorize_sealed_media(asset, user_id) do
+    cond do
+      aget(asset, :owner_user_id) == user_id ->
+        :ok
+
+      is_binary(aget(asset, :conversation_id)) and aget(asset, :conversation_id) != "" ->
+        membership(aget(asset, :conversation_id), user_id)
+
+      true ->
+        {:error, :not_a_member}
     end
   end
 

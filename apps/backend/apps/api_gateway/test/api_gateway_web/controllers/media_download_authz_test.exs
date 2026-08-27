@@ -30,6 +30,10 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
   @group_media "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
   # any media_id NOT in the caller's app → get_asset 404
   @cross_media "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+  # SEALED media (E2EE attachment): bound to a conversation at upload; NO message ever references it.
+  @sealed_media "ffffffff-ffff-4fff-8fff-ffffffffffff"
+  # A sealed asset with no conversation_id (older upload) → owner-only.
+  @sealed_orphan "12121212-1212-4121-8121-121212121212"
 
   defmodule AuthStub do
     @moduledoc false
@@ -49,6 +53,8 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
     @unsent_media "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
     @avatar_media "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
     @group_media "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    @sealed_media "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    @sealed_orphan "12121212-1212-4121-8121-121212121212"
 
     # get_asset is scoped by (media_id, app_id): only assets in the caller's app resolve; anything else
     # (unknown id, another tenant's id) → :not_found. Only assets that belong to @app are matched here.
@@ -63,6 +69,13 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
 
     def get_asset(%{"media_id" => @group_media, "app_id" => @app}),
       do: ok("group_avatar", @owner, @convo, @group_media)
+
+    # The E2EE attachment: purpose sealed_media, carrying the conversation it was uploaded for.
+    def get_asset(%{"media_id" => @sealed_media, "app_id" => @app}),
+      do: ok("sealed_media", @owner, @convo, @sealed_media)
+
+    def get_asset(%{"media_id" => @sealed_orphan, "app_id" => @app}),
+      do: ok("sealed_media", @owner, nil, @sealed_orphan)
 
     def get_asset(_), do: {:error, :not_found}
 
@@ -220,5 +233,54 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
 
   test "group_avatar: a non-member → 404" do
     assert_opaque_404(download(@stranger, @group_media))
+  end
+
+  # --- SEALED MEDIA (E2EE attachments) ---------------------------------------------------------------
+  #
+  # THE PRODUCTION OUTAGE THESE PIN. sealed_media used to route to the message-media rule, whose oracle
+  # asks "is there a message referencing this media_id whose sender is the owner?". A sealed message's
+  # media_id column is forced NULL (the descriptor rides inside the encrypted frame), so that oracle
+  # finds nothing and denies EVERY recipient — every encrypted attachment 404'd while E2EE was
+  # default-on. The owner short-circuit hid it from the sender, which is why it presented as
+  # purpose-specific rather than transport-specific.
+  #
+  # Note the MessageStub above answers allowed:false for @sealed_media — exactly as the real oracle
+  # does. So if these ever route back through the message rule, they fail.
+
+  test "a conversation PARTICIPANT can download sealed media → 200" do
+    conn = download(@member, @sealed_media)
+
+    assert conn.status == 200
+    assert body(conn)["download_url"] == "https://minio.local/get/" <> @sealed_media
+  end
+
+  test "the OWNER can download their own sealed media → 200" do
+    assert download(@owner, @sealed_media).status == 200
+  end
+
+  test "a NON-PARTICIPANT gets an opaque 404 for sealed media" do
+    assert_opaque_404(download(@stranger, @sealed_media))
+  end
+
+  test "a FORMER participant (left the conversation) gets 404 — membership must be ACTIVE" do
+    assert_opaque_404(download(@former, @sealed_media))
+  end
+
+  test "sealed media in ANOTHER tenant → 404 (get_asset is app-scoped, before any authz)" do
+    assert_opaque_404(download(@member, @cross_media))
+  end
+
+  test "a sealed asset with NO conversation_id is owner-only" do
+    # Nothing to check membership against, so the safe default: the owner, and nobody else.
+    assert download(@owner, @sealed_orphan).status == 200
+    assert_opaque_404(download(@member, @sealed_orphan))
+    assert_opaque_404(download(@stranger, @sealed_orphan))
+  end
+
+  test "sealed media does NOT consult the message oracle — it cannot, there is no message row" do
+    # The stub denies @sealed_media for everyone; a 200 for the participant proves the decision came
+    # from conversation membership instead. This is the mutation point: route sealed_media back to
+    # authorize_message_media and this test goes red with a 404.
+    assert download(@member, @sealed_media).status == 200
   end
 end
