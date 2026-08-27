@@ -89,6 +89,12 @@ defmodule MessageService.MessageClientInProcess do
   def set_status_audience(attrs), do: MessageService.Statuses.set_audience(attrs)
 
   @impl true
+  def get_status_settings(attrs), do: MessageService.Statuses.get_settings(attrs)
+
+  @impl true
+  def set_status_settings(attrs), do: MessageService.Statuses.set_settings(attrs)
+
+  @impl true
   def record_status_view(attrs), do: MessageService.Statuses.record_view(attrs)
 
   @impl true

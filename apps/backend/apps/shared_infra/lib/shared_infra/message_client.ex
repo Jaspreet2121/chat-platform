@@ -82,6 +82,9 @@ defmodule SharedInfra.MessageClient do
   # Status commit 2: audience modes + view recording + the owner's viewer lists.
   @callback get_status_audience(attrs()) :: result()
   @callback set_status_audience(attrs()) :: result()
+  # Per-user status DURATION (112) — the second preference on the same status_audience row.
+  @callback get_status_settings(attrs()) :: result()
+  @callback set_status_settings(attrs()) :: result()
   @callback record_status_view(attrs()) :: result()
   @callback status_viewers(attrs()) :: result()
   @callback my_status(attrs()) :: result()
@@ -105,6 +108,8 @@ defmodule SharedInfra.MessageClient do
                       status_media_allowed: 1,
                       get_status_audience: 1,
                       set_status_audience: 1,
+                      get_status_settings: 1,
+                      set_status_settings: 1,
                       record_status_view: 1,
                       status_viewers: 1,
                       my_status: 1,
@@ -133,6 +138,8 @@ defmodule SharedInfra.MessageClient do
   def status_media_allowed(attrs), do: normalize(adapter().status_media_allowed(attrs))
   def get_status_audience(attrs), do: normalize(adapter().get_status_audience(attrs))
   def set_status_audience(attrs), do: normalize(adapter().set_status_audience(attrs))
+  def get_status_settings(attrs), do: normalize(adapter().get_status_settings(attrs))
+  def set_status_settings(attrs), do: normalize(adapter().set_status_settings(attrs))
   def record_status_view(attrs), do: normalize(adapter().record_status_view(attrs))
   def status_viewers(attrs), do: normalize(adapter().status_viewers(attrs))
   def my_status(attrs), do: normalize(adapter().my_status(attrs))

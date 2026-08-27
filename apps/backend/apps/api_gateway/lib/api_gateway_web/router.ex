@@ -314,6 +314,10 @@ defmodule ApiGatewayWeb.Router do
     get "/audience", StatusController, :get_audience
     put "/audience", StatusController, :set_audience
 
+    # Duration settings (112) — literal path, so like /audience it must precede "/:owner_user_id".
+    get "/settings", StatusController, :get_settings
+    put "/settings", StatusController, :set_settings
+
     # View recording + the owner's "seen by" list (two-segment paths never collide with the one-segment
     # owner list below).
     post "/:status_id/view", StatusController, :record_view

@@ -46,6 +46,8 @@ defmodule MessageService.Statuses do
 
   alias MessageService.Repo
 
+  # The default duration. The enum a user may choose from lives in SharedInfra.StatusDuration because
+  # the API gateway needs it too and does NOT contain this module — see that moduledoc.
   @ttl_hours 24
   @sweep_batch 25
   @sweep_grace_seconds 3600
@@ -73,6 +75,11 @@ defmodule MessageService.Statuses do
       app_id = SharedInfra.Tenancy.app_id_or_default(get_attr(attrs, "app_id"))
       metadata = normalize_metadata(get_attr(attrs, "metadata"))
 
+      # AT CREATION ONLY (112). expires_at is materialised on the row here, so a later settings change
+      # cannot move it — shortening your duration must never make statuses your contacts are already
+      # looking at vanish out from under them. Every read filter stays exactly as it was.
+      duration_hours = duration_for(owner)
+
       %{rows: [[created_at, expires_at]]} =
         Repo.query!(
           "INSERT INTO status_posts (id, owner_user_id, app_id, kind, body, media_id, metadata, expires_at) " <>
@@ -87,7 +94,7 @@ defmodule MessageService.Statuses do
             get_attr(attrs, "body"),
             get_attr(attrs, "media_id"),
             metadata,
-            @ttl_hours
+            duration_hours
           ]
         )
 
@@ -314,6 +321,88 @@ defmodule MessageService.Statuses do
   rescue
     Ecto.Query.CastError -> {:error, :status_invalid}
   end
+
+  # --- DURATION SETTING (112) ---------------------------------------------------------------------
+
+  @doc """
+  The caller's status duration. No row → the default. → `{:ok, %{duration_hours, allowed_duration_hours}}`.
+
+  The allowed list rides the response so a client renders its picker from the server rather than
+  hardcoding the enum (and keeps working when the enum widens).
+  """
+  def get_settings(attrs) do
+    with :ok <- ensure_persistence(),
+         {:ok, user_id} <- required(attrs, "user_id") do
+      {:ok,
+       %{
+         duration_hours: duration_for(user_id),
+         allowed_duration_hours: SharedInfra.StatusDuration.allowed()
+       }}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :status_invalid}
+  end
+
+  @doc """
+  Set the caller's status duration. Validated against the server-owned enum; anything else is
+  `:status_invalid_duration`.
+
+  UPSERTS THE SAME status_audience ROW the audience mode lives on — one per-user status preferences
+  row, not two — and touches nothing else on it, so setting a duration never disturbs the audience
+  mode or its member list.
+  """
+  def set_settings(attrs) do
+    with :ok <- ensure_persistence(),
+         {:ok, user_id} <- required(attrs, "user_id"),
+         {:ok, hours} <- valid_duration(attrs) do
+      Repo.query!(
+        "INSERT INTO status_audience (user_id, duration_hours) VALUES ($1::text::uuid, $2) " <>
+          "ON CONFLICT (user_id) DO UPDATE SET duration_hours = EXCLUDED.duration_hours, updated_at = now()",
+        [user_id, hours]
+      )
+
+      get_settings(%{"user_id" => user_id})
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :status_invalid}
+  end
+
+  # The user's chosen duration, or the default when they have never set one. Read ONLY at create time.
+  defp duration_for(user_id) do
+    %{rows: rows} =
+      Repo.query!("SELECT duration_hours FROM status_audience WHERE user_id = $1::text::uuid", [
+        user_id
+      ])
+
+    case rows do
+      [[hours]] when is_integer(hours) -> hours
+      _ -> @ttl_hours
+    end
+  rescue
+    # A preferences read must never fail a post — fall back to the default duration.
+    _ -> @ttl_hours
+  end
+
+  # Accepts an integer or its string form (a JSON round-trip through the internal API may hand back
+  # either), and only values in the server-owned enum.
+  defp valid_duration(attrs) do
+    hours = normalize_duration(get_attr(attrs, "duration_hours"))
+
+    if SharedInfra.StatusDuration.allowed?(hours),
+      do: {:ok, hours},
+      else: {:error, :status_invalid_duration}
+  end
+
+  defp normalize_duration(value) when is_integer(value), do: value
+
+  defp normalize_duration(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {hours, ""} -> hours
+      _ -> nil
+    end
+  end
+
+  defp normalize_duration(_value), do: nil
 
   # --- VIEWS (commit 2) ---------------------------------------------------------------------------
 

@@ -84,6 +84,41 @@ defmodule ApiGatewayWeb.StatusController do
   end
 
   @doc """
+  GET /api/v1/status/settings — the caller's status duration, plus the durations they may choose.
+
+  The allowed list is served rather than hardcoded so a client renders its picker from the server and
+  keeps working when the enum widens.
+  """
+  def get_settings(conn, _params) do
+    with {:ok, session} <- session(conn),
+         {:ok, settings} <-
+           SharedInfra.MessageClient.get_status_settings(%{"user_id" => session.user_id}) do
+      json(conn, settings)
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  @doc """
+  PUT /api/v1/status/settings {duration_hours} — set how long the caller's NEW statuses live.
+
+  Applied at CREATION only: existing posts keep the expires_at they were written with, so shortening
+  the setting never makes a status a contact is already viewing disappear.
+  """
+  def set_settings(conn, params) do
+    with {:ok, session} <- session(conn),
+         {:ok, settings} <-
+           SharedInfra.MessageClient.set_status_settings(%{
+             "user_id" => session.user_id,
+             "duration_hours" => params["duration_hours"]
+           }) do
+      json(conn, settings)
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  @doc """
   Record that the caller opened a status. Gated by the SAME audience predicate — a viewer who can't see
   it can't record (404), so a BLOCKED viewer never produces a row. The row is the dedup key (first view
   wins); DISCLOSURE is filtered at read, so a receipts-off viewer still records one. The owner's own
@@ -311,6 +346,17 @@ defmodule ApiGatewayWeb.StatusController do
         conn,
         "status.invalid_media",
         "media_id must reference your own ready status upload"
+      )
+
+  # The allowed list rides the 400 body (the status.audience_limit precedent) so a client that guessed
+  # wrong can correct itself — and render its picker — without shipping a new build.
+  defp handle_error(conn, {:error, :status_invalid_duration}),
+    do:
+      ErrorResponse.invalid_request_with(
+        conn,
+        "status.invalid_duration",
+        "duration_hours must be one of the allowed values",
+        %{allowed_duration_hours: SharedInfra.StatusDuration.allowed()}
       )
 
   defp handle_error(conn, {:error, :status_invalid_mode}),

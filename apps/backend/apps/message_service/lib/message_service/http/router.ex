@@ -153,6 +153,14 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Statuses.set_audience(body(conn)))
   end
 
+  post "/internal/status/settings/get" do
+    send_result(conn, MessageService.Statuses.get_settings(body(conn)))
+  end
+
+  post "/internal/status/settings/set" do
+    send_result(conn, MessageService.Statuses.set_settings(body(conn)))
+  end
+
   post "/internal/status/view" do
     send_result(conn, MessageService.Statuses.record_view(body(conn)))
   end

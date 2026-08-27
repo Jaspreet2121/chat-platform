@@ -88,6 +88,12 @@ defmodule SharedInfra.MessageClientHttp do
   def set_status_audience(attrs), do: post("/internal/status/audience/set", attrs)
 
   @impl true
+  def get_status_settings(attrs), do: post("/internal/status/settings/get", attrs)
+
+  @impl true
+  def set_status_settings(attrs), do: post("/internal/status/settings/set", attrs)
+
+  @impl true
   def record_status_view(attrs), do: post("/internal/status/view", attrs)
 
   @impl true
