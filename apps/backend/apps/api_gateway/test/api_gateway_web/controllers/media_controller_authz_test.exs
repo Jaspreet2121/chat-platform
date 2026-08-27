@@ -64,6 +64,41 @@ defmodule ApiGatewayWeb.MediaControllerAuthzTest do
     def complete_upload(attrs) do
       {:ok, %{media_id: attrs["media_id"], status: "ready", echo_keys: Map.keys(attrs)}}
     end
+
+    # Multipart (112) — echoes the same fields so the tests can assert that these actions go through
+    # the SAME purpose/authorization path as the single-PUT create.
+    def create_multipart_upload(attrs) do
+      {:ok,
+       %{
+         media_id: "m1",
+         upload_id: "upload-1",
+         object_key: "media/#{attrs["owner_user_id"]}/m1/f.bin",
+         part_size: 5_242_880,
+         echo_owner: attrs["owner_user_id"],
+         echo_app_id: attrs["app_id"],
+         echo_purpose: attrs["purpose"],
+         echo_conversation_id: attrs["conversation_id"]
+       }}
+    end
+
+    def presign_upload_parts(attrs) do
+      {:ok,
+       %{
+         parts:
+           Enum.map(attrs["part_numbers"] || [], &%{part_number: &1, url: "https://s/#{&1}"}),
+         echo_owner: attrs["owner_user_id"],
+         echo_app_id: attrs["app_id"],
+         echo_upload_id: attrs["upload_id"]
+       }}
+    end
+
+    def complete_multipart_upload(attrs) do
+      {:ok, %{media_id: attrs["media_id"], status: "ready", echo_upload_id: attrs["upload_id"]}}
+    end
+
+    def abort_multipart_upload(attrs) do
+      {:ok, %{aborted: true, media_id: attrs["media_id"], echo_upload_id: attrs["upload_id"]}}
+    end
   end
 
   setup do
@@ -221,6 +256,107 @@ defmodule ApiGatewayWeb.MediaControllerAuthzTest do
       assert "owner_user_id" in keys
       assert "app_id" in keys
       refute "object_key" in keys
+    end
+  end
+
+  describe "multipart upload authorization (112)" do
+    test "create_multipart runs the SAME purpose whitelist — sealed_media is NOT coerced" do
+      params =
+        create_params(%{
+          "purpose" => "sealed_media",
+          "content_type" => "application/octet-stream",
+          "conversation_id" => @convo
+        })
+
+      conn = MediaController.create_multipart(upload_conn(@member), params)
+
+      assert conn.status == 201
+      b = body(conn)
+
+      # Drop "sealed_media" from upload_purpose/1's whitelist and this reads "message" — the same
+      # mutation that d4af319 pinned for the single-PUT path, now pinned for multipart too.
+      assert b["echo_purpose"] == "sealed_media"
+      assert b["echo_owner"] == @member
+      assert b["echo_app_id"] == @app
+      assert b["part_size"] == 5_242_880
+      assert b["upload_id"] == "upload-1"
+    end
+
+    test "create_multipart by a NON-PARTICIPANT is 404 — same gate as the single PUT" do
+      params = create_params(%{"purpose" => "message", "conversation_id" => @convo})
+      conn = MediaController.create_multipart(upload_conn(@stranger), params)
+
+      assert conn.status == 404
+      assert body(conn)["error"]["code"] == "media.not_found"
+    end
+
+    test "create_multipart for a group_avatar by a non-admin is 403, like the single PUT" do
+      params = create_params(%{"purpose" => "group_avatar", "conversation_id" => @convo})
+      conn = MediaController.create_multipart(upload_conn(@member), params)
+
+      assert conn.status == 403
+    end
+
+    test "an UNKNOWN purpose still coerces to message (the deliberate fallback, unchanged)" do
+      params = create_params(%{"purpose" => "nonsense"})
+      conn = MediaController.create_multipart(upload_conn(@member), params)
+
+      assert conn.status == 201
+      assert body(conn)["echo_purpose"] == "message"
+    end
+
+    test "parts / complete / abort inject the session identity and the path upload_id" do
+      parts =
+        MediaController.multipart_parts(upload_conn(@member), %{
+          "upload_id" => "upload-9",
+          "media_id" => "m1",
+          "part_numbers" => [1, 2]
+        })
+
+      assert parts.status == 200
+      pb = body(parts)
+      assert pb["echo_upload_id"] == "upload-9"
+
+      # Identity comes from the SESSION, never from the body — a client cannot upload as someone else.
+      assert pb["echo_owner"] == @member
+      assert pb["echo_app_id"] == @app
+      assert Enum.map(pb["parts"], & &1["part_number"]) == [1, 2]
+
+      complete =
+        MediaController.multipart_complete(upload_conn(@member), %{
+          "upload_id" => "upload-9",
+          "media_id" => "m1",
+          "parts" => [%{"part_number" => 1, "etag" => "\"e\""}]
+        })
+
+      assert complete.status == 200
+
+      # THE CONVERGENCE REQUIREMENT: same shape as complete_upload, so clients keep one post-upload path.
+      assert body(complete)["status"] == "ready"
+
+      abort =
+        MediaController.multipart_abort(upload_conn(@member), %{
+          "upload_id" => "upload-9",
+          "media_id" => "m1"
+        })
+
+      assert abort.status == 200
+      assert body(abort)["aborted"] == true
+    end
+
+    test "no session → 401 on every multipart action" do
+      unauthed = fn -> :post |> conn("/api/v1/media/upload/multipart", %{}) end
+
+      assert MediaController.create_multipart(unauthed.(), create_params(%{})).status == 401
+
+      assert MediaController.multipart_parts(unauthed.(), %{
+               "upload_id" => "u",
+               "media_id" => "m",
+               "part_numbers" => [1]
+             }).status == 401
+
+      assert MediaController.multipart_abort(unauthed.(), %{"upload_id" => "u", "media_id" => "m"}).status ==
+               401
     end
   end
 end

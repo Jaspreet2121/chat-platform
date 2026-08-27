@@ -94,6 +94,237 @@ defmodule MediaService.Media do
     end
   end
 
+  # ---- S3 multipart upload (112) ------------------------------------------------------------------
+  #
+  # The Android client needs resumable, parallel, byte-progress uploads, which a single presigned PUT
+  # cannot give it. These four functions are the minimal S3 multipart contract, and they deliberately
+  # reuse the SINGLE-PUT path's validation and completion rather than running beside it:
+  #
+  #   * create runs the SAME required_attr / fetch_purpose / required_content_type / required_size
+  #     checks and inserts the SAME media_assets row (status "created");
+  #   * complete finishes the S3 upload and then calls the SAME complete_persisted/3 the single-PUT
+  #     path uses — so ownership, tenancy, the measured-size cap and the response shape are identical
+  #     by construction, not by imitation.
+  #
+  # NO MIGRATION. S3 owns the multipart state and hands back the `upload_id` that identifies it; the
+  # media row already tracks created → ready. Persisting the upload_id would duplicate state S3 holds
+  # authoritatively. The client therefore carries `media_id` alongside `upload_id`: the row lookup
+  # (tenant + owner scoped) is the authorization, and S3 itself validates that the upload_id belongs
+  # to that object key — a mismatched pair simply fails there.
+  #
+  # AN ABANDONED UPLOAD IS INERT. Parts live only inside S3's multipart staging area; no object exists
+  # until complete succeeds, and the row stays "created", which can never presign a download or attach
+  # to a message. Abort frees the staged parts; see the lifecycle note in the abort docstring.
+
+  # S3's floor for every part except the last. Chosen server-side and returned so the client never has
+  # to know the rule — and so we can raise it later without shipping a new client.
+  @multipart_part_size 5 * 1024 * 1024
+  @max_parts_per_request 1000
+  # S3's hard ceiling on parts per upload.
+  @max_part_number 10_000
+
+  @doc """
+  Begin a multipart upload. Same attrs as `create_upload/1`; `size_bytes` is the client's declared
+  total and is capped here exactly as it is for a single PUT (the real size is re-checked at complete).
+
+  → `{:ok, %{media_id, upload_id, object_key, part_size}}`.
+  """
+  def create_multipart_upload(attrs) do
+    with {:ok, owner_user_id} <- required_attr(attrs, "owner_user_id"),
+         {:ok, purpose} <- fetch_purpose(attrs),
+         {:ok, filename} <- required_attr(attrs, "filename"),
+         {:ok, content_type} <- required_content_type(attrs, purpose),
+         {:ok, size_bytes} <- required_size(attrs),
+         :ok <- ensure_persistence() do
+      media_id = generate_uuid()
+      object_key = object_key(owner_user_id, media_id, filename)
+      conversation_id = optional_attr(attrs, "conversation_id")
+
+      with {:ok, app_id} <- required_attr(attrs, "app_id"),
+           {:ok, _asset} <-
+             insert_media_asset(
+               media_id,
+               app_id,
+               owner_user_id,
+               conversation_id,
+               purpose,
+               object_key,
+               content_type,
+               size_bytes
+             ),
+           {:ok, %{upload_id: upload_id}} <-
+             Storage.create_multipart_upload(%{"object_key" => object_key}) do
+        {:ok,
+         %{
+           media_id: media_id,
+           upload_id: upload_id,
+           object_key: object_key,
+           part_size: @multipart_part_size
+         }}
+      end
+    end
+  end
+
+  @doc """
+  Presigned PUT URLs for a window of part numbers — one round trip per window, so a client uploading
+  in parallel does not pay a request per part.
+
+  attrs: "media_id", "upload_id", "app_id", "owner_user_id", "part_numbers" (list of integers).
+  → `{:ok, %{parts: [%{part_number, url}]}}`.
+  """
+  def presign_upload_parts(attrs) do
+    with {:ok, upload_id} <- required_attr(attrs, "upload_id"),
+         {:ok, numbers} <- validate_part_numbers(optional_list(attrs, "part_numbers")),
+         {:ok, asset} <- owned_asset(attrs) do
+      Storage.presign_upload_parts(%{
+        "object_key" => asset.object_key,
+        "upload_id" => upload_id,
+        "part_numbers" => numbers
+      })
+    end
+  end
+
+  @doc """
+  Assemble the uploaded parts, then run the SAME completion the single-PUT path runs — so the response
+  shape, the measured-size cap and the ownership rules are identical.
+
+  attrs: "media_id", "upload_id", "app_id", "owner_user_id", "parts" ([%{"part_number", "etag"}]).
+  A missing or mismatched part makes S3 refuse to assemble → `:multipart_incomplete`, and the row is
+  never marked ready. It is NEVER completed into a corrupt object.
+  """
+  def complete_multipart_upload(attrs) do
+    with {:ok, upload_id} <- required_attr(attrs, "upload_id"),
+         {:ok, parts} <- validate_parts(optional_list(attrs, "parts")),
+         {:ok, asset} <- owned_asset(attrs),
+         {:ok, _} <-
+           Storage.complete_multipart_upload(%{
+             "object_key" => asset.object_key,
+             "upload_id" => upload_id,
+             "parts" => parts
+           }),
+         {:ok, media_id} <- required_attr(attrs, "media_id"),
+         {:ok, app_id} <- required_attr(attrs, "app_id"),
+         {:ok, owner_user_id} <- required_attr(attrs, "owner_user_id") do
+      # The object now exists; this HEADs it, enforces the cap on the MEASURED size, and flips the row
+      # to ready — byte-for-byte the single-PUT completion.
+      complete_persisted(media_id, app_id, owner_user_id)
+    end
+  end
+
+  @doc """
+  Abort an unfinished multipart upload: S3 discards the staged parts, and the row is marked deleted so
+  its id can never be reused or presigned. Idempotent.
+
+  OPS FOLLOW-UP (not implemented here): a client that dies without calling this leaves staged parts
+  that S3 keeps until told otherwise. MinIO supports a lifecycle rule for exactly this —
+  `mc ilm rule add --expire-delete-marker` style config, specifically
+  `mc ilm rule add <alias>/chat-media --expiry-incomplete-multipart-upload-days 7` — which should be
+  applied once to the bucket in deployment. Documented rather than done because it is a one-off ops
+  action on the bucket, not application code.
+  """
+  def abort_multipart_upload(attrs) do
+    with {:ok, upload_id} <- required_attr(attrs, "upload_id"),
+         {:ok, asset} <- owned_asset(attrs) do
+      _ =
+        Storage.abort_multipart_upload(%{
+          "object_key" => asset.object_key,
+          "upload_id" => upload_id
+        })
+
+      asset
+      |> MediaAsset.status_changeset("deleted", DateTime.utc_now())
+      |> Repo.update()
+
+      {:ok, %{aborted: true, media_id: asset.id}}
+    end
+  end
+
+  # The row, scoped to the caller's tenant AND ownership — the same 404-not-403 posture as
+  # complete_persisted: a foreign or cross-tenant media_id must not reveal that it exists.
+  defp owned_asset(attrs) do
+    with :ok <- ensure_persistence(),
+         {:ok, media_id} <- required_attr(attrs, "media_id"),
+         {:ok, app_id} <- required_attr(attrs, "app_id"),
+         {:ok, owner_user_id} <- required_attr(attrs, "owner_user_id") do
+      case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
+        %MediaAsset{owner_user_id: ^owner_user_id} = asset -> {:ok, asset}
+        _ -> {:error, :not_found}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :not_found}
+  end
+
+  defp ensure_persistence do
+    if media_persistence_enabled?(), do: :ok, else: {:error, :media_storage_unavailable}
+  end
+
+  defp optional_list(attrs, key) do
+    case get_attr(attrs, key) do
+      value when is_list(value) -> value
+      _ -> nil
+    end
+  end
+
+  # Part numbers must be a non-empty list of DISTINCT integers in 1..10000. Gaps are legal (a client
+  # may request a later window first), duplicates and out-of-range values are not.
+  defp validate_part_numbers(nil), do: {:error, :media_invalid}
+
+  defp validate_part_numbers([]), do: {:error, :media_invalid}
+
+  defp validate_part_numbers(numbers) when is_list(numbers) do
+    normalized = Enum.map(numbers, &normalize_part_number/1)
+
+    cond do
+      Enum.any?(normalized, &is_nil/1) -> {:error, :media_invalid}
+      length(normalized) > @max_parts_per_request -> {:error, :media_invalid}
+      length(Enum.uniq(normalized)) != length(normalized) -> {:error, :media_invalid}
+      true -> {:ok, normalized}
+    end
+  end
+
+  defp normalize_part_number(value) when is_integer(value) do
+    if value >= 1 and value <= @max_part_number, do: value, else: nil
+  end
+
+  defp normalize_part_number(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {number, ""} -> normalize_part_number(number)
+      _ -> nil
+    end
+  end
+
+  defp normalize_part_number(_value), do: nil
+
+  # Completion parts: every entry needs a valid part number AND a non-empty etag, and the numbers must
+  # be distinct. S3 would reject a malformed set anyway; refusing here turns it into a 422 the client
+  # can act on instead of an opaque storage error.
+  defp validate_parts(nil), do: {:error, :media_invalid}
+
+  defp validate_parts([]), do: {:error, :media_invalid}
+
+  defp validate_parts(parts) when is_list(parts) do
+    normalized =
+      Enum.map(parts, fn part ->
+        number = normalize_part_number(get_attr(part, "part_number"))
+        etag = get_attr(part, "etag")
+
+        if is_nil(number) or not (is_binary(etag) and etag != "") do
+          nil
+        else
+          %{"part_number" => number, "etag" => etag}
+        end
+      end)
+
+    numbers = Enum.map(normalized, fn part -> part && part["part_number"] end)
+
+    cond do
+      Enum.any?(normalized, &is_nil/1) -> {:error, :media_invalid}
+      length(Enum.uniq(numbers)) != length(numbers) -> {:error, :media_invalid}
+      true -> {:ok, normalized}
+    end
+  end
+
   # Take `media_id` + the caller (`owner_user_id`) + `app_id` ONLY — NEVER a client object_key. Resolve the
   # row server-side scoped to the tenant, verify the caller OWNS it (else 404 — no existence reveal), and
   # flip it to "ready". Idempotent: completing an already-ready asset succeeds.

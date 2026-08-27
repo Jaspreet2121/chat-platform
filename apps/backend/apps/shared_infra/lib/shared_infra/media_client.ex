@@ -20,7 +20,18 @@ defmodule SharedInfra.MediaClient do
   @callback get_asset(attrs()) :: result()
   # Purge an asset's bytes (status sweep / owner delete). Optional so existing stubs don't need it.
   @callback purge_asset(attrs()) :: result()
-  @optional_callbacks purge_asset: 1
+  # S3 multipart (112) — resumable/parallel uploads for the mobile clients. Optional so an existing
+  # partial test double of this behaviour keeps compiling.
+  @callback create_multipart_upload(attrs()) :: result()
+  @callback presign_upload_parts(attrs()) :: result()
+  @callback complete_multipart_upload(attrs()) :: result()
+  @callback abort_multipart_upload(attrs()) :: result()
+
+  @optional_callbacks purge_asset: 1,
+                      create_multipart_upload: 1,
+                      presign_upload_parts: 1,
+                      complete_multipart_upload: 1,
+                      abort_multipart_upload: 1
 
   def create_upload(attrs), do: adapter().create_upload(attrs)
   def complete_upload(attrs), do: adapter().complete_upload(attrs)
@@ -29,6 +40,18 @@ defmodule SharedInfra.MediaClient do
   # Read-path authz metadata (purpose/owner/conversation) by (media_id, app_id); never returns object_key.
   def get_asset(attrs), do: adapter().get_asset(attrs)
   def purge_asset(attrs), do: adapter().purge_asset(attrs)
+
+  @doc "Begin a multipart upload → %{media_id, upload_id, object_key, part_size}."
+  def create_multipart_upload(attrs), do: adapter().create_multipart_upload(attrs)
+
+  @doc "Presigned PUT URLs for a window of part numbers → %{parts: [%{part_number, url}]}."
+  def presign_upload_parts(attrs), do: adapter().presign_upload_parts(attrs)
+
+  @doc "Assemble the parts; answers the SAME shape as complete_upload/1."
+  def complete_multipart_upload(attrs), do: adapter().complete_multipart_upload(attrs)
+
+  @doc "Discard an unfinished multipart upload."
+  def abort_multipart_upload(attrs), do: adapter().abort_multipart_upload(attrs)
 
   @doc "The configured Media client adapter (default `MediaService.MediaClientInProcess`)."
   def adapter do

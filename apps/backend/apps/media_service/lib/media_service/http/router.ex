@@ -29,6 +29,22 @@ defmodule MediaService.HTTP.Router do
     send_result(conn, MediaService.Media.get_download_url(body(conn)))
   end
 
+  post "/internal/media/multipart/create" do
+    send_result(conn, MediaService.Media.create_multipart_upload(body(conn)))
+  end
+
+  post "/internal/media/multipart/parts" do
+    send_result(conn, MediaService.Media.presign_upload_parts(body(conn)))
+  end
+
+  post "/internal/media/multipart/complete" do
+    send_result(conn, MediaService.Media.complete_multipart_upload(body(conn)))
+  end
+
+  post "/internal/media/multipart/abort" do
+    send_result(conn, MediaService.Media.abort_multipart_upload(body(conn)))
+  end
+
   post "/internal/media/purge_asset" do
     send_result(conn, MediaService.Media.purge_asset(body(conn)))
   end

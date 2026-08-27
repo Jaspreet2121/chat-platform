@@ -578,6 +578,14 @@ defmodule ApiGatewayWeb.Router do
 
     post "/uploads", MediaController, :create_upload
     post "/uploads/:media_id/complete", MediaController, :complete_upload
+
+    # S3 multipart (112) — resumable/parallel uploads for the mobile clients. Declared BEFORE the
+    # "/:media_id/download" catch-all so the literal "upload" segment cannot be swallowed by it.
+    post "/upload/multipart", MediaController, :create_multipart
+    post "/upload/multipart/:upload_id/parts", MediaController, :multipart_parts
+    post "/upload/multipart/:upload_id/complete", MediaController, :multipart_complete
+    delete "/upload/multipart/:upload_id", MediaController, :multipart_abort
+
     get "/:media_id/download", MediaController, :download
   end
 

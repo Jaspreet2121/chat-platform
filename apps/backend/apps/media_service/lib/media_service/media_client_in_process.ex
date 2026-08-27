@@ -24,4 +24,16 @@ defmodule MediaService.MediaClientInProcess do
 
   @impl true
   def purge_asset(attrs), do: Media.purge_asset(attrs)
+
+  @impl true
+  def create_multipart_upload(attrs), do: MediaService.Media.create_multipart_upload(attrs)
+
+  @impl true
+  def presign_upload_parts(attrs), do: MediaService.Media.presign_upload_parts(attrs)
+
+  @impl true
+  def complete_multipart_upload(attrs), do: MediaService.Media.complete_multipart_upload(attrs)
+
+  @impl true
+  def abort_multipart_upload(attrs), do: MediaService.Media.abort_multipart_upload(attrs)
 end

@@ -121,6 +121,164 @@ defmodule ApiGatewayWeb.MediaController do
     |> ErrorResponse.rate_limited("media.rate_limited")
   end
 
+  # ---- S3 multipart upload (112) ------------------------------------------------------------------
+  #
+  # Resumable/parallel uploads for the mobile clients. Every one of these actions runs through the
+  # SAME session resolution, the SAME `upload_purpose/1` whitelist and the SAME `authorize_upload/3`
+  # as the single-PUT `create_upload/2` above — deliberately not a parallel authorization path, which
+  # is exactly how "sealed_media" was silently coerced to "message" before d4af319.
+
+  @doc """
+  POST /api/v1/media/upload/multipart — begin a multipart upload.
+  → 201 {media_id, upload_id, object_key, part_size}
+  """
+  def create_multipart(conn, params) do
+    if media_persistence_enabled?() do
+      purpose = upload_purpose(params)
+      conversation_id = params["conversation_id"]
+
+      with {:ok, session} <- session(conn),
+           :ok <- upload_rate_limit(session.user_id),
+           :ok <- authorize_upload(purpose, conversation_id, session.user_id),
+           {:ok, response} <-
+             params
+             |> Map.put("owner_user_id", session.user_id)
+             |> Map.put("app_id", session.app_id)
+             |> Map.put("purpose", purpose)
+             |> SharedInfra.MediaClient.create_multipart_upload() do
+        conn |> put_status(:created) |> json(response)
+      else
+        error -> multipart_error(conn, error)
+      end
+    else
+      invalid_request(conn)
+    end
+  end
+
+  @doc """
+  POST /api/v1/media/upload/multipart/:upload_id/parts — presigned PUT URLs for a window of parts.
+  Body: {media_id, part_numbers: [int]} → 200 {parts: [{part_number, url}]}
+  """
+  def multipart_parts(conn, %{"upload_id" => upload_id} = params) do
+    with {:ok, session} <- session(conn),
+         {:ok, response} <-
+           params
+           |> Map.put("upload_id", upload_id)
+           |> Map.put("owner_user_id", session.user_id)
+           |> Map.put("app_id", session.app_id)
+           |> SharedInfra.MediaClient.presign_upload_parts() do
+      json(conn, response)
+    else
+      error -> multipart_error(conn, error)
+    end
+  end
+
+  def multipart_parts(conn, _params), do: invalid_request(conn)
+
+  @doc """
+  POST /api/v1/media/upload/multipart/:upload_id/complete — assemble the object.
+  Body: {media_id, parts: [{part_number, etag}]} → the SAME response as complete_upload, so clients
+  converge on one post-upload path.
+  """
+  def multipart_complete(conn, %{"upload_id" => upload_id} = params) do
+    with {:ok, session} <- session(conn),
+         {:ok, response} <-
+           params
+           |> Map.put("upload_id", upload_id)
+           |> Map.put("owner_user_id", session.user_id)
+           |> Map.put("app_id", session.app_id)
+           |> SharedInfra.MediaClient.complete_multipart_upload() do
+      json(conn, response)
+    else
+      error -> multipart_error(conn, error)
+    end
+  end
+
+  def multipart_complete(conn, _params), do: invalid_request(conn)
+
+  @doc """
+  DELETE /api/v1/media/upload/multipart/:upload_id — abort and free the staged parts.
+  Body/query: media_id → 200 {aborted: true, media_id}.
+  """
+  def multipart_abort(conn, %{"upload_id" => upload_id} = params) do
+    with {:ok, session} <- session(conn),
+         {:ok, response} <-
+           params
+           |> Map.put("upload_id", upload_id)
+           |> Map.put("owner_user_id", session.user_id)
+           |> Map.put("app_id", session.app_id)
+           |> SharedInfra.MediaClient.abort_multipart_upload() do
+      json(conn, response)
+    else
+      error -> multipart_error(conn, error)
+    end
+  end
+
+  def multipart_abort(conn, _params), do: invalid_request(conn)
+
+  defp session(conn) do
+    with {:ok, authorization} <- authorization_header(conn) do
+      SharedInfra.AuthClient.current_session(%{"authorization" => authorization})
+    end
+  end
+
+  # Same mapping as the single-PUT path, plus the two multipart-specific outcomes.
+  defp multipart_error(conn, error) do
+    case error do
+      {:error, :session_invalid} ->
+        unauthorized(conn)
+
+      {:error, :rate_limited, retry_after_seconds} ->
+        rate_limited(conn, retry_after_seconds)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :media_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :media_storage_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :media_too_large} ->
+        too_large(conn)
+
+      {:error, :conversation_unavailable} ->
+        service_unavailable(conn)
+
+      # A non-participant, a foreign owner, or a cross-tenant media_id all read the same: 404, no
+      # existence reveal — identical posture to complete_upload.
+      {:error, :not_a_member} ->
+        not_found(conn)
+
+      {:error, :not_found} ->
+        not_found(conn)
+
+      {:error, :not_group_admin} ->
+        forbidden(conn)
+
+      # S3 refused to assemble (a missing or mismatched part). The object does NOT exist and the row
+      # was never marked ready — the client can re-upload the missing part and complete again.
+      {:error, :multipart_incomplete} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "media.multipart_incomplete",
+          "Some parts are missing or do not match; re-upload them and complete again"
+        )
+
+      # Bad part numbers / etags — actionable, so 422 rather than a flat 400.
+      {:error, :media_invalid} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "media.invalid_parts",
+          "part_numbers must be distinct integers in 1..10000, and each part needs an etag"
+        )
+
+      _ ->
+        invalid_request(conn)
+    end
+  end
+
   # Enforce the upload's authorization by purpose. Only checks when a conversation_id is supplied (the
   # current frontend supplies none → no check this slice; Phase 5 sends it → enforcement activates).
   defp authorize_upload(_purpose, conversation_id, _user_id)

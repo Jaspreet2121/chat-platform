@@ -29,6 +29,18 @@ defmodule SharedInfra.MediaClientHttp do
   @impl true
   def purge_asset(attrs), do: post("/internal/media/purge_asset", attrs)
 
+  @impl true
+  def create_multipart_upload(attrs), do: post("/internal/media/multipart/create", attrs)
+
+  @impl true
+  def presign_upload_parts(attrs), do: post("/internal/media/multipart/parts", attrs)
+
+  @impl true
+  def complete_multipart_upload(attrs), do: post("/internal/media/multipart/complete", attrs)
+
+  @impl true
+  def abort_multipart_upload(attrs), do: post("/internal/media/multipart/abort", attrs)
+
   defp post(path, attrs) do
     SharedInfra.HttpClient.post_result(base_url(), path, attrs, unavailable: @unavailable)
   end

@@ -58,6 +58,47 @@ defmodule SharedInfra.HttpClient do
   @spec delete(String.t()) :: {:ok, non_neg_integer(), list()} | {:error, term()}
   def delete(url) when is_binary(url), do: raw_request(:delete, url)
 
+  @doc """
+  Send an ABSOLUTE-url request and return the RESPONSE BODY as well as the status.
+
+  `head/1` and `delete/1` deliberately discard the body; S3's multipart API does not let us — the
+  UploadId comes back only in the CreateMultipartUpload XML, and CompleteMultipartUpload can answer
+  200 with an `<Error>` document that must not be read as success. Same transport, timeouts and
+  fail-shape as the other raw helpers; still no internal token and no envelope decoding.
+  """
+  @spec raw(atom(), String.t(), keyword()) ::
+          {:ok, non_neg_integer(), list(), binary()} | {:error, term()}
+  def raw(method, url, opts \\ []) when is_binary(url) do
+    ensure_req_started()
+
+    request =
+      [
+        method: method,
+        url: url,
+        decode_body: false,
+        retry: false,
+        connect_options: [timeout: connect_timeout()],
+        receive_timeout: receive_timeout()
+      ]
+      |> maybe_put(:body, Keyword.get(opts, :body))
+      |> maybe_put(:headers, Keyword.get(opts, :headers))
+
+    case Req.request(request) do
+      {:ok, %Req.Response{status: status, headers: headers, body: body}} ->
+        {:ok, status, headers, body || ""}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    kind, value -> {:error, {kind, value}}
+  end
+
+  defp maybe_put(request, _key, nil), do: request
+  defp maybe_put(request, key, value), do: Keyword.put(request, key, value)
+
   defp raw_request(method, url) do
     ensure_req_started()
 

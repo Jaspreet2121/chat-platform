@@ -15,6 +15,19 @@ defmodule MediaService.Storage do
   @callback head_object(attrs()) :: result()
   @callback delete_object(attrs()) :: result()
 
+  # S3 multipart (112). The object only exists once complete_multipart_upload/1 succeeds, so an
+  # abandoned upload leaves no object at all — which is what keeps a half-finished media row unusable.
+  @callback create_multipart_upload(attrs()) :: result()
+  @callback presign_upload_parts(attrs()) :: result()
+  @callback complete_multipart_upload(attrs()) :: result()
+  @callback abort_multipart_upload(attrs()) :: result()
+
+  # Optional so an existing test double implementing only the single-PUT surface keeps compiling.
+  @optional_callbacks create_multipart_upload: 1,
+                      presign_upload_parts: 1,
+                      complete_multipart_upload: 1,
+                      abort_multipart_upload: 1
+
   def create_upload(attrs), do: adapter().create_upload(attrs)
   def complete_upload(attrs), do: adapter().complete_upload(attrs)
   def get_download_url(attrs), do: adapter().get_download_url(attrs)
@@ -27,6 +40,18 @@ defmodule MediaService.Storage do
 
   @doc "Remove a stored object. Best-effort cleanup after a rejected upload."
   def delete_object(attrs), do: adapter().delete_object(attrs)
+
+  @doc "Begin a multipart upload. → %{upload_id: String.t()}."
+  def create_multipart_upload(attrs), do: adapter().create_multipart_upload(attrs)
+
+  @doc "Presigned PUT URLs for a window of part numbers. → %{parts: [%{part_number, url}]}."
+  def presign_upload_parts(attrs), do: adapter().presign_upload_parts(attrs)
+
+  @doc "Assemble the parts into the final object. → %{object_key: String.t()}."
+  def complete_multipart_upload(attrs), do: adapter().complete_multipart_upload(attrs)
+
+  @doc "Discard an unfinished multipart upload and free its parts. Idempotent."
+  def abort_multipart_upload(attrs), do: adapter().abort_multipart_upload(attrs)
 
   defp adapter do
     Application.get_env(
@@ -61,6 +86,18 @@ defmodule MediaService.Storage.QueryPlanAdapter do
 
   @impl true
   def delete_object(_attrs), do: {:error, :media_storage_unavailable}
+
+  @impl true
+  def create_multipart_upload(_attrs), do: {:error, :media_storage_unavailable}
+
+  @impl true
+  def presign_upload_parts(_attrs), do: {:error, :media_storage_unavailable}
+
+  @impl true
+  def complete_multipart_upload(_attrs), do: {:error, :media_storage_unavailable}
+
+  @impl true
+  def abort_multipart_upload(_attrs), do: {:error, :media_storage_unavailable}
 end
 
 defmodule MediaService.Storage.MinioAdapter do
@@ -167,6 +204,151 @@ defmodule MediaService.Storage.MinioAdapter do
 
   def delete_object(_attrs), do: {:error, :media_storage_unavailable}
 
+  # ---- S3 multipart (112) -------------------------------------------------------------------------
+  #
+  # Four operations, and the endpoint split matters in each:
+  #   * create / complete / abort are SERVER-SIDE calls from the media service, so they presign
+  #     against the INTERNAL host (same reason as head/delete — the signed host must equal the host
+  #     we actually connect to);
+  #   * presign_upload_parts hands URLs to a CLIENT, so those keep the PUBLIC-host signature.
+  #
+  # Verified against the deployed MinIO: CreateMultipartUpload, presigned UploadPart (unauthenticated
+  # PUT), and CompleteMultipartUpload all work, and the assembled object's byte count is exact.
+
+  @impl true
+  def create_multipart_upload(%{"object_key" => object_key})
+      when is_binary(object_key) and object_key != "" do
+    with {:ok, config} <- config(),
+         {:ok, url} <- presigned_url("POST", object_key, internal(config), %{"uploads" => ""}),
+         {:ok, status, _headers, body} <- SharedInfra.HttpClient.raw(:post, url) do
+      case {status, extract_tag(body, "UploadId")} do
+        {200, upload_id} when is_binary(upload_id) and upload_id != "" ->
+          {:ok, %{upload_id: upload_id, object_key: object_key}}
+
+        _ ->
+          {:error, :media_storage_unavailable}
+      end
+    else
+      _ -> {:error, :media_storage_unavailable}
+    end
+  end
+
+  def create_multipart_upload(_attrs), do: {:error, :media_storage_unavailable}
+
+  @impl true
+  def presign_upload_parts(%{
+        "object_key" => object_key,
+        "upload_id" => upload_id,
+        "part_numbers" => numbers
+      })
+      when is_binary(object_key) and object_key != "" and is_binary(upload_id) and
+             is_list(numbers) do
+    with {:ok, config} <- config() do
+      parts =
+        Enum.reduce_while(numbers, [], fn number, acc ->
+          extra = %{"partNumber" => Integer.to_string(number), "uploadId" => upload_id}
+
+          case presigned_url("PUT", object_key, config, extra) do
+            {:ok, url} -> {:cont, [%{part_number: number, url: url} | acc]}
+            _ -> {:halt, :error}
+          end
+        end)
+
+      case parts do
+        :error -> {:error, :media_storage_unavailable}
+        list -> {:ok, %{parts: Enum.reverse(list)}}
+      end
+    end
+  end
+
+  def presign_upload_parts(_attrs), do: {:error, :media_storage_unavailable}
+
+  @impl true
+  def complete_multipart_upload(%{
+        "object_key" => object_key,
+        "upload_id" => upload_id,
+        "parts" => parts
+      })
+      when is_binary(object_key) and object_key != "" and is_binary(upload_id) and is_list(parts) do
+    with {:ok, config} <- config(),
+         {:ok, url} <-
+           presigned_url("POST", object_key, internal(config), %{"uploadId" => upload_id}),
+         {:ok, status, _headers, body} <-
+           SharedInfra.HttpClient.raw(:post, url,
+             body: complete_xml(parts),
+             headers: [{"content-type", "application/xml"}]
+           ) do
+      # S3 can answer 200 with an <Error> document (it streams whitespace while assembling, then
+      # reports failure). Treating that as success is how a corrupt/absent object gets marked ready.
+      cond do
+        status == 200 and extract_tag(body, "Error") == nil and
+            is_binary(extract_tag(body, "ETag")) ->
+          {:ok, %{object_key: object_key}}
+
+        status == 200 ->
+          {:error, :multipart_incomplete}
+
+        status in [400, 404] ->
+          {:error, :multipart_incomplete}
+
+        true ->
+          {:error, :media_storage_unavailable}
+      end
+    else
+      _ -> {:error, :media_storage_unavailable}
+    end
+  end
+
+  def complete_multipart_upload(_attrs), do: {:error, :media_storage_unavailable}
+
+  @impl true
+  def abort_multipart_upload(%{"object_key" => object_key, "upload_id" => upload_id})
+      when is_binary(object_key) and object_key != "" and is_binary(upload_id) do
+    with {:ok, config} <- config(),
+         {:ok, url} <-
+           presigned_url("DELETE", object_key, internal(config), %{"uploadId" => upload_id}),
+         {:ok, status, _headers, _body} <- SharedInfra.HttpClient.raw(:delete, url) do
+      # Idempotent, like delete_object: 204 on success, 404 when it is already gone.
+      if status in [200, 202, 204, 404], do: :ok, else: {:error, :media_storage_unavailable}
+    else
+      _ -> {:error, :media_storage_unavailable}
+    end
+  end
+
+  def abort_multipart_upload(_attrs), do: {:error, :media_storage_unavailable}
+
+  # The CompleteMultipartUpload body. Parts MUST be ascending by part number — S3 rejects any other
+  # order — and the ETag is echoed back exactly as the UploadPart response gave it (quotes included).
+  defp complete_xml(parts) do
+    body =
+      parts
+      |> Enum.sort_by(& &1["part_number"])
+      |> Enum.map_join(fn part ->
+        "<Part><PartNumber>#{part["part_number"]}</PartNumber><ETag>#{escape_xml(part["etag"])}</ETag></Part>"
+      end)
+
+    "<CompleteMultipartUpload>" <> body <> "</CompleteMultipartUpload>"
+  end
+
+  defp escape_xml(value) do
+    value
+    |> to_string()
+    |> String.replace("&", "&amp;")
+    |> String.replace("<", "&lt;")
+    |> String.replace(">", "&gt;")
+  end
+
+  # Enough XML for the two values we read back. A real parser would be overkill for two tags in a
+  # response we generated the request for.
+  defp extract_tag(body, tag) when is_binary(body) do
+    case Regex.run(~r{<#{tag}>(.*?)</#{tag}>}s, body) do
+      [_, value] -> value
+      _ -> nil
+    end
+  end
+
+  defp extract_tag(_body, _tag), do: nil
+
   # THE ENDPOINT SUBTLETY. `presigned_url/3` signs against `public_endpoint || endpoint` because a BROWSER
   # PUT/GET must have the SigV4 host match the host it actually connects to. A SERVER-SIDE HEAD/DELETE runs
   # from the media service, which reaches MinIO directly on the internal network — so signing against the
@@ -204,7 +386,11 @@ defmodule MediaService.Storage.MinioAdapter do
 
   defp override_url_expiry(config, _seconds), do: config
 
-  defp presigned_url(method, object_key, config) do
+  # `extra_query` folds additional S3 query parameters (partNumber, uploadId, …) into the CANONICAL
+  # query string BEFORE signing, which is what SigV4 requires — a parameter appended to the URL after
+  # signing is not covered by the signature and MinIO rejects it. Defaults to none, so every existing
+  # caller signs exactly the same bytes it always did.
+  defp presigned_url(method, object_key, config, extra_query \\ %{}) do
     now = Keyword.get(config, :now) || DateTime.utc_now()
     amz_date = Calendar.strftime(now, "%Y%m%dT%H%M%SZ")
     date_stamp = Calendar.strftime(now, "%Y%m%d")
@@ -225,6 +411,7 @@ defmodule MediaService.Storage.MinioAdapter do
       "X-Amz-SignedHeaders" => "host"
     }
 
+    query_params = Map.merge(query_params, extra_query)
     canonical_query = canonical_query_string(query_params)
 
     canonical_request = [
