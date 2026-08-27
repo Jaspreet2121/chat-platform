@@ -47,7 +47,51 @@ defmodule ApiGatewayWeb.MediaControllerAuthzTest do
   defmodule MediaStub do
     @moduledoc false
     # Echo the received attrs back so the test can assert what the controller passed. Never touches a DB.
+    #
+    # ENFORCES the media service's real create-side contract for the anchored purposes, the same way the
+    # UPI double enforces complete_upload's required attrs — an echo-only double would have happily
+    # "succeeded" on the very anchorless sealed upload that broke production.
+    @anchored ["sealed_media"]
+
     def create_upload(attrs) do
+      with :ok <- require_anchor(attrs), do: do_create_upload(attrs)
+    end
+
+    def anchor_asset(%{"conversation_id" => conversation_id, "media_id" => media_id} = attrs) do
+      # Mirrors MediaService.Media.anchor_asset/1: owner-only, unanchored-only, idempotent.
+      case media_id do
+        "unanchored" ->
+          {:ok,
+           %{
+             media_id: media_id,
+             conversation_id: conversation_id,
+             anchored: true,
+             echo_owner: attrs["owner_user_id"],
+             echo_app_id: attrs["app_id"]
+           }}
+
+        "already-same" ->
+          {:ok, %{media_id: media_id, conversation_id: conversation_id, anchored: false}}
+
+        "already-other" ->
+          {:error, :media_already_anchored}
+
+        _ ->
+          {:error, :not_found}
+      end
+    end
+
+    defp require_anchor(attrs) do
+      anchor = attrs["conversation_id"]
+
+      if attrs["purpose"] in @anchored and not (is_binary(anchor) and anchor != "") do
+        {:error, :media_conversation_required}
+      else
+        :ok
+      end
+    end
+
+    defp do_create_upload(attrs) do
       {:ok,
        %{
          media_id: "m1",
@@ -68,6 +112,10 @@ defmodule ApiGatewayWeb.MediaControllerAuthzTest do
     # Multipart (112) — echoes the same fields so the tests can assert that these actions go through
     # the SAME purpose/authorization path as the single-PUT create.
     def create_multipart_upload(attrs) do
+      with :ok <- require_anchor(attrs), do: do_create_multipart_upload(attrs)
+    end
+
+    defp do_create_multipart_upload(attrs) do
       {:ok,
        %{
          media_id: "m1",
@@ -356,6 +404,158 @@ defmodule ApiGatewayWeb.MediaControllerAuthzTest do
              }).status == 401
 
       assert MediaController.multipart_abort(unauthed.(), %{"upload_id" => "u", "media_id" => "m"}).status ==
+               401
+    end
+  end
+
+  describe "sealed_media requires a conversation anchor at create (113)" do
+    test "single create with NO conversation_id → 422 media.conversation_required" do
+      params =
+        create_params(%{
+          "purpose" => "sealed_media",
+          "content_type" => "application/octet-stream"
+        })
+
+      conn = MediaController.create_upload(upload_conn(@member), params)
+
+      assert conn.status == 422
+      assert body(conn)["error"]["code"] == "media.conversation_required"
+    end
+
+    test "single create with a BLANK conversation_id → 422 (not treated as supplied)" do
+      params =
+        create_params(%{
+          "purpose" => "sealed_media",
+          "content_type" => "application/octet-stream",
+          "conversation_id" => ""
+        })
+
+      conn = MediaController.create_upload(upload_conn(@member), params)
+
+      assert conn.status == 422
+      assert body(conn)["error"]["code"] == "media.conversation_required"
+    end
+
+    test "MULTIPART create with NO conversation_id → 422 (the second create path)" do
+      params =
+        create_params(%{
+          "purpose" => "sealed_media",
+          "content_type" => "application/octet-stream"
+        })
+
+      conn = MediaController.create_multipart(upload_conn(@member), params)
+
+      assert conn.status == 422
+      assert body(conn)["error"]["code"] == "media.conversation_required"
+    end
+
+    test "anchored sealed create by a participant → 201 and the anchor is persisted" do
+      params =
+        create_params(%{
+          "purpose" => "sealed_media",
+          "content_type" => "application/octet-stream",
+          "conversation_id" => @convo
+        })
+
+      conn = MediaController.create_upload(upload_conn(@member), params)
+
+      assert conn.status == 201
+      assert body(conn)["echo_conversation_id"] == @convo
+      assert body(conn)["echo_purpose"] == "sealed_media"
+    end
+
+    test "sealed create naming a conversation the uploader is NOT in → 404" do
+      params =
+        create_params(%{
+          "purpose" => "sealed_media",
+          "content_type" => "application/octet-stream",
+          "conversation_id" => @convo
+        })
+
+      assert MediaController.create_upload(upload_conn(@stranger), params).status == 404
+      assert MediaController.create_multipart(upload_conn(@stranger), params).status == 404
+    end
+
+    test "plaintext message with no conversation_id still succeeds (clients have not shipped it yet)" do
+      params = create_params(%{"purpose" => "message"})
+
+      assert MediaController.create_upload(upload_conn(@member), params).status == 201
+    end
+
+    test "user_avatar needs no anchor" do
+      assert MediaController.create_upload(
+               upload_conn(@member),
+               create_params(%{"purpose" => "user_avatar"})
+             ).status ==
+               201
+    end
+  end
+
+  describe "anchor (client-assisted recovery for legacy unanchored assets)" do
+    test "owner who is a participant anchors an unanchored asset → 200" do
+      conn =
+        MediaController.anchor(upload_conn(@member), %{
+          "media_id" => "unanchored",
+          "conversation_id" => @convo
+        })
+
+      assert conn.status == 200
+      b = body(conn)
+      assert b["anchored"] == true
+      assert b["conversation_id"] == @convo
+      assert b["echo_owner"] == @member
+      assert b["echo_app_id"] == @app
+    end
+
+    test "re-anchoring to the SAME conversation is idempotent → 200" do
+      conn =
+        MediaController.anchor(upload_conn(@member), %{
+          "media_id" => "already-same",
+          "conversation_id" => @convo
+        })
+
+      assert conn.status == 200
+      assert body(conn)["anchored"] == false
+    end
+
+    test "an asset already anchored ELSEWHERE cannot be moved → 409" do
+      conn =
+        MediaController.anchor(upload_conn(@member), %{
+          "media_id" => "already-other",
+          "conversation_id" => @convo
+        })
+
+      assert conn.status == 409
+      assert body(conn)["error"]["code"] == "media.already_anchored"
+    end
+
+    test "a NON-participant cannot anchor into that conversation → 404 (the leak gate)" do
+      conn =
+        MediaController.anchor(upload_conn(@stranger), %{
+          "media_id" => "unanchored",
+          "conversation_id" => @convo
+        })
+
+      assert conn.status == 404
+    end
+
+    test "missing or blank conversation_id → 400" do
+      assert MediaController.anchor(upload_conn(@member), %{"media_id" => "unanchored"}).status ==
+               400
+
+      assert MediaController.anchor(upload_conn(@member), %{
+               "media_id" => "unanchored",
+               "conversation_id" => ""
+             }).status == 400
+    end
+
+    test "no session → 401" do
+      conn = :post |> conn("/api/v1/media/x/anchor", %{})
+
+      assert MediaController.anchor(conn, %{
+               "media_id" => "unanchored",
+               "conversation_id" => @convo
+             }).status ==
                401
     end
   end

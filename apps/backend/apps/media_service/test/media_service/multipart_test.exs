@@ -221,6 +221,18 @@ defmodule MediaService.MultipartTest do
     )
   end
 
+  # media_assets.conversation_id FKs conversations(id), so the anchored purposes need a real row (113).
+  defp seed_conversation! do
+    id = Ecto.UUID.generate()
+
+    MediaRepo.query!(
+      "INSERT INTO conversations (id, type, created_by) VALUES ($1::text::uuid, 'direct', $2::text::uuid)",
+      [id, @owner]
+    )
+
+    id
+  end
+
   defp status(media_id) do
     MediaRepo.get(MediaAsset, media_id).status
   end
@@ -369,14 +381,39 @@ defmodule MediaService.MultipartTest do
       assert {:ok, created} =
                create!(%{
                  "purpose" => "sealed_media",
-                 "content_type" => "application/octet-stream"
+                 "content_type" => "application/octet-stream",
+                 "conversation_id" => seed_conversation!()
                })
 
       assert MediaRepo.get(MediaAsset, created.media_id).purpose == "sealed_media"
 
       # The wrong content type for that purpose is refused here too — not silently accepted.
       assert {:error, :media_invalid} =
-               create!(%{"purpose" => "sealed_media", "content_type" => "video/mp4"})
+               create!(%{
+                 "purpose" => "sealed_media",
+                 "content_type" => "video/mp4",
+                 "conversation_id" => seed_conversation!()
+               })
+    end
+
+    test "sealed_media through THIS path also requires the conversation anchor (113)" do
+      assert {:error, :media_conversation_required} =
+               create!(%{
+                 "purpose" => "sealed_media",
+                 "content_type" => "application/octet-stream"
+               })
+
+      # And the anchor is what lands on the row, not a silently-dropped param.
+      convo = seed_conversation!()
+
+      assert {:ok, created} =
+               create!(%{
+                 "purpose" => "sealed_media",
+                 "content_type" => "application/octet-stream",
+                 "conversation_id" => convo
+               })
+
+      assert MediaRepo.get(MediaAsset, created.media_id).conversation_id == convo
     end
 
     test "an unknown purpose is refused at the domain, and a normal one is stored as sent" do

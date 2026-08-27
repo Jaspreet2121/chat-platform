@@ -121,6 +121,7 @@ defmodule ApiGatewayWeb.Router do
     # /api/v1/media/* under V1Auth actor rules; never returns object_key.
     post "/media/uploads", MediaController, :create_upload
     post "/media/uploads/:media_id/complete", MediaController, :complete_upload
+    post "/media/:media_id/anchor", MediaController, :anchor
     get "/media/:media_id/download", MediaController, :download
 
     # End-user call surface for integrator SDKs (end-user JWT actor required; a secret-key actor → 403
@@ -589,6 +590,10 @@ defmodule ApiGatewayWeb.Router do
     post "/upload/multipart/:upload_id/parts", MediaController, :multipart_parts
     post "/upload/multipart/:upload_id/complete", MediaController, :multipart_complete
     delete "/upload/multipart/:upload_id", MediaController, :multipart_abort
+
+    # RECOVERY (113): client-assisted repair for sealed assets uploaded before the conversation anchor
+    # was mandatory. A literal trailing segment, so the download catch-all below cannot swallow it.
+    post "/:media_id/anchor", MediaController, :anchor
 
     get "/:media_id/download", MediaController, :download
   end

@@ -32,6 +32,21 @@ defmodule MediaService.Media do
                            "video/x-matroska"
                          ])
 
+  # PURPOSES THAT MUST CARRY A CONVERSATION ANCHOR AT CREATE.
+  #
+  # A sealed attachment's media_id rides INSIDE the encrypted frame, so no message row ever references
+  # it and the ONLY thing that can authorize a recipient is the conversation the ciphertext was
+  # uploaded for. An asset created without one is unreadable by every recipient forever — which is
+  # exactly what happened: 33 of 37 sealed assets in two days were minted anchorless and 404'd.
+  # Refusing loudly at create is the whole point; a silently-conversationless sealed asset is a bug
+  # that only surfaces days later on someone else's device.
+  #
+  # "message" is DELIBERATELY NOT in this list yet. Live traffic shows 38 of 65 plaintext message
+  # uploads arriving with no conversation_id (older Android builds), so requiring it today would turn
+  # a sealed-media outage into a total media outage. Add "message" here once the clients ship the
+  # field — this list is the one-line switch.
+  @conversation_anchored_purposes ["sealed_media"]
+
   @type media_attrs :: map()
   @type result :: {:ok, map()} | {:error, atom()}
 
@@ -49,10 +64,10 @@ defmodule MediaService.Media do
          {:ok, purpose} <- fetch_purpose(attrs),
          {:ok, filename} <- required_attr(attrs, "filename"),
          {:ok, content_type} <- required_content_type(attrs, purpose),
-         {:ok, size_bytes} <- required_size(attrs) do
+         {:ok, size_bytes} <- required_size(attrs),
+         {:ok, conversation_id} <- conversation_anchor(attrs, purpose) do
       media_id = generate_uuid()
       object_key = object_key(owner_user_id, media_id, filename)
-      conversation_id = optional_attr(attrs, "conversation_id")
 
       upload_attrs = %{
         "media_id" => media_id,
@@ -135,10 +150,10 @@ defmodule MediaService.Media do
          {:ok, filename} <- required_attr(attrs, "filename"),
          {:ok, content_type} <- required_content_type(attrs, purpose),
          {:ok, size_bytes} <- required_size(attrs),
+         {:ok, conversation_id} <- conversation_anchor(attrs, purpose),
          :ok <- ensure_persistence() do
       media_id = generate_uuid()
       object_key = object_key(owner_user_id, media_id, filename)
-      conversation_id = optional_attr(attrs, "conversation_id")
 
       with {:ok, app_id} <- required_attr(attrs, "app_id"),
            {:ok, _asset} <-
@@ -370,6 +385,82 @@ defmodule MediaService.Media do
       else
         {:error, :not_found}
       end
+    end
+  end
+
+  @doc """
+  RECOVERY (client-assisted): attach a conversation to an asset that was created without one.
+
+  Needed because ~33 sealed assets were minted anchorless before the create-side rule above existed, and
+  the server CANNOT work out where they belong on its own: the sealed frame is opaque ciphertext, and
+  `messages.media_id` is forced nil for sealed messages (message_store's oracle can never see them). Any
+  server-side guess — same owner, nearby timestamp, only shared conversation — could bind an asset to the
+  WRONG conversation, and a wrong anchor hands the file to people who were never sent it. That is strictly
+  worse than the 404 it would fix, so no heuristic is used. The uploader's own client still holds the
+  plaintext frame, so it is the only party that KNOWS the answer; this endpoint just lets it say so.
+
+  Three constraints, all enforced here:
+
+    * OWNER ONLY. Only the uploader may anchor. A recipient claim would let anyone who shares a
+      conversation with the owner drag an unanchored asset into it, widening access to a file that was
+      sent somewhere else entirely — the exact leak the no-heuristic rule exists to prevent.
+    * UNANCHORED ONLY. An asset that already carries a conversation is immutable; re-anchoring would be a
+      way to move a file between conversations after the fact.
+    * IDEMPOTENT. Re-claiming to the SAME conversation succeeds, so a client can repair on every launch
+      without tracking what it has already repaired.
+
+  Membership in the claimed conversation is checked by the GATEWAY before this is called — the media
+  service cannot reach conversation_service.
+  """
+  def anchor_asset(attrs) do
+    with {:ok, media_id} <- required_attr(attrs, "media_id"),
+         {:ok, app_id} <- required_attr(attrs, "app_id"),
+         {:ok, owner_user_id} <- required_attr(attrs, "owner_user_id"),
+         {:ok, conversation_id} <- required_attr(attrs, "conversation_id") do
+      if media_persistence_enabled?() do
+        do_anchor_asset(media_id, app_id, owner_user_id, conversation_id)
+      else
+        {:error, :not_found}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :not_found}
+  end
+
+  defp do_anchor_asset(media_id, app_id, owner_user_id, conversation_id) do
+    case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
+      # Tenancy and ownership collapse to the same opaque :not_found as every other media authz failure —
+      # a distinct "not yours" would confirm the id exists to anyone probing.
+      nil ->
+        {:error, :not_found}
+
+      %MediaAsset{owner_user_id: ^owner_user_id} = asset ->
+        case asset.conversation_id do
+          nil ->
+            persist_anchor(asset, conversation_id)
+
+          "" ->
+            persist_anchor(asset, conversation_id)
+
+          ^conversation_id ->
+            {:ok, %{media_id: media_id, conversation_id: conversation_id, anchored: false}}
+
+          _other ->
+            {:error, :media_already_anchored}
+        end
+
+      %MediaAsset{} ->
+        {:error, :not_found}
+    end
+  end
+
+  defp persist_anchor(%MediaAsset{} = asset, conversation_id) do
+    case asset |> Ecto.Changeset.change(conversation_id: conversation_id) |> Repo.update() do
+      {:ok, updated} ->
+        {:ok, %{media_id: updated.id, conversation_id: conversation_id, anchored: true}}
+
+      {:error, _changeset} ->
+        {:error, :media_invalid}
     end
   end
 
@@ -695,6 +786,23 @@ defmodule MediaService.Media do
     |> String.split(";", parts: 2)
     |> hd()
     |> String.trim()
+  end
+
+  # The anchor rule, applied identically by BOTH create paths (single PUT and multipart) — one
+  # function, so the two can never drift the way the upload-side purpose whitelist once did.
+  defp conversation_anchor(attrs, purpose) do
+    conversation_id = optional_attr(attrs, "conversation_id")
+
+    cond do
+      is_binary(conversation_id) and conversation_id != "" ->
+        {:ok, conversation_id}
+
+      purpose in @conversation_anchored_purposes ->
+        {:error, :media_conversation_required}
+
+      true ->
+        {:ok, nil}
+    end
   end
 
   defp required_size(attrs) do

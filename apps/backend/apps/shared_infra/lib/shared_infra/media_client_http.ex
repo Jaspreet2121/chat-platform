@@ -30,6 +30,9 @@ defmodule SharedInfra.MediaClientHttp do
   def purge_asset(attrs), do: post("/internal/media/purge_asset", attrs)
 
   @impl true
+  def anchor_asset(attrs), do: post("/internal/media/anchor_asset", attrs)
+
+  @impl true
   def create_multipart_upload(attrs), do: post("/internal/media/multipart/create", attrs)
 
   @impl true

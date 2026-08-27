@@ -20,6 +20,9 @@ defmodule SharedInfra.MediaClient do
   @callback get_asset(attrs()) :: result()
   # Purge an asset's bytes (status sweep / owner delete). Optional so existing stubs don't need it.
   @callback purge_asset(attrs()) :: result()
+
+  # Client-assisted recovery for assets minted before conversation_id was required at create.
+  @callback anchor_asset(attrs()) :: result()
   # S3 multipart (112) — resumable/parallel uploads for the mobile clients. Optional so an existing
   # partial test double of this behaviour keeps compiling.
   @callback create_multipart_upload(attrs()) :: result()
@@ -28,6 +31,7 @@ defmodule SharedInfra.MediaClient do
   @callback abort_multipart_upload(attrs()) :: result()
 
   @optional_callbacks purge_asset: 1,
+                      anchor_asset: 1,
                       create_multipart_upload: 1,
                       presign_upload_parts: 1,
                       complete_multipart_upload: 1,
@@ -40,6 +44,9 @@ defmodule SharedInfra.MediaClient do
   # Read-path authz metadata (purpose/owner/conversation) by (media_id, app_id); never returns object_key.
   def get_asset(attrs), do: adapter().get_asset(attrs)
   def purge_asset(attrs), do: adapter().purge_asset(attrs)
+
+  @doc "Client-assisted recovery: bind an unanchored asset to a conversation (owner-only, idempotent)."
+  def anchor_asset(attrs), do: adapter().anchor_asset(attrs)
 
   @doc "Begin a multipart upload → %{media_id, upload_id, object_key, part_size}."
   def create_multipart_upload(attrs), do: adapter().create_multipart_upload(attrs)

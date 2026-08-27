@@ -130,15 +130,21 @@ defmodule MediaService.MediaTest do
       content_type =
         if purpose == "sealed_media", do: "application/octet-stream", else: "image/png"
 
+      # ...and since 113 it must also carry a conversation anchor, or the create is refused.
+      anchor =
+        if purpose == "sealed_media", do: %{"conversation_id" => seed_conversation!()}, else: %{}
+
       assert {:ok, upload} =
-               Media.create_upload(%{
-                 "owner_user_id" => @owner_user_id,
-                 "app_id" => @app,
-                 "purpose" => purpose,
-                 "filename" => "asset.png",
-                 "content_type" => content_type,
-                 "size_bytes" => 123
-               }),
+               Media.create_upload(
+                 Map.merge(anchor, %{
+                   "owner_user_id" => @owner_user_id,
+                   "app_id" => @app,
+                   "purpose" => purpose,
+                   "filename" => "asset.png",
+                   "content_type" => content_type,
+                   "size_bytes" => 123
+                 })
+               ),
              "purpose #{purpose} must be uploadable — it exists downstream (authz/presign)"
 
       # And the PERSISTED row carries the purpose — the value the download-side assertions gate on.
@@ -283,7 +289,9 @@ defmodule MediaService.MediaTest do
                # The ciphertext's declared type — the server MUST NOT sniff or reject on it.
                "content_type" => "application/octet-stream",
                "filename" => "photo.enc",
-               "size_bytes" => 4096
+               "size_bytes" => 4096,
+               # 113: sealed uploads must name their conversation, or the create is refused.
+               "conversation_id" => seed_conversation!()
              })
 
     assert {:ok, _} =
@@ -513,5 +521,175 @@ defmodule MediaService.MediaTest do
         "ON CONFLICT DO NOTHING",
       [@owner_user_id, "+15550000001"]
     )
+  end
+
+  # media_assets.conversation_id FKs conversations(id), so the anchor tests need a REAL conversation —
+  # which is itself a guard: a bogus anchor cannot be written even if authz were bypassed.
+  defp seed_conversation! do
+    id = Ecto.UUID.generate()
+
+    MediaRepo.query!(
+      "INSERT INTO conversations (id, type, created_by) VALUES ($1::text::uuid, 'direct', $2::text::uuid)",
+      [id, @owner_user_id]
+    )
+
+    id
+  end
+
+  # --- 113: the conversation anchor is REQUIRED for sealed_media at create ------------------------
+
+  defp sealed_attrs(extra \\ %{}) do
+    Map.merge(
+      %{
+        "owner_user_id" => @owner_user_id,
+        "app_id" => @app,
+        "filename" => "photo.enc",
+        "content_type" => "application/octet-stream",
+        "size_bytes" => 123,
+        "purpose" => "sealed_media"
+      },
+      extra
+    )
+  end
+
+  test "create_upload REFUSES a sealed_media upload with no conversation_id" do
+    assert {:error, :media_conversation_required} = Media.create_upload(sealed_attrs())
+
+    assert {:error, :media_conversation_required} =
+             Media.create_upload(sealed_attrs(%{"conversation_id" => ""}))
+  end
+
+  test "create_multipart_upload refuses the same — both create paths, one rule" do
+    assert {:error, :media_conversation_required} = Media.create_multipart_upload(sealed_attrs())
+  end
+
+  test "an anchored sealed_media create succeeds and PERSISTS the conversation" do
+    convo = seed_conversation!()
+
+    assert {:ok, %{media_id: media_id}} =
+             Media.create_upload(sealed_attrs(%{"conversation_id" => convo}))
+
+    assert {:ok, asset} = Media.get_asset(%{"media_id" => media_id, "app_id" => @app})
+    assert asset.conversation_id == convo
+    assert asset.purpose == "sealed_media"
+  end
+
+  test "purposes without a conversation are unaffected" do
+    assert {:ok, _} =
+             Media.create_upload(%{
+               "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
+               "filename" => "a.png",
+               "content_type" => "image/png",
+               "size_bytes" => 123,
+               "purpose" => "user_avatar"
+             })
+
+    # "message" is deliberately still permitted anchorless — live clients have not shipped the field.
+    assert {:ok, _} =
+             Media.create_upload(%{
+               "owner_user_id" => @owner_user_id,
+               "app_id" => @app,
+               "filename" => "a.png",
+               "content_type" => "image/png",
+               "size_bytes" => 123,
+               "purpose" => "message"
+             })
+  end
+
+  # --- 113: client-assisted recovery for the legacy anchorless rows -------------------------------
+
+  # Exactly the shape production minted before the rule: sealed, ready, owned, conversation NULL.
+  # Inserted RAW on purpose — create_upload can no longer produce one, which is the whole point of the
+  # fix; the recovery path has to be proven against the rows that already exist, not synthetic ones.
+  defp legacy_unanchored_asset! do
+    media_id = Ecto.UUID.generate()
+
+    MediaRepo.query!(
+      "INSERT INTO media_assets (id, app_id, owner_user_id, conversation_id, purpose, storage_provider, " <>
+        "bucket, object_key, mime_type, size_bytes, status) VALUES ($1::text::uuid, $2::text::uuid, " <>
+        "$3::text::uuid, NULL, 'sealed_media', 'minio', 'chat-media', $4, 'application/octet-stream', 123, 'ready')",
+      [media_id, @app, @owner_user_id, "media/#{@owner_user_id}/#{media_id}/photo.enc"]
+    )
+
+    {:ok, asset} = Media.get_asset(%{"media_id" => media_id, "app_id" => @app})
+    assert asset.conversation_id == nil
+    media_id
+  end
+
+  test "anchor_asset binds an unanchored asset for its OWNER, and is idempotent" do
+    media_id = legacy_unanchored_asset!()
+    convo = seed_conversation!()
+
+    assert {:ok, %{anchored: true, conversation_id: ^convo}} =
+             Media.anchor_asset(%{
+               "media_id" => media_id,
+               "app_id" => @app,
+               "owner_user_id" => @owner_user_id,
+               "conversation_id" => convo
+             })
+
+    assert {:ok, asset} = Media.get_asset(%{"media_id" => media_id, "app_id" => @app})
+    assert asset.conversation_id == convo
+
+    # Same conversation again → success, no write. Clients can repair on every launch.
+    assert {:ok, %{anchored: false}} =
+             Media.anchor_asset(%{
+               "media_id" => media_id,
+               "app_id" => @app,
+               "owner_user_id" => @owner_user_id,
+               "conversation_id" => convo
+             })
+  end
+
+  test "anchor_asset REFUSES a non-owner — the leak gate, indistinguishable from a missing asset" do
+    media_id = legacy_unanchored_asset!()
+
+    assert {:error, :not_found} =
+             Media.anchor_asset(%{
+               "media_id" => media_id,
+               "app_id" => @app,
+               "owner_user_id" => Ecto.UUID.generate(),
+               "conversation_id" => seed_conversation!()
+             })
+
+    assert {:ok, asset} = Media.get_asset(%{"media_id" => media_id, "app_id" => @app})
+    assert asset.conversation_id == nil
+  end
+
+  test "anchor_asset REFUSES to move an already-anchored asset to another conversation" do
+    media_id = legacy_unanchored_asset!()
+    original = seed_conversation!()
+
+    assert {:ok, %{anchored: true}} =
+             Media.anchor_asset(%{
+               "media_id" => media_id,
+               "app_id" => @app,
+               "owner_user_id" => @owner_user_id,
+               "conversation_id" => original
+             })
+
+    assert {:error, :media_already_anchored} =
+             Media.anchor_asset(%{
+               "media_id" => media_id,
+               "app_id" => @app,
+               "owner_user_id" => @owner_user_id,
+               "conversation_id" => seed_conversation!()
+             })
+
+    assert {:ok, asset} = Media.get_asset(%{"media_id" => media_id, "app_id" => @app})
+    assert asset.conversation_id == original
+  end
+
+  test "anchor_asset is tenant-scoped" do
+    media_id = legacy_unanchored_asset!()
+
+    assert {:error, :not_found} =
+             Media.anchor_asset(%{
+               "media_id" => media_id,
+               "app_id" => Ecto.UUID.generate(),
+               "owner_user_id" => @owner_user_id,
+               "conversation_id" => seed_conversation!()
+             })
   end
 end

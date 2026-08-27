@@ -45,6 +45,10 @@ defmodule MediaService.HTTP.Router do
     send_result(conn, MediaService.Media.abort_multipart_upload(body(conn)))
   end
 
+  post "/internal/media/anchor_asset" do
+    send_result(conn, MediaService.Media.anchor_asset(body(conn)))
+  end
+
   post "/internal/media/purge_asset" do
     send_result(conn, MediaService.Media.purge_asset(body(conn)))
   end

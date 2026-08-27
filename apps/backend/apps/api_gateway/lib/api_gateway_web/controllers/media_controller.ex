@@ -73,6 +73,7 @@ defmodule ApiGatewayWeb.MediaController do
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :media_unavailable} -> service_unavailable(conn)
       {:error, :media_too_large} -> too_large(conn)
+      {:error, :media_conversation_required} -> conversation_required(conn)
       {:error, :conversation_unavailable} -> service_unavailable(conn)
       # A non-participant (message) → 404, no existence reveal. A member-but-not-admin (group_avatar) →
       # 403, mirroring the existing group-profile behaviour (conversation_service ensure_owner_or_admin → 403).
@@ -113,6 +114,16 @@ defmodule ApiGatewayWeb.MediaController do
       {:error, :rate_limited, _retry} = limited -> limited
       _ -> :ok
     end
+  end
+
+  # LOUD ON PURPOSE. An encrypted attachment uploaded with no conversation can never be read by its
+  # recipients — the failure would otherwise surface days later, on someone else's device, as a 404.
+  defp conversation_required(conn) do
+    ErrorResponse.unprocessable_entity(
+      conn,
+      "media.conversation_required",
+      "conversation_id is required for this upload purpose"
+    )
   end
 
   defp rate_limited(conn, retry_after_seconds) do
@@ -243,6 +254,9 @@ defmodule ApiGatewayWeb.MediaController do
       {:error, :media_too_large} ->
         too_large(conn)
 
+      {:error, :media_conversation_required} ->
+        conversation_required(conn)
+
       {:error, :conversation_unavailable} ->
         service_unavailable(conn)
 
@@ -281,6 +295,11 @@ defmodule ApiGatewayWeb.MediaController do
 
   # Enforce the upload's authorization by purpose. Only checks when a conversation_id is supplied (the
   # current frontend supplies none → no check this slice; Phase 5 sends it → enforcement activates).
+  # NO conversation_id supplied. This clause returns :ok, which for years meant "no membership check
+  # ran" — the earlier claim that sealed uploads were membership-checked was only true when the field
+  # happened to be present. It is kept for the purposes that legitimately have no conversation
+  # (avatars) and for plaintext `message` until its clients ship the field; for the anchored purposes
+  # MediaService now REFUSES the create outright, so this can no longer wave one through.
   defp authorize_upload(_purpose, conversation_id, _user_id)
        when not is_binary(conversation_id) or conversation_id == "",
        do: :ok
@@ -360,6 +379,70 @@ defmodule ApiGatewayWeb.MediaController do
         "message"
     end
   end
+
+  @doc """
+  RECOVERY: `POST /api/v1/media/:media_id/anchor` — bind a legacy unanchored asset to its conversation.
+
+  For the sealed assets uploaded before conversation_id became mandatory. The server cannot deduce where
+  they belong (the frame is ciphertext and no message row references them), and guessing could bind a file
+  to a conversation it was never sent to, so the uploader's client — the only party that actually knows —
+  supplies the answer.
+
+  TWO independent gates, one per service: HERE, the caller must be an active participant of the
+  conversation they name (the media service cannot reach conversation_service). THERE, the caller must be
+  the asset's owner and the asset must still be unanchored. A recipient therefore cannot pull someone
+  else's stray asset into a conversation they happen to share, and an owner cannot anchor into a
+  conversation they are not in. Idempotent: re-anchoring to the same conversation is a 200.
+  """
+  def anchor(conn, %{"media_id" => media_id, "conversation_id" => conversation_id} = _params)
+      when is_binary(conversation_id) and conversation_id != "" do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- upload_rate_limit(session.user_id),
+         :ok <- membership(conversation_id, session.user_id),
+         {:ok, response} <-
+           SharedInfra.MediaClient.anchor_asset(%{
+             "media_id" => media_id,
+             "app_id" => session.app_id,
+             "owner_user_id" => session.user_id,
+             "conversation_id" => conversation_id
+           }) do
+      json(conn, response)
+    else
+      {:error, :session_invalid} ->
+        unauthorized(conn)
+
+      {:error, :unauthorized} ->
+        unauthorized(conn)
+
+      {:error, :rate_limited, retry_after_seconds} ->
+        rate_limited(conn, retry_after_seconds)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :media_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :media_already_anchored} ->
+        ErrorResponse.conflict(
+          conn,
+          "media.already_anchored",
+          "This asset is already anchored to a different conversation"
+        )
+
+      # Not a member, not the owner, wrong tenant, no such asset — one opaque answer, as everywhere else
+      # on the media surface.
+      _ ->
+        not_found(conn)
+    end
+  end
+
+  def anchor(conn, _params), do: invalid_request(conn)
 
   def complete_upload(conn, %{"media_id" => media_id} = params) do
     if media_persistence_enabled?() do

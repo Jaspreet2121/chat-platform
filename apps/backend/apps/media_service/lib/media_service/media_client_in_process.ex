@@ -26,6 +26,9 @@ defmodule MediaService.MediaClientInProcess do
   def purge_asset(attrs), do: Media.purge_asset(attrs)
 
   @impl true
+  def anchor_asset(attrs), do: Media.anchor_asset(attrs)
+
+  @impl true
   def create_multipart_upload(attrs), do: MediaService.Media.create_multipart_upload(attrs)
 
   @impl true
