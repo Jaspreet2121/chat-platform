@@ -180,7 +180,11 @@ defmodule NotificationService.FcmSender do
       "call_id" => to_string(attrs["call_id"]),
       "call_type" => to_string(attrs["call_type"] || "voice"),
       "caller_id" => to_string(attrs["caller_id"] || ""),
-      "caller_name" => caller
+      "caller_name" => caller,
+      # E2EE display hint (111): the ring UI can show the lock immediately. The sealed key envelopes
+      # NEVER ride a push (FCM data caps, and every value must be a string) — the client fetches
+      # GET /api/v1/calls/:id for them. See E2EE_FRAME.md §calls.
+      "e2ee" => to_string(attrs["e2ee"] == true)
     }
     |> maybe_put("conversation_id", attrs["conversation_id"])
   end

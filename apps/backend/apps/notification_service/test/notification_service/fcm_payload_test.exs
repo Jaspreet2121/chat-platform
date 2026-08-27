@@ -76,8 +76,31 @@ defmodule NotificationService.FcmPayloadTest do
                "call_type" => "video",
                "caller_id" => @sender,
                "caller_name" => "Asha",
-               "conversation_id" => @conversation
+               "conversation_id" => @conversation,
+               # E2EE (111) display hint — always present, string-valued like every FCM data field.
+               "e2ee" => "false"
              }
+    end
+
+    test "the E2EE hint rides the ring push — but NEVER the key envelopes" do
+      offered =
+        FcmSender.call_data(%{
+          "call_id" => "call-1",
+          "call_type" => "voice",
+          "caller_name" => "Asha",
+          "e2ee" => true
+        })
+
+      # A display hint only: it lets the ring UI show the lock immediately, while the sealed
+      # envelopes are fetched from GET /api/v1/calls/:id (they are far too large for a data push).
+      assert offered["e2ee"] == "true"
+      refute Map.has_key?(offered, "e2ee_offer")
+      refute Map.has_key?(offered, "envelopes")
+
+      # Absent or non-true is a plain call — never "maybe".
+      assert FcmSender.call_data(%{"call_id" => "c"})["e2ee"] == "false"
+      assert FcmSender.call_data(%{"call_id" => "c", "e2ee" => false})["e2ee"] == "false"
+      assert FcmSender.call_data(%{"call_id" => "c", "e2ee" => "yes"})["e2ee"] == "false"
     end
 
     test "a call with no caller name falls back rather than sending an empty string" do

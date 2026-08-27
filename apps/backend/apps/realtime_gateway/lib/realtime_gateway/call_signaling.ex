@@ -72,6 +72,9 @@ defmodule RealtimeGateway.CallSignaling do
                "callee_id" => callee_id,
                "type" => type,
                "conversation_id" => payload["conversation_id"],
+               # E2EE (111): OPTIONAL sealed call-key envelopes. The store validates SHAPE only and
+               # relays them opaquely; absent = an old client and the call is byte-identical to before.
+               "e2ee_offer" => payload["e2ee_offer"],
                # The tenant rides from the AUTHENTICATED socket session (UserSocket.assign_session) — the
                # boundary resolution rule (097). nil assigns → NULL row, never an invented default.
                "app_id" => app_id(socket)
@@ -86,7 +89,10 @@ defmodule RealtimeGateway.CallSignaling do
               caller_id: caller_id,
               callee_id: callee_id,
               type: type,
-              conversation_id: cget(call, :conversation_id)
+              conversation_id: cget(call, :conversation_id),
+              # Read back from the STORE, not from the payload: what rides the ring is what was
+              # validated and persisted, so a rejected offer can never reach the callee.
+              e2ee_offer: cget(call, :e2ee_offer)
             })
 
             # Server-side ring timeout (this = the caller's channel process). On fire we re-check status,
@@ -94,6 +100,11 @@ defmodule RealtimeGateway.CallSignaling do
             Process.send_after(self(), {:call_ring_timeout, call_id}, @ring_timeout_ms)
 
             {:reply, {:ok, %{call_id: call_id, room: room}}, socket}
+
+          # A malformed offer is the CLIENT's bug, not an outage — say so distinctly so a broken
+          # E2EE client is diagnosable instead of looking like a server failure.
+          {:error, :call_invalid_e2ee_offer} ->
+            reply_error(socket, "call.invalid_e2ee_offer")
 
           {:error, _reason} ->
             reply_error(socket, "call.unavailable")
@@ -109,14 +120,21 @@ defmodule RealtimeGateway.CallSignaling do
   BACKGROUNDED or socketless callee gets). ONE implementation for both entry points — the socket
   `call:invite` above and `POST /v1/calls` — so the wire payload can never fork between them.
   """
-  def ring_callee(endpoint, app_id, %{
-        call_id: call_id,
-        room: room,
-        caller_id: caller_id,
-        callee_id: callee_id,
-        type: type,
-        conversation_id: conversation_id
-      }) do
+  def ring_callee(
+        endpoint,
+        app_id,
+        %{
+          call_id: call_id,
+          room: room,
+          caller_id: caller_id,
+          callee_id: callee_id,
+          type: type,
+          conversation_id: conversation_id
+        } = ring
+      ) do
+    # Optional so the /v1 REST create (which rings through here too) needs no change.
+    e2ee_offer = Map.get(ring, :e2ee_offer)
+
     if call_blocked?(caller_id, callee_id) do
       # Either party has blocked the other: ring NOTHING and push NOTHING — the callee never learns of the
       # call. The caller's client shows "ringing" until the 35s ring-timeout resolves it (missed),
@@ -140,9 +158,12 @@ defmodule RealtimeGateway.CallSignaling do
           conversation_id: conversation_id
         }
         |> put_avatar(caller_avatar_url)
+        |> put_e2ee_offer(e2ee_offer)
       )
 
-      emit_incoming_push(callee_id, caller_name, type, call_id)
+      # The push carries only the BOOLEAN hint — envelopes are far too large for a data push and would
+      # blow the FCM cap; the callee fetches GET /api/v1/calls/:id for them (E2EE_FRAME.md §calls).
+      emit_incoming_push(callee_id, caller_name, type, call_id, not is_nil(e2ee_offer))
       :ok
     end
   end
@@ -162,13 +183,22 @@ defmodule RealtimeGateway.CallSignaling do
   defp call_blocked?(_caller_id, _callee_id), do: false
 
   # --- accept / reject (callee only) -------------------------------------------------------------
-  defp accept(%{"call_id" => call_id}, socket) do
+  defp accept(%{"call_id" => call_id} = payload, socket) do
     with_call(call_id, socket, [:callee], fn call, _role ->
-      case ConversationClient.mark_call_answered(%{"call_id" => call_id}) do
+      # E2EE (111): the callee reports whether it opened its sealed envelope AND has frame encryption
+      # armed. RELAYED, never enforced — the mode is the two clients' agreement and the server only
+      # carries the bit, so both sides know the final mode BEFORE media flows.
+      e2ee_accepted = payload["e2ee_accepted"] == true
+
+      case ConversationClient.mark_call_answered(%{
+             "call_id" => call_id,
+             "e2ee_accepted" => e2ee_accepted
+           }) do
         {:ok, _} ->
           broadcast(socket, cget(call, :caller_id), "call:accepted", %{
             call_id: call_id,
-            room: cget(call, :room_name)
+            room: cget(call, :room_name),
+            e2ee_accepted: e2ee_accepted
           })
 
           {:reply, {:ok, %{call_id: call_id, room: cget(call, :room_name)}}, socket}
@@ -875,6 +905,12 @@ defmodule RealtimeGateway.CallSignaling do
 
   defp put_avatar(payload, _url), do: payload
 
+  # The sealed envelopes ride the SOCKET ring (a foregrounded callee needs no extra round-trip). They
+  # are relayed byte-for-byte as the store validated them; the server never looks inside one.
+  defp put_e2ee_offer(payload, offer) when is_map(offer), do: Map.put(payload, :e2ee_offer, offer)
+
+  defp put_e2ee_offer(payload, _offer), do: payload
+
   # The tenant this socket belongs to (set by UserSocket.assign_session via Tenancy.app_id_or_default).
   defp app_id(socket), do: Map.get(socket.assigns, :app_id)
 
@@ -1002,7 +1038,7 @@ defmodule RealtimeGateway.CallSignaling do
   # produce onto the Kafka bus (gated by CALL_PUSH_ENABLED); notification_service's CallIncomingConsumer
   # turns it into a web-push via PushSender. A no-op when the flag/Kafka path is off (same ceiling as
   # message pushes) — the reliable ring is the socket broadcast above; this is only the backgrounded case.
-  defp emit_incoming_push(callee_id, caller_name, type, call_id) do
+  defp emit_incoming_push(callee_id, caller_name, type, call_id, e2ee) do
     if call_push_enabled?() do
       correlation = SharedInfra.Correlation.get_or_generate()
 
@@ -1018,6 +1054,9 @@ defmodule RealtimeGateway.CallSignaling do
           "callee_id" => callee_id,
           "caller_name" => caller_name,
           "call_type" => type,
+          # DISPLAY HINT ONLY (111): lets a push-woken client show the lock while it fetches. The
+          # envelopes themselves never ride a push — see GET /api/v1/calls/:id.
+          "e2ee" => e2ee,
           "correlation_id" => correlation
         }
 

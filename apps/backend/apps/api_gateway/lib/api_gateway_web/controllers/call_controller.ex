@@ -173,6 +173,89 @@ defmodule ApiGatewayWeb.CallController do
     end
   end
 
+  @doc """
+  GET /api/v1/calls/:id — one call's live state, for the CALLEE woken by a push.
+
+  THIS ENDPOINT EXISTS FOR E2EE (111 / E2EE_FRAME.md §calls). The incoming-call push is data-only and
+  deliberately small (FCM caps data payloads, and the ring push must fit inside the 35s ring window),
+  so the sealed key envelopes CANNOT ride it. A backgrounded callee therefore wakes on the push and
+  fetches the call here to find the envelope addressed to its own device.
+
+  Session-authed and scoped to the two parties: only the caller or the callee of THIS call may read
+  it (a group call authorizes on participation, same predicate the token endpoint uses). Anyone else
+  gets 404 — a call id must not confirm its own existence to a stranger.
+
+  Once the call reaches a terminal state the server has scrubbed `e2ee_offer` to null; the response
+  then carries only the durable `e2ee` / `e2ee_accepted` booleans. Fetching a finished call is
+  therefore useless for key recovery BY DESIGN — the key died with the call.
+  """
+  def show(conn, %{"id" => call_id}) when is_binary(call_id) and call_id != "" do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, call} <- fetch_call(call_id),
+         :ok <- ensure_party(call, session.user_id) do
+      json(conn, present_call_state(call))
+    else
+      # Not a party to the call reads exactly like a call that does not exist.
+      {:error, :forbidden} -> ErrorResponse.not_found(conn, "calls.not_found", "Call not found")
+      {:error, :not_found} -> ErrorResponse.not_found(conn, "calls.not_found", "Call not found")
+      _ -> ErrorResponse.unauthorized(conn, "auth.unauthorized", "Invalid or missing session")
+    end
+  end
+
+  def show(conn, _params), do: ErrorResponse.invalid_request(conn, "calls.invalid_request")
+
+  # Caller or callee of a direct call; a participant of a group/link call.
+  defp ensure_party(call, user_id) do
+    cond do
+      not is_binary(user_id) ->
+        {:error, :forbidden}
+
+      user_id == cget(call, :caller_id) or user_id == cget(call, :callee_id) ->
+        :ok
+
+      call_participant?(cget(call, :id), user_id) ->
+        :ok
+
+      true ->
+        {:error, :forbidden}
+    end
+  end
+
+  defp call_participant?(call_id, user_id) do
+    match?(
+      {:ok, %{participant: true}},
+      SharedInfra.ConversationClient.call_participant?(%{
+        "call_id" => call_id,
+        "user_id" => user_id
+      })
+    )
+  end
+
+  # The live-state view. Deliberately NOT the history presenter: history masks the status per viewer
+  # (declined reads as missed to the caller) and drops fields — a ringing callee needs the raw truth,
+  # plus the room to join and the sealed offer to open.
+  defp present_call_state(call) do
+    %{
+      "id" => cget(call, :id),
+      "room_name" => cget(call, :room_name),
+      "kind" => cget(call, :kind) || "direct",
+      "caller_id" => cget(call, :caller_id),
+      "callee_id" => cget(call, :callee_id),
+      "conversation_id" => cget(call, :conversation_id),
+      "type" => cget(call, :type),
+      "status" => cget(call, :status),
+      "created_at" => cget(call, :created_at),
+      "answered_at" => cget(call, :answered_at),
+      "ended_at" => cget(call, :ended_at),
+      # E2EE: the booleans are always present; the offer is null once the call ended (scrubbed).
+      "e2ee" => cget(call, :e2ee) || false,
+      "e2ee_accepted" => cget(call, :e2ee_accepted),
+      "e2ee_offer" => cget(call, :e2ee_offer)
+    }
+  end
+
   # --- first-party decline (reject/2) helpers ----------------------------------------------------
 
   defp fetch_call(call_id) do
@@ -323,6 +406,11 @@ defmodule ApiGatewayWeb.CallController do
       "created_at" => cget(call, :created_at),
       "answered_at" => cget(call, :answered_at),
       "ended_at" => cget(call, :ended_at),
+      # E2EE (111): `e2ee` says an encrypted call was OFFERED and survives the end-of-call envelope
+      # scrub, so a past call can still draw its lock badge; `e2ee_accepted` is the mode the two
+      # clients actually agreed (nil when the call was never answered). The envelopes are long gone.
+      "e2ee" => cget(call, :e2ee) || false,
+      "e2ee_accepted" => cget(call, :e2ee_accepted),
       # The recorded first-party rule: 0 (not nil) for a call that never connected. The /v1 webhook keeps
       # its own recorded nil — two surfaces, two recorded contracts, one raw source (CallStore).
       "duration_seconds" => cget(call, :duration_seconds) || 0,

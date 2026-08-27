@@ -28,7 +28,10 @@ defmodule ConversationService.CallStore do
     with :ok <- persistence(),
          {:ok, caller_id} <- required(attrs, "caller_id"),
          {:ok, callee_id} <- required(attrs, "callee_id"),
-         {:ok, type} <- required(attrs, "type") do
+         {:ok, type} <- required(attrs, "type"),
+         # E2EE (111): OPTIONAL. Absent → exactly the pre-E2EE call, which is how old clients keep
+         # working. Present → shape-validated here and stored verbatim; never parsed.
+         {:ok, e2ee_offer} <- validate_e2ee_offer(get(attrs, "e2ee_offer"), caller_id, callee_id) do
       id = Ecto.UUID.generate()
 
       changeset =
@@ -43,7 +46,9 @@ defmodule ConversationService.CallStore do
           conversation_id: get(attrs, "conversation_id"),
           type: type,
           status: "ringing",
-          created_at: DateTime.utc_now()
+          created_at: DateTime.utc_now(),
+          e2ee_offer: e2ee_offer,
+          e2ee: not is_nil(e2ee_offer)
         })
 
       case Repo.insert(changeset) do
@@ -55,18 +60,47 @@ defmodule ConversationService.CallStore do
     _ -> {:error, :call_invalid}
   end
 
-  @doc "Caller answered → accepted + answered_at. attrs: \"call_id\". Emits the `call.started` webhook."
-  def mark_answered(attrs),
-    do: transition(attrs, %{status: "accepted", answered_at: DateTime.utc_now()}, "call.started")
+  @doc """
+  Caller answered → accepted + answered_at. attrs: \"call_id\", optional \"e2ee_accepted\" (bool —
+  the callee opened its sealed envelope and has frame encryption armed). Emits `call.started`.
+
+  The flag is RELAYED, not enforced: the server records what the callee reported so the caller can
+  read the agreed mode, and never decides the mode itself (E2EE_FRAME.md §calls).
+  """
+  def mark_answered(attrs) do
+    patch = %{status: "accepted", answered_at: DateTime.utc_now()}
+
+    # NOT via get/2: that helper is `Map.get(a) || Map.get(b)`, and a legitimate `false` is falsy —
+    # it would silently read as "absent" and never be recorded. Fetch both keys explicitly.
+    patch =
+      case fetch_either(attrs, "e2ee_accepted") do
+        {:ok, accepted} when is_boolean(accepted) -> Map.put(patch, :e2ee_accepted, accepted)
+        # Absent stays ABSENT (nil), not false: a plain call negotiated nothing, and writing false
+        # would claim a negotiation that never happened.
+        _ -> patch
+      end
+
+    transition(attrs, patch, "call.started")
+  end
 
   @doc "Callee rejected → declined. attrs: \"call_id\". Emits `call.declined` (an ACTIVE refusal — distinct
   from `call.missed`, which is a timeout; an integrator logs those differently)."
   def mark_declined(attrs),
-    do: transition(attrs, %{status: "declined", ended_at: DateTime.utc_now()}, "call.declined")
+    do:
+      transition(
+        attrs,
+        %{status: "declined", ended_at: DateTime.utc_now(), e2ee_offer: nil},
+        "call.declined"
+      )
 
   @doc "Never answered (ring timeout) → missed. attrs: \"call_id\". Emits `call.missed`."
   def mark_missed(attrs),
-    do: transition(attrs, %{status: "missed", ended_at: DateTime.utc_now()}, "call.missed")
+    do:
+      transition(
+        attrs,
+        %{status: "missed", ended_at: DateTime.utc_now(), e2ee_offer: nil},
+        "call.missed"
+      )
 
   @doc """
   Caller hung up while still ringing → cancelled (097 — previously folded into `missed`). attrs:
@@ -74,11 +108,21 @@ defmodule ConversationService.CallStore do
   call; the payload's `reason` carries "cancelled" for the distinction) — no new webhook event type.
   """
   def mark_cancelled(attrs),
-    do: transition(attrs, %{status: "cancelled", ended_at: DateTime.utc_now()}, "call.missed")
+    do:
+      transition(
+        attrs,
+        %{status: "cancelled", ended_at: DateTime.utc_now(), e2ee_offer: nil},
+        "call.missed"
+      )
 
   @doc "Call finished (hang up) → ended. attrs: \"call_id\". Emits `call.ended` (with duration_seconds)."
   def mark_ended(attrs),
-    do: transition(attrs, %{status: "ended", ended_at: DateTime.utc_now()}, "call.ended")
+    do:
+      transition(
+        attrs,
+        %{status: "ended", ended_at: DateTime.utc_now(), e2ee_offer: nil},
+        "call.ended"
+      )
 
   @doc "Fetch a single call by id. attrs: \"call_id\". → {:ok, call} | {:error, :call_not_found}."
   def get_call(attrs) do
@@ -1104,7 +1148,13 @@ defmodule ConversationService.CallStore do
       ended_at: iso8601(call.ended_at),
       # nil when the call never connected — the /v1 webhook's recorded "nil, not a misleading 0"; the
       # first-party list surface maps nil → 0 at presentation (its recorded contract) — one raw truth here.
-      duration_seconds: duration_seconds(call)
+      duration_seconds: duration_seconds(call),
+      # E2EE (111). `e2ee` is the durable capability bit (survives the end-of-call scrub, so history
+      # can draw a lock); `e2ee_accepted` is the agreed mode; `e2ee_offer` carries the sealed
+      # envelopes and is nil once the call is over. The server never reads inside an envelope.
+      e2ee: call.e2ee || false,
+      e2ee_accepted: call.e2ee_accepted,
+      e2ee_offer: call.e2ee_offer
     }
   end
 
@@ -1124,6 +1174,87 @@ defmodule ConversationService.CallStore do
   defp iso8601(nil), do: nil
   defp iso8601(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 
+  # ---- E2EE call-key offer (111 / E2EE_FRAME.md §calls) -------------------------------------------
+  #
+  # THE SERVER VALIDATES SHAPE ONLY AND NEVER LOOKS INSIDE AN ENVELOPE. It cannot: the envelopes are
+  # anonymous sealed boxes to device X25519 keys the server holds only the PUBLIC half of. What it can
+  # check is that the blob is well-formed and addressed to devices that actually belong to the two
+  # parties — a foreign device_id is either a bug or an attempt to have us relay a key to an outsider.
+  #
+  # It also never enforces the MODE. Whether the call runs encrypted is an agreement between the two
+  # clients (offer + accept flag); the server only carries the bits. A missing offer is not an error,
+  # it is an old client, and the call proceeds exactly as it did before this slice.
+  @e2ee_max_envelopes 20
+  @e2ee_max_bytes 32 * 1024
+
+  defp validate_e2ee_offer(nil, _caller_id, _callee_id), do: {:ok, nil}
+
+  defp validate_e2ee_offer(offer, caller_id, callee_id) when is_map(offer) do
+    envelopes = Map.get(offer, "envelopes") || Map.get(offer, :envelopes)
+
+    with true <- version_one?(offer) || {:error, :call_invalid_e2ee_offer},
+         true <- nonempty_string?(sender_device(offer)) || {:error, :call_invalid_e2ee_offer},
+         true <- valid_envelopes?(envelopes) || {:error, :call_invalid_e2ee_offer},
+         true <-
+           length(envelopes) <= @e2ee_max_envelopes || {:error, :call_invalid_e2ee_offer},
+         true <-
+           byte_size(Jason.encode!(offer)) <= @e2ee_max_bytes ||
+             {:error, :call_invalid_e2ee_offer},
+         true <-
+           envelope_devices_belong?(envelopes, caller_id, callee_id) ||
+             {:error, :call_invalid_e2ee_offer} do
+      # Stored VERBATIM — normalising it would change bytes the clients may hash or compare.
+      {:ok, offer}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_e2ee_offer(_offer, _caller_id, _callee_id), do: {:error, :call_invalid_e2ee_offer}
+
+  defp version_one?(offer), do: (Map.get(offer, "v") || Map.get(offer, :v)) == 1
+
+  defp sender_device(offer),
+    do: Map.get(offer, "sender_device_id") || Map.get(offer, :sender_device_id)
+
+  defp nonempty_string?(value), do: is_binary(value) and value != ""
+
+  defp valid_envelopes?(envelopes) do
+    is_list(envelopes) and envelopes != [] and
+      Enum.all?(envelopes, fn envelope ->
+        is_map(envelope) and nonempty_string?(envelope_device(envelope)) and
+          valid_base64?(envelope_blob(envelope))
+      end)
+  end
+
+  defp envelope_device(envelope),
+    do: Map.get(envelope, "device_id") || Map.get(envelope, :device_id)
+
+  defp envelope_blob(envelope),
+    do: Map.get(envelope, "envelope_b64") || Map.get(envelope, :envelope_b64)
+
+  # Standard padded base64 (RFC 4648) — the same variant every other _b64 field in the E2EE spec uses.
+  defp valid_base64?(value) do
+    nonempty_string?(value) and match?({:ok, _}, Base.decode64(value))
+  end
+
+  # Every addressed device must be a LIVE device of the caller or the callee. Mirrors the sealed
+  # MESSAGE rule (MessageService.Messages.recipients_are_member_devices?/2): liveness is a
+  # non-revoked device_sessions row, and a device is allowed even if it has not uploaded keys yet.
+  defp envelope_devices_belong?(envelopes, caller_id, callee_id) do
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT ds.device_id FROM device_sessions ds " <>
+          "WHERE ds.revoked_at IS NULL AND ds.user_id IN ($1::text::uuid, $2::text::uuid)",
+        [to_string(caller_id), to_string(callee_id)]
+      )
+
+    allowed = MapSet.new(rows, fn [device_id] -> device_id end)
+    Enum.all?(envelopes, &MapSet.member?(allowed, envelope_device(&1)))
+  rescue
+    _ -> false
+  end
+
   defp required(attrs, key) do
     case get(attrs, key) do
       value when is_binary(value) and value != "" -> {:ok, value}
@@ -1132,6 +1263,14 @@ defmodule ConversationService.CallStore do
   end
 
   defp get(attrs, key), do: Map.get(attrs, key) || Map.get(attrs, String.to_atom(key))
+
+  # Presence-preserving lookup for values where `false` is meaningful (see mark_answered/1).
+  defp fetch_either(attrs, key) do
+    case Map.fetch(attrs, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(attrs, String.to_atom(key))
+    end
+  end
 
   defp limit(attrs) do
     case get(attrs, "limit") do

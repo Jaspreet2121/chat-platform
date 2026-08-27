@@ -208,3 +208,108 @@ Two upgrade triggers, both idempotent (enabling an already-secret conversation i
   and keeps working (old clients, or a peer who hasn't opened the app, are never broken).
 
 The client MUST treat both as best-effort: a failed upgrade never blocks sending a normal message.
+
+## 10. Calls (end-to-end encrypted voice/video) — NORMATIVE
+
+Media rides LiveKit with **client-side frame encryption** (Insertable Streams / `E2EEKeyProvider`).
+The SFU routes already-encrypted frames; it cannot decode them. The server's whole job is to relay
+one opaque blob and carry two booleans — it never sees the call key.
+
+Call E2EE INHERITS DEVICE-KEY TRUST. The call key is sealed with the SAME `crypto_box_seal`
+primitive, to the SAME registry device keys, as §3 message envelopes. Nothing in a call is signed,
+so a call's authenticity rests entirely on the device keys already verified by the §6 safety number
+— verifying the safety number therefore covers calls too. A client that shows a lock on a call MUST
+mean "sealed to the device keys the registry holds", nothing stronger.
+
+### 10.1 The call key
+
+The CALLER generates **32 cryptographically random bytes** per call (`crypto_secretbox_KEYBYTES`;
+`randombytes_buf(32)`). It is per-call and short-lived: it MUST NOT be derived from, or reused
+across, any other call, and MUST NOT be persisted anywhere.
+
+### 10.2 The offer (caller → server → callee)
+
+The caller seals the raw 32 bytes once per recipient device and attaches `e2ee_offer` to the
+call-create/ring payload:
+
+    e2ee_offer = {
+      "v": 1,
+      "sender_device_id": "<the caller's device_id>",
+      "envelopes": [
+        { "device_id": "<a device>", "envelope_b64": "<base64 crypto_box_seal(32-byte key, that device's X25519 public)>" },
+        ...
+      ]
+    }
+
+Base64 is standard (RFC 4648, `+/`, padded) — libsodium `base64_variants.ORIGINAL`, as everywhere
+else in this document.
+
+`envelopes` MUST be the union of **every active device key of the callee** AND **the caller's own
+OTHER devices** (the self-copy — without it, answering on a second own device is impossible). The
+caller's own sending device MAY be included; it is not required.
+
+The server validates SHAPE ONLY: `v == 1`, every `device_id` is a live device of the caller or the
+callee, `envelope_b64` is valid base64, at most **20** envelopes, and the whole object at most
+**32 KB**. A violation is `422 call.invalid_e2ee_offer`. The server NEVER parses `envelope_b64`,
+never learns the key, and never rewrites the object.
+
+`e2ee_offer` is OPTIONAL. Omitting it is exactly the pre-E2EE call, byte-for-byte — that is how old
+clients keep working.
+
+### 10.3 The accept (callee → server → caller)
+
+The callee finds its own `device_id` in `envelopes` and opens it:
+
+    key = crypto_box_seal_open(my_envelope, my_x25519_public, my_x25519_private)   // 32 bytes
+
+The accept payload gains `"e2ee_accepted": <bool>` — **true only if that open succeeded** and the
+client has frame encryption armed. The server relays the flag to the caller, so BOTH sides know the
+final mode BEFORE media flows.
+
+A callee that finds no envelope for its device, fails to open one, or is an old/keyless client MUST
+send `e2ee_accepted: false` (or omit it entirely — absent is false).
+
+### 10.4 Feeding LiveKit
+
+Both sides, before publishing or subscribing:
+
+1. Create the room with E2EE enabled and an external key provider.
+2. Set the RAW 32 bytes as the shared key (`setKey`) — do NOT pass it through a passphrase/KDF, and
+   do NOT base64 it: both peers must arrive at byte-identical key material.
+3. Enable frame encryption for the local participant, then join.
+
+Both sides MUST have the key set BEFORE the first frame is published. A participant that joins with
+the wrong key produces undecryptable media, not a downgrade — clients SHOULD surface that as a call
+failure rather than silently continuing.
+
+### 10.5 Fallback rules
+
+E2EE engages only when **both** sides agree, exactly like §9's opportunistic upgrade:
+
+- caller offers + callee replies `e2ee_accepted: true` → **E2EE**: frame encryption on both sides.
+- caller offers + callee replies `e2ee_accepted: false` (or omits it) → plain SFU call.
+- caller sends no offer (old client) → plain SFU call.
+
+The SERVER NEVER ENFORCES OR DOWNGRADES. It carries the bits; the mode is an agreement between the
+two clients. A client MUST NOT infer the mode from anything but the accept flag it received.
+
+The UI MUST show the non-E2EE state plainly when the call is not encrypted — absence of a lock is
+not sufficient on its own if the product elsewhere implies calls are private.
+
+### 10.6 Lifetime and storage
+
+The server persists `e2ee_offer` on the call row so a callee woken by a push can FETCH the call
+state and still get its envelope (the envelopes never ride the push payload — FCM size limits).
+
+When the call reaches a terminal state the server **scrubs the envelopes to NULL**. They are useless
+after the fact: the key died with the call, and a stored envelope is only a target. A boolean
+`e2ee` (an offer was made) and `e2ee_accepted` (both sides agreed) SURVIVE for call-history display
+— that is what draws the lock badge on a past call.
+
+### 10.7 Out of scope for v1 (recorded follow-ups)
+
+- **Key rotation mid-call.** Call keys are per-call and short-lived, so v1 does not rotate. A long
+  call keeps one key.
+- **Re-offer on device-set change while ringing.** If the callee links a new device between the
+  offer and the accept, that device has no envelope and MUST answer non-E2EE (or answer on a device
+  that has one). Re-offering mid-ring is a follow-up.

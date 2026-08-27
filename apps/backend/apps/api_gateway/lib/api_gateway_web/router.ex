@@ -449,6 +449,9 @@ defmodule ApiGatewayWeb.Router do
 
     # Call history for the authenticated user (both sides), newest first — Slice-5a.
     get "/", CallController, :index
+    # One call's live state — the push-woken callee's route to its sealed E2EE envelope (111).
+    # Declared BEFORE the "/:id/..." routes; a literal-vs-param collision is impossible (distinct verbs).
+    get "/:id", CallController, :show
     post "/token", CallController, :token
 
     # First-party decline — the closed-app case: with incoming-call FCM live, the callee's handset rings while
