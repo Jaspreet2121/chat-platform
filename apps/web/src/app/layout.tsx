@@ -32,9 +32,24 @@ export const metadata: Metadata = {
     statusBarStyle: "default",
     title: "Growblic"
   },
+  // The brand mark (vc40) — a white skull on an opaque black field, the same asset Android ships.
+  // Declared explicitly rather than through Next's app/icon.* file convention so every path here is a
+  // real file in public/ that a build check can fetch; a 404'd icon is otherwise silent.
+  //
+  // OPAQUE at every size on purpose: iOS ignores alpha on the touch icon and fills it black anyway,
+  // and the mark's own field IS black, so there is nothing to lose and no fringing to risk.
+  //
+  // Dark-mode tabs are fine without a light variant: what could vanish on dark chrome is a DARK mark on
+  // transparency, and this is the reverse — the white skull sits on its own opaque field, so it stays
+  // legible on light and dark alike (checked at 32px, where the mark is still clearly readable).
   icons: {
-    icon: "/icon-192.png",
-    apple: "/apple-touch-icon.png"
+    icon: [
+      { url: "/favicon.ico", sizes: "16x16 32x32 48x48" },
+      { url: "/icon-32.png", type: "image/png", sizes: "32x32" },
+      { url: "/icon-192.png", type: "image/png", sizes: "192x192" },
+      { url: "/icon-512.png", type: "image/png", sizes: "512x512" }
+    ],
+    apple: { url: "/apple-touch-icon.png", sizes: "180x180" }
   }
 };
 
