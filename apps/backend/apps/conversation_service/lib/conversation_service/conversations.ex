@@ -666,29 +666,13 @@ defmodule ConversationService.Conversations do
     end)
   end
 
-  # The row subtitle text: a text message's body; nil for media (the client renders a kind label). A
-  # "call" (missed-call) message carries a short human body ("Missed voice call") — surface it verbatim so
-  # the list preview matches the in-thread entry (client has no separate call-kind label).
-  defp preview_text(body, "text") when is_binary(body) and body != "", do: body
-  defp preview_text(body, nil) when is_binary(body) and body != "", do: body
-  defp preview_text(body, "call") when is_binary(body) and body != "", do: body
-  defp preview_text(_body, _type), do: nil
-
-  defp message_kind(nil, _content_type), do: nil
-  defp message_kind("text", _content_type), do: "text"
-
-  defp message_kind("media", content_type) do
-    ct = to_string(content_type)
-
-    cond do
-      String.starts_with?(ct, "image/") -> "image"
-      String.starts_with?(ct, "video/") -> "video"
-      String.starts_with?(ct, "audio/") -> "audio"
-      true -> "file"
-    end
-  end
-
-  defp message_kind(other, _content_type), do: other
+  # MOVED to SharedInfra.InboxPreview and DELEGATED, not copied. The conversation_updated broadcast has to
+  # apply the identical rules from another release (it composes the frame from the triggering message,
+  # because the denormalised columns these read are written later by the Kafka projection), and
+  # @inbox_sql's header says what a second copy of the preview rules costs. One implementation, two
+  # callers. The sealed gate (108) lives with it: "sealed" never matches a preview_text clause.
+  defdelegate preview_text(body, message_type), to: SharedInfra.InboxPreview
+  defdelegate message_kind(message_type, content_type), to: SharedInfra.InboxPreview
 
   defp placeholder_list_conversations do
     {:ok,

@@ -209,7 +209,7 @@ defmodule SharedInfra.ConversationBroadcastTest do
     committed_at = "2026-07-14T10:05:31.204118Z"
 
     ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
-      activity_at: committed_at
+      message: text_message(committed_at)
     )
 
     frames = drain()
@@ -220,11 +220,11 @@ defmodule SharedInfra.ConversationBroadcastTest do
     end
   end
 
-  test "a DateTime activity_at is formatted exactly like the row's to_char output" do
+  test "a DateTime created_at is formatted exactly like the row's to_char output" do
     {:ok, committed_at, _} = DateTime.from_iso8601("2026-07-14T10:05:31.204118Z")
 
     ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
-      activity_at: committed_at
+      message: text_message(committed_at)
     )
 
     assert frame_for(drain(), @alice)["updated_at"] == "2026-07-14T10:05:31.204118Z"
@@ -238,63 +238,188 @@ defmodule SharedInfra.ConversationBroadcastTest do
           {"2026-07-14T10:05:31.204Z", "2026-07-14T10:05:31.204000Z"}
         ] do
       ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
-        activity_at: given
+        message: text_message(given)
       )
 
       assert frame_for(drain(), @alice)["updated_at"] == expected
     end
   end
 
-  test "it is a FLOOR, not an overwrite: a row NEWER than activity_at is left alone" do
+  test "it is a FLOOR, not an overwrite: a row NEWER than the message is left alone" do
     # The projection landed (or another message raced in) between the write and this read. The row is
     # already correct and must not be dragged backwards to our own message's stamp.
     ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
-      activity_at: "2026-07-14T09:00:00.000000Z"
+      message: text_message("2026-07-14T09:00:00.000000Z")
     )
 
     assert frame_for(drain(), @alice)["updated_at"] == @stale_row_updated_at
   end
 
-  test "an equal activity_at changes nothing (the projection already landed)" do
+  test "an equal created_at changes nothing (the projection already landed)" do
     ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
-      activity_at: @stale_row_updated_at
+      message: text_message(@stale_row_updated_at)
     )
 
     assert frame_for(drain(), @alice)["updated_at"] == @stale_row_updated_at
   end
 
-  test "the non-message triggers pass no activity_at and are untouched" do
+  test "the non-message triggers pass no :message and are untouched" do
     for trigger <- [:receipt, :title, :participant, :pref] do
       ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, trigger)
       assert frame_for(drain(), @alice)["updated_at"] == @stale_row_updated_at
     end
   end
 
-  test "an unparseable or missing activity_at degrades to the row's own value, never to nil" do
+  test "an unparseable or missing created_at degrades to the row's own value, never to nil" do
     for bad <- [nil, "", "not-a-timestamp", 12_345] do
       ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
-        activity_at: bad
+        message: text_message(bad)
       )
 
       assert frame_for(drain(), @alice)["updated_at"] == @stale_row_updated_at
     end
   end
 
-  test "the floor does not disturb the rest of the row, including the object-key guard" do
+  test "the override does not disturb the rest of the row, including the object-key guard" do
     frame =
       ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
-        activity_at: "2026-07-14T10:05:31.204118Z"
+        message: text_message("2026-07-14T10:05:31.204118Z")
       )
       |> then(fn :ok -> drain() end)
       |> frame_for(@bob)
 
     assert frame["unread_count"] == 2
-    assert frame["last_message_preview"] == "hello"
+
+    # The preview now comes from the TRIGGERING message ("fresh"), not the unprojected row ("hello") —
+    # that is the defect this slice fixes. Everything the message does not speak for is passed through.
+    assert frame["last_message_preview"] == "fresh"
     assert frame["group_avatar_media_id"] == "gm-1"
     refute Map.has_key?(frame, "group_avatar_object_key")
     refute Map.has_key?(frame, "user_id")
     # Exactly one updated_at key, in the wire's string style — never both shapes.
     assert Enum.count(frame, fn {k, _} -> to_string(k) == "updated_at" end) == 1
+  end
+
+  # --- preview + kind composed from the triggering message ------------------------------------------
+  #
+  # Same defect as the timestamp, same shape: `last_message_body/type/content_type` are the SAME
+  # unprojected denormalised columns, so the row ConvStub returns describes the PREVIOUS message
+  # ("hello"). The frame must describe the one that triggered it.
+
+  @committed_at "2026-07-14T10:05:31.204118Z"
+
+  defp broadcast!(message) do
+    ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
+      message: message
+    )
+
+    frame_for(drain(), @alice)
+  end
+
+  test "a TEXT message's own body and kind are what the frame carries" do
+    frame =
+      broadcast!(%{
+        "message_type" => "text",
+        "body" => "the message that triggered this",
+        "created_at" => @committed_at
+      })
+
+    assert frame["last_message_preview"] == "the message that triggered this"
+    assert frame["last_message_kind"] == "text"
+    # And it stays consistent with the timestamp — one message describes all three fields.
+    assert frame["updated_at"] == @committed_at
+  end
+
+  test "a MEDIA message yields no preview text and a kind resolved from metadata.content_type" do
+    for {content_type, kind} <- [
+          {"image/png", "image"},
+          {"video/mp4", "video"},
+          {"audio/ogg", "audio"},
+          {"application/pdf", "file"}
+        ] do
+      frame =
+        broadcast!(%{
+          "message_type" => "media",
+          "body" => "photo.png",
+          "metadata" => %{"content_type" => content_type},
+          "created_at" => @committed_at
+        })
+
+      assert frame["last_message_preview"] == nil
+      assert frame["last_message_kind"] == kind
+    end
+  end
+
+  test "a CALL message surfaces its short human body, matching the in-thread entry" do
+    frame =
+      broadcast!(%{
+        "message_type" => "call",
+        "body" => "Missed voice call",
+        "created_at" => @committed_at
+      })
+
+    assert frame["last_message_preview"] == "Missed voice call"
+    assert frame["last_message_kind"] == "call"
+  end
+
+  # --- 108: THE SEALED GATE ON THE WIRE ---
+
+  test "a SEALED message NEVER puts content on the wire — kind only, no preview" do
+    frame =
+      broadcast!(%{
+        "message_type" => "sealed",
+        "metadata" => %{"envelopes" => [%{"device_id" => "d1", "ciphertext" => "AA=="}]},
+        "created_at" => @committed_at
+      })
+
+    assert frame["last_message_preview"] == nil
+    # The kind is what the client keys its own locally-decrypted preview off (Android vc20/vc27).
+    assert frame["last_message_kind"] == "sealed"
+    assert frame["updated_at"] == @committed_at
+  end
+
+  test "even a sealed message carrying a body cannot leak it" do
+    # Messages.create_message rejects this shape, but the gate must not DEPEND on that: it is the clause
+    # order in InboxPreview, so a body attached by any route still yields nil.
+    for body <- ["the actual plaintext", "🔒 Message"] do
+      frame =
+        broadcast!(%{"message_type" => "sealed", "body" => body, "created_at" => @committed_at})
+
+      assert frame["last_message_preview"] == nil
+      refute frame["last_message_preview"] == body
+    end
+  end
+
+  # --- the projection landing afterwards changes nothing ---
+
+  test "a row the projection HAS reached is left entirely alone — same values, no double-apply" do
+    # The row already describes our message (its timestamp is not older), so nothing is overridden and the
+    # frame is what the projected row says. This is what makes the fix a no-op once Kafka catches up.
+    frame =
+      broadcast!(%{
+        "message_type" => "text",
+        "body" => "fresh",
+        "created_at" => "2026-07-14T09:59:59.000000Z"
+      })
+
+    assert frame["updated_at"] == @stale_row_updated_at
+    assert frame["last_message_preview"] == "hello"
+    assert frame["last_message_kind"] == "text"
+  end
+
+  test "a message we cannot date leaves preview and kind alone too — all three move together" do
+    frame = broadcast!(%{"message_type" => "sealed", "body" => nil, "created_at" => nil})
+
+    assert frame["updated_at"] == @stale_row_updated_at
+    assert frame["last_message_preview"] == "hello"
+    assert frame["last_message_kind"] == "text"
+  end
+
+  # A committed TEXT message, the shape the create paths hand the fan-out. Body "fresh" is deliberately
+  # different from ConvStub's row preview ("hello"), so a frame composed from the unprojected row shows up
+  # in these tests too, not only in the dedicated preview ones below.
+  defp text_message(created_at) do
+    %{"message_type" => "text", "body" => "fresh", "created_at" => created_at}
   end
 
   # --- helpers ---

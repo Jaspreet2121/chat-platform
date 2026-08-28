@@ -26,6 +26,8 @@ defmodule RealtimeGateway.ConversationUpdatedFreshnessTest do
   @stale_row_at "2026-08-28T06:24:40.305000Z"
   # What the message we are about to send actually committed as.
   @committed_at "2026-08-28T06:28:01.117204Z"
+  # …and what the unprojected row still says the preview is.
+  @stale_preview "the PREVIOUS message"
 
   defmodule ConvStub do
     @moduledoc false
@@ -155,5 +157,48 @@ defmodule RealtimeGateway.ConversationUpdatedFreshnessTest do
     })
 
     assert await_frame(@peer)["updated_at"] == @committed_at
+  end
+
+  test "the frame's PREVIEW and KIND come from the triggering message, not the unprojected row" do
+    Phoenix.PubSub.subscribe(RealtimeGateway.PubSub, "user:#{@peer}")
+    socket = join_channel()
+
+    send_message(socket, %{"message_type" => "text", "body" => "the message that triggered this"})
+
+    payload = await_frame(@peer)
+    assert payload["last_message_preview"] == "the message that triggered this"
+    assert payload["last_message_kind"] == "text"
+    refute payload["last_message_preview"] == @stale_preview
+  end
+
+  test "MEDIA: no preview text, kind resolved from the message's own metadata.content_type" do
+    Phoenix.PubSub.subscribe(RealtimeGateway.PubSub, "user:#{@peer}")
+    socket = join_channel()
+
+    send_message(socket, %{
+      "message_type" => "media",
+      "body" => "photo.png",
+      "media_id" => "m-9",
+      "metadata" => %{"content_type" => "image/png"}
+    })
+
+    payload = await_frame(@peer)
+    assert payload["last_message_preview"] == nil
+    assert payload["last_message_kind"] == "image"
+  end
+
+  test "108: a SEALED send puts NO content on the wire — kind only" do
+    Phoenix.PubSub.subscribe(RealtimeGateway.PubSub, "user:#{@peer}")
+    socket = join_channel()
+
+    send_message(socket, %{
+      "message_type" => "sealed",
+      "metadata" => %{"envelopes" => [%{"device_id" => "d1", "ciphertext" => "AA=="}]}
+    })
+
+    payload = await_frame(@peer)
+    assert payload["last_message_preview"] == nil
+    assert payload["last_message_kind"] == "sealed"
+    refute payload["last_message_preview"] == @stale_preview
   end
 end

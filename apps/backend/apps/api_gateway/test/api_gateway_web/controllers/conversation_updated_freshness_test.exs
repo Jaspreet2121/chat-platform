@@ -31,6 +31,8 @@ defmodule ApiGatewayWeb.ConversationUpdatedFreshnessTest do
   @stale_row_at "2026-08-28T06:24:40.305000Z"
   # What the message we are about to send actually committed as.
   @committed_at "2026-08-28T06:28:01.117204Z"
+  # …and what the unprojected row still says the preview is.
+  @stale_preview "the PREVIOUS message"
 
   defmodule AuthStub do
     @moduledoc false
@@ -102,11 +104,29 @@ defmodule ApiGatewayWeb.ConversationUpdatedFreshnessTest do
     end
   end
 
+  defmodule MediaStub do
+    @moduledoc false
+    # /v1 validates an attachment before sending (v1.invalid_media otherwise). The preview rules never
+    # read the asset — they read the message's own metadata.content_type — but the PATH does, so the
+    # media case needs a valid one to reach the broadcast at all.
+    def get_asset(%{"media_id" => media_id}) do
+      {:ok,
+       %{
+         media_id: media_id,
+         purpose: "message",
+         status: "ready",
+         owner_user_id: "22222222-2222-4222-8222-222222222222",
+         conversation_id: "11111111-1111-4111-8111-111111111111"
+       }}
+    end
+  end
+
   setup do
     prev = %{
       auth: Application.get_env(:shared_infra, :auth_client_adapter),
       conv: Application.get_env(:shared_infra, :conversation_client_adapter),
       msg: Application.get_env(:shared_infra, :message_client_adapter),
+      media: Application.get_env(:shared_infra, :media_client_adapter),
       persist: Application.get_env(:message_service, :message_persistence, false),
       backend: System.get_env("V1_RUNTIME_BACKEND")
     }
@@ -118,6 +138,7 @@ defmodule ApiGatewayWeb.ConversationUpdatedFreshnessTest do
     Application.put_env(:shared_infra, :auth_client_adapter, AuthStub)
     Application.put_env(:shared_infra, :conversation_client_adapter, ConvStub)
     Application.put_env(:shared_infra, :message_client_adapter, MsgStub)
+    Application.put_env(:shared_infra, :media_client_adapter, MediaStub)
     System.put_env("V1_RUNTIME_BACKEND", "ets")
 
     on_exit(fn ->
@@ -125,6 +146,7 @@ defmodule ApiGatewayWeb.ConversationUpdatedFreshnessTest do
       restore(:auth_client_adapter, prev.auth)
       restore(:conversation_client_adapter, prev.conv)
       restore(:message_client_adapter, prev.msg)
+      restore(:media_client_adapter, prev.media)
 
       if prev.backend,
         do: System.put_env("V1_RUNTIME_BACKEND", prev.backend),
@@ -156,6 +178,15 @@ defmodule ApiGatewayWeb.ConversationUpdatedFreshnessTest do
   end
 
   defp text_body, do: %{"message_type" => "text", "body" => "hello"}
+
+  defp media_body do
+    %{
+      "message_type" => "media",
+      "body" => "photo.png",
+      "media_id" => "m-9",
+      "metadata" => %{"content_type" => "image/png"}
+    }
+  end
 
   defp sealed_body do
     %{
@@ -233,5 +264,61 @@ defmodule ApiGatewayWeb.ConversationUpdatedFreshnessTest do
     refute Map.has_key?(payload, "user_id")
     # One updated_at key, in the wire's string style — never both shapes at once.
     assert Enum.count(payload, fn {k, _} -> to_string(k) == "updated_at" end) == 1
+  end
+
+  # --- preview + kind composed from the triggering message, on BOTH HTTP paths ---
+
+  test "first-party create: PREVIEW and KIND come from the triggering message, not the row" do
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@peer}")
+
+    send_first_party(text_body())
+
+    payload = await_frame(@peer)
+    assert payload["last_message_preview"] == "hello"
+    assert payload["last_message_kind"] == "text"
+    refute payload["last_message_preview"] == @stale_preview
+  end
+
+  test "/v1 create: PREVIEW and KIND come from the triggering message, not the row" do
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@peer}")
+
+    send_v1(text_body())
+
+    payload = await_frame(@peer)
+    assert payload["last_message_preview"] == "hello"
+    assert payload["last_message_kind"] == "text"
+    refute payload["last_message_preview"] == @stale_preview
+  end
+
+  test "MEDIA on both paths: no preview text, kind from the message's own content_type" do
+    for send <- [&send_first_party/1, &send_v1/1] do
+      Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@peer}")
+
+      conn = send.(media_body())
+      assert conn.status == 201, "send failed: #{conn.status} #{inspect(conn.resp_body)}"
+
+      payload = await_frame(@peer)
+      assert payload["last_message_preview"] == nil
+      assert payload["last_message_kind"] == "image"
+
+      Phoenix.PubSub.unsubscribe(ApiGateway.PubSub, "user:#{@peer}")
+    end
+  end
+
+  # --- 108: the sealed gate holds on every path ---
+
+  test "SEALED on both paths: NO content on the wire, kind only" do
+    for send <- [&send_first_party/1, &send_v1/1] do
+      Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@peer}")
+
+      send.(sealed_body())
+
+      payload = await_frame(@peer)
+      assert payload["last_message_preview"] == nil
+      assert payload["last_message_kind"] == "sealed"
+      refute payload["last_message_preview"] == @stale_preview
+
+      Phoenix.PubSub.unsubscribe(ApiGateway.PubSub, "user:#{@peer}")
+    end
   end
 end
