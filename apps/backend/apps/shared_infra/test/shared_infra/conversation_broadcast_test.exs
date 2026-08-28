@@ -197,6 +197,106 @@ defmodule SharedInfra.ConversationBroadcastTest do
     assert ConversationBroadcast.unread_before(@conversation, @alice) == nil
   end
 
+  # --- the post-write floor: the frame must never be one message behind -----------------------------
+  #
+  # ConvStub's row is deliberately FROZEN at 2026-07-14T10:00:00 — it stands in for the real defect:
+  # `conversations.last_message_at` is denormalised and, under the Scylla store, written by the Kafka
+  # projection AFTER the send returns, so this fan-out re-reads the PREVIOUS message's timestamp.
+
+  @stale_row_updated_at "2026-07-14T10:00:00.000000Z"
+
+  test "a :message frame carries the COMMITTED message's timestamp, not the unprojected row's" do
+    committed_at = "2026-07-14T10:05:31.204118Z"
+
+    ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
+      activity_at: committed_at
+    )
+
+    frames = drain()
+
+    # EVERY participant's frame, not just the sender's — inbox ordering broke for all of them.
+    for user <- [@alice, @bob] do
+      assert frame_for(frames, user)["updated_at"] == committed_at
+    end
+  end
+
+  test "a DateTime activity_at is formatted exactly like the row's to_char output" do
+    {:ok, committed_at, _} = DateTime.from_iso8601("2026-07-14T10:05:31.204118Z")
+
+    ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
+      activity_at: committed_at
+    )
+
+    assert frame_for(drain(), @alice)["updated_at"] == "2026-07-14T10:05:31.204118Z"
+  end
+
+  test "sub-second precision is padded to six digits, like every other row on the wire" do
+    # A timestamp that survived a fraction-less or millisecond ISO round-trip must not reach clients as
+    # ".0Z" or ".204Z" — the field's shape is part of the contract.
+    for {given, expected} <- [
+          {"2026-07-14T10:05:31Z", "2026-07-14T10:05:31.000000Z"},
+          {"2026-07-14T10:05:31.204Z", "2026-07-14T10:05:31.204000Z"}
+        ] do
+      ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
+        activity_at: given
+      )
+
+      assert frame_for(drain(), @alice)["updated_at"] == expected
+    end
+  end
+
+  test "it is a FLOOR, not an overwrite: a row NEWER than activity_at is left alone" do
+    # The projection landed (or another message raced in) between the write and this read. The row is
+    # already correct and must not be dragged backwards to our own message's stamp.
+    ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
+      activity_at: "2026-07-14T09:00:00.000000Z"
+    )
+
+    assert frame_for(drain(), @alice)["updated_at"] == @stale_row_updated_at
+  end
+
+  test "an equal activity_at changes nothing (the projection already landed)" do
+    ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
+      activity_at: @stale_row_updated_at
+    )
+
+    assert frame_for(drain(), @alice)["updated_at"] == @stale_row_updated_at
+  end
+
+  test "the non-message triggers pass no activity_at and are untouched" do
+    for trigger <- [:receipt, :title, :participant, :pref] do
+      ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, trigger)
+      assert frame_for(drain(), @alice)["updated_at"] == @stale_row_updated_at
+    end
+  end
+
+  test "an unparseable or missing activity_at degrades to the row's own value, never to nil" do
+    for bad <- [nil, "", "not-a-timestamp", 12_345] do
+      ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
+        activity_at: bad
+      )
+
+      assert frame_for(drain(), @alice)["updated_at"] == @stale_row_updated_at
+    end
+  end
+
+  test "the floor does not disturb the rest of the row, including the object-key guard" do
+    frame =
+      ConversationBroadcast.broadcast_updated(FakeEndpoint, @conversation, @alice, :message,
+        activity_at: "2026-07-14T10:05:31.204118Z"
+      )
+      |> then(fn :ok -> drain() end)
+      |> frame_for(@bob)
+
+    assert frame["unread_count"] == 2
+    assert frame["last_message_preview"] == "hello"
+    assert frame["group_avatar_media_id"] == "gm-1"
+    refute Map.has_key?(frame, "group_avatar_object_key")
+    refute Map.has_key?(frame, "user_id")
+    # Exactly one updated_at key, in the wire's string style — never both shapes.
+    assert Enum.count(frame, fn {k, _} -> to_string(k) == "updated_at" end) == 1
+  end
+
   # --- helpers ---
 
   # The fan-out runs in a Task, so wait generously for the FIRST frame, then sweep up whatever else landed.

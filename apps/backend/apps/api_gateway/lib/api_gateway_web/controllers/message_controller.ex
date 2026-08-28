@@ -37,6 +37,13 @@ defmodule ApiGatewayWeb.MessageController do
     end
   end
 
+  # The committed message's own timestamp, read from whichever key shape the store returned (the
+  # in-process adapter answers atom-keyed, internal HTTP string-keyed).
+  defp created_at(response) when is_map(response),
+    do: Map.get(response, :created_at) || Map.get(response, "created_at")
+
+  defp created_at(_response), do: nil
+
   defp create_message_from_store(conn, conversation_id, params) do
     params = Map.put(params, "conversation_id", conversation_id)
 
@@ -66,10 +73,14 @@ defmodule ApiGatewayWeb.MessageController do
       # is skipped. The sender learns nothing.
       unless dropped? do
         # Live inbox: new preview + updated_at for all, +1 unread for everyone but the sender.
+        # `activity_at` carries the timestamp of the message we JUST committed. Without it this frame
+        # serialises whatever `conversations.last_message_at` holds right now, which under the Scylla
+        # store is still the PREVIOUS message — the Kafka projection has not run yet.
         ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
           conversation_id,
           session.user_id,
-          :message
+          :message,
+          activity_at: created_at(response)
         )
       end
 

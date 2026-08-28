@@ -33,6 +33,9 @@ defmodule SharedInfra.ConversationBroadcast do
     * `:skip_if_unread` — skip when the target's unread equals this number. The `:receipt` trigger snapshots
       the count BEFORE `mark_read` (see `unread_before/2`); re-reading an already-read message changes
       nothing, and an identical row must not be re-broadcast on every such call.
+    * `:activity_at` — the just-committed message's `created_at`, used as a FLOOR on the row's
+      `updated_at`. Required on the `:message` trigger; see `apply_activity_floor/2` for why the
+      re-read alone is not enough.
     * `:removed_user_id` — also send a final `%{conversation_id, removed: true}` frame to a just-removed user.
       They are no longer an active participant, so `inbox_rows` returns NO row for them (the SQL requires
       `left_at IS NULL`); without this frame their inbox would keep a dead row until a refetch.
@@ -101,6 +104,7 @@ defmodule SharedInfra.ConversationBroadcast do
   defp do_broadcast_updated(endpoint, conversation_id, actor_user_id, trigger, opts) do
     removed_user_id = Keyword.get(opts, :removed_user_id)
     skip_if_unread = Keyword.get(opts, :skip_if_unread)
+    activity_at = Keyword.get(opts, :activity_at)
 
     # The removed member's final frame goes out regardless of the row fetch below — they HAVE no row to fetch
     # (inbox_rows requires an active participant), and their inbox must not keep a dead entry.
@@ -119,7 +123,7 @@ defmodule SharedInfra.ConversationBroadcast do
            }) do
       result
       |> rows()
-      |> Enum.each(&broadcast_row(endpoint, &1, skip_if_unread))
+      |> Enum.each(&broadcast_row(endpoint, &1, skip_if_unread, activity_at))
     else
       other ->
         # No rows → NOBODY's inbox updated. Keep the trigger tag: it names which path went dark.
@@ -131,7 +135,7 @@ defmodule SharedInfra.ConversationBroadcast do
     end
   end
 
-  defp broadcast_row(endpoint, row, skip_if_unread) do
+  defp broadcast_row(endpoint, row, skip_if_unread, activity_at) do
     user_id = cget(row, :user_id)
     unread = cget(row, :unread_count)
 
@@ -144,7 +148,11 @@ defmodule SharedInfra.ConversationBroadcast do
         :ok
 
       true ->
-        endpoint.broadcast("user:" <> user_id, "conversation_updated", updated_row(row))
+        endpoint.broadcast(
+          "user:" <> user_id,
+          "conversation_updated",
+          row |> apply_activity_floor(activity_at) |> updated_row()
+        )
     end
   end
 
@@ -178,6 +186,80 @@ defmodule SharedInfra.ConversationBroadcast do
 
   defp rows(result) when is_map(result), do: cget(result, :rows) || []
   defp rows(_result), do: []
+
+  # THE POST-WRITE FLOOR — why re-reading the row is not enough.
+  #
+  # The frame's `updated_at` comes from `conversations.last_message_at`, a DENORMALISED column (086).
+  # Under the Postgres store `InboxProjection.record_message/1` maintains it inside the message's own
+  # transaction, so a read after `create_message` returns is correct. Under the SCYLLA store — which is
+  # what production runs — `ScyllaAdapter.put_message/1` writes the message to Scylla and only STAGES a
+  # Kafka event; the column is written later by the `InboxFromTopic` consumer, deliberately the single
+  # idempotent writer of the unread increment. So this fan-out, which fires the moment `create_message`
+  # returns, re-reads a row the projection has not reached yet and serialises the PREVIOUS message's
+  # timestamp. One frame, one message behind, with no corrected follow-up — exactly what was captured on
+  # device — while a later GET /conversations reads the same column after the consumer landed and is right.
+  #
+  # Applying the projection synchronously would fix the read but double-count unread (it would add a
+  # second writer of the increment, which InboxFromTopic's idempotency design forbids). So instead the
+  # caller carries the committed message's own `created_at` through and it is used as a FLOOR here: the
+  # authoritative value from the write we just performed, applied to the row we just read.
+  #
+  # A FLOOR, never an overwrite. When the projection HAS landed the row already carries this timestamp (or
+  # a newer one, if another message raced in) and nothing changes — so a fresh row is never dragged
+  # backwards, and the triggers that pass no `:activity_at` (`:receipt`, `:title`, `:participant`, `:pref`)
+  # are untouched.
+  #
+  # PREVIEW STALENESS IS NOT FIXED HERE, and that is deliberate: `last_message_body/type` come from the
+  # same unprojected row, but rebuilding the preview would mean copying conversation_service's
+  # `preview_text/2` + `message_kind/2` rules across a release boundary into shared_infra — the second
+  # copy that @inbox_sql's own comment warns drifts. The ordering key is what broke inboxes; the preview
+  # correction belongs with those rules, not beside them.
+  defp apply_activity_floor(row, activity_at) do
+    with {:ok, floor} <- parse_timestamp(activity_at),
+         current = cget(row, :updated_at),
+         true <- newer?(floor, current) do
+      row
+      |> Map.drop([:updated_at, "updated_at"])
+      |> Map.put(key_style(row, :updated_at), format_timestamp(floor))
+    else
+      _ -> row
+    end
+  end
+
+  # The row may be atom- or string-keyed depending on which side of the ConversationClient boundary it
+  # came from; write the replacement back in the SAME style so nothing downstream sees both.
+  defp key_style(row, key) do
+    if Map.has_key?(row, key), do: key, else: to_string(key)
+  end
+
+  defp newer?(floor, current) do
+    case parse_timestamp(current) do
+      {:ok, current_dt} -> DateTime.compare(floor, current_dt) == :gt
+      _ -> true
+    end
+  end
+
+  defp parse_timestamp(%DateTime{} = value), do: {:ok, value}
+
+  defp parse_timestamp(value) when is_binary(value) and value != "" do
+    case DateTime.from_iso8601(value) do
+      {:ok, datetime, _offset} -> {:ok, datetime}
+      _ -> :error
+    end
+  end
+
+  defp parse_timestamp(_value), do: :error
+
+  # Byte-identical to @inbox_sql's to_char format, so a floored frame and a projected one are
+  # indistinguishable on the wire.
+  defp format_timestamp(%DateTime{} = datetime) do
+    # The precision is FORCED to 6 digits first. `%f` renders whatever precision the DateTime carries, so a
+    # timestamp parsed from a fraction-less ISO string ({0, 0}) would render "...:40.0Z" — a different
+    # string shape from the one @inbox_sql's to_char always produces, and clients parse this field.
+    %{DateTime.shift_zone!(datetime, "Etc/UTC") | microsecond: {elem(datetime.microsecond, 0), 6}}
+    |> Calendar.strftime("%Y-%m-%dT%H:%M:%S.%f")
+    |> Kernel.<>("Z")
+  end
 
   # The broadcast payload = the inbox row, minus the routing key (user_id) that told us WHERE to send it.
   # String keys: this is a wire frame, and it must look identical whether the row came back from the

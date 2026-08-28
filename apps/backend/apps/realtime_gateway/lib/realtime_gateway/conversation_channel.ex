@@ -369,6 +369,11 @@ defmodule RealtimeGateway.ConversationChannel do
     })
   end
 
+  defp message_created_at(response) when is_map(response),
+    do: Map.get(response, :created_at) || Map.get(response, "created_at")
+
+  defp message_created_at(_response), do: nil
+
   defp create_message(payload, socket) do
     with :ok <- validate_message_payload(payload),
          {:ok, sender_user_id} <- current_user_id(socket),
@@ -396,11 +401,15 @@ defmodule RealtimeGateway.ConversationChannel do
 
         # Live INBOX row (distinct from the message fan-out above: that wakes an OPEN thread, this wakes every
         # participant's conversation LIST). Per-user unread, fire-and-forget, shared with the HTTP paths.
+        # `activity_at` = the timestamp of the message just committed. The inbox row this reads is the
+        # DENORMALISED conversations.last_message_at; under the Scylla store the Kafka projection has
+        # not written it yet, so without the floor the frame is one message behind.
         SharedInfra.ConversationBroadcast.broadcast_updated(
           socket.endpoint,
           socket.assigns.conversation_id,
           sender_user_id,
-          :message
+          :message,
+          activity_at: message_created_at(response)
         )
       end
 

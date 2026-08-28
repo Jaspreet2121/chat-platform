@@ -492,14 +492,23 @@ defmodule ApiGatewayWeb.V1.MessageController do
     # ...and the INBOX row (new preview, new updated_at, +1 unread for everyone but the sender — the unread
     # SQL excludes your own messages, so no special-casing here). Separate from the message fan-out above:
     # that one tells an OPEN thread about a message; this one tells every participant's INBOX.
+    # `activity_at` is the committed message's own timestamp. The row this fan-out re-reads is the
+    # DENORMALISED conversations.last_message_at, which under the Scylla store is written by the Kafka
+    # projection AFTER this point — without the floor the frame carries the previous message's stamp.
     ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
       conversation_id,
       sender_user_id,
-      :message
+      :message,
+      activity_at: message_created_at(message)
     )
 
     :ok
   end
+
+  defp message_created_at(message) when is_map(message),
+    do: Map.get(message, :created_at) || Map.get(message, "created_at")
+
+  defp message_created_at(_message), do: nil
 
   # Mirror message_created onto each OTHER participant's user:<id> topic — reuse the socket path's logic
   # verbatim (participants via get_conversation, reject nil + the SENDER). Same as
