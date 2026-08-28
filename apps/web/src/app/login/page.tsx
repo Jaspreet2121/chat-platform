@@ -188,7 +188,7 @@ function LoginForm() {
   return (
     <AuthLayout
       icon={<MessagesSquare className="h-6 w-6" aria-hidden />}
-      title="Skifi"
+      title="Growblic"
       tagline="Messaging that feels effortless."
       highlights={HIGHLIGHTS}
       footnote="Protected by one-time passcode authentication."

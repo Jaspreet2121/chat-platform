@@ -132,7 +132,7 @@ export default function LinkPage() {
   return (
     <AuthLayout
       icon={<QrCode className="h-6 w-6" aria-hidden />}
-      title="Skifi"
+      title="Growblic"
       tagline="Link this browser to your phone."
       footnote="The code changes every 60 seconds and works only once."
     >
@@ -140,7 +140,7 @@ export default function LinkPage() {
         <div className="space-y-1">
           <h1 className="font-display text-xl font-semibold text-fg">Link with phone</h1>
           <p className="text-sm text-muted">
-            Open Skifi on your phone → Settings → Linked devices → Link a device → scan this code.
+            Open Growblic on your phone → Settings → Linked devices → Link a device → scan this code.
           </p>
         </div>
 

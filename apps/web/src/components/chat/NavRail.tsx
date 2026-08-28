@@ -100,26 +100,26 @@ function DesktopRail({
         onClick={() => onSelectView?.("chats")}
         className={railItemClass(activeView === "chats")}
         aria-current={activeView === "chats" ? "page" : undefined}
-        title="Messages"
+        title="Chat"
       >
         <MessageCircle className="h-5 w-5" aria-hidden />
         {hasUnread ? <UnreadDot /> : null}
-        <span className="sr-only">Messages</span>
+        <span className="sr-only">Chat</span>
       </button>
       <button
         type="button"
         onClick={() => onSelectView?.("calls")}
         className={railItemClass(activeView === "calls")}
         aria-current={activeView === "calls" ? "page" : undefined}
-        title="Calls"
+        title="Call"
       >
         <Phone className="h-5 w-5" aria-hidden />
-        <span className="sr-only">Calls</span>
+        <span className="sr-only">Call</span>
       </button>
       {/* Dating (105) — its own top-level route; visible always (routes to setup when off). */}
-      <a href="/dating" className={railItemClass(false)} title="Dating">
+      <a href="/dating" className={railItemClass(false)} title="Matches">
         <Heart className="h-5 w-5" aria-hidden />
-        <span className="sr-only">Dating</span>
+        <span className="sr-only">Matches</span>
       </a>
       <button type="button" onClick={onNewGroup} className={railItemClass(false)} title="New group">
         <Users className="h-5 w-5" aria-hidden />
@@ -218,7 +218,7 @@ function MobileTabBar({
             <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-[#8de08a]" aria-hidden />
           ) : null}
         </span>
-        <span className="max-w-full truncate leading-none">Messages</span>
+        <span className="max-w-full truncate leading-none">Chat</span>
       </button>
 
       <button
@@ -231,18 +231,18 @@ function MobileTabBar({
         <span className="flex h-6 w-6 items-center justify-center">
           <Phone className="h-5 w-5" aria-hidden />
         </span>
-        <span className="max-w-full truncate leading-none">Calls</span>
+        <span className="max-w-full truncate leading-none">Call</span>
       </button>
 
-      <a href="/dating" aria-label="Dating" className={tabClass(false)}>
+      <a href="/dating" aria-label="Matches" className={tabClass(false)}>
         <span className="flex h-6 w-6 items-center justify-center">
           <Heart className="h-5 w-5" aria-hidden />
         </span>
-        <span className="max-w-full truncate leading-none">Dating</span>
+        <span className="max-w-full truncate leading-none">Matches</span>
       </a>
 
       {/* You — WhatsApp-style: profile photo in the same 24px icon slot + a "You" label on the same
-          baseline as Messages/Calls, so all three tabs share one column structure and vertical
+          baseline as Chat/Call, so all three tabs share one column structure and vertical
           baseline (no floating-high avatar). The active pill hugs the column. */}
       <button
         type="button"

@@ -31,7 +31,7 @@ export function EncryptionConfirmSheet({
         <h2 className="mt-4 text-center text-lg font-semibold text-fg">Turn on encryption?</h2>
         <ul className="mt-3 space-y-1.5 text-sm text-muted">
           <li>• Messages become end-to-end encrypted — only you two can read them.</li>
-          <li>• Both of you need to have opened Skifi at least once so your keys are registered.</li>
+          <li>• Both of you need to have opened Growblic at least once so your keys are registered.</li>
           <li>• This can&apos;t be turned back off — to leave, start a new chat.</li>
           <li>• Attachments aren&apos;t available in encrypted chats yet.</li>
         </ul>

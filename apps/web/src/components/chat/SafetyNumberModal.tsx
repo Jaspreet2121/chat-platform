@@ -36,7 +36,7 @@ export function SafetyNumberModal({ peerUserId, peerName, onClose }: SafetyNumbe
         const peers = await fetchUserKeys([peerUserId]);
         const peerDevice = peers.find((u) => u.user_id === peerUserId)?.devices?.[0];
         if (!peerDevice) {
-          if (!cancelled) setError("Your contact hasn't opened Skifi on a device yet.");
+          if (!cancelled) setError("Your contact hasn't opened Growblic on a device yet.");
           return;
         }
 

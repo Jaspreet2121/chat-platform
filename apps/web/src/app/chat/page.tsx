@@ -1522,7 +1522,7 @@ export default function ChatPage() {
       const code = error instanceof ApiRequestError ? error.code : undefined;
       setEncryptError(
         code === "secret.peer_keys_missing"
-          ? "Ask them to open Skifi once so their keys register, then try again."
+          ? "Ask them to open Growblic once so their keys register, then try again."
           : code === "secret.not_supported"
             ? "Encryption is only available in 1:1 chats."
             : error instanceof Error

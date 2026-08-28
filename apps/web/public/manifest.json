@@ -1,6 +1,6 @@
 {
-  "name": "Skifi",
-  "short_name": "Skifi",
+  "name": "Growblic: Chat, Call, Meet",
+  "short_name": "Growblic",
   "description": "Chat with the people who matter.",
   "start_url": "/chat",
   "display": "standalone",
