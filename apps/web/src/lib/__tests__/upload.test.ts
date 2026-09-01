@@ -59,7 +59,8 @@ describe("uploadMediaBlob — the 3-step sequence", () => {
         blob: blob(),
         filename: "photo.png",
         contentType: "image/png",
-        purpose: "message"
+        purpose: "message",
+        conversationId: "c1"
       })
     ).rejects.toThrow(/500/);
 
@@ -126,6 +127,7 @@ describe("uploadMediaBlob — the 3-step sequence", () => {
         filename: "f",
         contentType: "image/png",
         purpose: "message",
+        conversationId: "c1",
         uploadErrorMessage: (status) => `Forward upload failed with ${status}.`
       })
     ).rejects.toThrow("Forward upload failed with 503.");
@@ -153,6 +155,7 @@ describe("uploadMediaBlob — the 3-step sequence", () => {
       filename: "photo.png",
       contentType: "image/png",
       purpose: "message",
+      conversationId: "c1",
       onStage: (stage) => stages.push(stage)
     });
 
@@ -169,10 +172,73 @@ describe("uploadMediaBlob — the 3-step sequence", () => {
         filename: "photo.png",
         contentType: "image/png",
         purpose: "message",
+        conversationId: "c1",
         onStage: (stage) => failedStages.push(stage)
       })
     ).rejects.toThrow();
 
     expect(failedStages).toEqual(["describing", "uploading"]);
+  });
+});
+
+describe("uploadMediaBlob — the message anchor guard", () => {
+  // The spread that builds the request body drops conversation_id when it is falsy, so an anchorless
+  // message upload was indistinguishable on the wire from one that never needed an anchor. That is a
+  // caller bug; it now throws locally instead of reaching the server.
+  it("sends both fields when a message attachment has its conversation", async () => {
+    const calls = routes();
+
+    await uploadMediaBlob({
+      blob: blob(),
+      filename: "photo.png",
+      contentType: "image/png",
+      purpose: "message",
+      conversationId: "c1"
+    });
+
+    const body = calls[0].body as Record<string, unknown>;
+    expect(body.purpose).toBe("message");
+    expect(body.conversation_id).toBe("c1");
+  });
+
+  it("THROWS on a message attachment with no conversation — nothing is sent", async () => {
+    for (const missing of [undefined, ""]) {
+      const calls = routes();
+
+      await expect(
+        uploadMediaBlob({
+          blob: blob(),
+          filename: "photo.png",
+          contentType: "image/png",
+          purpose: "message",
+          conversationId: missing
+        })
+      ).rejects.toThrow(/conversation_id is required/);
+
+      // The point of failing locally: the describe request never happened.
+      expect(calls).toHaveLength(0);
+
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("leaves the other purposes alone — an avatar still uploads with no conversation", async () => {
+    // This is what stops the guard being widened to every purpose: avatars and status posts have no
+    // conversation to give, and throwing for them would break three working call sites.
+    for (const purpose of ["user_avatar", "group_avatar", "status", "sealed_media"] as const) {
+      const calls = routes();
+
+      const result = await uploadMediaBlob({
+        blob: blob(),
+        filename: "photo.png",
+        contentType: "image/png",
+        purpose
+      });
+
+      expect(result.mediaId).toBe("m-new");
+      expect(calls.length).toBeGreaterThan(0);
+
+      vi.unstubAllGlobals();
+    }
   });
 });

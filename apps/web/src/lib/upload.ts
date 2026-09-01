@@ -55,6 +55,19 @@ export async function uploadMediaBlob({
   uploadErrorMessage = (status) => `Upload failed with ${status}`,
   onStage
 }: UploadMediaBlobInput): Promise<UploadedMedia> {
+  // FAIL HERE, NOT ON THE WIRE. The spread below drops conversation_id whenever it is falsy, so a
+  // message attachment sent with no conversation used to become a perfectly well-formed anchorless
+  // request — the server accepted it, and the asset's only route to a recipient was gone. The
+  // conversation is what authorizes an attachment; a message upload without one is a bug in the
+  // caller, and it should surface at the call site with a stack that names it rather than as a 422
+  // (or, worse, as a silently unreadable asset).
+  //
+  // Scoped to "message" deliberately: avatars and status posts have no conversation, and sealed_media
+  // is already refused server-side with its own 422.
+  if (purpose === "message" && !conversationId) {
+    throw new Error("uploadMediaBlob: conversation_id is required for a message attachment");
+  }
+
   onStage?.("describing");
   const upload = await createMediaUpload({
     filename,
