@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getNearbySettings, updateNearbySettings } from "@/lib/api";
-import { bucketLabel } from "@/components/chat/NearbyPeopleModal";
+import { bucketLabel, nearbyCta } from "@/components/chat/NearbyPeopleModal";
 import { installFetch, json, type RecordedCall } from "./support/fetchMock";
 
 /**
@@ -9,6 +9,17 @@ import { installFetch, json, type RecordedCall } from "./support/fetchMock";
  * distance-bucket label. The bucket matters because the gateway overwrites the numeric GPS bucket
  * with the STRING "ble" when a Bluetooth proximity marker is live — the old renderer interpolated it
  * blindly and produced "Within ble m".
+ *
+ * Also the per-row CTA mapping. The four relationship states each get a DIFFERENT control, and the
+ * two that matter are opposites: an existing connection gets "Message" (opens the chat) while a
+ * stranger gets "Send request" (fires a connection request). Swapping those two would silently
+ * message people you have not connected to, or offer to befriend people you already chat with —
+ * neither is a crash, so only an assertion catches it.
+ *
+ * SCOPE: this locks the LABELS and the branch identity, not the handler wiring. Which onClick each
+ * kind is bound to lives in the JSX and needs a component renderer to assert; there is none in this
+ * suite (see vitest.config.ts — the include glob is *.test.ts and nothing renders React), and
+ * adding one is a separate infrastructure decision.
  */
 
 const body = (calls: RecordedCall[], n = 0) => calls[n].body as Record<string, unknown>;
@@ -62,5 +73,48 @@ describe("distance bucket label", () => {
   it("renders the BLE bucket as 'Very close', never 'Within ble m'", () => {
     expect(bucketLabel("ble")).toBe("Very close");
     expect(bucketLabel("ble")).not.toContain("m");
+  });
+});
+
+describe("nearby CTA mapping", () => {
+  it("gives an existing connection a Message action", () => {
+    expect(nearbyCta("connected")).toEqual({ kind: "message", label: "Message" });
+  });
+
+  it("gives a stranger a Send request action", () => {
+    expect(nearbyCta("none")).toEqual({ kind: "request", label: "Send request" });
+  });
+
+  it("shows a sent request as pending, with no action", () => {
+    expect(nearbyCta("sent")).toEqual({ kind: "requested", label: "Requested" });
+  });
+
+  it("points an incoming request at the list above, with no action", () => {
+    expect(nearbyCta("received")).toEqual({ kind: "check", label: "Check request above" });
+  });
+
+  it("never gives two relationships the same control", () => {
+    // The whole point of the mapping: four states, four distinct outcomes. A refactor that
+    // collapses any pair — most dangerously connected and none — fails here even if each
+    // individual assertion above were somehow satisfied.
+    const all = (["connected", "none", "sent", "received"] as const).map(nearbyCta);
+
+    expect(new Set(all.map((cta) => cta.kind)).size).toBe(4);
+    expect(new Set(all.map((cta) => cta.label)).size).toBe(4);
+  });
+
+  it("falls through to Send request for an unrecognised relationship", () => {
+    // PINNED BEHAVIOUR, not a preference: the ternary chain this replaced ended in an `else` that
+    // caught "none" and anything unknown alike. A future fifth server value therefore offers a
+    // request rather than rendering an empty row on an old client.
+    const unknown = "blocked" as unknown as Parameters<typeof nearbyCta>[0];
+
+    expect(nearbyCta(unknown)).toEqual({ kind: "request", label: "Send request" });
+  });
+
+  it("never returns a blank label", () => {
+    for (const value of ["connected", "none", "sent", "received"] as const) {
+      expect(nearbyCta(value).label.trim().length).toBeGreaterThan(0);
+    }
   });
 });

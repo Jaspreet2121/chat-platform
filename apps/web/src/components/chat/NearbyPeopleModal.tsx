@@ -31,6 +31,33 @@ export function bucketLabel(bucket: NearbyBucket): string {
   return bucket === "ble" ? "Very close" : `Within ${bucket} m`;
 }
 
+/** What a nearby row's trailing control says and does, decided purely from the server's
+ *  `relationship`. Extracted so the wording is testable without a component renderer (the same
+ *  reason `bucketLabel` above is exported) — the JSX below renders `label` and switches on `kind`,
+ *  so a literal can never drift from the branch that is supposed to produce it.
+ *
+ *  UNKNOWN VALUES FALL THROUGH TO "request", deliberately preserving the behaviour of the ternary
+ *  chain this replaced: its final `else` caught "none" and anything unrecognised alike. If the
+ *  server ever adds a fifth relationship, an old client offers to send a request rather than
+ *  rendering nothing — a wrong-but-harmless control beats a dead row, and the request endpoint
+ *  rejects a duplicate anyway. */
+export type NearbyCtaKind = "message" | "requested" | "check" | "request";
+
+export type NearbyCta = { kind: NearbyCtaKind; label: string };
+
+export function nearbyCta(relationship: NearbyPerson["relationship"]): NearbyCta {
+  switch (relationship) {
+    case "connected":
+      return { kind: "message", label: "Message" };
+    case "sent":
+      return { kind: "requested", label: "Requested" };
+    case "received":
+      return { kind: "check", label: "Check request above" };
+    default:
+      return { kind: "request", label: "Send request" };
+  }
+}
+
 export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleModalProps) {
   const [radius, setRadius] = useState<100 | 200>(200);
   const [people, setPeople] = useState<NearbyPerson[]>([]);
@@ -303,32 +330,40 @@ export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleMo
                   No opted-in people found within {radius} m.
                 </p>
               ) : (
-                people.map((person) => (
-                  <PersonRow
-                    key={person.user_id}
-                    profile={person}
-                    subtitle={bucketLabel(person.distance_bucket_m)}
-                  >
-                    {person.relationship === "connected" ? (
-                      <Button size="sm" variant="ghost" onClick={() => void onStartDirectChat(person)}>
-                        Message
-                      </Button>
-                    ) : person.relationship === "sent" ? (
-                      <span className="text-xs text-faint">Requested</span>
-                    ) : person.relationship === "received" ? (
-                      <span className="text-xs text-brand">Check request above</span>
-                    ) : (
-                      <Button
-                        size="sm"
-                        onClick={() => void sendRequest(person)}
-                        isLoading={busyId === person.user_id}
-                        leftIcon={<UserPlus className="h-4 w-4" aria-hidden />}
-                      >
-                        Send request
-                      </Button>
-                    )}
-                  </PersonRow>
-                ))
+                people.map((person) => {
+                  const cta = nearbyCta(person.relationship);
+
+                  return (
+                    <PersonRow
+                      key={person.user_id}
+                      profile={person}
+                      subtitle={bucketLabel(person.distance_bucket_m)}
+                    >
+                      {cta.kind === "message" ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => void onStartDirectChat(person)}
+                        >
+                          {cta.label}
+                        </Button>
+                      ) : cta.kind === "requested" ? (
+                        <span className="text-xs text-faint">{cta.label}</span>
+                      ) : cta.kind === "check" ? (
+                        <span className="text-xs text-brand">{cta.label}</span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          onClick={() => void sendRequest(person)}
+                          isLoading={busyId === person.user_id}
+                          leftIcon={<UserPlus className="h-4 w-4" aria-hidden />}
+                        >
+                          {cta.label}
+                        </Button>
+                      )}
+                    </PersonRow>
+                  );
+                })
               )}
             </Section>
           ) : null}
