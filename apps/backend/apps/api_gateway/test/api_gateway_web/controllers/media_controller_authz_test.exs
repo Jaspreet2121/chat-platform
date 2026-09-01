@@ -271,13 +271,54 @@ defmodule ApiGatewayWeb.MediaControllerAuthzTest do
       assert body(conn)["error"]["code"] == "media.not_found"
     end
 
-    test "an UNKNOWN purpose still coerces to message (the deliberate fallback, unchanged)" do
-      for unknown <- ["nonsense", "", nil] do
-        params = create_params(%{"purpose" => unknown})
+    # REPLACES "an UNKNOWN purpose still coerces to message". That coercion is gone: it made a forgotten
+    # field, a typo and a real message attachment indistinguishable at the boundary, and the next slice
+    # gives "message" a rule that a silently-coerced request would then fail for an unwritten reason.
+    test "a MISSING purpose → 422 media.purpose_required" do
+      for missing <- [nil, ""] do
+        params = create_params(%{"purpose" => missing})
         conn = MediaController.create_upload(upload_conn(@member), params)
 
-        assert conn.status == 201
-        assert body(conn)["echo_purpose"] == "message"
+        assert conn.status == 422
+        assert body(conn)["error"]["code"] == "media.purpose_required"
+      end
+    end
+
+    test "a purpose key ABSENT from the body entirely → 422 media.purpose_required" do
+      # Distinct from an explicit nil: this is the shape our own docs used to publish.
+      conn = MediaController.create_upload(upload_conn(@member), create_params(%{}))
+
+      assert conn.status == 422
+      assert body(conn)["error"]["code"] == "media.purpose_required"
+    end
+
+    test "an UNKNOWN purpose → 422 media.purpose_invalid, a DIFFERENT code from missing" do
+      conn = MediaController.create_upload(upload_conn(@member), create_params(%{"purpose" => "banana"}))
+
+      assert conn.status == 422
+      assert body(conn)["error"]["code"] == "media.purpose_invalid"
+
+      # The two failures must stay distinguishable — an integrator has to know whether they sent
+      # nothing or sent something we do not serve.
+      missing = MediaController.create_upload(upload_conn(@member), create_params(%{}))
+      refute body(conn)["error"]["code"] == body(missing)["error"]["code"]
+    end
+
+    test "every VALID purpose still passes through unchanged" do
+      # sealed_media carries its anchor (it is the one purpose that already requires one); the rest do
+      # not need one. Nothing here may change until the flip slice.
+      for {purpose, extra} <- [
+            {"message", %{"conversation_id" => @convo}},
+            {"user_avatar", %{}},
+            {"group_avatar", %{"conversation_id" => @convo}},
+            {"status", %{}},
+            {"sealed_media", %{"conversation_id" => @convo}}
+          ] do
+        params = create_params(Map.merge(%{"purpose" => purpose}, extra))
+        conn = MediaController.create_upload(upload_conn(@admin), params)
+
+        assert conn.status == 201, "#{purpose} should still be accepted"
+        assert body(conn)["echo_purpose"] == purpose
       end
     end
 
@@ -345,12 +386,36 @@ defmodule ApiGatewayWeb.MediaControllerAuthzTest do
       assert conn.status == 403
     end
 
-    test "an UNKNOWN purpose still coerces to message (the deliberate fallback, unchanged)" do
-      params = create_params(%{"purpose" => "nonsense"})
+    # Multipart init runs the SAME upload_purpose/1 helper as the single-PUT create — one choke point,
+    # so the two can never drift the way the purpose whitelist itself once did.
+    test "multipart init rejects a MISSING purpose → 422 media.purpose_required" do
+      conn = MediaController.create_multipart(upload_conn(@member), create_params(%{}))
+
+      assert conn.status == 422
+      assert body(conn)["error"]["code"] == "media.purpose_required"
+    end
+
+    test "multipart init rejects an UNKNOWN purpose → 422 media.purpose_invalid" do
+      params = create_params(%{"purpose" => "banana"})
       conn = MediaController.create_multipart(upload_conn(@member), params)
 
-      assert conn.status == 201
-      assert body(conn)["echo_purpose"] == "message"
+      assert conn.status == 422
+      assert body(conn)["error"]["code"] == "media.purpose_invalid"
+    end
+
+    test "multipart init still accepts every VALID purpose" do
+      for {purpose, extra} <- [
+            {"message", %{"conversation_id" => @convo}},
+            {"user_avatar", %{}},
+            {"status", %{}},
+            {"sealed_media", %{"conversation_id" => @convo}}
+          ] do
+        params = create_params(Map.merge(%{"purpose" => purpose}, extra))
+        conn = MediaController.create_multipart(upload_conn(@admin), params)
+
+        assert conn.status == 201, "#{purpose} should still be accepted by multipart init"
+        assert body(conn)["echo_purpose"] == purpose
+      end
     end
 
     test "parts / complete / abort inject the session identity and the path upload_id" do

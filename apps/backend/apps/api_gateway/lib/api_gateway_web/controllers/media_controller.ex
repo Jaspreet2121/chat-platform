@@ -25,6 +25,10 @@ defmodule ApiGatewayWeb.MediaController do
   @upload_daily_limit 500
   @upload_daily_window_seconds 86_400
 
+  # The ONLY accepted upload purposes. Declared here (not beside upload_purpose/1) because the error
+  # responders interpolate it and a module attribute must be set before it is read.
+  @upload_purposes ["message", "user_avatar", "group_avatar", "status", "sealed_media"]
+
   def create_upload(conn, params) do
     if media_persistence_enabled?() do
       create_upload_with_session(conn, params)
@@ -47,12 +51,14 @@ defmodule ApiGatewayWeb.MediaController do
   end
 
   defp create_upload_with_session(conn, params) do
-    purpose = upload_purpose(params)
     conversation_id = params["conversation_id"]
 
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         # Purpose is validated AFTER the session on purpose: a caller with no token gets 401 and
+         # learns nothing about which purposes this deployment accepts.
+         {:ok, purpose} <- upload_purpose(params),
          :ok <- upload_rate_limit(session.user_id),
          # Membership (message) / owner-admin (group_avatar) is enforced HERE — the gateway can reach
          # conversation_service; the media service can't. Only enforced when a conversation_id is present
@@ -73,6 +79,8 @@ defmodule ApiGatewayWeb.MediaController do
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :media_unavailable} -> service_unavailable(conn)
       {:error, :media_too_large} -> too_large(conn)
+      {:error, :media_purpose_required} -> purpose_required(conn)
+      {:error, :media_purpose_invalid} -> purpose_invalid(conn)
       {:error, :media_conversation_required} -> conversation_required(conn)
       {:error, :conversation_unavailable} -> service_unavailable(conn)
       # A non-participant (message) → 404, no existence reveal. A member-but-not-admin (group_avatar) →
@@ -126,6 +134,22 @@ defmodule ApiGatewayWeb.MediaController do
     )
   end
 
+  defp purpose_required(conn) do
+    ErrorResponse.unprocessable_entity(
+      conn,
+      "media.purpose_required",
+      "purpose is required: one of #{Enum.join(@upload_purposes, ", ")}"
+    )
+  end
+
+  defp purpose_invalid(conn) do
+    ErrorResponse.unprocessable_entity(
+      conn,
+      "media.purpose_invalid",
+      "purpose must be one of #{Enum.join(@upload_purposes, ", ")}"
+    )
+  end
+
   defp rate_limited(conn, retry_after_seconds) do
     conn
     |> put_resp_header("retry-after", Integer.to_string(retry_after_seconds))
@@ -145,10 +169,11 @@ defmodule ApiGatewayWeb.MediaController do
   """
   def create_multipart(conn, params) do
     if media_persistence_enabled?() do
-      purpose = upload_purpose(params)
       conversation_id = params["conversation_id"]
 
       with {:ok, session} <- session(conn),
+           # Same ordering rule as the single-PUT create: authenticate first, then validate the body.
+           {:ok, purpose} <- upload_purpose(params),
            :ok <- upload_rate_limit(session.user_id),
            :ok <- authorize_upload(purpose, conversation_id, session.user_id),
            {:ok, response} <-
@@ -253,6 +278,12 @@ defmodule ApiGatewayWeb.MediaController do
 
       {:error, :media_too_large} ->
         too_large(conn)
+
+      {:error, :media_purpose_required} ->
+        purpose_required(conn)
+
+      {:error, :media_purpose_invalid} ->
+        purpose_invalid(conn)
 
       {:error, :media_conversation_required} ->
         conversation_required(conn)
@@ -369,14 +400,24 @@ defmodule ApiGatewayWeb.MediaController do
   # the application/octet-stream that MediaService.Media REQUIRES for sealed media, so every E2EE
   # attachment 400'd as media.invalid_request. Adding a purpose to the media service means adding it
   # here too (and to authorize_upload/3 above, which already had its sealed_media clause).
+  # EXPLICIT OR REJECTED. This used to coerce a missing OR unrecognised purpose to "message", which
+  # made three separate things indistinguishable at the boundary: a real message attachment, a client
+  # that forgot the field, and a typo. That default is load-bearing in the wrong direction — the next
+  # slice makes "message" require a conversation anchor, and a silent coercion would route every
+  # purpose-less request into that rule and 422 it for a reason its author never wrote down.
+  #
+  # The two failures are told apart on purpose: "required" is a client that sent nothing (the shape our
+  # own docs used to show), "invalid" is a client that sent something we do not serve. Collapsing them
+  # would leave an integrator guessing which of the two they did.
+  #
+  # NOTE the DB column still defaults to 'message' (072) — that backstops legacy rows and is untouched;
+  # nothing can reach the insert without an explicit purpose now.
   defp upload_purpose(params) do
     case params["purpose"] do
-      purpose
-      when purpose in ["message", "user_avatar", "group_avatar", "status", "sealed_media"] ->
-        purpose
-
-      _ ->
-        "message"
+      purpose when purpose in @upload_purposes -> {:ok, purpose}
+      nil -> {:error, :media_purpose_required}
+      "" -> {:error, :media_purpose_required}
+      _ -> {:error, :media_purpose_invalid}
     end
   end
 
