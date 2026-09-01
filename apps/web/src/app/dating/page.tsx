@@ -298,7 +298,7 @@ export default function DatingPage() {
       </header>
 
       {/* Sub-nav */}
-      <nav aria-label="Dating sections" className="flex border-b border-border/60 px-2">
+      <nav aria-label="Matches sections" className="flex border-b border-border/60 px-2">
         {tabs.map(({ id, label, icon: Icon, badge }) => {
           const disabled = !enabled && id !== "profile";
           return (

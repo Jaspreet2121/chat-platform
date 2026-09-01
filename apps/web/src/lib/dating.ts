@@ -60,7 +60,7 @@ export function validateSetup(draft: SetupDraft, today = new Date()): SetupError
   } else {
     const age = computeAge(draft.dob, today);
     if (age === null) errors.dob = "That date doesn't look right.";
-    else if (age < 18) errors.dob = "You must be 18 or older to use Dating.";
+    else if (age < 18) errors.dob = "You must be 18 or older to use Matches.";
   }
 
   if (!draft.gender) errors.gender = "Pick your gender.";
@@ -77,7 +77,7 @@ export function validateSetup(draft: SetupDraft, today = new Date()): SetupError
 export function setupServerError(code: string | undefined): string | null {
   switch (code) {
     case "dating.underage":
-      return "You must be 18 or older to use Dating.";
+      return "You must be 18 or older to use Matches.";
     case "dating.dob_locked":
       return "Your date of birth can no longer be changed.";
     case "dating.photo_not_owned":

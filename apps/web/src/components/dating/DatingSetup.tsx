@@ -213,7 +213,7 @@ export function DatingSetup({ profile, catalog, onSaved }: DatingSetupProps) {
           <h1 className="text-xl font-semibold text-fg">Matches on Growblic</h1>
           <p className="mt-1 text-sm text-muted">
             A separate, opt-in space. Your chats and profile stay untouched — only people in the
-            dating deck see your dating card, and only while you keep it on.
+            Matches deck see your card, and only while you keep it on.
           </p>
         </header>
       )}
@@ -234,7 +234,7 @@ export function DatingSetup({ profile, catalog, onSaved }: DatingSetupProps) {
         </p>
         {(errors.dob || dobUnder18) && (
           <p className="mt-1 text-xs text-red-500" role="alert">
-            {errors.dob ?? "You must be 18 or older to use Dating."}
+            {errors.dob ?? "You must be 18 or older to use Matches."}
           </p>
         )}
       </section>
@@ -555,7 +555,7 @@ export function DatingSetup({ profile, catalog, onSaved }: DatingSetupProps) {
             </Button>
             {confirmDisable ? (
               <div className="rounded-xl border border-border bg-elevated p-3 text-sm">
-                <p className="text-fg">Turn Dating off?</p>
+                <p className="text-fg">Turn Matches off?</p>
                 <p className="mt-1 text-xs text-muted">
                   You&apos;ll disappear from everyone&apos;s deck immediately. Your profile is kept
                   for when you come back.
@@ -571,13 +571,13 @@ export function DatingSetup({ profile, catalog, onSaved }: DatingSetupProps) {
               </div>
             ) : (
               <Button type="button" variant="ghost" onClick={() => setConfirmDisable(true)}>
-                Turn off Dating
+                Turn off Matches
               </Button>
             )}
           </>
         ) : (
           <Button type="button" onClick={() => void save(true)} disabled={saving || uploading}>
-            {saving ? "Turning on…" : "Turn on Dating"}
+            {saving ? "Turning on…" : "Turn on Matches"}
           </Button>
         )}
       </div>
