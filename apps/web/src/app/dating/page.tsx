@@ -294,7 +294,7 @@ export default function DatingPage() {
         >
           <ArrowLeft className="h-5 w-5" aria-hidden />
         </button>
-        <h1 className="text-base font-semibold text-fg">Dating</h1>
+        <h1 className="text-base font-semibold text-fg">Matches</h1>
       </header>
 
       {/* Sub-nav */}

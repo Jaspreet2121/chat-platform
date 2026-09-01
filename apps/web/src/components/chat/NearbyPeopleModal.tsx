@@ -311,7 +311,7 @@ export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleMo
                   >
                     {person.relationship === "connected" ? (
                       <Button size="sm" variant="ghost" onClick={() => void onStartDirectChat(person)}>
-                        Say hi
+                        Message
                       </Button>
                     ) : person.relationship === "sent" ? (
                       <span className="text-xs text-faint">Requested</span>
@@ -324,7 +324,7 @@ export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleMo
                         isLoading={busyId === person.user_id}
                         leftIcon={<UserPlus className="h-4 w-4" aria-hidden />}
                       >
-                        Add
+                        Send request
                       </Button>
                     )}
                   </PersonRow>

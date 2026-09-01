@@ -210,7 +210,7 @@ export function DatingSetup({ profile, catalog, onSaved }: DatingSetupProps) {
           <div className="accent-gradient mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-2xl shadow-accent-glow">
             <Heart className="h-7 w-7 text-white" aria-hidden />
           </div>
-          <h1 className="text-xl font-semibold text-fg">Dating on Growblic</h1>
+          <h1 className="text-xl font-semibold text-fg">Matches on Growblic</h1>
           <p className="mt-1 text-sm text-muted">
             A separate, opt-in space. Your chats and profile stay untouched — only people in the
             dating deck see your dating card, and only while you keep it on.
