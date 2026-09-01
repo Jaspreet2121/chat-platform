@@ -366,7 +366,7 @@ defmodule MediaService.Media do
           # Optional expected purpose: an avatar/message call-site refuses to presign an asset of the wrong
           # purpose (so a poisoned avatar_media_id can't presign a message attachment). Absent → no check
           # (media_controller.download already authorized the specific asset).
-          download_persisted(media_id, app_id, optional_attr(attrs, "purpose"))
+          download_persisted(media_id, app_id, expected_purpose(attrs))
         end
       else
         {:ok,
@@ -537,7 +537,27 @@ defmodule MediaService.Media do
     Ecto.Query.CastError -> {:error, :not_found}
   end
 
+  # The expected-purpose filter, read WITHOUT optional_attr/2 on purpose: that helper answers nil for
+  # anything non-binary, so a list would have silently become "no check at all" — turning an assertion
+  # into a bypass at the one call site that most needs it.
+  defp expected_purpose(attrs) do
+    case get_attr(attrs, "purpose") do
+      [_ | _] = purposes -> Enum.filter(purposes, &(is_binary(&1) and &1 != ""))
+      value when is_binary(value) and value != "" -> value
+      _ -> nil
+    end
+  end
+
   defp purpose_ok?(_asset, nil), do: true
+  defp purpose_ok?(_asset, []), do: true
+
+  # A LIST admits several purposes while keeping the assertion — needed since 113, where a message
+  # attachment may legitimately be either "message" or the server-generated "user_asset" (a /qr send).
+  # Still an assertion, not a bypass: anything outside the list is refused, so a poisoned
+  # avatar_media_id can no more presign an attachment than before.
+  defp purpose_ok?(%MediaAsset{purpose: purpose}, expected) when is_list(expected),
+    do: purpose in expected
+
   defp purpose_ok?(%MediaAsset{purpose: purpose}, expected), do: purpose == expected
 
   defp lookup_asset(media_id, app_id) do
@@ -692,7 +712,18 @@ defmodule MediaService.Media do
       # purpose test in MediaService.MediaTest, which now enumerates this list.
       # sealed_media (110): an E2EE attachment — ciphertext bytes, stored + served opaquely (the
       # media service never processes any purpose's bytes). Download ACL = message media.
-      purpose when purpose in ["message", "user_avatar", "group_avatar", "status", "sealed_media"] ->
+      # user_asset (113): server-generated, user-owned, no conversation (the UPI QR). INTERNAL ONLY —
+      # deliberately absent from the gateway's @upload_purposes and v1's @purposes, so no client can
+      # ask for it; only in-process callers like UserService.UpiQr reach this list.
+      purpose
+      when purpose in [
+             "message",
+             "user_avatar",
+             "group_avatar",
+             "status",
+             "sealed_media",
+             "user_asset"
+           ] ->
         {:ok, purpose}
 
       _ ->

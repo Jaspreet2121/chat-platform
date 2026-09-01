@@ -107,8 +107,17 @@ defmodule UserService.UpiQr do
   defmodule MediaWriter do
     @moduledoc false
     # The REAL store path: the server IS the uploading client — same rows, same authz shape, same
-    # attachability as any user upload. purpose "message" (no conversation binding) so the asset can
-    # ride the ordinary media-message send path.
+    # attachability as any user upload.
+    #
+    # purpose "user_asset" (113), NOT "message". It still carries no conversation and still rides the
+    # ordinary media-message send path when the user runs /qr — the ACL is identical, the read arm
+    # delegates to the same message-media rule. What changes is that it no longer masquerades as a
+    # chat attachment: "message" rows are about to require a conversation anchor, and a QR has no
+    # conversation to give. Minting it as "message" would have made the server itself the last
+    # producer blocking that rule.
+    #
+    # INTERNAL ONLY: "user_asset" is absent from the gateway and /v1 upload whitelists, so no client
+    # can create one — this in-process call is the only writer.
     @callback store_png(String.t(), String.t(), binary()) ::
                 {:ok, String.t()} | {:error, term()}
 
@@ -117,7 +126,7 @@ defmodule UserService.UpiQr do
              SharedInfra.MediaClient.create_upload(%{
                "owner_user_id" => user_id,
                "app_id" => app_id,
-               "purpose" => "message",
+               "purpose" => "user_asset",
                "filename" => "upi-qr.png",
                "content_type" => "image/png",
                "size_bytes" => byte_size(png),

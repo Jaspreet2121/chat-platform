@@ -60,8 +60,12 @@ defmodule ApiGatewayWeb.ProfilePresenter do
     end
   end
 
-  # Presign the generated QR PNG (a normal "message"-purpose media asset) into upi_qr_url —
-  # best-effort, exactly like the avatar presign; no id / no app / any error → no URL attached.
+  # Presign the generated QR PNG into upi_qr_url — best-effort, exactly like the avatar presign; no id
+  # / no app / any error → no URL attached.
+  #
+  # BOTH purposes are accepted: new QRs are minted "user_asset" (113), every QR generated before that
+  # is still "message", and this presign must keep working for both — a viewer's payment card would
+  # otherwise lose its QR the moment the writer changed.
   defp attach_qr_url(profile) do
     media_id = Map.get(profile, :upi_qr_media_id)
     app_id = Map.get(profile, :app_id)
@@ -71,7 +75,7 @@ defmodule ApiGatewayWeb.ProfilePresenter do
            SharedInfra.MediaClient.get_download_url(%{
              "media_id" => media_id,
              "app_id" => app_id,
-             "purpose" => "message"
+             "purpose" => ["user_asset", "message"]
            }),
          url when is_binary(url) <- Map.get(download, :download_url) do
       Map.put(profile, :upi_qr_url, url)

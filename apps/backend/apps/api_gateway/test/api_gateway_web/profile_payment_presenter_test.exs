@@ -33,8 +33,13 @@ defmodule ApiGatewayWeb.ProfilePaymentPresenterTest do
 
   defmodule MediaStub do
     @moduledoc false
+    # The purpose is echoed into the URL so the assertions can see WHICH purposes the presenter asked
+    # for. Since 113 it asks for both: a QR minted before that migration is still "message", one minted
+    # after is "user_asset", and the payment card has to keep rendering either.
     def get_download_url(%{"media_id" => id, "purpose" => purpose}),
-      do: {:ok, %{download_url: "https://cdn.example/#{purpose}/#{id}"}}
+      do:
+        {:ok,
+         %{download_url: "https://cdn.example/#{Enum.join(List.wrap(purpose), "+")}/#{id}"}}
   end
 
   setup do
@@ -84,7 +89,7 @@ defmodule ApiGatewayWeb.ProfilePaymentPresenterTest do
     assert presented.upi_id == "shop@okaxis"
     assert presented.upi_merchant == %{"mc" => "5411"}
     assert presented.upi_qr_media_id == "qr-media-1"
-    assert presented.upi_qr_url == "https://cdn.example/message/qr-media-1"
+    assert presented.upi_qr_url == "https://cdn.example/user_asset+message/qr-media-1"
     assert presented.profile_visibility["payment"] == "contacts"
   end
 
@@ -92,7 +97,7 @@ defmodule ApiGatewayWeb.ProfilePaymentPresenterTest do
     seen = ProfilePresenter.present(@contact, @owner, card())
     assert seen.upi_id == "shop@okaxis"
     assert seen.payment_name == "Sharma Stores"
-    assert seen.upi_qr_url == "https://cdn.example/message/qr-media-1"
+    assert seen.upi_qr_url == "https://cdn.example/user_asset+message/qr-media-1"
     # Owner-only internals never reach ANY viewer.
     refute Map.has_key?(seen, :upi_merchant)
     refute Map.has_key?(seen, :upi_qr_media_id)

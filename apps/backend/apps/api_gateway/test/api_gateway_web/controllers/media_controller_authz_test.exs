@@ -292,6 +292,29 @@ defmodule ApiGatewayWeb.MediaControllerAuthzTest do
       assert body(conn)["error"]["code"] == "media.purpose_required"
     end
 
+    test "user_asset is INTERNAL — a client asking for it is rejected like any unknown purpose" do
+      # 113 added "user_asset" to the media service's own whitelist so the server can mint UPI QRs.
+      # It must NEVER reach the public whitelist: a client that could create one would be creating
+      # media that bypasses the conversation-anchor rule "message" is about to carry.
+      for params <- [
+            create_params(%{"purpose" => "user_asset"}),
+            create_params(%{"purpose" => "user_asset", "conversation_id" => @convo})
+          ] do
+        conn = MediaController.create_upload(upload_conn(@member), params)
+
+        assert conn.status == 422
+        assert body(conn)["error"]["code"] == "media.purpose_invalid"
+      end
+    end
+
+    test "multipart init also refuses user_asset" do
+      conn =
+        MediaController.create_multipart(upload_conn(@member), create_params(%{"purpose" => "user_asset"}))
+
+      assert conn.status == 422
+      assert body(conn)["error"]["code"] == "media.purpose_invalid"
+    end
+
     test "an UNKNOWN purpose → 422 media.purpose_invalid, a DIFFERENT code from missing" do
       conn = MediaController.create_upload(upload_conn(@member), create_params(%{"purpose" => "banana"}))
 

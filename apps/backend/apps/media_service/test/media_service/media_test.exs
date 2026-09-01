@@ -122,7 +122,10 @@ defmodule MediaService.MediaTest do
   # months before it was uploadable: the upload whitelist was never told, every status test
   # fabricated media ids, and photo/video status 400'd in production while text status worked.
   # Rule: a purpose that exists ANYWHERE downstream must be creatable HERE, through the REAL path.
-  @valid_purposes ["message", "user_avatar", "group_avatar", "status", "sealed_media"]
+  # "user_asset" (113) is INTERNAL — the public whitelists deliberately exclude it, but the STORE must
+  # accept it or the server cannot mint a UPI QR at all. That is exactly the shape of the status gap
+  # this test exists to catch, so it belongs here.
+  @valid_purposes ["message", "user_avatar", "group_avatar", "status", "sealed_media", "user_asset"]
 
   test "EVERY valid purpose uploads through the real create path; an unknown one is rejected" do
     for purpose <- @valid_purposes do

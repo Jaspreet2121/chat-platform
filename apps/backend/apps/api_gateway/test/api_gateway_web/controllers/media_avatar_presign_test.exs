@@ -49,16 +49,24 @@ defmodule ApiGatewayWeb.MediaAvatarPresignTest do
     }
 
     # Presign only when BOTH app_id and purpose match the row (mirrors media.ex download_persisted).
+    # `purpose` may be a LIST since 113 — media.ex's purpose_ok?/2 accepts "any of these", so the double
+    # has to as well, or it stops mimicking the thing it exists to stand in for.
     def get_download_url(%{"media_id" => id, "app_id" => app, "purpose" => purpose}) do
+      accepted = List.wrap(purpose)
+
       case Map.get(@assets, id) do
-        %{app_id: ^app, purpose: ^purpose} ->
-          {:ok,
-           %{
-             media_id: id,
-             download_url: "https://minio.local/get/" <> id,
-             expires_at: "x",
-             mime_type: "image/png"
-           }}
+        %{app_id: ^app, purpose: asset_purpose} when is_binary(asset_purpose) ->
+          if asset_purpose in accepted do
+            {:ok,
+             %{
+               media_id: id,
+               download_url: "https://minio.local/get/" <> id,
+               expires_at: "x",
+               mime_type: "image/png"
+             }}
+          else
+            {:error, :not_found}
+          end
 
         _ ->
           {:error, :not_found}

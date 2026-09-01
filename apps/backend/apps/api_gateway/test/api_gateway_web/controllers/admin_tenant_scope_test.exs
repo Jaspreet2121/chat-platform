@@ -67,10 +67,12 @@ defmodule ApiGatewayWeb.AdminTenantScopeTest do
     @tenant_media "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 
     # Presign only a tenant-zero asset; an integrator asset (row in another app) → not_found → no URL.
+    # purpose is a LIST since 113 (message + the server-generated user_asset); tenant scoping is
+    # unchanged and is what this test is about.
     def get_download_url(%{
           "media_id" => @tenant_media,
           "app_id" => @default,
-          "purpose" => "message"
+          "purpose" => ["message", "user_asset"]
         }),
         do: {:ok, %{download_url: "https://minio.local/get/" <> @tenant_media}}
 

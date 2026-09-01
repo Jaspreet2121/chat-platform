@@ -114,6 +114,14 @@ defmodule UserService.UpiQrStoreTest do
     assert create_attrs["content_type"] == "image/png"
     assert create_attrs["size_bytes"] == byte_size(png)
 
+    # 113: the QR is "user_asset", NOT "message". It carries no conversation and never could — and
+    # "message" is about to require one, which would have made this generator the last server-side
+    # producer blocking that rule. The ACL is unchanged (media_authz routes user_asset to the same
+    # message-media predicate), so /qr sends keep working for their recipients.
+    assert create_attrs["purpose"] == "user_asset"
+    refute create_attrs["purpose"] == "message"
+    refute Map.has_key?(create_attrs, "conversation_id")
+
     # 2. the PNG bytes really went to the presigned URL.
     assert_receive {:put_received, path, body}
     assert body == png

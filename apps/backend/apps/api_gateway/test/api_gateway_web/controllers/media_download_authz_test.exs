@@ -34,6 +34,10 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
   @sealed_media "ffffffff-ffff-4fff-8fff-ffffffffffff"
   # A sealed asset with no conversation_id (older upload) → owner-only.
   @sealed_orphan "12121212-1212-4121-8121-121212121212"
+  # user_asset (113): the server-generated UPI QR. Never carries a conversation — it belongs to a
+  # USER — but IS sent into chats by /qr, so its ACL is the message-media rule, not owner-only.
+  @qr_sent "13131313-1313-4131-8131-131313131313"
+  @qr_unsent "14141414-1414-4141-8141-141414141414"
 
   defmodule AuthStub do
     @moduledoc false
@@ -55,6 +59,8 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
     @group_media "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
     @sealed_media "ffffffff-ffff-4fff-8fff-ffffffffffff"
     @sealed_orphan "12121212-1212-4121-8121-121212121212"
+    @qr_sent "13131313-1313-4131-8131-131313131313"
+    @qr_unsent "14141414-1414-4141-8141-141414141414"
 
     # get_asset is scoped by (media_id, app_id): only assets in the caller's app resolve; anything else
     # (unknown id, another tenant's id) → :not_found. Only assets that belong to @app are matched here.
@@ -76,6 +82,13 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
 
     def get_asset(%{"media_id" => @sealed_orphan, "app_id" => @app}),
       do: ok("sealed_media", @owner, nil, @sealed_orphan)
+
+    # user_asset carries NO conversation by construction — the anchor is not what authorizes it.
+    def get_asset(%{"media_id" => @qr_sent, "app_id" => @app}),
+      do: ok("user_asset", @owner, nil, @qr_sent)
+
+    def get_asset(%{"media_id" => @qr_unsent, "app_id" => @app}),
+      do: ok("user_asset", @owner, nil, @qr_unsent)
 
     def get_asset(_), do: {:error, :not_found}
 
@@ -107,6 +120,7 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
     @member "22222222-2222-4222-8222-222222222222"
     @owner "77777777-7777-4777-8777-777777777777"
     @msg_media "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    @qr_sent "13131313-1313-4131-8131-131313131313"
 
     # The owner-anchored rule: for the SENT media, only @member sits in a conversation holding the
     # owner's send (a stranger AND a former participant — left_at — both fail the active-membership
@@ -114,6 +128,15 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
     # (the fast-path in MediaAuthz short-circuits).
     def media_download_allowed(%{
           "media_id" => @msg_media,
+          "owner_user_id" => @owner,
+          "viewer_user_id" => @member
+        }),
+        do: {:ok, %{allowed: true}}
+
+    # A QR the owner SENT with /qr: the oracle sees a real media message referencing it, so the
+    # recipient is allowed — the whole reason user_asset delegates to this rule instead of owner-only.
+    def media_download_allowed(%{
+          "media_id" => @qr_sent,
           "owner_user_id" => @owner,
           "viewer_user_id" => @member
         }),
@@ -282,5 +305,45 @@ defmodule ApiGatewayWeb.MediaDownloadAuthzTest do
     # from conversation membership instead. This is the mutation point: route sealed_media back to
     # authorize_message_media and this test goes red with a 404.
     assert download(@member, @sealed_media).status == 200
+  end
+
+  describe "user_asset (113) — the server-generated UPI QR" do
+    test "the OWNER can always download their own QR, sent or not" do
+      for media <- [@qr_sent, @qr_unsent] do
+        conn = download(@owner, media)
+        assert conn.status == 200
+      end
+    end
+
+    test "a RECIPIENT of a sent QR can download it — the arm delegates to the message oracle" do
+      # THE POINT OF THE SLICE. /qr sends the QR into a chat by id, so the recipient fetches this very
+      # media_id. Owner-only here would 404 every QR anyone has ever sent.
+      conn = download(@member, @qr_sent)
+
+      assert conn.status == 200
+    end
+
+    test "a QR that was never sent is owner-only — no message, no access" do
+      conn = download(@member, @qr_unsent)
+
+      assert conn.status == 404
+    end
+
+    test "an unrelated user cannot download a sent QR" do
+      for user <- [@stranger, @former] do
+        conn = download(user, @qr_sent)
+        assert conn.status == 404
+      end
+    end
+
+    test "user_asset behaves EXACTLY like message media for the same viewers" do
+      # If these two ever diverge, one of the arms has been changed without the other.
+      for user <- [@owner, @member, @stranger, @former] do
+        qr = download(user, @qr_sent).status
+        msg = download(user, @msg_media).status
+
+        assert qr == msg, "user_asset and message disagree for #{user}: #{qr} vs #{msg}"
+      end
+    end
   end
 end

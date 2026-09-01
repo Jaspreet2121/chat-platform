@@ -222,7 +222,9 @@ defmodule ApiGatewayWeb.AdminContentController do
   # message intact without a URL. Non-media messages pass through untouched.
   # Presign scoped to the ASSET's app_id (the conversation's tenant, resolved by the caller). An admin/root
   # actor is tenant-wide, so the asset's own app is the correct scope. object_key is resolved server-side
-  # from the row; the "message" purpose assertion refuses to presign a non-message asset.
+  # from the row; the purpose assertion refuses to presign a non-attachment asset. "user_asset" (113)
+  # joins it because the /qr slash command sends a server-generated QR as an ordinary media message —
+  # moderation must be able to see exactly what was sent. An avatar still cannot be presigned here.
   @doc false
   def enrich_media(m, app_id) do
     media_id = mget(m, :media_id)
@@ -231,7 +233,7 @@ defmodule ApiGatewayWeb.AdminContentController do
       case SharedInfra.MediaClient.get_download_url(%{
              "media_id" => media_id,
              "app_id" => app_id,
-             "purpose" => "message"
+             "purpose" => ["message", "user_asset"]
            }) do
         {:ok, download} ->
           Map.put(

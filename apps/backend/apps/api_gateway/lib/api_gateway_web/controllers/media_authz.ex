@@ -26,6 +26,13 @@ defmodule ApiGatewayWeb.MediaAuthz do
   def authorize_download(media_id, asset, user_id) do
     case aget(asset, :purpose) do
       "message" -> authorize_message_media(media_id, asset, user_id)
+      # user_asset (113): a SERVER-GENERATED asset owned by a user with no conversation of its own —
+      # today only the UPI QR PNG. It exists so such assets stop being minted as anchorless
+      # purpose="message" rows, NOT because their ACL differs: the /qr slash command sends the QR into
+      # a chat as an ordinary media message by id, so a recipient fetches THIS media_id and must be
+      # authorized exactly as they would be for any attachment. Owner-only here would 404 every QR
+      # anyone has ever sent. Same rule, different provenance.
+      "user_asset" -> authorize_message_media(media_id, asset, user_id)
       # sealed_media: CANNOT use the message-media rule — see authorize_sealed_media/2.
       "sealed_media" -> authorize_sealed_media(asset, user_id)
       "group_avatar" -> authorize_group_avatar(asset, user_id)

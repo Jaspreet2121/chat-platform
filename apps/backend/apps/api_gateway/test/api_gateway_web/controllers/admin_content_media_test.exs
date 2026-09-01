@@ -9,10 +9,16 @@ defmodule ApiGatewayWeb.AdminContentMediaTest.MediaStub do
   @impl true
   def get_asset(_attrs), do: {:error, :not_used}
 
-  # New shape: (media_id, app_id, purpose "message"). object_key is resolved server-side from the row, so
-  # the URL is derived from media_id here.
+  # Shape: (media_id, app_id, purpose). object_key is resolved server-side from the row, so the URL is
+  # derived from media_id here. Since 113 the purpose is a LIST — moderation must be able to presign a
+  # server-generated "user_asset" (a QR sent with /qr) as well as a plain "message", and matching the
+  # list here is what pins that the assertion was widened rather than dropped.
   @impl true
-  def get_download_url(%{"media_id" => media_id, "app_id" => _app, "purpose" => "message"}) do
+  def get_download_url(%{
+        "media_id" => media_id,
+        "app_id" => _app,
+        "purpose" => ["message", "user_asset"]
+      }) do
     {:ok, %{download_url: "https://media.growblic.com/get/#{media_id}?X-Amz-Signature=stub"}}
   end
 end
