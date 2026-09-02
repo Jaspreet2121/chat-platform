@@ -35,7 +35,10 @@ Defines the initial public authentication API exposed through the API Gateway. T
 | auth.unsupported_destination | 400 | Unsupported phone/email destination |
 | auth.otp_invalid | 401 | OTP is wrong or expired |
 | auth.token_invalid | 401 | Access or refresh token is invalid |
-| auth.refresh_invalid | 401 | Refresh token is invalid, expired, or revoked |
+| auth.refresh_invalid | 401 | Refresh failed for an uncharacterised reason (unknown token, device_id mismatch, inactive user) |
+| auth.refresh_expired | 401 | Refresh token expired — re-login, local data can be kept |
+| auth.refresh_reused | 401 | Refresh token already rotated or revoked — treat as compromise |
+| auth.session_revoked | 401 | Device session revoked or gone — treat as a sign-out |
 | auth.session_invalid | 401 | Session token is missing, invalid, or revoked |
 | auth.session_not_found | 404 | Session does not exist or was revoked |
 | auth.rate_limited | 429 | Rate limit exceeded |
@@ -120,15 +123,11 @@ Response `200`:
 Rotates a refresh token and returns a new access token.
 
 Current backend behavior can rotate refresh tokens when opt-in refresh
-persistence is enabled. The submitted token is hashed before lookup; expired,
-revoked, missing, or device-mismatched tokens return `auth.refresh_invalid`.
-Successful rotation revokes the old `refresh_tokens` row, creates a new row
-storing only the new token hash, and updates the matching `device_sessions`
-record. Reuse of a rotated refresh token is rejected, and refresh is rejected
-when the device session is revoked or no longer points at the submitted token
-hash.
+persistence is enabled. The submitted token is hashed before lookup. Successful
+rotation revokes the old `refresh_tokens` row, creates a new row storing only the
+new token hash, and updates the matching `device_sessions` record.
 
-Request:
+Request — **both fields are required**:
 
 ```json
 {
@@ -136,6 +135,30 @@ Request:
   "device_id": "ios-device-123"
 }
 ```
+
+`device_id` **must** be sent and **must** match the device the token was issued to. It is
+not optional: an absent `device_id` compares as `nil` against the token's own value and is
+rejected exactly like a mismatch, with no distinguishing error. It is checked against
+`refresh_tokens.device_id`, not against the access token.
+
+### Failure codes — all `401`, and they mean different things
+
+The four codes exist so a client can tell a routine expiry from a possible compromise.
+Before they were split, every refusal was `auth.refresh_invalid`, and a client facing that
+ambiguity could only respond conservatively — one shipped client wiped all local data,
+including E2EE keys, on what was an ordinary scheduled expiry.
+
+| Code | Cause | What the client should do |
+|---|---|---|
+| `auth.refresh_expired` | The refresh token passed its `expires_at`. | **Re-login, and KEEP local data.** Nothing was compromised; the session simply aged out. Destroying local state here loses message history and E2EE keys for no security benefit. |
+| `auth.refresh_reused` | The token was already rotated or revoked, or the device session has since rotated past it. | **Treat as a possible compromise.** Benign if a response was lost in flight, hostile if the token was replayed. Re-authenticate; clearing secrets is defensible. |
+| `auth.session_revoked` | The device session is gone or explicitly revoked — a sign-out, "sign out everywhere else", or an admin action. | **Treat as a deliberate sign-out.** The session was taken away. Clear local state and return to login. |
+| `auth.refresh_invalid` | Anything else: unknown token, `device_id` mismatch, inactive user, or an internal failure. | **Be conservative.** The server could not characterise the failure. |
+
+The status is `401` for all four, so clients that key only off the HTTP status are unaffected
+by the split. `POST /api/v1/auth/logout` reports every one of these as `auth.refresh_invalid`
+— the distinction is about how to react to a failed *rotation*, and there is no such choice
+when signing out.
 
 Response `200`:
 
