@@ -1,4 +1,12 @@
--- Nearby People (101): short-lived, explicit proximity discovery plus consent-based connections.
+-- Nearby People (101): explicit proximity discovery plus consent-based connections.
+--
+-- !! SUPERSEDED IN PART BY 114 — READ THIS BEFORE TRUSTING THE PARAGRAPH BELOW !!
+-- The "five minutes" and "pinned for the row's lifetime" promises here are NO LONGER TRUE. 114
+-- introduced opt-in background publishing: coordinates now rest for up to EIGHT HOURS after the
+-- last publish, and a per-viewer bucket pin is scoped to the target's fix_seq rather than frozen
+-- for the row's lifetime. This header is left as written because it records what 101 actually
+-- created; the live truth is in 114 and in the COMMENT ON entries it installs.
+--
 -- Coordinates are server-only and expire after five minutes. Public responses expose only a coarse
 -- distance bucket (100/200 m, pinned per viewer for the row's lifetime), never latitude, longitude,
 -- accuracy, or an exact distance. Expired rows are physically deleted by the next discover/stop.
