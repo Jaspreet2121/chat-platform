@@ -122,6 +122,9 @@ defmodule UserService.Nearby do
         [user_id, app_id, latitude, longitude, accuracy, @presence_seconds]
       )
 
+      {box_min_lat, box_max_lat, box_min_lng, box_max_lng} =
+        bounding_box(latitude, longitude, radius * 1.0)
+
       %{rows: rows} =
         Repo.query!(
           """
@@ -136,6 +139,13 @@ defmodule UserService.Nearby do
             FROM nearby_presence p
             JOIN users_auth a ON a.id = p.user_id AND a.status = 'active'
             WHERE p.app_id = $2::text::uuid
+              -- BOUNDING-BOX PREFILTER (114). A haversine cannot use an index, so before the 8h TTL
+              -- this scanned every live row in the app and computed a great-circle distance for each.
+              -- The box is a strict SUPERSET of the circle and rides the (app_id, latitude) INCLUDE
+              -- (longitude) index; the haversine below still decides membership, so the box can only
+              -- ever remove rows that were going to fail it anyway.
+              AND p.latitude BETWEEN $7 AND $8
+              AND p.longitude BETWEEN $9 AND $10
               AND p.user_id <> $1::text::uuid
               AND p.expires_at > now()
               -- STORE-LEVEL block exclusion (defense-in-depth): a blocked pair — either direction —
@@ -182,7 +192,18 @@ defmodule UserService.Nearby do
           ORDER BY c.age_seconds, c.distance_m, c.user_id
           LIMIT #{@max_results}
           """,
-          [user_id, app_id, latitude, longitude, radius * 1.0, viewer.audience]
+          [
+            user_id,
+            app_id,
+            latitude,
+            longitude,
+            radius * 1.0,
+            viewer.audience,
+            box_min_lat,
+            box_max_lat,
+            box_min_lng,
+            box_max_lng
+          ]
         )
 
       people =
@@ -222,6 +243,55 @@ defmodule UserService.Nearby do
   rescue
     Ecto.Query.CastError -> {:error, :nearby_invalid}
     _error in Postgrex.Error -> {:error, :nearby_invalid}
+  end
+
+  @doc """
+  The bounding box for a radius around a point, as {min_lat, max_lat, min_lng, max_lng}.
+
+  A STRICT SUPERSET of the circle — that is the only correctness requirement, and it is why the
+  Haversine still runs afterwards. The box exists to stop the scan touching every live row in the
+  app; it must never be the thing that decides membership, or a point just inside the radius would
+  be silently dropped.
+
+  Longitude degrees shrink as cos(latitude), so the longitude half-width is divided by that cosine.
+  Two guards keep it a superset where that division misbehaves:
+
+    * near the poles cos(lat) approaches 0 and the half-width explodes — clamped to the full
+      -180..180 range, which is a superset by definition and correct: near a pole a small radius
+      really does span every meridian;
+    * the box is padded by 1% plus a metre before conversion, so floating-point error in the
+      cosine or in the degree conversion cannot pull an edge INSIDE the circle.
+
+  Latitude is clamped to [-90, 90]; the longitude range is NOT wrapped across the antimeridian —
+  it widens to the full range instead, again preferring a superset over a clever split.
+  """
+  @earth_radius_m 6_371_000.0
+  @box_padding 1.01
+  @box_padding_m 1.0
+
+  def bounding_box(latitude, longitude, radius_m) do
+    padded = radius_m * @box_padding + @box_padding_m
+    lat_delta = padded / @earth_radius_m * 180.0 / :math.pi()
+
+    min_lat = max(latitude - lat_delta, -90.0)
+    max_lat = min(latitude + lat_delta, 90.0)
+
+    # Evaluate the cosine at the WIDEST latitude the box reaches, not at the centre: that is where
+    # longitude degrees are shortest, so it yields the widest (safest) longitude delta.
+    widest = max(abs(min_lat), abs(max_lat))
+    cos_lat = :math.cos(widest * :math.pi() / 180.0)
+
+    if cos_lat <= 0.01 do
+      {min_lat, max_lat, -180.0, 180.0}
+    else
+      lng_delta = lat_delta / cos_lat
+
+      if lng_delta >= 180.0 do
+        {min_lat, max_lat, -180.0, 180.0}
+      else
+        {min_lat, max_lat, longitude - lng_delta, longitude + lng_delta}
+      end
+    end
   end
 
   @doc """
