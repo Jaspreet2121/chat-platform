@@ -570,10 +570,18 @@ defmodule ApiGatewayWeb.MediaController do
            }),
          :ok <- ApiGatewayWeb.MediaAuthz.authorize_download(media_id, asset, session.user_id),
          {:ok, response} <-
-           SharedInfra.MediaClient.get_download_url(%{
-             "media_id" => media_id,
-             "app_id" => session.app_id
-           }) do
+           SharedInfra.MediaClient.get_download_url(
+             %{
+               "media_id" => media_id,
+               "app_id" => session.app_id
+             }
+             # VIEW-ONCE URLS ARE SHORT-LIVED (120s). The deny lands the instant the recipient opens,
+             # but MinIO honours the signature, not our authz — at the 900s default an already-issued
+             # URL would outlive the deny by up to fifteen minutes. Deleting the blob at open is what
+             # actually closes that window; this narrows it. Shorten-only in the media service, so
+             # this can never widen anyone's window.
+             |> ApiGatewayWeb.MediaAuthz.put_download_ttl(media_id, session.user_id)
+           ) do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)

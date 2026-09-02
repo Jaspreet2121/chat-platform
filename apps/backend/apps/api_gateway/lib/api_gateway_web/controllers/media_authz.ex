@@ -24,6 +24,64 @@ defmodule ApiGatewayWeb.MediaAuthz do
 
   @spec authorize_download(String.t(), map(), String.t()) :: :ok | {:error, atom()}
   def authorize_download(media_id, asset, user_id) do
+    # VIEW-ONCE (115) RUNS BEFORE THE PURPOSE DISPATCH, and it has to: inside
+    # authorize_message_media/3 the owner short-circuit fires first, so a sender-side deny placed
+    # there would be dead code — the sender IS the owner.
+    #
+    # THE AGREEMENT PROPERTY, which is the whole safety argument: for any media not referenced by a
+    # view_once=true message, this function returns exactly what it returned before, having executed
+    # exactly the same code path. `:not_view_once` is therefore also what a FAILING probe returns
+    # (see ViewOnce.state/2's rescue) — this gate is an extra restriction on a narrow feature, never
+    # a new dependency for every download in the system. Failing closed here would turn one bad
+    # query into a total media outage.
+    case view_once_state(media_id, user_id) do
+      :not_view_once -> authorize_by_purpose(media_id, asset, user_id)
+      # The viewer may read it exactly once more.
+      :unopened -> authorize_by_purpose(media_id, asset, user_id)
+      # One-way: a sender who could re-read their own send would keep a copy of what the recipient
+      # believes is gone.
+      :sender -> {:error, :not_a_member}
+      :opened -> {:error, :not_a_member}
+      :expired -> {:error, :not_a_member}
+    end
+  end
+
+  # 120 seconds for view-once media. Long enough for a client to follow the URL it just asked for,
+  # short enough that a URL issued moments before an open cannot be replayed for long afterwards.
+  @view_once_url_expires_seconds 120
+
+  @doc """
+  Add a presign-lifetime ceiling to a download request when the media is view-once.
+
+  Returns the attrs UNCHANGED for ordinary media — the agreement property covers the presign path
+  too: a non-view-once download is signed exactly as it was before.
+  """
+  def put_download_ttl(attrs, media_id, user_id) do
+    case view_once_state(media_id, user_id) do
+      :not_view_once -> attrs
+      _ -> Map.put(attrs, "url_expires_seconds", @view_once_url_expires_seconds)
+    end
+  end
+
+  defp view_once_state(media_id, user_id) do
+    case MessageClient.view_once_state(%{
+           "media_id" => media_id,
+           "viewer_user_id" => user_id
+         }) do
+      {:ok, result} -> decode_state(aget(result, :state))
+      # An unreachable message service must not deny ordinary media — same reasoning as the rescue
+      # inside ViewOnce.state/2, applied at the seam.
+      _ -> :not_view_once
+    end
+  end
+
+  defp decode_state("sender"), do: :sender
+  defp decode_state("opened"), do: :opened
+  defp decode_state("expired"), do: :expired
+  defp decode_state("unopened"), do: :unopened
+  defp decode_state(_), do: :not_view_once
+
+  defp authorize_by_purpose(media_id, asset, user_id) do
     case aget(asset, :purpose) do
       "message" -> authorize_message_media(media_id, asset, user_id)
       # user_asset (113): a SERVER-GENERATED asset owned by a user with no conversation of its own —

@@ -30,6 +30,16 @@ defmodule MessageService.Messages do
   @callback delete_message(message_attrs()) :: result()
 
   def create_message(attrs) do
+    # VALIDATED AT THE ENTRY POINT, not per-branch. view_once is a property of the caller's payload,
+    # so whether it is legal cannot depend on the storage mode — validating only inside
+    # create_message_in_store/1 meant a placeholder-mode deployment silently accepted an
+    # unenforceable view-once send, and the dropped-recipient path needed its own copy of the check.
+    with {:ok, _view_once} <- view_once(attrs, get_attr(attrs, "message_type")) do
+      do_create_message(attrs)
+    end
+  end
+
+  defp do_create_message(attrs) do
     cond do
       # BLOCK DROP: a DIRECT message whose recipient has blocked the sender. Return a well-formed canonical
       # message to the SENDER (single tick) but persist and publish NOTHING — the message never exists
@@ -230,6 +240,7 @@ defmodule MessageService.Messages do
          {:ok, caption} <- caption(attrs, message_type),
          {:ok, body} <- message_body(attrs, message_type, caption),
          {:ok, metadata} <- metadata(attrs, message_type, media_id, caption),
+         # Already validated at the entry point; this just reads it.
          {:ok, view_once} <- view_once(attrs, message_type) do
       created_at = now()
 

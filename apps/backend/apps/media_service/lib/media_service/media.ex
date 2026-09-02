@@ -366,7 +366,12 @@ defmodule MediaService.Media do
           # Optional expected purpose: an avatar/message call-site refuses to presign an asset of the wrong
           # purpose (so a poisoned avatar_media_id can't presign a message attachment). Absent → no check
           # (media_controller.download already authorized the specific asset).
-          download_persisted(media_id, app_id, expected_purpose(attrs))
+          download_persisted(
+            media_id,
+            app_id,
+            expected_purpose(attrs),
+            requested_expires_seconds(attrs)
+          )
         end
       else
         {:ok,
@@ -506,7 +511,12 @@ defmodule MediaService.Media do
     end
   end
 
-  defp download_persisted(media_id, app_id, expected_purpose) do
+  defp shortest(nil, nil), do: nil
+  defp shortest(nil, requested), do: requested
+  defp shortest(purpose_override, nil), do: purpose_override
+  defp shortest(purpose_override, requested), do: min(purpose_override, requested)
+
+  defp download_persisted(media_id, app_id, expected_purpose, requested_expires_seconds) do
     case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
       nil ->
         {:error, :not_found}
@@ -516,7 +526,13 @@ defmodule MediaService.Media do
           # STATUS presigns are SHORT-lived (300s vs the 900s default): status URLs are fetched at open
           # and never long-lived, and the short TTL bounds how long an issued URL outlives the post's
           # 24h expiry (the stated presign residual).
-          override = if asset.purpose == "status", do: @status_url_expires_seconds, else: nil
+          # SHORTEN-ONLY. A caller may ask for a briefer URL than the purpose default (view-once
+          # media asks for 120s: the download deny lands the instant the recipient opens, and
+          # without a short TTL an already-issued URL would outlive it by up to the 900s default).
+          # It can never LENGTHEN one — min/2 with the purpose override, so a client cannot widen
+          # its own window by asking.
+          purpose_override = if asset.purpose == "status", do: @status_url_expires_seconds, else: nil
+          override = shortest(purpose_override, requested_expires_seconds)
           expires_at = expires_at(override)
 
           case Storage.get_download_url(%{
@@ -540,6 +556,23 @@ defmodule MediaService.Media do
   # The expected-purpose filter, read WITHOUT optional_attr/2 on purpose: that helper answers nil for
   # anything non-binary, so a list would have silently become "no check at all" — turning an assertion
   # into a bypass at the one call site that most needs it.
+  # A caller-supplied ceiling on the presign lifetime. Only positive integers are honoured; anything
+  # else means "no request", never "unlimited".
+  defp requested_expires_seconds(attrs) do
+    case get_attr(attrs, "url_expires_seconds") do
+      value when is_integer(value) and value > 0 -> value
+      value when is_binary(value) -> parse_positive_int(value)
+      _ -> nil
+    end
+  end
+
+  defp parse_positive_int(value) do
+    case Integer.parse(value) do
+      {n, _} when n > 0 -> n
+      _ -> nil
+    end
+  end
+
   defp expected_purpose(attrs) do
     case get_attr(attrs, "purpose") do
       [_ | _] = purposes -> Enum.filter(purposes, &(is_binary(&1) and &1 != ""))
