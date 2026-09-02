@@ -15,6 +15,12 @@ defmodule UserService.Nearby do
   # past this edge is REMOVED, never merely filtered out of a query.
   @presence_seconds 28_800
 
+  # BOUND AS A STRING, cast in SQL — the file's `$N::text::<type>` convention, and here it is load
+  # bearing rather than stylistic. `($6 || ' seconds')` makes Postgrex infer $6 as TEXT from the
+  # concatenation operator; binding the integer raises DBConnection.EncodeError at runtime and takes
+  # discover down with it. Compiling proves nothing about a parameter's wire type.
+  defp presence_seconds_param, do: Integer.to_string(@presence_seconds)
+
   # Staleness, as CEILING buckets in seconds. Coarse on purpose: a viewer learns "roughly how old"
   # without ever receiving a timestamp they could difference against a second observation to infer
   # movement. "now" absorbs everything under ten minutes, so an actively-publishing phone never leaks
@@ -114,7 +120,8 @@ defmodule UserService.Nearby do
         """
         INSERT INTO nearby_presence
           (user_id, app_id, latitude, longitude, accuracy_m, expires_at, updated_at)
-        VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, now() + ($6 || ' seconds')::interval, now())
+        VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5,
+                now() + ($6::text || ' seconds')::interval, now())
         ON CONFLICT (user_id) DO UPDATE SET
           app_id = EXCLUDED.app_id,
           latitude = EXCLUDED.latitude,
@@ -126,7 +133,7 @@ defmodule UserService.Nearby do
           pins = CASE WHEN nearby_presence.expires_at > now()
                       THEN nearby_presence.pins ELSE '{}'::jsonb END
         """,
-        [user_id, app_id, latitude, longitude, accuracy, @presence_seconds]
+        [user_id, app_id, latitude, longitude, accuracy, presence_seconds_param()]
       )
 
       {box_min_lat, box_max_lat, box_min_lng, box_max_lng} =
@@ -363,7 +370,7 @@ defmodule UserService.Nearby do
         INSERT INTO nearby_presence
           (user_id, app_id, latitude, longitude, accuracy_m, expires_at, updated_at, fix_seq, pins)
         VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5,
-                now() + ($6 || ' seconds')::interval, now(), 0, '{}'::jsonb)
+                now() + ($6::text || ' seconds')::interval, now(), 0, '{}'::jsonb)
         ON CONFLICT (user_id) DO UPDATE SET
           app_id = EXCLUDED.app_id,
           latitude = EXCLUDED.latitude,
@@ -376,7 +383,8 @@ defmodule UserService.Nearby do
           fix_seq = CASE WHEN $7 THEN nearby_presence.fix_seq + 1 ELSE nearby_presence.fix_seq END,
           pins = CASE WHEN $7 THEN '{}'::jsonb ELSE nearby_presence.pins END
         """,
-        [user_id, app_id, latitude, longitude, accuracy, @presence_seconds, advance?]
+        [user_id, app_id, latitude, longitude, accuracy, presence_seconds_param(),
+         advance?]
       )
 
       {:ok, %{published: true, expires_in_seconds: @presence_seconds}}
