@@ -18,7 +18,11 @@ defmodule MediaService.Schemas.MediaAsset do
   # must agree; the whitelist-enumeration test in MediaService.MediaTest creates through the real
   # path per purpose, so a purpose missing at ANY layer fails the gate. "status" was missing at all
   # three while its authz arm shipped — photo/video status never worked.
-  @purposes ~w(message user_avatar group_avatar status sealed_media)
+  #
+  # It happened AGAIN with "user_asset" (113): layer 1 and layer 3 were updated, this one was not,
+  # and every UPI QR create returned :media_invalid. The comment above predicted it and the
+  # enumeration test caught it — before deploy, which is the whole point of both.
+  @purposes ~w(message user_avatar group_avatar status sealed_media user_asset)
   @providers ~w(s3 minio)
 
   schema "media_assets" do
