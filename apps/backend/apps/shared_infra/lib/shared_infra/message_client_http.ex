@@ -109,6 +109,15 @@ defmodule SharedInfra.MessageClientHttp do
   def media_download_allowed(attrs), do: post("/internal/media/download_allowed", attrs)
 
   @impl true
+  def view_once_state(attrs), do: post("/internal/view_once/state", attrs)
+
+  @impl true
+  def open_view_once(attrs), do: post("/internal/view_once/open", attrs)
+
+  @impl true
+  def expired_view_once_media(attrs), do: post("/internal/view_once/expired", attrs)
+
+  @impl true
   def mark_delivered(attrs), do: post("/internal/receipts/mark_delivered", attrs)
 
   @impl true

@@ -92,6 +92,10 @@ defmodule SharedInfra.MessageClient do
   @callback status_for_reply(attrs()) :: result()
   # Owner-anchored message-media download authorization.
   @callback media_download_allowed(attrs()) :: result()
+  # View-once (115): the download gate's state, and the per-recipient open ledger.
+  @callback view_once_state(attrs()) :: result()
+  @callback open_view_once(attrs()) :: result()
+  @callback expired_view_once_media(attrs()) :: result()
   @optional_callbacks message_info: 1,
                       get_message: 1,
                       event_outbox_summary: 1,
@@ -99,6 +103,9 @@ defmodule SharedInfra.MessageClient do
                       event_outbox_get: 1,
                       event_outbox_acknowledge: 1,
                       media_download_allowed: 1,
+                      view_once_state: 1,
+                      open_view_once: 1,
+                      expired_view_once_media: 1,
                       vote_poll: 1,
                       list_poll_votes: 1,
                       post_status: 1,
@@ -145,6 +152,15 @@ defmodule SharedInfra.MessageClient do
   def my_status(attrs), do: normalize(adapter().my_status(attrs))
   def status_for_reply(attrs), do: normalize(adapter().status_for_reply(attrs))
   def media_download_allowed(attrs), do: normalize(adapter().media_download_allowed(attrs))
+
+  @doc "View-once download state for (media_id, viewer_user_id) → %{state: atom-as-string}."
+  def view_once_state(attrs), do: normalize(adapter().view_once_state(attrs))
+
+  @doc "Record a view-once open → %{opened_at, media_id, first_open}."
+  def open_view_once(attrs), do: normalize(adapter().open_view_once(attrs))
+
+  @doc "Media ids of unopened view-once sends past the window → %{media_ids: [...]}. Bounded."
+  def expired_view_once_media(attrs), do: normalize(adapter().expired_view_once_media(attrs))
   def mark_delivered(attrs), do: normalize(adapter().mark_delivered(attrs))
   def analytics_overview(attrs), do: normalize(adapter().analytics_overview(attrs))
   def analytics_timeseries(attrs), do: normalize(adapter().analytics_timeseries(attrs))

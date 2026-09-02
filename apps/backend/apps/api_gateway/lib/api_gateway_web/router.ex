@@ -549,6 +549,8 @@ defmodule ApiGatewayWeb.Router do
     get "/", MessageController, :index
     patch "/:message_id", MessageController, :update
     delete "/:message_id", MessageController, :delete
+    # View-once (115): recording the open is what flips the download gate for this recipient.
+    post "/:message_id/open", ViewOnceController, :open
     post "/:message_id/read", MessageController, :read
     post "/:message_id/delivered", MessageController, :delivered
 

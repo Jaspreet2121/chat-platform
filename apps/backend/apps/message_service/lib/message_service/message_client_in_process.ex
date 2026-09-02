@@ -110,6 +110,32 @@ defmodule MessageService.MessageClientInProcess do
   def media_download_allowed(attrs), do: MessageService.MessageStore.media_download_allowed(attrs)
 
   @impl true
+  def view_once_state(attrs) do
+    state =
+      MessageService.ViewOnce.state(
+        Map.get(attrs, "media_id"),
+        Map.get(attrs, "viewer_user_id")
+      )
+
+    {:ok, %{state: Atom.to_string(state)}}
+  end
+
+  @impl true
+  def open_view_once(attrs) do
+    case MessageService.ViewOnce.open(
+           Map.get(attrs, "message_id"),
+           Map.get(attrs, "viewer_user_id")
+         ) do
+      {:ok, result} -> {:ok, Map.put(result, :first_open, result.first_open?)}
+      error -> error
+    end
+  end
+
+  @impl true
+  def expired_view_once_media(_attrs),
+    do: {:ok, %{media_ids: MessageService.ViewOnce.expired_unopened_media()}}
+
+  @impl true
   def mark_delivered(attrs), do: Receipts.mark_delivered(attrs)
 
   @impl true

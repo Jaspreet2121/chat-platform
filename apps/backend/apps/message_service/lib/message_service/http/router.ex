@@ -178,6 +178,37 @@ defmodule MessageService.HTTP.Router do
   end
 
   # Owner-anchored message-media download authorization (the gateway's "message" purpose arm).
+  post "/internal/view_once/state" do
+    body = body(conn)
+
+    state =
+      MessageService.ViewOnce.state(
+        Map.get(body, "media_id"),
+        Map.get(body, "viewer_user_id")
+      )
+
+    send_result(conn, {:ok, %{state: Atom.to_string(state)}})
+  end
+
+  post "/internal/view_once/open" do
+    body = body(conn)
+
+    result =
+      case MessageService.ViewOnce.open(
+             Map.get(body, "message_id"),
+             Map.get(body, "viewer_user_id")
+           ) do
+        {:ok, r} -> {:ok, Map.put(r, :first_open, r.first_open?)}
+        error -> error
+      end
+
+    send_result(conn, result)
+  end
+
+  post "/internal/view_once/expired" do
+    send_result(conn, {:ok, %{media_ids: MessageService.ViewOnce.expired_unopened_media()}})
+  end
+
   post "/internal/media/download_allowed" do
     send_result(conn, MessageService.MessageStore.media_download_allowed(body(conn)))
   end
