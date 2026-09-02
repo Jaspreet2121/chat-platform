@@ -92,6 +92,13 @@ defmodule ApiGatewayWeb.MessageController do
       {:error, :auth_unavailable} ->
         service_unavailable(conn)
 
+      {:error, :view_once_invalid} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "message.view_once_invalid",
+          "view_once is only valid on a media message"
+        )
+
       {:error, :message_unavailable} ->
         service_unavailable(conn)
 

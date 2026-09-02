@@ -31,6 +31,10 @@ defmodule MessageService.Schemas.Message do
     field(:reply_to_message_id, :binary_id)
     field(:status, :string, default: "active")
     field(:metadata, :map, default: %{})
+    # View-once (115). A real column, not a metadata key: the media-authz gate is raw SQL against
+    # this table, and metadata is map<text,text> on Scylla where a boolean would become the string
+    # "true". Immutable after create — nothing casts it on update.
+    field(:view_once, :boolean, default: false)
     field(:created_at, :utc_datetime_usec)
     field(:edited_at, :utc_datetime_usec)
     field(:deleted_at, :utc_datetime_usec)
@@ -48,6 +52,7 @@ defmodule MessageService.Schemas.Message do
       :reply_to_message_id,
       :status,
       :metadata,
+      :view_once,
       :created_at,
       :edited_at,
       :deleted_at

@@ -212,12 +212,26 @@ defmodule ApiGatewayWeb.BroadcastController do
   end
 
   defp validate_message(params) do
-    if is_binary(params["message_type"]) and params["message_type"] != "" do
-      :ok
-    else
-      {:error, :message_invalid}
+    cond do
+      # VIEW-ONCE IS REFUSED, LOUDLY, rather than dropped by the @message_fields take below. One
+      # media_id fans out to N conversations here, each needing its own per-recipient open — but the
+      # FIRST open deletes the blob for everyone, so recipients 2..N would silently lose a message
+      # they were told they had. Silently stripping the flag would be worse: the sender would believe
+      # they sent view-once and be wrong.
+      truthy_view_once?(params["view_once"]) ->
+        {:error, :view_once_unsupported}
+
+      is_binary(params["message_type"]) and params["message_type"] != "" ->
+        :ok
+
+      true ->
+        {:error, :message_invalid}
     end
   end
+
+  defp truthy_view_once?(true), do: true
+  defp truthy_view_once?("true"), do: true
+  defp truthy_view_once?(_), do: false
 
   # Spam-amplifier control (contacts-sync idiom): FAIL-CLOSED — a limiter outage rejects rather than
   # opening a 5,120-messages/hour gate.
@@ -282,6 +296,14 @@ defmodule ApiGatewayWeb.BroadcastController do
 
   defp handle_error(conn, {:error, :list_not_found}),
     do: ErrorResponse.not_found(conn, "broadcasts.not_found", "Broadcast list not found")
+
+  defp handle_error(conn, {:error, :view_once_unsupported}),
+    do:
+      ErrorResponse.unprocessable_entity(
+        conn,
+        "broadcast.view_once_unsupported",
+        "View-once messages cannot be broadcast"
+      )
 
   defp handle_error(conn, {:error, :invalid_name}),
     do: ErrorResponse.invalid_request(conn, "broadcasts.invalid_name")

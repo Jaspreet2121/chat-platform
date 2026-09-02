@@ -229,7 +229,8 @@ defmodule MessageService.Messages do
          {:ok, media_id} <- media_id(attrs, message_type),
          {:ok, caption} <- caption(attrs, message_type),
          {:ok, body} <- message_body(attrs, message_type, caption),
-         {:ok, metadata} <- metadata(attrs, message_type, media_id, caption) do
+         {:ok, metadata} <- metadata(attrs, message_type, media_id, caption),
+         {:ok, view_once} <- view_once(attrs, message_type) do
       created_at = now()
 
       with {:ok, metadata} <- decorate_metadata(metadata, attrs, created_at) do
@@ -252,6 +253,7 @@ defmodule MessageService.Messages do
               "media_id" => media_id,
               "reply_to_message_id" => get_attr(attrs, "reply_to_message_id"),
               "status" => "active",
+              "view_once" => view_once,
               "metadata" => apply_forward_depth(metadata, attrs),
               "created_at" => created_at,
               "edited_at" => nil,
@@ -511,7 +513,11 @@ defmodule MessageService.Messages do
          {:ok, media_id} <- media_id(attrs, message_type),
          {:ok, caption} <- caption(attrs, message_type),
          {:ok, body} <- message_body(attrs, message_type, caption),
-         {:ok, metadata} <- metadata(attrs, message_type, media_id, caption) do
+         {:ok, metadata} <- metadata(attrs, message_type, media_id, caption),
+         # Validated on the DROPPED path too, so a malformed view_once is refused identically whether
+         # or not the recipient has blocked the sender. The refusal depends only on the caller's own
+         # payload, so answering 422 here reveals nothing about the block.
+         {:ok, view_once} <- view_once(attrs, message_type) do
       message = %{
         conversation_id: conversation_id,
         message_id: generate_timeuuid(),
@@ -522,6 +528,7 @@ defmodule MessageService.Messages do
         reply_to_message_id: get_attr(attrs, "reply_to_message_id"),
         status: "active",
         metadata: metadata,
+        view_once: view_once,
         created_at: now(),
         edited_at: nil,
         deleted_at: nil
@@ -973,6 +980,25 @@ defmodule MessageService.Messages do
   # Sealed messages carry NO plaintext body — content lives only in metadata.sealed (ciphertext).
   defp message_body(_attrs, "sealed", _caption), do: {:ok, nil}
   defp message_body(attrs, _message_type, _caption), do: {:ok, get_attr(attrs, "body")}
+
+  # VIEW-ONCE IS VALID ONLY ON A "media" MESSAGE, and that one condition is exactly right:
+  #   * "media" runs required_attr below, so a view-once send is GUARANTEED a media_id to delete;
+  #   * "sealed" forces media_id to nil whatever the client sends (the descriptor lives inside the
+  #     ciphertext), so the server could never find the blob — sealed view-once is client-enforced
+  #     later, and is refused here rather than accepted and silently unenforceable;
+  #   * "text" and everything else have no blob at all.
+  # Absent or false is always fine; only an explicit truthy view_once on a non-media type is refused.
+  defp view_once(attrs, message_type) do
+    case truthy_flag(get_attr(attrs, "view_once")) do
+      false -> {:ok, false}
+      true when message_type == "media" -> {:ok, true}
+      true -> {:error, :view_once_invalid}
+    end
+  end
+
+  defp truthy_flag(true), do: true
+  defp truthy_flag("true"), do: true
+  defp truthy_flag(_), do: false
 
   defp media_id(attrs, "media"), do: required_attr(attrs, "media_id")
   # SEALED (108/110): the attachment's media_id rides INSIDE the encrypted envelope, never as a

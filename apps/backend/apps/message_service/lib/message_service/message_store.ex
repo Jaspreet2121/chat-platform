@@ -3596,6 +3596,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
       reply_to_message_id: message.reply_to_message_id,
       status: message.status,
       metadata: message.metadata,
+      view_once: message.view_once,
       created_at: message.created_at,
       edited_at: message.edited_at,
       deleted_at: message.deleted_at
