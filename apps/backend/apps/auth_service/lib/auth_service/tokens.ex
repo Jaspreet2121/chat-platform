@@ -222,14 +222,29 @@ defmodule AuthService.Tokens do
     end)
   end
 
+  # TWELVE HEX CHARACTERS, not twelve characters of the hash STRING. hash_token/1 returns an
+  # algorithm-tagged value ("sha256:<hex>"), so slicing the raw string spent seven characters on the
+  # tag and left five hex digits — enough collisions to make correlating a token across log lines
+  # unreliable, which is the one job this field has. Strip the tag first, then take twelve.
+  #
+  # Still never the full hash: that value is the lookup key for refresh_tokens.token_hash, so logging
+  # it would put a working session identifier in the log stream.
   defp token_hash_prefix(attrs) do
     case submitted_refresh_token(attrs) do
-      {:ok, refresh_token} -> refresh_token |> hash_token() |> binary_part(0, 12)
+      {:ok, refresh_token} -> refresh_token |> hash_token() |> hash_digits() |> String.slice(0, 12)
       _ -> "none"
     end
   rescue
     _ -> "none"
   end
+
+  defp hash_digits(hash) when is_binary(hash) do
+    case String.split(hash, ":", parts: 2) do
+      [_algorithm, digits] -> digits
+      [digits] -> digits
+    end
+  end
+
 
   defp revoke_persisted_token(attrs) do
     now = DateTime.utc_now()

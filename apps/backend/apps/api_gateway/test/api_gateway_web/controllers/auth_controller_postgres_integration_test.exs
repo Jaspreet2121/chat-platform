@@ -328,6 +328,45 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
   end
 
   @tag :postgres_integration
+  test "the refusal is LOGGED with its cause and a usable hash prefix, never the token" do
+    # The diagnostic line is the only thing that can say WHY a refresh failed — the gateway's request
+    # line records the flattened HTTP code and nothing else. It shipped once slicing the algorithm tag
+    # ("sha256:") instead of the digest, leaving five hex characters: enough collisions to make
+    # correlating a token across log lines unreliable, which is the field's only job.
+    fixture = create_refresh_fixture!("logged-expired-token", expires_in_seconds: -60)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        json_request(
+          :post,
+          "/api/v1/auth/refresh",
+          %{"refresh_token" => "logged-expired-token", "device_id" => fixture.device_id}
+        )
+      end)
+
+    # Assert on OUR line only. capture_log also picks up Ecto's SQL debug output, which echoes bound
+    # parameters — including the full token hash in the lookup's WHERE clause. That is Ecto's
+    # behaviour at debug level and predates this line; scoping here keeps the test about the thing it
+    # is testing instead of silently asserting a property of the framework's logger.
+    refusal =
+      log
+      |> String.split("\n")
+      |> Enum.filter(&String.contains?(&1, "[auth.refresh] refused"))
+      |> Enum.join("\n")
+
+    assert refusal != "", "the refusal was not logged at all"
+    assert refusal =~ "reason=:refresh_expired"
+
+    # TWELVE HEX CHARACTERS — not twelve characters of "sha256:...".
+    assert [[_, prefix]] = Regex.scan(~r/token_hash_prefix=(\S+)/, refusal)
+    assert prefix =~ ~r/^[0-9a-f]{12}$/, "got #{inspect(prefix)}"
+
+    # Neither the token nor its full hash is in the line we emit.
+    refute refusal =~ "logged-expired-token"
+    refute refusal =~ Tokens.hash_token("logged-expired-token")
+  end
+
+  @tag :postgres_integration
   test "POST /api/v1/auth/refresh rejects revoked refresh token" do
     fixture = create_refresh_fixture!("revoked-refresh-token", revoked_at: DateTime.utc_now())
 
@@ -744,7 +783,11 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
   end
 
   defp assert_refresh_expired(conn) do
-    assert_error_envelope(conn, "auth.refresh_expired", "Refresh token has expired — sign in again")
+    assert_error_envelope(
+      conn,
+      "auth.refresh_expired",
+      "Refresh token has expired — sign in again"
+    )
   end
 
   defp assert_refresh_reused(conn) do
