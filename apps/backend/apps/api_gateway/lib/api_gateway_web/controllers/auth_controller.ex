@@ -33,6 +33,19 @@ defmodule ApiGatewayWeb.AuthController do
          {:ok, response} <- SharedInfra.AuthClient.refresh(params) do
       json(conn, response)
     else
+      # FOUR CODES, ONE STATUS. All four stay 401 — the change is what the client can DO about it.
+      # Expiry is routine: re-login and KEEP local data. Reuse and a revoked session are
+      # compromise-grade: the client may reasonably clear secrets. refresh_invalid stays the
+      # conservative catch-all for everything we cannot characterise.
+      #
+      # THESE CLAUSES ARE ALSO WHAT PUTS THE ATOMS IN THIS RELEASE. Auth is a separate release and the
+      # error crosses as a string that InternalApi.decode_result/2 rehydrates with
+      # String.to_existing_atom/1 — falling back to the raw string when the atom is unknown here. A
+      # gateway that did not name these atoms would decode them as strings, miss every clause, and
+      # answer 400 instead of 401. See the deploy-order note in the commit message.
+      {:error, :refresh_expired} -> refresh_expired(conn)
+      {:error, :refresh_reused} -> refresh_reused(conn)
+      {:error, :session_revoked} -> session_revoked(conn)
       {:error, :refresh_invalid} -> refresh_invalid(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
       _ -> invalid_request(conn)
@@ -123,6 +136,30 @@ defmodule ApiGatewayWeb.AuthController do
 
   defp refresh_invalid(conn),
     do: ErrorResponse.unauthorized(conn, "auth.refresh_invalid", "Refresh token is invalid")
+
+  defp refresh_expired(conn),
+    do:
+      ErrorResponse.unauthorized(
+        conn,
+        "auth.refresh_expired",
+        "Refresh token has expired — sign in again"
+      )
+
+  defp refresh_reused(conn),
+    do:
+      ErrorResponse.unauthorized(
+        conn,
+        "auth.refresh_reused",
+        "Refresh token was already used"
+      )
+
+  defp session_revoked(conn),
+    do:
+      ErrorResponse.unauthorized(
+        conn,
+        "auth.session_revoked",
+        "This session has been signed out"
+      )
 
   defp session_invalid(conn),
     do: ErrorResponse.unauthorized(conn, "auth.session_invalid", "Session token is invalid")

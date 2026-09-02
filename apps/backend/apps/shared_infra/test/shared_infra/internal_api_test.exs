@@ -40,6 +40,15 @@ defmodule SharedInfra.InternalApiTest do
       assert roundtrip({:error, :otp_invalid}) == {:error, :otp_invalid}
       assert roundtrip({:error, :session_invalid}) == {:error, :session_invalid}
       assert roundtrip({:error, :refresh_invalid}) == {:error, :refresh_invalid}
+
+      # The refresh-cause atoms (auth ships them, the GATEWAY decodes them). decode_result/2 uses
+      # String.to_existing_atom/1 and falls back to the raw STRING when the atom is unknown in the
+      # decoding release — a gateway that never names these would answer 400 instead of 401. This
+      # test runs in the umbrella where all atoms exist; what it pins is that they survive the
+      # encode/decode shape at all.
+      assert roundtrip({:error, :refresh_expired}) == {:error, :refresh_expired}
+      assert roundtrip({:error, :refresh_reused}) == {:error, :refresh_reused}
+      assert roundtrip({:error, :session_revoked}) == {:error, :session_revoked}
     end
 
     test "bare boolean (persistence_enabled?)" do

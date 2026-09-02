@@ -12,6 +12,8 @@ defmodule AuthService.Tokens do
   alias AuthService.RefreshTokens
   alias AuthService.Repo
 
+  require Logger
+
   @token_version "v1"
 
   @type token_attrs :: map()
@@ -195,10 +197,38 @@ defmodule AuthService.Tokens do
          {:ok, response} <- rotate_refresh_token(existing_token, device_session, now) do
       {:ok, response}
     else
-      {:repo, false} -> {:error, :repo_not_started}
-      {:error, :refresh_invalid} -> {:error, :refresh_invalid}
-      {:error, _reason} = error -> error
+      {:repo, false} ->
+        {:error, :repo_not_started}
+
+      {:error, reason} ->
+        log_refresh_failure(reason, attrs)
+        {:error, reason}
     end
+  end
+
+  # THE LINE THAT WAS MISSING. A forced-logout investigation could not say WHY a refresh was refused:
+  # tokens.ex logged nothing, and the gateway's request line records only the flattened HTTP code. The
+  # cause atom is the whole point — without it the nine causes are indistinguishable in production.
+  #
+  # NEVER logs the refresh token, and never its full hash: a full hash is the lookup key for
+  # refresh_tokens.token_hash, so logging one would put a working session identifier in the log
+  # stream. Twelve hex characters correlate a token across lines without being usable to find the row.
+  defp log_refresh_failure(reason, attrs) do
+    Logger.warning(fn ->
+      "[auth.refresh] refused reason=#{inspect(reason)} " <>
+        "device_id=#{inspect(get_attr(attrs, :device_id))} " <>
+        "token_hash_prefix=#{token_hash_prefix(attrs)} " <>
+        "correlation_id=#{inspect(SharedInfra.Correlation.get())}"
+    end)
+  end
+
+  defp token_hash_prefix(attrs) do
+    case submitted_refresh_token(attrs) do
+      {:ok, refresh_token} -> refresh_token |> hash_token() |> binary_part(0, 12)
+      _ -> "none"
+    end
+  rescue
+    _ -> "none"
   end
 
   defp revoke_persisted_token(attrs) do
@@ -213,24 +243,46 @@ defmodule AuthService.Tokens do
       # expired) — the gateway uses this to sever the device's live socket (realtime session revocation).
       {:ok, %{user_id: existing_token.user_id, device_id: existing_token.device_id}}
     else
-      {:repo, false} -> {:error, :repo_not_started}
-      {:error, :refresh_invalid} -> {:error, :refresh_invalid}
-      {:error, _reason} = error -> error
+      {:repo, false} ->
+        {:error, :repo_not_started}
+
+      # LOGOUT KEEPS ITS OLD SHAPE. It shares get_active_refresh_token/2 with refresh, so it now sees
+      # the new atoms too — but the distinction exists to tell a CLIENT how to react to a failed
+      # ROTATION, and there is no such decision to make when signing out. Folding them back keeps
+      # logout's contract byte-identical (401 auth.refresh_invalid) instead of leaking a 400 through
+      # the gateway's catch-all.
+      {:error, reason} when reason in [:refresh_expired, :refresh_reused, :session_revoked] ->
+        {:error, :refresh_invalid}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
+  # THE SAME CHECKS, IN THE SAME ORDER — only the error atom differs now. A client that is merely
+  # past its expiry needs to re-login; a client presenting an already-rotated token might have been
+  # replayed. Collapsing both into one code is what forced Android to wipe E2EE keys on an ordinary
+  # expiry, because a wipe is the only safe response to an ambiguous "your token is bad".
   defp get_active_refresh_token(token_hash, now) do
     case RefreshTokens.get_by_token_hash(token_hash) do
       nil ->
+        # Unknown hash: could be a forgery, a token from a wiped database, or a typo. Nothing here
+        # says "expired", so it stays the conservative catch-all.
         {:error, :refresh_invalid}
 
       %{revoked_at: nil, expires_at: expires_at} = refresh_token when not is_nil(expires_at) ->
         if DateTime.compare(expires_at, now) == :gt do
           {:ok, refresh_token}
         else
-          {:error, :refresh_invalid}
+          {:error, :refresh_expired}
         end
 
+      # Revoked, i.e. ALREADY ROTATED (rotation sets revoked_at + replaced_by_token_id) or logged out.
+      # Presenting one is chain reuse: benign if a response was lost in flight, hostile if replayed.
+      %{revoked_at: revoked_at} when not is_nil(revoked_at) ->
+        {:error, :refresh_reused}
+
+      # A row with no expires_at at all — malformed, never issued by prepare_issue_pair.
       _ ->
         {:error, :refresh_invalid}
     end
@@ -246,24 +298,30 @@ defmodule AuthService.Tokens do
     end
   end
 
+  # The device session is GONE or explicitly revoked — a sign-out, a "sign out everywhere else", or an
+  # admin revoke. Distinct from expiry: the session was taken away, so the client should treat it as a
+  # compromise-grade event rather than a routine re-login. A missing row is reported the same way; from
+  # the device's side the two are indistinguishable, and both mean "this session no longer exists".
   defp get_active_device_session(existing_token) do
     case DeviceSessions.get_device_session(existing_token.user_id, existing_token.device_id) do
       nil ->
-        {:error, :refresh_invalid}
+        {:error, :session_revoked}
 
       %{revoked_at: revoked_at} when not is_nil(revoked_at) ->
-        {:error, :refresh_invalid}
+        {:error, :session_revoked}
 
       device_session ->
         {:ok, device_session}
     end
   end
 
+  # The session's CURRENT hash is not this token — another rotation has happened since. Same class as a
+  # revoked row (cause 3): the chain moved on without this token.
   defp refresh_token_matches_session?(existing_token, device_session) do
     if existing_token.token_hash == device_session.refresh_token_hash do
       :ok
     else
-      {:error, :refresh_invalid}
+      {:error, :refresh_reused}
     end
   end
 

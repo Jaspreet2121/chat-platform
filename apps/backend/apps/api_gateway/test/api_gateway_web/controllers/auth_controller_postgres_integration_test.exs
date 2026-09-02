@@ -305,7 +305,7 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
       )
 
     assert second_conn.status == 401
-    assert_refresh_invalid(second_conn)
+    assert_refresh_reused(second_conn)
   end
 
   @tag :postgres_integration
@@ -323,7 +323,7 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
       )
 
     assert conn.status == 401
-    assert_refresh_invalid(conn)
+    assert_refresh_expired(conn)
     assert Repo.get!(RefreshToken, fixture.refresh_token_id).revoked_at == nil
   end
 
@@ -342,7 +342,7 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
       )
 
     assert conn.status == 401
-    assert_refresh_invalid(conn)
+    assert_refresh_reused(conn)
   end
 
   @tag :postgres_integration
@@ -366,7 +366,7 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
       )
 
     assert conn.status == 401
-    assert_refresh_invalid(conn)
+    assert_session_revoked(conn)
   end
 
   @tag :postgres_integration
@@ -736,8 +736,23 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
     assert_error_envelope(conn, "auth.otp_invalid", "OTP is wrong or expired")
   end
 
+  # FOUR CAUSES, FOUR CODES (all still 401). These assertions used to say "refresh_invalid" for every
+  # refusal — which is precisely the ambiguity that made a routine expiry indistinguishable from a
+  # possible compromise, and left the client with wiping as its only safe response.
   defp assert_refresh_invalid(conn) do
     assert_error_envelope(conn, "auth.refresh_invalid", "Refresh token is invalid")
+  end
+
+  defp assert_refresh_expired(conn) do
+    assert_error_envelope(conn, "auth.refresh_expired", "Refresh token has expired — sign in again")
+  end
+
+  defp assert_refresh_reused(conn) do
+    assert_error_envelope(conn, "auth.refresh_reused", "Refresh token was already used")
+  end
+
+  defp assert_session_revoked(conn) do
+    assert_error_envelope(conn, "auth.session_revoked", "This session has been signed out")
   end
 
   defp assert_session_invalid(conn) do
