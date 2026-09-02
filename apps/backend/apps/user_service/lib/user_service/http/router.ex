@@ -94,6 +94,10 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Privacy.update_privacy(body(conn)))
   end
 
+  post "/internal/nearby/publish" do
+    send_result(conn, UserService.Nearby.publish(body(conn)))
+  end
+
   post "/internal/nearby/discover" do
     send_result(conn, UserService.Nearby.discover(body(conn)))
   end

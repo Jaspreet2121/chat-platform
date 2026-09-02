@@ -70,6 +70,9 @@ defmodule UserService.UserClientInProcess do
   def discover_nearby(attrs), do: UserService.Nearby.discover(attrs)
 
   @impl true
+  def publish_nearby(attrs), do: UserService.Nearby.publish(attrs)
+
+  @impl true
   def stop_nearby(attrs), do: UserService.Nearby.stop(attrs)
 
   @impl true

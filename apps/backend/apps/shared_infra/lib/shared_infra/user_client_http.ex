@@ -63,6 +63,9 @@ defmodule SharedInfra.UserClientHttp do
   def discover_nearby(attrs), do: post("/internal/nearby/discover", attrs)
 
   @impl true
+  def publish_nearby(attrs), do: post("/internal/nearby/publish", attrs)
+
+  @impl true
   def stop_nearby(attrs), do: post("/internal/nearby/stop", attrs)
 
   @impl true

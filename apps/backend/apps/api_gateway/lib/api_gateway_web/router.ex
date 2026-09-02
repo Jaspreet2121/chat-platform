@@ -292,6 +292,9 @@ defmodule ApiGatewayWeb.Router do
     pipe_through :api
 
     post "/discover", NearbyController, :discover
+    # 114: publish-only (the background worker). Same path as the DELETE below — POST publishes a
+    # fix, DELETE removes it — so the client has one presence resource, not two.
+    post "/presence", NearbyController, :publish
     delete "/presence", NearbyController, :stop
     get "/requests", NearbyController, :requests
     post "/requests", NearbyController, :send_request

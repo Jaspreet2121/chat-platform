@@ -13,6 +13,11 @@ defmodule ApiGatewayWeb.NearbyController do
   # 6/min (was 30 — audit 2026-08-26): with per-pair bucket pinning this is belt-and-braces
   # against movement-based trilateration; a human refreshing a modal never approaches it.
   @discover_limit 6
+
+  # A background worker publishes far more often than a human opens the screen — but not unboundedly.
+  # 30/hour is a fix every two minutes, comfortably above any sane cadence and low enough that a
+  # runaway loop is capped rather than free to write.
+  @publish_limit 30
   @request_limit 10
   # BLE (104): a handset re-requests its broadcast token at most every ~75s in practice; sightings
   # batch. Both fail CLOSED like discover — the BLE path is an enumeration/abuse surface.
@@ -42,6 +47,30 @@ defmodule ApiGatewayWeb.NearbyController do
         expires_in_seconds: mget(result, :expires_in_seconds),
         radius_m: mget(result, :radius_m)
       })
+    else
+      error -> handle_error(conn, error)
+    end
+  end
+
+  @doc """
+  POST /api/v1/nearby/presence — publish a fix without running discovery (114).
+
+  This is the background path: it exists so a phone can keep its owner visible while Nearby is
+  closed. It deliberately returns NO people — a background worker has no business receiving a list of
+  who is nearby, and keeping the surfaces separate means a compromised worker cannot enumerate.
+  """
+  def publish(conn, params) do
+    with {:ok, session} <- session(conn),
+         :ok <- rate_limit("nearby_publish", session.user_id, @publish_limit),
+         {:ok, result} <-
+           SharedInfra.UserClient.publish_nearby(%{
+             "user_id" => session.user_id,
+             "app_id" => session_app(session),
+             "latitude" => Map.get(params, "latitude"),
+             "longitude" => Map.get(params, "longitude"),
+             "accuracy_m" => Map.get(params, "accuracy_m")
+           }) do
+      json(conn, result)
     else
       error -> handle_error(conn, error)
     end
@@ -459,6 +488,17 @@ defmodule ApiGatewayWeb.NearbyController do
 
   defp handle_error(conn, {:error, :nearby_disabled}),
     do: ErrorResponse.forbidden(conn, "nearby.disabled", "Nearby is turned off in your settings")
+
+  # DISTINCT from nearby.disabled on purpose. "You turned Nearby off" and "you never turned on
+  # background publishing" need different words in the client, and the second must not read as a
+  # fault — the user simply has not opted in.
+  defp handle_error(conn, {:error, :nearby_publish_disabled}),
+    do:
+      ErrorResponse.forbidden(
+        conn,
+        "nearby.publish_disabled",
+        "Background location sharing is off — turn it on in Nearby settings"
+      )
 
   defp handle_error(conn, {:error, :nearby_not_discoverable}),
     do: ErrorResponse.not_found(conn, "nearby.not_available", "This person is no longer nearby")

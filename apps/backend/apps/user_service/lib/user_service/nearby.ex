@@ -9,7 +9,23 @@ defmodule UserService.Nearby do
 
   alias UserService.Repo
 
-  @presence_seconds 300
+  # RETENTION, one constant for every write path (the discover self-upsert AND the publish endpoint).
+  # Was 300s: presence existed only while Nearby was open. Now 8h, because phones publish in the
+  # background for opted-in users. The physical delete-on-expiry sweep is unchanged — a coordinate
+  # past this edge is REMOVED, never merely filtered out of a query.
+  @presence_seconds 28_800
+
+  # Staleness, as CEILING buckets in seconds. Coarse on purpose: a viewer learns "roughly how old"
+  # without ever receiving a timestamp they could difference against a second observation to infer
+  # movement. "now" absorbs everything under ten minutes, so an actively-publishing phone never leaks
+  # its publish cadence.
+  @staleness_buckets [{600, "now"}, {3_600, "1h"}, {7_200, "2h"}, {14_400, "4h"}]
+  @staleness_max "8h"
+
+  # A publish must move the stored fix by at least this much to count as a NEW fix (fix_seq++), which
+  # is what retires per-viewer bucket pins. Below it, a phone re-reporting the same place — GPS jitter,
+  # a stationary device — keeps the existing pins and cannot be used to probe the bucket boundary.
+  @fix_move_threshold_m 25.0
   @max_results 30
   @valid_radii [100, 200]
   @audiences ~w(everyone contacts)
@@ -91,7 +107,7 @@ defmodule UserService.Nearby do
         """
         INSERT INTO nearby_presence
           (user_id, app_id, latitude, longitude, accuracy_m, expires_at, updated_at)
-        VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, now() + interval '5 minutes', now())
+        VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5, now() + ($6 || ' seconds')::interval, now())
         ON CONFLICT (user_id) DO UPDATE SET
           app_id = EXCLUDED.app_id,
           latitude = EXCLUDED.latitude,
@@ -103,14 +119,15 @@ defmodule UserService.Nearby do
           pins = CASE WHEN nearby_presence.expires_at > now()
                       THEN nearby_presence.pins ELSE '{}'::jsonb END
         """,
-        [user_id, app_id, latitude, longitude, accuracy]
+        [user_id, app_id, latitude, longitude, accuracy, @presence_seconds]
       )
 
       %{rows: rows} =
         Repo.query!(
           """
           WITH candidates AS (
-            SELECT p.user_id, p.pins ->> $1 AS pinned_bucket,
+            SELECT p.user_id, p.pins ->> ($1 || ':' || p.fix_seq::text) AS pinned_bucket, p.fix_seq,
+              EXTRACT(EPOCH FROM (now() - p.updated_at))::float AS age_seconds,
               6371000.0 * 2.0 * asin(LEAST(1.0, sqrt(
                 power(sin(radians((p.latitude - $3) / 2.0)), 2) +
                 cos(radians($3)) * cos(radians(p.latitude)) *
@@ -141,7 +158,7 @@ defmodule UserService.Nearby do
                               WHERE vf.owner_user_id = $1::text::uuid
                                 AND vf.favourite_user_id = p.user_id))
           )
-          SELECT c.user_id::text, c.distance_m, c.pinned_bucket,
+          SELECT c.user_id::text, c.distance_m, c.pinned_bucket, c.fix_seq, c.age_seconds,
             CASE
               WHEN nc.user_low_id IS NOT NULL THEN 'connected'
               WHEN sent.id IS NOT NULL THEN 'sent'
@@ -160,27 +177,44 @@ defmodule UserService.Nearby do
             ON received.requester_user_id = c.user_id AND received.recipient_user_id = $1::text::uuid
            AND received.status = 'pending'
           WHERE c.distance_m <= $5::double precision
-          ORDER BY c.distance_m, c.user_id
+          -- Freshest first, then nearest. (BLE-confirmed rows are hoisted above all of these by the
+          -- gateway's overlay, which is the only layer that knows about Bluetooth sightings.)
+          ORDER BY c.age_seconds, c.distance_m, c.user_id
           LIMIT #{@max_results}
           """,
           [user_id, app_id, latitude, longitude, radius * 1.0, viewer.audience]
         )
 
       people =
-        Enum.map(rows, fn [id, distance, pinned, relationship] ->
+        Enum.map(rows, fn [id, distance, pinned, fix_seq, age_seconds, relationship] ->
+          # THE PIN KEY IS (viewer, target-fix). Scoping it to the target's fix_seq is what keeps the
+          # anti-trilateration property alive under an 8h TTL:
+          #
+          #   * a VIEWER who moves and re-queries reads the same key, so a stationary target's bucket
+          #     never changes — an attacker still cannot walk the 100/200 m boundary to triangulate;
+          #   * a TARGET who genuinely moves advances fix_seq, the old key stops matching, and the
+          #     bucket is recomputed once for the new position.
+          #
+          # Under the old rule (frozen for the row's LIFETIME) an 8h row would have shown a bucket
+          # from eight hours ago forever, which is both wrong and its own privacy problem — it would
+          # advertise where someone WAS long after they left.
+          pin_key = pin_key(user_id, fix_seq)
           bucket = pinned_or_computed(pinned, distance)
 
-          # PIN the first computed bucket for this (viewer, target) pair — every later discover by
-          # this viewer returns the same bucket until the target's row dies (see moduledoc).
           if is_nil(pinned) do
             Repo.query!(
               "UPDATE nearby_presence SET pins = pins || jsonb_build_object($1::text, $2::int) " <>
                 "WHERE user_id = $3::text::uuid AND expires_at > now()",
-              [user_id, bucket, id]
+              [pin_key, bucket, id]
             )
           end
 
-          %{user_id: id, distance_bucket_m: bucket, relationship: relationship}
+          %{
+            user_id: id,
+            distance_bucket_m: bucket,
+            last_seen_bucket: staleness_bucket(age_seconds),
+            relationship: relationship
+          }
         end)
 
       {:ok, %{people: people, expires_in_seconds: @presence_seconds, radius_m: radius}}
@@ -188,6 +222,126 @@ defmodule UserService.Nearby do
   rescue
     Ecto.Query.CastError -> {:error, :nearby_invalid}
     _error in Postgrex.Error -> {:error, :nearby_invalid}
+  end
+
+  @doc """
+  Coarse staleness from an age in seconds. CEILING buckets, never a timestamp: a viewer learns
+  "roughly how old" and cannot difference two observations to infer that someone moved.
+
+  Public + pure so it can be tested directly and so the boundaries are pinned by name rather than by
+  reading the SQL.
+  """
+  def staleness_bucket(age_seconds) when is_number(age_seconds) do
+    age = max(age_seconds, 0)
+
+    Enum.find_value(@staleness_buckets, @staleness_max, fn {ceiling, label} ->
+      if age <= ceiling, do: label
+    end)
+  end
+
+  def staleness_bucket(_), do: @staleness_max
+
+  @doc """
+  The per-viewer pin key. Scoped to the TARGET's fix generation, which is the whole
+  anti-trilateration property: a moving viewer reads the same key (bucket frozen), a moving target
+  advances fix_seq and retires the key (bucket recomputed once).
+  """
+  def pin_key(viewer_id, fix_seq), do: "#{viewer_id}:#{fix_seq}"
+
+  @doc "Did an accepted publish move the stored fix far enough to count as a new one?"
+  def new_fix?(nil, _lat, _lng), do: true
+
+  def new_fix?({prev_lat, prev_lng}, lat, lng) do
+    haversine_m(prev_lat, prev_lng, lat, lng) >= @fix_move_threshold_m
+  end
+
+  @doc """
+  PUBLISH-ONLY upsert — the background path (114). Writes a fix without running discovery, so a
+  phone can keep its owner visible while Nearby is closed.
+
+  THE SERVER IS THE WALL. Publishing requires BOTH the master switch (`enabled`) and the explicit
+  `auto_publish` opt-in. The client worker checks too, but a client check is a courtesy: a stale
+  build, a replayed request, or a modified app must not be able to publish for a user who never
+  opted in. `enabled=false` refuses as :nearby_disabled (as everywhere else); opted-out refuses with
+  its own :nearby_publish_disabled so the client can tell "you turned Nearby off" from "you never
+  turned background publishing on".
+  """
+  def publish(attrs) do
+    with {:ok, user_id} <- required(attrs, "user_id"),
+         {:ok, app_id} <- required(attrs, "app_id"),
+         {:ok, latitude} <- coordinate(attrs, "latitude", -90.0, 90.0),
+         {:ok, longitude} <- coordinate(attrs, "longitude", -180.0, 180.0),
+         {:ok, accuracy} <- accuracy(attrs),
+         {:ok, _settings} <- require_publish_allowed(user_id) do
+      Repo.query!(
+        "DELETE FROM nearby_presence WHERE app_id = $1::text::uuid AND expires_at < now()",
+        [app_id]
+      )
+
+      previous = previous_fix(user_id)
+      advance? = new_fix?(previous, latitude, longitude)
+
+      Repo.query!(
+        """
+        INSERT INTO nearby_presence
+          (user_id, app_id, latitude, longitude, accuracy_m, expires_at, updated_at, fix_seq, pins)
+        VALUES ($1::text::uuid, $2::text::uuid, $3, $4, $5,
+                now() + ($6 || ' seconds')::interval, now(), 0, '{}'::jsonb)
+        ON CONFLICT (user_id) DO UPDATE SET
+          app_id = EXCLUDED.app_id,
+          latitude = EXCLUDED.latitude,
+          longitude = EXCLUDED.longitude,
+          accuracy_m = EXCLUDED.accuracy_m,
+          expires_at = EXCLUDED.expires_at,
+          updated_at = EXCLUDED.updated_at,
+          -- A MATERIAL move advances the fix and drops every pin minted against the old one; a
+          -- stationary re-publish keeps both, so republishing cannot be used to shake a pin loose.
+          fix_seq = CASE WHEN $7 THEN nearby_presence.fix_seq + 1 ELSE nearby_presence.fix_seq END,
+          pins = CASE WHEN $7 THEN '{}'::jsonb ELSE nearby_presence.pins END
+        """,
+        [user_id, app_id, latitude, longitude, accuracy, @presence_seconds, advance?]
+      )
+
+      {:ok, %{published: true, expires_in_seconds: @presence_seconds}}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :nearby_invalid}
+    _error in Postgrex.Error -> {:error, :nearby_invalid}
+  end
+
+  defp previous_fix(user_id) do
+    case Repo.query!(
+           "SELECT latitude, longitude FROM nearby_presence " <>
+             "WHERE user_id = $1::text::uuid AND expires_at > now()",
+           [user_id]
+         ) do
+      %{rows: [[lat, lng]]} when is_number(lat) and is_number(lng) -> {lat, lng}
+      _ -> nil
+    end
+  end
+
+  defp require_publish_allowed(user_id) do
+    case settings_row(user_id) do
+      %{enabled: true, auto_publish: true} = settings -> {:ok, settings}
+      %{enabled: true} -> {:error, :nearby_publish_disabled}
+      _ -> {:error, :nearby_disabled}
+    end
+  end
+
+  # Metres between two WGS84 points. Mirrors the discover query's in-SQL haversine so the
+  # move threshold and the distance bucket cannot disagree about what "25 m" means.
+  defp haversine_m(lat1, lng1, lat2, lng2) do
+    r = 6_371_000.0
+    dlat = :math.pi() * (lat2 - lat1) / 180.0
+    dlng = :math.pi() * (lng2 - lng1) / 180.0
+    rlat1 = :math.pi() * lat1 / 180.0
+    rlat2 = :math.pi() * lat2 / 180.0
+
+    a =
+      :math.pow(:math.sin(dlat / 2.0), 2) +
+        :math.cos(rlat1) * :math.cos(rlat2) * :math.pow(:math.sin(dlng / 2.0), 2)
+
+    2.0 * r * :math.asin(min(1.0, :math.sqrt(a)))
   end
 
   def stop(attrs) do
@@ -455,19 +609,28 @@ defmodule UserService.Nearby do
 
   # --- settings internals ------------------------------------------------------------------------
 
+  # THE DEFAULTS ARE THE CONTRACT. An absent row means "discoverable while I have Nearby open" —
+  # enabled true, auto_publish FALSE. Adding auto_publish here with a false default is what makes 114
+  # change nobody's exposure on its own.
   defp settings_row(user_id) do
     %{rows: rows} =
       Repo.query!(
-        "SELECT enabled, ble_assist, audience FROM nearby_settings WHERE user_id = $1::text::uuid",
+        "SELECT enabled, ble_assist, audience, auto_publish FROM nearby_settings " <>
+          "WHERE user_id = $1::text::uuid",
         [user_id]
       )
 
     case rows do
-      [[enabled, ble_assist, audience]] ->
-        %{enabled: enabled, ble_assist: ble_assist, audience: audience}
+      [[enabled, ble_assist, audience, auto_publish]] ->
+        %{
+          enabled: enabled,
+          ble_assist: ble_assist,
+          audience: audience,
+          auto_publish: auto_publish
+        }
 
       [] ->
-        %{enabled: true, ble_assist: false, audience: "everyone"}
+        %{enabled: true, ble_assist: false, audience: "everyone", auto_publish: false}
     end
   end
 

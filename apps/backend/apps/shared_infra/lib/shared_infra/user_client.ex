@@ -40,6 +40,8 @@ defmodule SharedInfra.UserClient do
   @callback check_username(attrs()) :: result()
   # Nearby People (101): short-lived discovery and consent-based connection requests.
   @callback discover_nearby(attrs()) :: result()
+  # 114: publish-only upsert (the background path). Gated on the auto_publish opt-in server-side.
+  @callback publish_nearby(attrs()) :: result()
   @callback stop_nearby(attrs()) :: result()
   @callback send_nearby_request(attrs()) :: result()
   @callback list_nearby_requests(attrs()) :: result()
@@ -74,6 +76,7 @@ defmodule SharedInfra.UserClient do
                       delete_quick_reply: 1,
                       reorder_quick_replies: 1,
                       discover_nearby: 1,
+                      publish_nearby: 1,
                       stop_nearby: 1,
                       send_nearby_request: 1,
                       list_nearby_requests: 1,
@@ -122,6 +125,7 @@ defmodule SharedInfra.UserClient do
   def reorder_quick_replies(attrs), do: adapter().reorder_quick_replies(attrs)
   def check_username(attrs), do: adapter().check_username(attrs)
   def discover_nearby(attrs), do: adapter().discover_nearby(attrs)
+  def publish_nearby(attrs), do: adapter().publish_nearby(attrs)
   def stop_nearby(attrs), do: adapter().stop_nearby(attrs)
   def send_nearby_request(attrs), do: adapter().send_nearby_request(attrs)
   def list_nearby_requests(attrs), do: adapter().list_nearby_requests(attrs)
