@@ -235,6 +235,92 @@ this section used to describe was real from the flip until the index shipped, la
 
 ## Forward depth
 
+## View-once messages (115)
+
+A view-once send is ordinary media whose blob the server stops serving once the recipient has opened
+it. The flag is **message metadata, not a media purpose** — the same asset can be an ordinary
+attachment in one message and view-once in another.
+
+### Create
+
+```
+POST /api/v1/conversations/:id/messages
+  { "message_type": "media",
+    "media_id": "<uuid>",
+    "view_once": true }
+```
+
+`view_once` is valid **only** on `message_type: "media"`. Anything else is
+`422 message.view_once_invalid`:
+
+| Type | Result | Why |
+|---|---|---|
+| `media` | ✅ accepted | `media_id` is required for this type, so there is always a blob to delete |
+| `sealed` | ❌ 422 | `media_id` is forced null for sealed sends — the descriptor rides inside the ciphertext, so the server can never find the blob. **View-once in a secret chat is client-enforced**, and is refused here rather than accepted and silently unenforceable |
+| `text` and all others | ❌ 422 | No blob |
+
+Absent or `false` is always fine, and unrecognised values read as `false` — only an explicit truthy
+`view_once` on a non-media type is refused.
+
+**Broadcasts refuse it**: `422 broadcast.view_once_unsupported`. One `media_id` fans out to N
+conversations, but the first open deletes the blob for everyone, so recipients 2..N would silently
+lose a message they were told they had. The flag is refused rather than quietly stripped, because a
+sender who believes they sent view-once and did not is the one failure this feature must never have.
+
+**The `/v1` integrator surface ignores it.** `view_once` is not in its accepted fields, so an
+integrator sending it gets an ordinary message — the flag is never set.
+
+### Opening
+
+```
+POST /api/v1/conversations/:conversation_id/messages/:message_id/open
+  (bearer session, no body)
+
+200 { "message_id": "...", "opened_at": "2026-09-03T...Z", "status": "opened" }
+403 message.sender_cannot_open
+404 message.not_found
+```
+
+**Idempotent.** A replay returns the **original** `opened_at` and does not purge again, so a client
+retrying a lost response cannot move the timestamp or trigger a second deletion.
+
+**403 for the sender**: view-once is one-way. A sender able to re-read their own send would keep a
+copy of what the recipient believes is gone.
+
+**404 is opaque** for unknown, not-view-once, and not-your-conversation alike — a distinct "not
+view-once" would confirm a message id exists to anyone probing.
+
+Emits `view_once_opened` on `conversation:<id>`:
+
+```json
+{ "message_id": "...", "user_id": "...", "opened_at": "2026-09-03T...Z" }
+```
+
+### Enforcement
+
+| Who | When | Download |
+|---|---|---|
+| Recipient | before their open | ✅ allowed (still subject to the ordinary media rules) |
+| Recipient | after their open | ❌ 404 |
+| Sender | any time after send | ❌ 404 |
+| Anyone | 14 days unopened | ❌ 404, and the blob is purged |
+
+Opening deletes the blob. View-once download URLs are signed for **120 seconds** rather than the
+900-second default, because storage honours a signature rather than our authorization — deletion is
+what actually closes that window, and the short TTL narrows it.
+
+**A failed deletion never fails the open.** The receipt is the authoritative fact and commits
+regardless; an undeleted blob is retried by an opportunistic sweep. A transient storage error must
+not show an error on a message the server has already decided the user may read.
+
+### What this does NOT do
+
+View-once controls **server access to the blob**. It cannot prevent a screenshot, a screen recording,
+or another phone pointed at the screen, and it should not be described to users as if it can. In
+secret chats the server never sees the media id at all, so view-once there is entirely a client
+promise — which is why the server refuses the flag on sealed sends rather than implying an
+enforcement it cannot provide.
+
 Misinformation friction, **not** a statistic. The signal is *distance from the origin*, not how many
 copies exist.
 
