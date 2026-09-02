@@ -10,6 +10,12 @@ defmodule ApiGatewayWeb.ViewOnceStateStub do
       # A FAILING PROBE, not a state. The gate must treat this as "not view-once" and let ordinary
       # media through — see the agreement property.
       :error -> {:error, :message_unavailable}
+      # A probe that RAISES. This is what an older message client, a partial double, or a
+      # mid-deploy release skew actually looks like — a missing callback raises
+      # UndefinedFunctionError, it does not return an error tuple. Caught only after 29 real
+      # suites went red; the original stub implemented the callback, so the property could not
+      # see it.
+      :raise -> raise "view_once_state is not implemented by this adapter"
       other -> {:ok, %{state: Atom.to_string(other)}}
     end
   end
@@ -133,6 +139,21 @@ defmodule ApiGatewayWeb.ViewOnceAuthzTest do
         assert MediaAuthz.authorize_download(@media, asset(purpose), viewer) == expected,
                "#{purpose}/#{viewer} changed when the view-once probe FAILED"
       end
+    end
+
+    test "A RAISING PROBE MUST NOT DENY ORDINARY MEDIA EITHER" do
+      # The failure mode an error-tuple fallback misses entirely: a client without the callback
+      # raises. Every media download in the system routes through this gate, so one missing callback
+      # would otherwise 404 all of them.
+      ViewOnceStateStub.put_state(:raise)
+
+      for {purpose, viewer, expected} <- @fixtures do
+        assert MediaAuthz.authorize_download(@media, asset(purpose), viewer) == expected,
+               "#{purpose}/#{viewer} changed when the view-once probe RAISED"
+      end
+
+      base = %{"media_id" => @media}
+      assert MediaAuthz.put_download_ttl(base, @media, @member) == base
     end
 
     test "the presign ceiling is added ONLY for view-once media" do

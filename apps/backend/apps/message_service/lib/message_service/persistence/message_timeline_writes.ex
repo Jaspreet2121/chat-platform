@@ -16,9 +16,9 @@ defmodule MessageService.Persistence.MessageTimelineWrites do
       """
       INSERT INTO messages_by_conversation (
         conversation_id, bucket_date, message_id, sender_user_id, message_type,
-        body, media_id, reply_to_message_id, status, metadata, created_at,
+        body, media_id, reply_to_message_id, status, metadata, view_once, created_at,
         edited_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       """,
       [
         ScyllaCodec.encode_uuid(Attrs.get(attrs, :conversation_id)),
@@ -31,6 +31,11 @@ defmodule MessageService.Persistence.MessageTimelineWrites do
         ScyllaCodec.encode_uuid(Attrs.get(attrs, :reply_to_message_id)),
         Attrs.get(attrs, :status),
         ScyllaCodec.encode_metadata(Attrs.get(attrs, :metadata)),
+        # A NATIVE BOOLEAN, never a metadata entry. metadata is map<text,text> here, so routing the
+        # flag through it would store the STRING "true" while Postgres stores a real boolean — two
+        # stores disagreeing about a value that gates media access. Defaulted to false so a caller
+        # that omits it writes the same thing Postgres's column default writes.
+        Attrs.get(attrs, :view_once) || false,
         ScyllaCodec.encode_timestamp(Attrs.get(attrs, :created_at)),
         ScyllaCodec.encode_timestamp(Attrs.get(attrs, :edited_at)),
         ScyllaCodec.encode_timestamp(Attrs.get(attrs, :deleted_at))

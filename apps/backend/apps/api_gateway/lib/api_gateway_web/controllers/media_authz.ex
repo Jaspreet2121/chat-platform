@@ -63,16 +63,25 @@ defmodule ApiGatewayWeb.MediaAuthz do
     end
   end
 
+  # RESCUES, not just an error-tuple fallback. A message client that does not implement this callback
+  # RAISES UndefinedFunctionError rather than returning {:error, _} — which is what an older adapter,
+  # a partial test double, or a mid-deploy release skew all look like. Catching only the tuple left
+  # every media download in the system one missing callback away from a 404, and the agreement
+  # property could not see it because the stub implemented the callback.
+  #
+  # The rule is the same at every layer: a broken view-once probe means "not view-once", never "deny".
   defp view_once_state(media_id, user_id) do
     case MessageClient.view_once_state(%{
            "media_id" => media_id,
            "viewer_user_id" => user_id
          }) do
       {:ok, result} -> decode_state(aget(result, :state))
-      # An unreachable message service must not deny ordinary media — same reasoning as the rescue
-      # inside ViewOnce.state/2, applied at the seam.
       _ -> :not_view_once
     end
+  rescue
+    _ -> :not_view_once
+  catch
+    _, _ -> :not_view_once
   end
 
   defp decode_state("sender"), do: :sender

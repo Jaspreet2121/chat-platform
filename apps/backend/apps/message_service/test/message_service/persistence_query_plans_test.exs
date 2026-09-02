@@ -36,7 +36,9 @@ defmodule MessageService.PersistenceQueryPlansTest do
 
     assert plan.operation == :insert_message
     assert plan.table == "messages_by_conversation"
-    assert_placeholder_count(plan.statement, 13)
+    # 14 since 115: view_once is a native boolean column on messages_by_conversation, never a
+    # metadata entry (metadata is map<text,text> there — a boolean would become the string "true").
+    assert_placeholder_count(plan.statement, 14)
     refute String.contains?(plan.statement, "Hello")
 
     assert Enum.take(plan.params, 6) == [

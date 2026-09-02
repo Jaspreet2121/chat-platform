@@ -19,7 +19,7 @@ defmodule MessageService.Persistence.MessageTimelineReads do
       @table,
       """
       SELECT conversation_id, bucket_date, message_id, sender_user_id,
-        message_type, body, media_id, reply_to_message_id, status, metadata,
+        message_type, body, media_id, reply_to_message_id, status, metadata, view_once,
         created_at, edited_at, deleted_at
       FROM messages_by_conversation
       WHERE conversation_id = ? AND bucket_date = ? AND message_id = ?
@@ -38,7 +38,7 @@ defmodule MessageService.Persistence.MessageTimelineReads do
       @table,
       """
       SELECT conversation_id, bucket_date, message_id, sender_user_id,
-        message_type, body, media_id, reply_to_message_id, status, metadata,
+        message_type, body, media_id, reply_to_message_id, status, metadata, view_once,
         created_at, edited_at, deleted_at
       FROM messages_by_conversation
       WHERE conversation_id = ? AND bucket_date = ?
@@ -58,7 +58,7 @@ defmodule MessageService.Persistence.MessageTimelineReads do
       @table,
       """
       SELECT conversation_id, bucket_date, message_id, sender_user_id,
-        message_type, body, media_id, reply_to_message_id, status, metadata,
+        message_type, body, media_id, reply_to_message_id, status, metadata, view_once,
         created_at, edited_at, deleted_at
       FROM messages_by_conversation
       WHERE conversation_id = ? AND bucket_date = ? AND message_id < ?
