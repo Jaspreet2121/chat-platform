@@ -33,13 +33,10 @@ config :logger, :console,
 
 config :auth_service, ecto_repos: [AuthService.Repo]
 
-config :auth_service, :tokens,
-  access_token_ttl_seconds:
-    String.to_integer(System.get_env("AUTH_ACCESS_TOKEN_TTL_SECONDS") || "900"),
-  refresh_token_ttl_seconds:
-    String.to_integer(System.get_env("AUTH_REFRESH_TOKEN_TTL_SECONDS") || "2592000"),
-  issuer: System.get_env("AUTH_TOKEN_ISSUER") || "chat-platform",
-  audience: System.get_env("AUTH_TOKEN_AUDIENCE") || "chat-platform-clients"
+# :auth_service, :tokens MOVED TO runtime.exs — see the note there. config.exs is evaluated when the
+# RELEASE IS BUILT, so reading System.get_env here baked the build machine's environment into the
+# image and made every AUTH_*_TTL_SECONDS set on the running container inert. Same class of bug as the
+# client-adapter selection that shipped once already.
 
 config :user_service, ecto_repos: [UserService.Repo]
 config :conversation_service, ecto_repos: [ConversationService.Repo]

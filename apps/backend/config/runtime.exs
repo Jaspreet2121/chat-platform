@@ -7,6 +7,28 @@ import Config
 # override via Application.put_env after boot. DEFAULT "none" keeps prod safe (no plaintext OTP).
 config :auth_service, otp_delivery_mode: System.get_env("OTP_DELIVERY_MODE") || "none"
 
+# TOKEN LIFETIMES — read HERE, not in config.exs.
+#
+# These lived in config.exs, which Mix evaluates at BUILD time. The System.get_env calls therefore
+# resolved against the build machine and were frozen into the release: setting
+# AUTH_REFRESH_TOKEN_TTL_SECONDS on the running container did nothing, and no error said so. During a
+# forced-logout investigation the deployed refresh lifetime could not be established from the compose
+# file at all — the only reliable read was an rpc into the running node.
+#
+# Values and variable names are UNCHANGED; only the moment of evaluation moves. With no AUTH_* vars
+# set (the current deployment) the defaults below resolve exactly as before: 900 / 2592000 /
+# chat-platform / chat-platform-clients.
+#
+# All four are consumed at runtime through Tokens.token_config/2, so none of them is needed at
+# compile time and the whole block moves together.
+config :auth_service, :tokens,
+  access_token_ttl_seconds:
+    String.to_integer(System.get_env("AUTH_ACCESS_TOKEN_TTL_SECONDS") || "900"),
+  refresh_token_ttl_seconds:
+    String.to_integer(System.get_env("AUTH_REFRESH_TOKEN_TTL_SECONDS") || "2592000"),
+  issuer: System.get_env("AUTH_TOKEN_ISSUER") || "chat-platform",
+  audience: System.get_env("AUTH_TOKEN_AUDIENCE") || "chat-platform-clients"
+
 # --- Shared Redis (ALL envs) ----------------------------------------------------------------------
 # Backs the /v1 runtime (rate-limit counter + idempotency KV) and the OTP rate limiter. MUST be here,
 # NOT config.exs: config.exs is compile-time for a release, so it would bake the BUILD-time value
