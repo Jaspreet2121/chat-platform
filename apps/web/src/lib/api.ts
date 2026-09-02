@@ -211,7 +211,12 @@ export type NearbyPerson = UserProfile & {
   // "Within {n} m" produced "Within ble m".
   distance_bucket_m: NearbyBucket;
   relationship: "none" | "sent" | "received" | "connected";
+  /** Coarse staleness (114). Ceiling buckets only — the server never returns a timestamp, so a
+   *  viewer cannot difference two observations to infer that someone moved. */
+  last_seen_bucket: NearbyStaleness;
 };
+
+export type NearbyStaleness = "now" | "1h" | "2h" | "4h" | "8h";
 
 export type NearbyBucket = 100 | 200 | "ble";
 
@@ -1111,6 +1116,9 @@ export function updateAutoReplies(input: { away?: AutoReplyAway; greeting?: Auto
 /** Nearby v2 (104) settings. `ble_assist` is stored per-user but the BLE scan loop is mobile-only —
  *  the web UI shows the toggle read-only so the setting is discoverable, not silently missing. */
 export type NearbySettings = {
+  /** 114: opt-in, default false. Governs whether this account's PHONES publish location while
+   *  Nearby is closed. The web app cannot background-publish at all; the toggle is account-wide. */
+  auto_publish: boolean;
   enabled: boolean;
   ble_assist: boolean;
   /** Nearby's own audience enum — only two values (auto-replies has a WIDER, unrelated one). */

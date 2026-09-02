@@ -101,8 +101,22 @@ Response `200`:
 ## Nearby People
 
 All Nearby endpoints require a bearer session. The authenticated user/app always come from that
-session; client-supplied identity fields are ignored. Nearby mode is foreground opt-in and is
-revoked when the client closes the Nearby UI (with a five-minute server expiry as fallback).
+session; client-supplied identity fields are ignored.
+
+**Retention changed in 114.** Presence used to last five minutes and existed only while the Nearby
+UI was open. A fix now lasts **up to 8 hours** after the last publish, so people stay discoverable
+after closing the screen. Coordinates are still server-only — no response has ever contained a
+latitude, longitude, accuracy or exact distance, and none does now.
+
+Two switches govern it, and both are enforced server-side:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | The master switch. `false` deletes any live presence row immediately and refuses discovery. |
+| `auto_publish` | **`false`** | **The opt-in for background publishing.** Required by `POST /nearby/presence`. Off means presence is only written while the user is actively discovering — the pre-114 behaviour. |
+
+An account with no settings row behaves as `enabled: true, auto_publish: false`, so 114 changed
+nobody's exposure by itself.
 
 ### POST /api/v1/nearby/discover
 
@@ -128,19 +142,58 @@ coordinates or exact distance:
       "display_name": "Nearby Person",
       "avatar_url": null,
       "distance_bucket_m": 100,
+      "last_seen_bucket": "now",
       "relationship": "none"
     }
   ],
-  "expires_in_seconds": 300,
+  "expires_in_seconds": 28800,
   "radius_m": 200
 }
 ```
 
 `relationship` is `none`, `sent`, `received`, or `connected`.
 
+`last_seen_bucket` is coarse staleness, one of `now` (≤10 min), `1h`, `2h`, `4h`, `8h` — **ceiling
+buckets, computed server-side**. The raw `updated_at` is never returned: a timestamp would let a
+viewer difference two observations and infer that someone moved, which is exactly what the coarse
+distance bucket exists to prevent. `now` deliberately absorbs everything under ten minutes so an
+actively-publishing phone does not leak its cadence.
+
+Rows are ordered BLE-confirmed first, then freshest, then nearest.
+
+### POST /api/v1/nearby/presence
+
+Publishes a fix **without running discovery** — the background path (114). Returns no people: a
+background worker has no business receiving a list of who is nearby.
+
+Request:
+
+```json
+{
+  "latitude": 28.6139,
+  "longitude": 77.209,
+  "accuracy_m": 12
+}
+```
+
+Response `200`: `{"published": true, "expires_in_seconds": 28800}`.
+
+Requires **both** `enabled` and `auto_publish`. Refusals are distinguishable on purpose:
+
+| Condition | Response |
+|---|---|
+| `enabled: false` | `403 nearby.disabled` — "Nearby is turned off in your settings" |
+| `auto_publish: false` | `403 nearby.publish_disabled` — the user never opted into background sharing; not a fault |
+| `accuracy_m > 100` | `400 nearby.accuracy_too_low` |
+
+Rate limited to 30/hour per user — a fix every two minutes, well above any sane cadence and low
+enough to cap a runaway worker.
+
 ### DELETE /api/v1/nearby/presence
 
 Immediately removes the caller from discovery. Idempotent response: `{"discoverable": false}`.
+Unchanged by 114: this and turning `enabled` off both delete the row at once rather than waiting
+for the 8-hour expiry.
 
 ### GET /api/v1/nearby/requests
 

@@ -9,6 +9,7 @@ import {
   listNearbyRequests,
   NearbyAudience,
   NearbyBucket,
+  NearbyStaleness,
   NearbyConnection,
   NearbyPerson,
   NearbyRequest,
@@ -29,6 +30,31 @@ export type NearbyPeopleModalProps = {
  *  "closer than GPS can tell", so it gets its own label rather than a distance. */
 export function bucketLabel(bucket: NearbyBucket): string {
   return bucket === "ble" ? "Very close" : `Within ${bucket} m`;
+}
+
+/** How stale a nearby row is, in words. The server sends only a coarse ceiling bucket — never a
+ *  timestamp — so this is a lookup, not arithmetic: there is no minute count to render and
+ *  deliberately no way to derive one. "Now" covers everything under ten minutes.
+ *
+ *  Exported and pure for the same reason as bucketLabel: the wording is worth pinning, and an
+ *  unrecognised bucket from a newer server must degrade to something honest rather than render
+ *  "undefined ago". */
+export function stalenessLabel(bucket: NearbyStaleness): string {
+  switch (bucket) {
+    case "now":
+      return "Now";
+    case "1h":
+      return "~1h ago";
+    case "2h":
+      return "~2h ago";
+    case "4h":
+      return "~4h ago";
+    case "8h":
+      return "~8h ago";
+    default:
+      // A bucket this build does not know. "Earlier" is true for every possible value.
+      return "Earlier";
+  }
 }
 
 /** What a nearby row's trailing control says and does, decided purely from the server's
@@ -287,6 +313,18 @@ export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleMo
                 </select>
               </label>
 
+              {/* OPERABLE here, but it does not govern THIS browser: a web page cannot publish
+                  location in the background at all. The toggle is account-wide, so turning it on
+                  here is how you enable it for your phones — the copy says so rather than implying
+                  this tab will start sharing. Default off; the server refuses to publish without
+                  it, so this is a real switch and not a hint. */}
+              <ToggleRow
+                label="Stay visible in the background"
+                hint="Lets your phones share location for up to 8 hours after you close Nearby. This browser never shares in the background."
+                checked={settings.auto_publish}
+                onChange={(value) => void saveSettings({ auto_publish: value })}
+              />
+
               {/* Shown, never operable on web: the BLE scan loop needs a native radio the browser
                   has no API for. Rendering it read-only keeps the setting discoverable instead of
                   silently absent, and the copy says exactly where it works. */}
@@ -337,7 +375,9 @@ export function NearbyPeopleModal({ onClose, onStartDirectChat }: NearbyPeopleMo
                     <PersonRow
                       key={person.user_id}
                       profile={person}
-                      subtitle={bucketLabel(person.distance_bucket_m)}
+                      subtitle={`${bucketLabel(person.distance_bucket_m)} · ${stalenessLabel(
+                        person.last_seen_bucket
+                      )}`}
                     >
                       {cta.kind === "message" ? (
                         <Button

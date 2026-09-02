@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getNearbySettings, updateNearbySettings } from "@/lib/api";
-import { bucketLabel, nearbyCta } from "@/components/chat/NearbyPeopleModal";
+import { bucketLabel, nearbyCta, stalenessLabel } from "@/components/chat/NearbyPeopleModal";
 import { installFetch, json, type RecordedCall } from "./support/fetchMock";
 
 /**
@@ -115,6 +115,38 @@ describe("nearby CTA mapping", () => {
   it("never returns a blank label", () => {
     for (const value of ["connected", "none", "sent", "received"] as const) {
       expect(nearbyCta(value).label.trim().length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("staleness label (114)", () => {
+  // The server sends a coarse ceiling bucket, never a timestamp — there is no minute count to
+  // render and deliberately no way to derive one. These are the five words a viewer can ever see.
+  it("renders each bucket as coarse words, never minutes", () => {
+    expect(stalenessLabel("now")).toBe("Now");
+    expect(stalenessLabel("1h")).toBe("~1h ago");
+    expect(stalenessLabel("2h")).toBe("~2h ago");
+    expect(stalenessLabel("4h")).toBe("~4h ago");
+    expect(stalenessLabel("8h")).toBe("~8h ago");
+  });
+
+  it("gives every bucket a DISTINCT label — a collapse would hide staleness entirely", () => {
+    const labels = (["now", "1h", "2h", "4h", "8h"] as const).map(stalenessLabel);
+
+    expect(new Set(labels).size).toBe(5);
+  });
+
+  it("degrades honestly on a bucket this build does not know", () => {
+    // A newer server adding a bucket must not render "undefined ago" in a list of real people.
+    const unknown = "16h" as unknown as Parameters<typeof stalenessLabel>[0];
+
+    expect(stalenessLabel(unknown)).toBe("Earlier");
+    expect(stalenessLabel(unknown)).not.toMatch(/undefined|NaN/);
+  });
+
+  it("never renders a minute count", () => {
+    for (const bucket of ["now", "1h", "2h", "4h", "8h"] as const) {
+      expect(stalenessLabel(bucket)).not.toMatch(/\bmin/i);
     }
   });
 });

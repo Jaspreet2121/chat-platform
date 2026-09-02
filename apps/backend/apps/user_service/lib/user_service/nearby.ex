@@ -53,22 +53,29 @@ defmodule UserService.Nearby do
          {:ok, app_id} <- required(attrs, "app_id"),
          {:ok, enabled} <- optional_bool(attrs, "enabled", :enabled),
          {:ok, ble_assist} <- optional_bool(attrs, "ble_assist", :ble_assist),
+         {:ok, auto_publish} <- optional_bool(attrs, "auto_publish", :auto_publish),
          {:ok, audience} <- optional_audience(attrs) do
       {:ok, settings} =
         Repo.transaction(fn ->
           Repo.query!(
             """
-            INSERT INTO nearby_settings (user_id, app_id, enabled, ble_assist, audience, updated_at)
+            INSERT INTO nearby_settings
+              (user_id, app_id, enabled, ble_assist, audience, auto_publish, updated_at)
             VALUES ($1::text::uuid, $2::text::uuid,
-                    COALESCE($3, true), COALESCE($4, false), COALESCE($5, 'everyone'), now())
+                    COALESCE($3, true), COALESCE($4, false), COALESCE($5, 'everyone'),
+                    COALESCE($6, false), now())
             ON CONFLICT (user_id) DO UPDATE SET
               app_id = EXCLUDED.app_id,
               enabled = COALESCE($3, nearby_settings.enabled),
               ble_assist = COALESCE($4, nearby_settings.ble_assist),
               audience = COALESCE($5, nearby_settings.audience),
+              -- auto_publish rides the same COALESCE-partial-PATCH rule as the others; false is a
+              -- VALUE here, which is why it comes through optional_bool and never the falsy-mget
+              -- helper.
+              auto_publish = COALESCE($6, nearby_settings.auto_publish),
               updated_at = now()
             """,
-            [user_id, app_id, enabled, ble_assist, audience]
+            [user_id, app_id, enabled, ble_assist, audience, auto_publish]
           )
 
           if enabled == false do

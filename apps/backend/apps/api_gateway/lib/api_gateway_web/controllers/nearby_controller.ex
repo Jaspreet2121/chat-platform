@@ -123,6 +123,7 @@ defmodule ApiGatewayWeb.NearbyController do
              "app_id" => session_app(session),
              "enabled" => Map.get(params, "enabled"),
              "ble_assist" => Map.get(params, "ble_assist"),
+             "auto_publish" => Map.get(params, "auto_publish"),
              "audience" => Map.get(params, "audience")
            }) do
       ApiGatewayWeb.Endpoint.broadcast("user:" <> session.user_id, "nearby_settings_changed", %{
