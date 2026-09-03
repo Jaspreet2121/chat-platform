@@ -103,6 +103,11 @@ defmodule MessageService.TestScyllaClient do
     end
   end
 
+  # POSITIONAL BY NECESSITY — this mirrors MessageTimelineWrites.insert_message_plan/1's parameter
+  # ORDER, so the two must change together. A column added to the plan and not here raises
+  # FunctionClauseError from inside the Agent, which surfaces as an opaque GenServer exit rather than
+  # a readable diff (view_once, 115, cost exactly that). The rows this builds are handed straight back
+  # as SELECT results, so a field missing here also silently disappears from every read round-trip.
   defp message_from_params([
          conversation_id,
          bucket_date,
@@ -114,6 +119,7 @@ defmodule MessageService.TestScyllaClient do
          reply_to_message_id,
          status,
          metadata,
+         view_once,
          created_at,
          edited_at,
          deleted_at
@@ -129,6 +135,7 @@ defmodule MessageService.TestScyllaClient do
       reply_to_message_id: reply_to_message_id,
       status: status,
       metadata: metadata,
+      view_once: view_once,
       created_at: created_at,
       edited_at: edited_at,
       deleted_at: deleted_at
@@ -194,6 +201,21 @@ defmodule MessageService.MessageStoreBoundaryTest do
 
     previous_client_adapter = Application.get_env(:message_service, :scylla_client_adapter)
     previous_shared_client_adapter = Application.get_env(:shared_infra, :scylla_client_adapter)
+
+    # THE REPO, EXPLICITLY. Under the Scylla adapter, put_message/1 opens a Postgres transaction for
+    # the event/webhook outbox, so these tests need the Repo running — but this suite is `use
+    # ExUnit.Case`, not DataCase, so nothing here starts it. In a FULL run it happened to be up
+    # already because some earlier DataCase test started it and unlinked it; in isolation it was not,
+    # and the suite died with "could not lookup Ecto repo MessageService.Repo". That order dependence
+    # also masked a real regression for a full slice: the suite looked green in the sweep and red
+    # alone, so the two failures were mistaken for each other.
+    #
+    # Same shape as DataCase.start_repo!/1, including the unlink: a failing test's abnormal exit must
+    # not take the shared Repo down with it.
+    case MessageService.Repo.start_link() do
+      {:ok, pid} -> Process.unlink(pid)
+      {:error, {:already_started, _pid}} -> :ok
+    end
 
     Application.put_env(:message_service, :message_persistence, true)
     Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
