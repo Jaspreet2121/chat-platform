@@ -181,6 +181,17 @@ end
 defmodule MessageService.MessageStoreBoundaryTest do
   use ExUnit.Case, async: false
 
+  # THE THREE SCYLLA-ADAPTER TESTS ARE POSTGRES-GATED, individually rather than at module level.
+  # Under the Scylla adapter, put_message/1 opens a Postgres transaction for the event/webhook
+  # outbox, so those three need a live database; the other twenty do not and stay in the fast
+  # Docker-free run. Tagging the whole module would have exiled all twenty for the sake of three.
+  #
+  # The tags also close a SWEEP BLIND SPOT: with nothing gated here, this suite appeared in neither
+  # scripts/test-postgres.sh nor scripts/test-scylla.sh, so a regression in it could sit behind two
+  # green deploy-day sweeps. It did — for a whole slice. test-postgres.sh collects any file
+  # mentioning postgres_integration and runs the WHOLE file, so all 23 now run in the sweep while
+  # 20 still run by default.
+
   alias MessageService.MessageStore
   alias MessageService.Messages
   alias MessageService.Receipts
@@ -615,6 +626,7 @@ defmodule MessageService.MessageStoreBoundaryTest do
              })
   end
 
+  @tag :postgres_integration
   test "scylla adapter executes insert and list plans through configured client" do
     Application.put_env(:message_service, :message_store_adapter, MessageStore.ScyllaAdapter)
     Application.put_env(:message_service, :scylla_client_adapter, MessageService.TestScyllaClient)
@@ -647,6 +659,7 @@ defmodule MessageService.MessageStoreBoundaryTest do
            ]
   end
 
+  @tag :postgres_integration
   test "scylla adapter can use shared configured client boundary" do
     Application.put_env(:message_service, :message_store_adapter, MessageStore.ScyllaAdapter)
     Application.delete_env(:message_service, :scylla_client_adapter)
@@ -663,6 +676,7 @@ defmodule MessageService.MessageStoreBoundaryTest do
     assert message.body == "Shared client boundary"
   end
 
+  @tag :postgres_integration
   test "scylla adapter executes update and delete plans through configured client" do
     Application.put_env(:message_service, :message_store_adapter, MessageStore.ScyllaAdapter)
     Application.put_env(:message_service, :scylla_client_adapter, MessageService.TestScyllaClient)
