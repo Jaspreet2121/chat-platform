@@ -208,12 +208,16 @@ defmodule SharedInfra.ConversationBroadcast do
   # message through and the frame is composed from IT: the authoritative facts from the write we just
   # performed, applied to the row we just read.
   #
-  # ALL THREE FIELDS MOVE TOGETHER, ON ONE DECISION — the timestamp comparison. That is what keeps the
+  # ALL FOUR FIELDS MOVE TOGETHER, ON ONE DECISION — the timestamp comparison. That is what keeps the
   # frame internally consistent: if another message raced in between our write and this read, the row is
   # NEWER than ours and we touch nothing, so the client never sees a timestamp from one message beside a
   # preview from another. When the projection has landed the row already holds these same values and the
   # override is a no-op; when it has not, we supply what it will hold. Triggers that pass no `:message`
   # (`:receipt`, `:title`, `:participant`, `:pref`) are untouched.
+  #
+  # `unread_count` was the field that did NOT move with them — it passed through `updated_row/1` stale,
+  # which is the n-1 badge (see `apply_pending_unread/2`). It is the same defect the preview trio was
+  # fixed for, one field late.
   #
   # THE PREVIEW RULES ARE NOT REIMPLEMENTED HERE. `SharedInfra.InboxPreview` is the one definition;
   # conversation_service's row mapper delegates to the same module, so the live frame and a later refetch
@@ -231,6 +235,7 @@ defmodule SharedInfra.ConversationBroadcast do
         :last_message_kind,
         InboxPreview.message_kind(message_type, InboxPreview.content_type(message))
       )
+      |> apply_pending_unread(message)
     else
       _ -> row
     end
@@ -238,7 +243,42 @@ defmodule SharedInfra.ConversationBroadcast do
 
   defp apply_post_write_state(row, _message), do: row
 
+  # THE FOURTH FIELD THE PROJECTION WILL WRITE. `unread_count` is maintained by the SAME consumer that
+  # writes the preview columns, so on the not-yet-landed path it is stale for exactly the same reason and
+  # by exactly one message — the frame showed the NEW preview beside the count from BEFORE it, so a
+  # recipient with the chat closed saw a permanent n-1 badge that only a REST refetch corrected.
+  #
+  # WHY THIS CANNOT DOUBLE-COUNT. It is reachable only from inside the `newer?/2` branch above, and that
+  # guard is the whole interlock: `newer?` is true only while the row's `updated_at` is OLDER than the
+  # message we just committed, which is precisely the window before the consumer runs. Once the consumer
+  # lands, @inbox_sql's `updated_at` IS this message's `last_message_at`, `newer?` compares equal (`:gt`
+  # is false), the whole branch is skipped and the row — already carrying the projection's +1 — passes
+  # through untouched. The three preview fields ride the same guard for the same reason; unread now
+  # simply stops being the one field that opted out of it.
+  #
+  # THE SENDER IS EXCLUDED, mirroring the projection's own `cp.user_id <> $2` (InboxProjection
+  # .record_message/1): your own message never raises your own unread. The row's `:user_id` is the
+  # routing key `broadcast_row/4` fans on (dropped from the wire frame later by `updated_row/1`), so the
+  # comparison is per-recipient and the sender's frame keeps its count unchanged.
+  #
+  # An unreadable sender or count leaves the row alone — a stale count is the bug we already had, while a
+  # wrong +1 on the wrong row is a new one.
+  defp apply_pending_unread(row, message) do
+    with sender when is_binary(sender) and sender != "" <- sender_user_id(message),
+         user_id when is_binary(user_id) and user_id != "" <- cget(row, :user_id),
+         true <- user_id != sender,
+         unread when is_integer(unread) <- cget(row, :unread_count) do
+      put_field(row, :unread_count, unread + 1)
+    else
+      _ -> row
+    end
+  end
+
   defp created_at(message), do: Map.get(message, :created_at) || Map.get(message, "created_at")
+
+  defp sender_user_id(message) do
+    Map.get(message, :sender_user_id) || Map.get(message, "sender_user_id")
+  end
 
   # Replace a field without leaving BOTH key shapes behind: the row may be atom- or string-keyed depending
   # on which side of the ConversationClient boundary it came from, so drop both and write back the style

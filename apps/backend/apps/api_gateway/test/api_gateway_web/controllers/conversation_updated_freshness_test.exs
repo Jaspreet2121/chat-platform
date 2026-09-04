@@ -285,17 +285,25 @@ defmodule ApiGatewayWeb.ConversationUpdatedFreshnessTest do
 
   # --- the rest of the frame is untouched ---
 
-  test "only updated_at is corrected — the per-user row is otherwise passed through as read" do
+  # `unread_count` USED TO BE ASSERTED HERE as passed-through (== 0), which encoded the n-1 badge: the
+  # count is maintained by the same unprojected consumer as the preview columns, so passing it through
+  # shipped the count from BEFORE the message the frame announces. It is now corrected alongside the
+  # trio and is locked, with its sender-exclusion and double-count guard, in
+  # ApiGatewayWeb.ConversationUpdatedUnreadTest. What this test still owns: everything the frame must
+  # NOT touch or duplicate.
+  test "the per-user row is otherwise passed through as read, and the routing key never ships" do
     Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@peer}")
 
     send_first_party(text_body())
 
     payload = await_frame(@peer)
     assert payload["conversation_id"] == @conversation
-    assert payload["unread_count"] == 0
+    assert payload["type"] == "direct"
     refute Map.has_key?(payload, "user_id")
     # One updated_at key, in the wire's string style — never both shapes at once.
     assert Enum.count(payload, fn {k, _} -> to_string(k) == "updated_at" end) == 1
+    # Same single-shape rule for the field this slice started writing.
+    assert Enum.count(payload, fn {k, _} -> to_string(k) == "unread_count" end) == 1
   end
 
   # --- preview + kind composed from the triggering message, on BOTH HTTP paths ---
