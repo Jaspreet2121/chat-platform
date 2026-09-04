@@ -30,6 +30,103 @@ defmodule UserService.NearbyTest do
     })
   end
 
+  # --- PRESENCE TTL: the horizon follows the user's own auto_publish setting ------------------------
+
+  @tag :postgres_integration
+  test "TTL: a discover-only user gets the FOREGROUND horizon, not the 8h background one" do
+    # THE PRIVACY REGRESSION. discover's self-upsert wrote 28_800s for everyone, so someone who merely
+    # opened Nearby to look around stayed discoverable for 8h after force-stopping the app — having
+    # opted into nothing. The default settings row is auto_publish FALSE, so this is the common case.
+    id = user!()
+
+    assert {:ok, result} = discover(id, @delhi_lat)
+    assert result.expires_in_seconds == 300
+
+    # The response must describe the row that was actually written, not a constant beside it.
+    assert presence_ttl_seconds(id) in 290..300
+  end
+
+  @tag :postgres_integration
+  test "TTL: an explicit auto_publish=false is the foreground horizon too" do
+    id = user!()
+
+    assert {:ok, _} =
+             Nearby.update_settings(%{
+               "user_id" => id,
+               "app_id" => @app_id,
+               "auto_publish" => false
+             })
+
+    assert {:ok, result} = discover(id, @delhi_lat)
+    assert result.expires_in_seconds == 300
+    assert presence_ttl_seconds(id) in 290..300
+  end
+
+  @tag :postgres_integration
+  test "TTL: an OPTED-IN user keeps the 8h horizon on discover (no visibility gap between fixes)" do
+    # Shortening this one to 300s would blink an opted-in user out of other people's lists for up to
+    # ~15 minutes between background publishes — which is why the fix is conditional, not a flat 300.
+    id = user!()
+
+    assert {:ok, _} =
+             Nearby.update_settings(%{
+               "user_id" => id,
+               "app_id" => @app_id,
+               "auto_publish" => true
+             })
+
+    assert {:ok, result} = discover(id, @delhi_lat)
+    assert result.expires_in_seconds == 28_800
+    assert presence_ttl_seconds(id) in 28_790..28_800
+  end
+
+  @tag :postgres_integration
+  test "TTL: publish/1 is UNCHANGED — 8h, and still refused without auto_publish" do
+    id = user!()
+
+    # Still gated: no opt-in, no publish.
+    assert {:error, :nearby_publish_disabled} =
+             Nearby.publish(%{
+               "user_id" => id,
+               "app_id" => @app_id,
+               "latitude" => @delhi_lat,
+               "longitude" => @delhi_lng,
+               "accuracy_m" => 12
+             })
+
+    assert {:ok, _} =
+             Nearby.update_settings(%{
+               "user_id" => id,
+               "app_id" => @app_id,
+               "auto_publish" => true
+             })
+
+    assert {:ok, published} =
+             Nearby.publish(%{
+               "user_id" => id,
+               "app_id" => @app_id,
+               "latitude" => @delhi_lat,
+               "longitude" => @delhi_lng,
+               "accuracy_m" => 12
+             })
+
+    assert published.expires_in_seconds == 28_800
+    assert presence_ttl_seconds(id) in 28_790..28_800
+  end
+
+  # Seconds remaining on the stored row — the only way to prove what was WRITTEN rather than what was
+  # echoed back. A range absorbs the seconds elapsed between the write and this read.
+  defp presence_ttl_seconds(user_id) do
+    %{rows: [[secs]]} =
+      Repo.query!(
+        "SELECT EXTRACT(EPOCH FROM (expires_at - now()))::int " <>
+          "FROM nearby_presence WHERE user_id = $1::text::uuid",
+        [user_id]
+      )
+
+    secs
+  end
+
   @tag :postgres_integration
   test "discovery is opt-in, radius-bound, coarse, and stop revokes it" do
     me = user!()

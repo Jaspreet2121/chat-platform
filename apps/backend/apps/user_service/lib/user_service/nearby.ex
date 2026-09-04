@@ -9,17 +9,38 @@ defmodule UserService.Nearby do
 
   alias UserService.Repo
 
-  # RETENTION, one constant for every write path (the discover self-upsert AND the publish endpoint).
-  # Was 300s: presence existed only while Nearby was open. Now 8h, because phones publish in the
-  # background for opted-in users. The physical delete-on-expiry sweep is unchanged — a coordinate
-  # past this edge is REMOVED, never merely filtered out of a query.
+  # RETENTION. TWO horizons, chosen by whether the user OPTED IN to background publishing.
+  #
+  # 8h exists because phones publish in the background for opted-in users — that is the whole reason
+  # the window is long. It was applied to EVERY write path, including discover's self-upsert, so a
+  # user who merely opened Nearby to look around got an 8h row: force-stop the app and they stayed
+  # discoverable for the rest of the day, having opted into nothing. That also made the Play
+  # declaration ("visible only while the toggle is on") untrue for exactly the users who never turned
+  # it on.
+  #
+  # 300s is the foreground horizon: presence lasts about as long as the screen is open, which is what
+  # a discover-only user actually consented to.
+  #
+  # WHY NOT 300 FOR EVERYONE — the obvious smaller fix. An opted-in user's foreground row would then
+  # expire up to ~15 minutes before the background worker's next publish, blinking them out of other
+  # people's lists between fixes. Keying on `auto_publish` gives each user the horizon their own
+  # setting describes and leaves the opted-in experience untouched.
+  #
+  # The physical delete-on-expiry sweep is unchanged — a coordinate past either edge is REMOVED, never
+  # merely filtered out of a query.
   @presence_seconds 28_800
+  @foreground_presence_seconds 300
 
   # BOUND AS A STRING, cast in SQL — the file's `$N::text::<type>` convention, and here it is load
   # bearing rather than stylistic. `($6 || ' seconds')` makes Postgrex infer $6 as TEXT from the
   # concatenation operator; binding the integer raises DBConnection.EncodeError at runtime and takes
   # discover down with it. Compiling proves nothing about a parameter's wire type.
-  defp presence_seconds_param, do: Integer.to_string(@presence_seconds)
+  defp presence_seconds_param(seconds), do: Integer.to_string(seconds)
+
+  # The horizon this user's own settings describe. Absent settings default to auto_publish false
+  # (settings_row/1), so a user who has never touched Nearby gets the foreground window.
+  defp presence_seconds_for(%{auto_publish: true}), do: @presence_seconds
+  defp presence_seconds_for(_settings), do: @foreground_presence_seconds
 
   # Staleness, as CEILING buckets in seconds. Coarse on purpose: a viewer learns "roughly how old"
   # without ever receiving a timestamp they could difference against a second observation to infer
@@ -109,6 +130,10 @@ defmodule UserService.Nearby do
          {:ok, accuracy} <- accuracy(attrs),
          {:ok, radius} <- radius(attrs),
          {:ok, viewer} <- require_enabled(user_id) do
+      # ONE value for both the row we write and the number we return — the response must describe what
+      # was ACTUALLY stored this call, not a constant that happens to match one of the two branches.
+      presence_seconds = presence_seconds_for(viewer)
+
       # RETENTION: expired rows are DELETED, not merely filtered — stale coordinates must not sit at
       # rest, and a re-created row starting fresh is what resets the per-viewer bucket pins.
       Repo.query!(
@@ -133,7 +158,7 @@ defmodule UserService.Nearby do
           pins = CASE WHEN nearby_presence.expires_at > now()
                       THEN nearby_presence.pins ELSE '{}'::jsonb END
         """,
-        [user_id, app_id, latitude, longitude, accuracy, presence_seconds_param()]
+        [user_id, app_id, latitude, longitude, accuracy, presence_seconds_param(presence_seconds)]
       )
 
       {box_min_lat, box_max_lat, box_min_lng, box_max_lng} =
@@ -252,7 +277,7 @@ defmodule UserService.Nearby do
           }
         end)
 
-      {:ok, %{people: people, expires_in_seconds: @presence_seconds, radius_m: radius}}
+      {:ok, %{people: people, expires_in_seconds: presence_seconds, radius_m: radius}}
     end
   rescue
     Ecto.Query.CastError -> {:error, :nearby_invalid}
@@ -383,8 +408,18 @@ defmodule UserService.Nearby do
           fix_seq = CASE WHEN $7 THEN nearby_presence.fix_seq + 1 ELSE nearby_presence.fix_seq END,
           pins = CASE WHEN $7 THEN '{}'::jsonb ELSE nearby_presence.pins END
         """,
-        [user_id, app_id, latitude, longitude, accuracy, presence_seconds_param(),
-         advance?]
+        # EXPLICITLY @presence_seconds, unchanged: this endpoint is already gated on
+        # require_publish_allowed/1 (auto_publish true), so every caller here is opted in and the 8h
+        # horizon is exactly what they asked for.
+        [
+          user_id,
+          app_id,
+          latitude,
+          longitude,
+          accuracy,
+          presence_seconds_param(@presence_seconds),
+          advance?
+        ]
       )
 
       {:ok, %{published: true, expires_in_seconds: @presence_seconds}}
