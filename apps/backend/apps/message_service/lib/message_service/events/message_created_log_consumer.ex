@@ -22,7 +22,20 @@ defmodule MessageService.Events.MessageCreatedLogConsumer do
   )
 
   @impl true
-  def init(_init_info, init_data), do: {:ok, init_data}
+  def init(init_info, init_data),
+    do: {:ok, MessageService.Events.OffsetRecovery.init_state(init_info, init_data)}
+
+  # THE OPTIONAL CALLBACK THAT UN-WEDGES offset_out_of_range. Without it, brod's fetch-error cast is
+  # swallowed by brod_utils:optional_callback's default and the partition stays suspended forever —
+  # the 2026-09-04 seven-hour inbox outage. See MessageService.Events.OffsetRecovery.
+  #
+  # NO @impl: brod_group_subscriber_v2 does not DECLARE handle_info/2 — the worker dispatches it via
+  # brod_utils:optional_callback (brod_group_subscriber_worker.erl:96), so an @impl would be a
+  # compile warning (an error under --warnings-as-errors).
+  def handle_info(info, state) do
+    MessageService.Events.OffsetRecovery.handle_fetch_error(info, state)
+    {:noreply, state}
+  end
 
   @impl true
   def handle_message(message, state) do
