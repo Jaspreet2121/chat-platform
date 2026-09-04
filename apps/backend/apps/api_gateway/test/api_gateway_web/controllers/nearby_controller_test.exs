@@ -86,6 +86,7 @@ defmodule ApiGatewayWeb.NearbyControllerTest do
        Application.get_env(:api_gateway, :test_nearby_settings, %{
          enabled: true,
          ble_assist: true,
+         auto_publish: false,
          audience: "everyone"
        })}
     end
@@ -97,6 +98,7 @@ defmodule ApiGatewayWeb.NearbyControllerTest do
        %{
          enabled: attrs["enabled"] != false,
          ble_assist: attrs["ble_assist"] == true,
+         auto_publish: attrs["auto_publish"] == true,
          audience: attrs["audience"] || "everyone"
        }}
     end
@@ -356,6 +358,64 @@ defmodule ApiGatewayWeb.NearbyControllerTest do
       event: "nearby_settings_changed",
       payload: %{"type" => "nearby_settings_changed"}
     }
+  end
+
+  test "SETTINGS RESPONSE SHAPE: every stored field is SERIALISED — asserted as an exact key set" do
+    # THIS IS THE TEST THAT WAS MISSING. auto_publish (114) was wired through the store, the PATCH
+    # input and the web UI, but not settings_view/1 — so it persisted correctly and was dropped on
+    # the way out, and every client read null for a setting it had just written.
+    #
+    # Asserted as an EXACT KEY SET rather than a partial map match. The pre-existing assertion here
+    # used `assert %{"enabled" => ...} = decoded`, which by construction cannot fail on a MISSING
+    # key — it is why the omission survived a green suite. A field added to the store and forgotten
+    # in the view now fails here.
+    Application.put_env(:api_gateway, :test_nearby_settings, %{
+      enabled: true,
+      ble_assist: false,
+      auto_publish: true,
+      audience: "contacts"
+    })
+
+    conn = authed(:get, "/api/v1/nearby/settings") |> NearbyController.settings(%{})
+    body = Jason.decode!(conn.resp_body)
+
+    assert conn.status == 200
+    assert Map.keys(body) |> Enum.sort() == ["audience", "auto_publish", "ble_assist", "enabled"]
+    assert body["auto_publish"] == true
+  end
+
+  test "SETTINGS: auto_publish defaults to FALSE when the store has no row" do
+    # The opt-in must never read as on by omission — an absent settings row means "I never turned
+    # background publishing on", and a client that saw null could render the toggle either way.
+    Application.put_env(:api_gateway, :test_nearby_settings, %{
+      enabled: true,
+      ble_assist: false,
+      audience: "everyone"
+    })
+
+    conn = authed(:get, "/api/v1/nearby/settings") |> NearbyController.settings(%{})
+    body = Jason.decode!(conn.resp_body)
+
+    assert body["auto_publish"] == false
+    refute is_nil(body["auto_publish"]), "absent must serialise as false, never null"
+  end
+
+  test "SETTINGS: PATCH echoes auto_publish back, so a client can confirm what it just wrote" do
+    # GET and PATCH share settings_view/1, so this pins that the write path's 200 is also readable.
+    # The reported symptom was 'PATCH returns 200 but the value never appears' — the 200 body was
+    # blind too, and a client trusting its own echo would have shown the toggle off after setting it.
+    params = %{"auto_publish" => true}
+
+    conn =
+      authed(:patch, "/api/v1/nearby/settings", params)
+      |> NearbyController.update_settings(params)
+
+    body = Jason.decode!(conn.resp_body)
+
+    assert conn.status == 200
+    assert body["auto_publish"] == true
+    assert_receive {:update_settings, attrs}
+    assert attrs["auto_publish"] == true
   end
 
   test "BLE TOKEN: issue + ROTATION (old token resolution deleted); disabled -> 403; limited -> 429" do

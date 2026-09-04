@@ -340,10 +340,15 @@ defmodule ApiGatewayWeb.NearbyController do
     end
   end
 
+  # THE ONE SERIALISER for both GET and PATCH. 8357032 wired auto_publish through the store, the
+  # PATCH input and the web UI but not this map, so the field was persisted correctly and then
+  # dropped on the way out — every client read null for a setting it had just successfully written.
+  # Default false matches the store's default for an absent settings row.
   defp settings_view(settings) do
     %{
       enabled: setting_bool(settings, :enabled, true),
       ble_assist: setting_bool(settings, :ble_assist, false),
+      auto_publish: setting_bool(settings, :auto_publish, false),
       audience: mget(settings, :audience) || "everyone"
     }
   end
