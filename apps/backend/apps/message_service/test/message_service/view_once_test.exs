@@ -6,9 +6,27 @@ defmodule MessageService.ViewOnceTest do
   """
   use MessageService.DataCase, async: false
 
+  alias MessageService.MessageStore
   alias MessageService.ViewOnce
 
   @app "00000000-0000-0000-0000-000000000001"
+
+  setup do
+    # THE LOOKUPS GO THROUGH THE CONFIGURED ADAPTER NOW, so a test that seeds rows into Postgres has
+    # to select the Postgres adapter — previously they read `messages` directly and the store's
+    # configuration was irrelevant. That indifference to the adapter is exactly what let the open
+    # path 404 in production, where the store is Scylla and `messages` is empty.
+    previous = Application.get_env(:message_service, :message_store_adapter)
+    Application.put_env(:message_service, :message_store_adapter, MessageStore.PostgresAdapter)
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:message_service, :message_store_adapter, previous),
+        else: Application.delete_env(:message_service, :message_store_adapter)
+    end)
+
+    :ok
+  end
 
   defp user! do
     id = Ecto.UUID.generate()
@@ -66,7 +84,7 @@ defmodule MessageService.ViewOnceTest do
     # (c) the SENDER is never a viewer of their own view-once send
     assert ViewOnce.state(m.media_id, sender) == :sender
 
-    assert {:ok, %{first_open?: true}} = ViewOnce.open(m.message_id, recipient)
+    assert {:ok, %{first_open?: true}} = ViewOnce.open(m.conversation_id, m.message_id, recipient)
 
     # (b) recipient POST-open
     assert ViewOnce.state(m.media_id, recipient) == :opened
@@ -89,15 +107,17 @@ defmodule MessageService.ViewOnceTest do
     recipient = user!()
     m = message!(user!(), [])
 
-    assert {:ok, %{opened_at: first, first_open?: true}} = ViewOnce.open(m.message_id, recipient)
+    assert {:ok, %{opened_at: first, first_open?: true}} =
+             ViewOnce.open(m.conversation_id, m.message_id, recipient)
 
     assert {:ok, %{opened_at: replay, first_open?: false}} =
-             ViewOnce.open(m.message_id, recipient)
+             ViewOnce.open(m.conversation_id, m.message_id, recipient)
 
     # Identical timestamp: a client retrying a lost response cannot move it...
     assert replay == first
     # ...and first_open? false is what stops a second purge.
-    assert {:ok, %{first_open?: false}} = ViewOnce.open(m.message_id, recipient)
+    assert {:ok, %{first_open?: false}} =
+             ViewOnce.open(m.conversation_id, m.message_id, recipient)
   end
 
   @tag :postgres_integration
@@ -105,15 +125,15 @@ defmodule MessageService.ViewOnceTest do
     sender = user!()
     m = message!(sender, [])
 
-    assert {:error, :sender_cannot_open} = ViewOnce.open(m.message_id, sender)
+    assert {:error, :sender_cannot_open} = ViewOnce.open(m.conversation_id, m.message_id, sender)
   end
 
   @tag :postgres_integration
   test "opening a NON-view-once message is not found (opaque, no existence reveal)" do
     m = message!(user!(), view_once: false)
 
-    assert {:error, :not_found} = ViewOnce.open(m.message_id, user!())
-    assert {:error, :not_found} = ViewOnce.open(Ecto.UUID.generate(), user!())
+    assert {:error, :not_found} = ViewOnce.open(m.conversation_id, m.message_id, user!())
+    assert {:error, :not_found} = ViewOnce.open(m.conversation_id, Ecto.UUID.generate(), user!())
   end
 
   @tag :postgres_integration
@@ -135,7 +155,7 @@ defmodule MessageService.ViewOnceTest do
     recipient = user!()
     m = message!(user!(), age_days: ViewOnce.expiry_days() + 1)
 
-    {:ok, _} = ViewOnce.open(m.message_id, recipient)
+    {:ok, _} = ViewOnce.open(m.conversation_id, m.message_id, recipient)
 
     refute m.media_id in ViewOnce.expired_unopened_media()
   end

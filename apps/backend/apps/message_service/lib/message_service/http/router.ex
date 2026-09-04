@@ -195,6 +195,7 @@ defmodule MessageService.HTTP.Router do
 
     result =
       case MessageService.ViewOnce.open(
+             Map.get(body, "conversation_id"),
              Map.get(body, "message_id"),
              Map.get(body, "viewer_user_id")
            ) do

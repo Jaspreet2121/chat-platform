@@ -34,6 +34,9 @@ defmodule ApiGatewayWeb.ViewOnceController do
          :ok <- authorize_membership(conversation_id, session.user_id),
          {:ok, result} <-
            SharedInfra.MessageClient.open_view_once(%{
+             # The conversation is the Scylla PARTITION KEY for a point read, and the route already
+             # carries it — without it the store cannot find the message at all.
+             "conversation_id" => conversation_id,
              "message_id" => message_id,
              "viewer_user_id" => session.user_id
            }) do

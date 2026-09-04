@@ -17,6 +17,7 @@ defmodule MessageService.ViewOnce do
 
   require Logger
 
+  alias MessageService.MessageStore
   alias MessageService.Repo
 
   # Unopened view-once media stops being readable after this, whether or not anyone ever asked for
@@ -80,8 +81,8 @@ defmodule MessageService.ViewOnce do
   Returns `{:ok, %{opened_at, media_id, first_open?}}`. `first_open?` tells the caller whether this
   request is the one that should purge the blob.
   """
-  def open(message_id, viewer_id) do
-    case fetch_message(message_id) do
+  def open(conversation_id, message_id, viewer_id) do
+    case fetch_message(conversation_id, message_id) do
       nil ->
         {:error, :not_found}
 
@@ -91,7 +92,7 @@ defmodule MessageService.ViewOnce do
       %{sender_user_id: ^viewer_id} ->
         {:error, :sender_cannot_open}
 
-      %{conversation_id: conversation_id, media_id: media_id} ->
+      %{conversation_id: resolved_conversation_id, media_id: media_id} ->
         %{rows: rows} =
           Repo.query!(
             """
@@ -100,7 +101,7 @@ defmodule MessageService.ViewOnce do
             ON CONFLICT (message_id, user_id) DO NOTHING
             RETURNING opened_at
             """,
-            [message_id, viewer_id, conversation_id]
+            [message_id, viewer_id, resolved_conversation_id]
           )
 
         case rows do
@@ -160,52 +161,64 @@ defmodule MessageService.ViewOnce do
     Enum.map(rows, fn [media_id] -> media_id end)
   end
 
+  # THROUGH THE CONFIGURED ADAPTER, never a hardcoded Postgres SELECT.
+  #
+  # These two lookups read `messages` directly, which is correct only under the Postgres store.
+  # Production runs MESSAGE_STORE_ADAPTER=scylla, where ScyllaAdapter.put_message/1 opens a Postgres
+  # transaction ONLY to stage the event/webhook outbox — no row is ever inserted into `messages`. So
+  # every real message returned no row: open/2 answered :not_found and the endpoint 404'd, while
+  # state/2 answered :not_view_once and the download gate never engaged at all. Same
+  # Postgres-vs-Scylla split that had just been fixed in the serialisers, one layer down.
+  #
+  # The view_once_opens LEDGER stays on Postgres by design — it is a PG table with no Scylla
+  # counterpart, and it is authorization state rather than message content. Only the MESSAGE lookups
+  # move.
+
+  # media_id -> the earliest message referencing it, then the message itself. Two hops because the
+  # media projection is keyed by media and the timeline by (conversation, message); the projection
+  # carries no view_once, so only the second hop can answer the question.
   defp fetch_view_once(media_id) do
-    %{rows: rows} =
-      Repo.query!(
-        """
-        SELECT m.message_id::text, m.sender_user_id::text, m.created_at
-        FROM messages m
-        WHERE m.media_id = $1::text::uuid AND m.view_once
-        ORDER BY m.created_at ASC
-        LIMIT 1
-        """,
-        [media_id]
-      )
-
-    case rows do
-      [[message_id, sender_user_id, created_at]] ->
-        %{message_id: message_id, sender_user_id: sender_user_id, created_at: created_at}
-
-      [] ->
-        nil
+    with {:ok, ref} <- MessageStore.get_by_media_id(%{"media_id" => media_id}),
+         conversation_id when is_binary(conversation_id) <- mget(ref, :conversation_id),
+         message_id when is_binary(message_id) <- mget(ref, :message_id),
+         {:ok, message} <- fetch_message_in(conversation_id, message_id),
+         true <- mget(message, :view_once) == true do
+      %{
+        message_id: message_id,
+        sender_user_id: mget(message, :sender_user_id),
+        created_at: mget(message, :created_at)
+      }
+    else
+      _ -> nil
     end
   end
 
-  defp fetch_message(message_id) do
-    %{rows: rows} =
-      Repo.query!(
-        """
-        SELECT m.conversation_id::text, m.sender_user_id::text, m.media_id::text, m.view_once
-        FROM messages m
-        WHERE m.message_id = $1::text::uuid
-        """,
-        [message_id]
-      )
-
-    case rows do
-      [[conversation_id, sender_user_id, media_id, view_once]] ->
+  # The open path always knows its conversation — it is in the route — so the partition key is
+  # available and this is a single point read on either store.
+  defp fetch_message(conversation_id, message_id) do
+    case fetch_message_in(conversation_id, message_id) do
+      {:ok, message} ->
         %{
-          conversation_id: conversation_id,
-          sender_user_id: sender_user_id,
-          media_id: media_id,
-          view_once: view_once
+          conversation_id: mget(message, :conversation_id) || conversation_id,
+          sender_user_id: mget(message, :sender_user_id),
+          media_id: mget(message, :media_id),
+          view_once: mget(message, :view_once) == true
         }
 
-      [] ->
+      _ ->
         nil
     end
   end
+
+  defp fetch_message_in(conversation_id, message_id) do
+    MessageStore.get_message(%{
+      "conversation_id" => conversation_id,
+      "message_id" => message_id
+    })
+  end
+
+  defp mget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
+  defp mget(_map, _key), do: nil
 
   defp opened?(message_id, viewer_id) do
     %{rows: [[count]]} =

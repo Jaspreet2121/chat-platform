@@ -47,7 +47,7 @@ defmodule MessageService.MessageStore do
 
   # Shared-media gallery (optional callback — only the Postgres adapter implements it).
   def list_media(attrs) do
-    store = adapter()
+    store = ensure_loaded_adapter()
 
     if function_exported?(store, :list_media, 1) do
       store.list_media(attrs)
@@ -59,7 +59,7 @@ defmodule MessageService.MessageStore do
   # Media-authorization support: the conversation a media_id was sent to (optional callback — Postgres
   # only). Returns {:ok, %{conversation_id}} or {:error, :not_found} for an unsent/unknown media_id.
   def get_by_media_id(attrs) do
-    store = adapter()
+    store = ensure_loaded_adapter()
 
     if function_exported?(store, :get_by_media_id, 1) do
       store.get_by_media_id(attrs)
@@ -71,7 +71,7 @@ defmodule MessageService.MessageStore do
   # The OWNER-ANCHORED download rule (optional callback — Postgres only): is the viewer an active member
   # of ANY conversation containing a message referencing this media_id whose SENDER is the asset's owner?
   def media_download_allowed(attrs) do
-    store = adapter()
+    store = ensure_loaded_adapter()
 
     if function_exported?(store, :media_download_allowed, 1) do
       store.media_download_allowed(attrs)
@@ -82,7 +82,7 @@ defmodule MessageService.MessageStore do
 
   # Message info — WHO has received/read a message, per user (optional callback; Postgres + InMemory).
   def message_info(attrs) do
-    store = adapter()
+    store = ensure_loaded_adapter()
 
     if function_exported?(store, :message_info, 1) do
       store.message_info(attrs)
@@ -93,7 +93,7 @@ defmodule MessageService.MessageStore do
 
   # Polls (optional callbacks; Postgres + InMemory).
   def poll_vote(attrs) do
-    store = adapter()
+    store = ensure_loaded_adapter()
 
     if function_exported?(store, :poll_vote, 1) do
       store.poll_vote(attrs)
@@ -103,7 +103,7 @@ defmodule MessageService.MessageStore do
   end
 
   def list_poll_votes(attrs) do
-    store = adapter()
+    store = ensure_loaded_adapter()
 
     if function_exported?(store, :list_poll_votes, 1) do
       store.list_poll_votes(attrs)
@@ -122,6 +122,17 @@ defmodule MessageService.MessageStore do
   def unstar_message(attrs), do: adapter().unstar_message(attrs)
   def list_starred(attrs), do: adapter().list_starred(attrs)
   def search_messages(attrs), do: adapter().search_messages(attrs)
+
+  # function_exported?/3 answers FALSE for a module that is simply NOT LOADED YET, which is not the
+  # same as "does not implement it". Every optional-callback dispatcher below guards with it, so on a
+  # cold node the FIRST call to get_by_media_id / media_download_allowed / list_media degraded to
+  # :message_unavailable — silently, and for the download oracle that is a denied download. Loading
+  # first makes the guard answer the question it is actually asking.
+  defp ensure_loaded_adapter do
+    store = adapter()
+    _ = Code.ensure_loaded?(store)
+    store
+  end
 
   defp adapter do
     Application.get_env(
@@ -924,8 +935,20 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
                  MediaProjections.earliest_reference_plan(%{"media_id" => media_id})
                ) do
           case rows(result) do
-            [row | _] -> {:ok, %{conversation_id: attr(row, "conversation_id")}}
-            [] -> {:error, :not_found}
+            [row | _] ->
+              # ADDITIVE. Existing callers read :conversation_id and are unaffected; the extra keys
+              # let a media-keyed caller reach the MESSAGE through the configured adapter instead of
+              # a hardcoded Postgres SELECT. messages_by_media already carries both — no schema
+              # change, just a wider projection.
+              {:ok,
+               %{
+                 conversation_id: attr(row, "conversation_id"),
+                 message_id: attr(row, "message_id"),
+                 sender_user_id: attr(row, "sender_user_id")
+               }}
+
+            [] ->
+              {:error, :not_found}
           end
         end
 
@@ -2752,11 +2775,19 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         |> where([m], m.media_id == ^media_id)
         |> order_by([m], asc: m.created_at)
         |> limit(1)
-        |> select([m], m.conversation_id)
+        |> select([m], {m.conversation_id, m.message_id, m.sender_user_id})
         |> Repo.one()
         |> case do
-          nil -> {:error, :not_found}
-          conversation_id -> {:ok, %{conversation_id: conversation_id}}
+          nil ->
+            {:error, :not_found}
+
+          {conversation_id, message_id, sender_user_id} ->
+            {:ok,
+             %{
+               conversation_id: conversation_id,
+               message_id: message_id,
+               sender_user_id: sender_user_id
+             }}
         end
 
       _ ->

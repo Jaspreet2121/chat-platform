@@ -729,6 +729,66 @@ defmodule MessageService.MessageStoreBoundaryTest do
     refute is_nil(read.view_once)
   end
 
+  # THE OPEN PATH, UNDER THE SCYLLA ADAPTER — the test that was missing.
+  #
+  # ViewOnce's message lookups were a hardcoded `SELECT ... FROM messages`, correct only under the
+  # Postgres store. Production is Scylla-authoritative and never inserts into that table, so open/3
+  # found no row and answered :not_found: every POST .../open 404'd, the client marked the photo
+  # spent, and it rendered "Opened" without ever being shown. Running the open flow against the
+  # SCYLLA adapter is the only shape of test that can catch that — the Postgres-backed view_once
+  # suite passes either way, because there the hardcoded SELECT happens to be right.
+  @tag :postgres_integration
+  test "VIEW-ONCE OPEN works against the SCYLLA adapter, not just Postgres" do
+    Application.put_env(:message_service, :message_store_adapter, MessageStore.ScyllaAdapter)
+    Application.put_env(:message_service, :scylla_client_adapter, MessageService.TestScyllaClient)
+
+    assert {:ok, created} =
+             Messages.create_message(%{
+               "conversation_id" => @conversation_id,
+               "sender_user_id" => @sender_user_id,
+               "message_type" => "media",
+               "media_id" => "44444444-4444-4444-8444-444444444444",
+               "view_once" => true
+             })
+
+    assert created.view_once == true
+
+    viewer = "99999999-9999-4999-8999-999999999999"
+
+    # view_once_opens.user_id is FK'd to users_auth, so the viewer has to exist. Seeding it here
+    # rather than in setup keeps this suite's other tests free of database fixtures they don't need.
+    for id <- [viewer, @sender_user_id] do
+      MessageService.Repo.query!(
+        "INSERT INTO users_auth (id, phone_number, status) " <>
+          "VALUES ($1::text::uuid, $2, 'active') ON CONFLICT DO NOTHING",
+        [id, "+1555" <> String.slice(id, 0, 7)]
+      )
+    end
+
+    # 200, not 404: the lookup resolves through the configured store.
+    assert {:ok, %{first_open?: true, media_id: media_id}} =
+             MessageService.ViewOnce.open(@conversation_id, created.message_id, viewer)
+
+    assert media_id == "44444444-4444-4444-8444-444444444444"
+
+    # Idempotent replay still holds on this path.
+    assert {:ok, %{first_open?: false}} =
+             MessageService.ViewOnce.open(@conversation_id, created.message_id, viewer)
+
+    # The sender is refused on the Scylla path too — the check reads sender_user_id from the row the
+    # adapter returned, so it only works if the lookup actually resolved.
+    assert {:error, :sender_cannot_open} =
+             MessageService.ViewOnce.open(@conversation_id, created.message_id, @sender_user_id)
+
+    # A genuinely absent message is still not found — the 404 must not disappear along with the bug.
+    assert {:error, :not_found} =
+             MessageService.ViewOnce.open(
+               @conversation_id,
+               "88888888-8888-4888-8888-888888888888",
+               viewer
+             )
+  end
+
   @tag :postgres_integration
   test "scylla adapter can use shared configured client boundary" do
     Application.put_env(:message_service, :message_store_adapter, MessageStore.ScyllaAdapter)

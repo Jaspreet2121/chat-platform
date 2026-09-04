@@ -45,7 +45,8 @@ defmodule MessageService.Persistence.MediaProjections do
     QueryPlan.new(
       :earliest_media_reference,
       "messages_by_media",
-      "SELECT conversation_id FROM messages_by_media WHERE media_id = ? LIMIT 1",
+      "SELECT conversation_id, message_id, sender_user_id " <>
+        "FROM messages_by_media WHERE media_id = ? LIMIT 1",
       [ScyllaCodec.encode_uuid(Attrs.get(attrs, :media_id))]
     )
   end

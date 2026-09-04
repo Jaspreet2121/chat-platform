@@ -123,6 +123,7 @@ defmodule MessageService.MessageClientInProcess do
   @impl true
   def open_view_once(attrs) do
     case MessageService.ViewOnce.open(
+           Map.get(attrs, "conversation_id"),
            Map.get(attrs, "message_id"),
            Map.get(attrs, "viewer_user_id")
          ) do
