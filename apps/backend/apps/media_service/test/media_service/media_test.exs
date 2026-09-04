@@ -518,6 +518,97 @@ defmodule MediaService.MediaTest do
   end
 
   # media_assets.owner_user_id FKs users_auth(id) — the row must exist before any INSERTing create.
+  # --- purge_asset is OWNER-SCOPED (the critical fix) -----------------------------------------------
+
+  describe "purge_asset owner scoping" do
+    @other_user_id "99999999-9999-4999-8999-999999999999"
+
+    test "the OWNER's purge deletes the object and tombstones the row" do
+      media_id = ready_asset!(@owner_user_id)
+
+      assert {:ok, %{purged: true}} =
+               Media.purge_asset(%{
+                 "media_id" => media_id,
+                 "app_id" => @app,
+                 "expected_owner_user_id" => @owner_user_id
+               })
+
+      assert asset_status(media_id) == "deleted"
+    end
+
+    test "A DIFFERENT USER cannot purge it — the row survives untouched" do
+      # This is the critical case. Before owner scoping, purge_asset matched on (id, app_id) alone, so
+      # attaching a victim's media_id to a view-once message and having a second account open it
+      # deleted the victim's file. The purge must now refuse.
+      seed_user!(@other_user_id, "+15550000009")
+      media_id = ready_asset!(@owner_user_id)
+
+      assert {:ok, %{purged: false}} =
+               Media.purge_asset(%{
+                 "media_id" => media_id,
+                 "app_id" => @app,
+                 "expected_owner_user_id" => @other_user_id
+               })
+
+      assert asset_status(media_id) == "ready",
+             "a non-owner purged another user's asset — the destructive primitive is back"
+    end
+
+    test "a missing expected_owner_user_id refuses rather than falling back to unscoped" do
+      media_id = ready_asset!(@owner_user_id)
+
+      assert {:error, _} =
+               Media.purge_asset(%{"media_id" => media_id, "app_id" => @app})
+
+      assert asset_status(media_id) == "ready"
+    end
+
+    test "an unknown media_id is still an idempotent no-op (the sweep depends on it)" do
+      assert {:ok, %{purged: false}} =
+               Media.purge_asset(%{
+                 "media_id" => Ecto.UUID.generate(),
+                 "app_id" => @app,
+                 "expected_owner_user_id" => @owner_user_id
+               })
+    end
+  end
+
+  defp ready_asset!(owner_user_id) do
+    {:ok, upload} =
+      Media.create_upload(%{
+        "owner_user_id" => owner_user_id,
+        "app_id" => @app,
+        "purpose" => "message",
+        "filename" => "asset.png",
+        "content_type" => "image/png",
+        "size_bytes" => 123
+      })
+
+    {:ok, _} =
+      Media.complete_upload(%{
+        "media_id" => upload.media_id,
+        "app_id" => @app,
+        "owner_user_id" => owner_user_id
+      })
+
+    upload.media_id
+  end
+
+  defp asset_status(media_id) do
+    %{rows: [[status]]} =
+      MediaRepo.query!("SELECT status FROM media_assets WHERE id = $1::text::uuid", [media_id])
+
+    status
+  end
+
+  defp seed_user!(id, phone) do
+    MediaRepo.query!(
+      "INSERT INTO users_auth (id, phone_number, status) VALUES ($1::text::uuid, $2, 'active') " <>
+        "ON CONFLICT DO NOTHING",
+      [id, phone]
+    )
+  end
+
   defp seed_owner! do
     MediaRepo.query!(
       "INSERT INTO users_auth (id, phone_number, status) VALUES ($1::text::uuid, $2, 'active') " <>

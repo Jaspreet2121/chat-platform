@@ -78,7 +78,9 @@ defmodule MessageService.ViewOnce do
   Record an open. WRITE-ONCE: the first open wins and a replay returns the ORIGINAL `opened_at`, so a
   client retrying a lost response cannot move the timestamp or re-trigger the purge.
 
-  Returns `{:ok, %{opened_at, media_id, first_open?}}`. `first_open?` tells the caller whether this
+  Returns `{:ok, %{opened_at, media_id, sender_user_id, first_open?}}`. `sender_user_id` is the
+  MESSAGE's sender: the purge that follows a first open is scoped to that owner, and it must never be
+  the opener (see MediaService.Media.purge_asset/1). `first_open?` tells the caller whether this
   request is the one that should purge the blob.
   """
   def open(conversation_id, message_id, viewer_id) do
@@ -92,7 +94,7 @@ defmodule MessageService.ViewOnce do
       %{sender_user_id: ^viewer_id} ->
         {:error, :sender_cannot_open}
 
-      %{conversation_id: resolved_conversation_id, media_id: media_id} ->
+      %{conversation_id: resolved_conversation_id, media_id: media_id, sender_user_id: sender} ->
         %{rows: rows} =
           Repo.query!(
             """
@@ -107,7 +109,13 @@ defmodule MessageService.ViewOnce do
         case rows do
           # Inserted: this request is the first open.
           [[opened_at]] ->
-            {:ok, %{opened_at: opened_at, media_id: media_id, first_open?: true}}
+            {:ok,
+             %{
+               opened_at: opened_at,
+               media_id: media_id,
+               sender_user_id: sender,
+               first_open?: true
+             }}
 
           # DO NOTHING returns no row — read the original back. Idempotent by contract: same body,
           # same timestamp, no second purge.
@@ -116,6 +124,7 @@ defmodule MessageService.ViewOnce do
              %{
                opened_at: existing_opened_at(message_id, viewer_id),
                media_id: media_id,
+               sender_user_id: sender,
                first_open?: false
              }}
         end

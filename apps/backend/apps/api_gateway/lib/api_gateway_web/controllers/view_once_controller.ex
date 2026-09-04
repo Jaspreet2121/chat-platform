@@ -43,7 +43,10 @@ defmodule ApiGatewayWeb.ViewOnceController do
       # FIRST OPEN PURGES. A replay must not: the blob is already gone, and re-purging would turn an
       # idempotent call into a second storage round trip for nothing.
       if mget(result, :first_open) == true do
-        purge_media(mget(result, :media_id), session.app_id)
+        # THE EXPECTED OWNER IS THE MESSAGE SENDER, never `session.user_id`. The opener is the one
+        # untrusted party in this flow — passing them would scope the purge to whoever asked for it,
+        # which is exactly the hole the owner scoping exists to close.
+        purge_media(mget(result, :media_id), session.app_id, mget(result, :sender_user_id))
       end
 
       fan_out(conversation_id, session.user_id, %{
@@ -85,8 +88,14 @@ defmodule ApiGatewayWeb.ViewOnceController do
 
   # TOLERATE + RETRY LATER. A failed delete leaves the row flipped (the recipient is already denied)
   # and the blob queued for the sweep; it never reaches the caller.
-  defp purge_media(media_id, app_id) when is_binary(media_id) and media_id != "" do
-    case SharedInfra.MediaClient.purge_asset(%{"media_id" => media_id, "app_id" => app_id}) do
+  defp purge_media(media_id, app_id, expected_owner)
+       when is_binary(media_id) and media_id != "" and is_binary(expected_owner) and
+              expected_owner != "" do
+    case SharedInfra.MediaClient.purge_asset(%{
+           "media_id" => media_id,
+           "app_id" => app_id,
+           "expected_owner_user_id" => expected_owner
+         }) do
       {:ok, _} ->
         :ok
 
@@ -100,7 +109,7 @@ defmodule ApiGatewayWeb.ViewOnceController do
     end
   end
 
-  defp purge_media(_media_id, _app_id), do: :ok
+  defp purge_media(_media_id, _app_id, _expected_owner), do: :ok
 
   # THROUGH THE CLIENT SEAM, never MessageService.ViewOnce directly: message_service is a separate
   # RELEASE and its modules do not exist in this one. A direct call compiles in the umbrella and
@@ -111,8 +120,26 @@ defmodule ApiGatewayWeb.ViewOnceController do
       try do
         case SharedInfra.MessageClient.expired_view_once_media(%{"app_id" => app_id}) do
           {:ok, result} ->
-            (mget(result, :media_ids) || [])
-            |> Enum.each(&purge_media(&1, app_id))
+            # THE EXPIRY SWEEP CANNOT PURGE UNDER OWNER SCOPING, and says so rather than degrading
+            # quietly. `expired_view_once_media` returns bare media ids with no sender, and purge now
+            # requires the expected owner — inventing one (the opener, the app) would reintroduce the
+            # unscoped delete this slice removed.
+            #
+            # This is NOT a behaviour change in production: `ViewOnce.expired_unopened_media/0` reads
+            # the Postgres `messages` table, which is empty under MESSAGE_STORE_ADAPTER=scylla, so the
+            # list has always been []. The follow-up that makes that query store-correct must ALSO
+            # carry `sender_user_id` per row; until then this logs and purges nothing.
+            case mget(result, :media_ids) || [] do
+              [] ->
+                :ok
+
+              ids ->
+                Logger.warning(
+                  "[view_once] expiry sweep found #{length(ids)} expired media but CANNOT purge: " <>
+                    "the payload carries no sender_user_id and purge_asset is owner-scoped. " <>
+                    "Fix expired_unopened_media/0 to return the sender alongside the media id."
+                )
+            end
 
           _ ->
             :ok

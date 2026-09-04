@@ -71,8 +71,13 @@ defmodule UserService.UpiQr do
   end
 
   @doc "Best-effort delete of a replaced/cleared QR asset — never fails the profile write."
-  def purge(media_id, app_id) when is_binary(media_id) and media_id != "" do
-    case SharedInfra.MediaClient.purge_asset(%{"media_id" => media_id, "app_id" => app_id}) do
+  def purge(media_id, app_id, expected_owner_user_id)
+      when is_binary(media_id) and media_id != "" do
+    case SharedInfra.MediaClient.purge_asset(%{
+           "media_id" => media_id,
+           "app_id" => app_id,
+           "expected_owner_user_id" => expected_owner_user_id
+         }) do
       {:ok, _} -> :ok
       other -> Logger.warning("upi qr purge failed for #{media_id}: #{inspect(other)}")
     end
@@ -82,7 +87,7 @@ defmodule UserService.UpiQr do
     _ -> :ok
   end
 
-  def purge(_media_id, _app_id), do: :ok
+  def purge(_media_id, _app_id, _expected_owner_user_id), do: :ok
 
   defp writer,
     do: Application.get_env(:user_service, :upi_media_writer, UserService.UpiQr.MediaWriter)

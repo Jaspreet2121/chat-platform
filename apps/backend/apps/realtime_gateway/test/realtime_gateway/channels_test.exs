@@ -6,7 +6,28 @@ defmodule RealtimeGateway.ChannelsTest do
 
   @endpoint RealtimeGateway.TestEndpoint
 
+  # SharedInfra.MediaAttachPolicy now resolves a media_id before the socket may attach it, so the two
+  # media-message cases below need an asset owned by the socket's user. Before the policy the id rode
+  # through unresolved — the same hole the REST path had.
+  defmodule MediaStub do
+    @moduledoc false
+    def get_asset(%{"media_id" => "44444444-4444-4444-8444-444444444444"}),
+      do:
+        {:ok,
+         %{
+           media_id: "44444444-4444-4444-8444-444444444444",
+           owner_user_id: "user_123",
+           status: "ready",
+           purpose: "message"
+         }}
+
+    def get_asset(_attrs), do: {:error, :not_found}
+  end
+
   setup do
+    previous_media_adapter = Application.get_env(:shared_infra, :media_client_adapter)
+    Application.put_env(:shared_infra, :media_client_adapter, MediaStub)
+
     previous_conversation_persistence =
       Application.get_env(:conversation_service, :conversation_persistence, false)
 
@@ -28,6 +49,10 @@ defmodule RealtimeGateway.ChannelsTest do
     Application.put_env(:message_service, :message_store_adapter, previous_message_adapter)
 
     on_exit(fn ->
+      if previous_media_adapter,
+        do: Application.put_env(:shared_infra, :media_client_adapter, previous_media_adapter),
+        else: Application.delete_env(:shared_infra, :media_client_adapter)
+
       Application.put_env(:auth_service, :session_persistence, previous_session_persistence)
 
       Application.put_env(

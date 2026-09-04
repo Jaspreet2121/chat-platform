@@ -6,6 +6,8 @@ defmodule MediaService.Media do
   enabled by default.
   """
 
+  require Logger
+
   alias MediaService.Repo
   alias MediaService.Schemas.MediaAsset
   alias MediaService.Storage
@@ -636,13 +638,45 @@ defmodule MediaService.Media do
   PURGE an asset's bytes (the status sweep + owner-delete path): delete the stored object (best-effort)
   and mark the row deleted so it can never presign again. Row kept as a tombstone (ids stay dead, not
   reusable). Missing asset → {:ok, %{purged: false}} — the sweep must be idempotent.
+
+  ## SCOPED BY OWNER (`expected_owner_user_id`, required)
+
+  This used to match on `(id, app_id)` alone, which made it a DESTRUCTIVE PRIMITIVE available to any
+  caller who could name an id in the tenant. Combined with an unvalidated `media_id` on message
+  create, that was a critical: attach a victim's asset to a `view_once` message, have a second account
+  open it, and the view-once purge deleted the victim's blob. Every caller knows whose asset it should
+  be, so every caller must now say:
+
+    * view-once open  → the MESSAGE SENDER (never the opener — the opener is precisely the untrusted
+      party in that flow, and passing them here would re-open the hole);
+    * status sweep    → `status_posts.owner_user_id`;
+    * UPI QR replace  → the profile's user_id.
+
+  BELT AND BRACES with `SharedInfra.MediaAttachPolicy`: that policy stops a foreign `media_id` reaching
+  a message at all, and this stops a purge landing on a foreign asset if one ever does. EITHER ALONE
+  closes the exploit. Both are kept deliberately — the policy guards a wider class (referencing others'
+  assets at all) while this guards the irreversible operation, and defence for a delete that cannot be
+  undone should not rest on a single check in a different service.
+
+  A mismatch is `{:ok, %{purged: false}}`, NOT an error: purge is best-effort at every call site, and
+  a new error atom crossing `InternalApi` would decode as a bare string in any release that does not
+  name it. It is logged at ERROR because a mismatch means a caller tried to delete something that was
+  not theirs.
   """
   def purge_asset(attrs) do
     with {:ok, media_id} <- required_attr(attrs, "media_id"),
-         {:ok, app_id} <- required_attr(attrs, "app_id") do
+         {:ok, app_id} <- required_attr(attrs, "app_id"),
+         {:ok, expected_owner} <- required_attr(attrs, "expected_owner_user_id") do
       if media_persistence_enabled?() do
-        case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
+        case Repo.get_by(MediaAsset,
+               id: media_id,
+               app_id: app_id,
+               owner_user_id: expected_owner
+             ) do
           nil ->
+            # Indistinguishable from "no such asset", deliberately — but if the id DOES exist under a
+            # different owner, that is an attempted cross-owner delete and must be visible.
+            log_owner_mismatch(media_id, app_id, expected_owner)
             {:ok, %{purged: false}}
 
           %MediaAsset{} = asset ->
@@ -660,6 +694,23 @@ defmodule MediaService.Media do
     end
   rescue
     Ecto.Query.CastError -> {:ok, %{purged: false}}
+  end
+
+  # Only fires when the row exists under a DIFFERENT owner — a plain unknown id logs nothing, so this
+  # line means someone named an asset that was not theirs.
+  defp log_owner_mismatch(media_id, app_id, expected_owner) do
+    case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
+      %MediaAsset{owner_user_id: actual} ->
+        Logger.error(
+          "media purge REFUSED (owner mismatch) media=#{media_id} expected_owner=#{expected_owner} " <>
+            "actual_owner=#{actual} — a caller tried to purge an asset it does not own"
+        )
+
+      _ ->
+        :ok
+    end
+  rescue
+    _ -> :ok
   end
 
   @doc """

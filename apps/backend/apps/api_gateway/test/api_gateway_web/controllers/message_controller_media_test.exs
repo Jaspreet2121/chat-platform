@@ -6,6 +6,24 @@ defmodule ApiGatewayWeb.MessageControllerMediaTest do
 
   alias MessageService.MessageStore
 
+  # The attach policy (SharedInfra.MediaAttachPolicy) now resolves every media_id before a message may
+  # carry it, so these DB-backed media sends need an asset that actually belongs to the placeholder
+  # sender. Before the policy the id was accepted unresolved — which was the hole.
+  defmodule MediaStub do
+    @moduledoc false
+    def get_asset(%{"media_id" => "44444444-4444-4444-8444-444444444444"}),
+      do:
+        {:ok,
+         %{
+           media_id: "44444444-4444-4444-8444-444444444444",
+           owner_user_id: "user_placeholder",
+           status: "ready",
+           purpose: "message"
+         }}
+
+    def get_asset(_attrs), do: {:error, :not_found}
+  end
+
   setup do
     previous_message_persistence =
       Application.get_env(:message_service, :message_persistence, false)
@@ -20,6 +38,9 @@ defmodule ApiGatewayWeb.MessageControllerMediaTest do
     Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
     Application.put_env(:auth_service, :session_persistence, false)
 
+    previous_media_adapter = Application.get_env(:shared_infra, :media_client_adapter)
+    Application.put_env(:shared_infra, :media_client_adapter, MediaStub)
+
     start_in_memory_store!()
     MessageStore.InMemoryAdapter.reset()
 
@@ -28,6 +49,10 @@ defmodule ApiGatewayWeb.MessageControllerMediaTest do
       Application.put_env(:message_service, :message_persistence, previous_message_persistence)
       Application.put_env(:message_service, :message_store_adapter, previous_message_adapter)
       Application.put_env(:auth_service, :session_persistence, previous_session_persistence)
+
+      if previous_media_adapter,
+        do: Application.put_env(:shared_infra, :media_client_adapter, previous_media_adapter),
+        else: Application.delete_env(:shared_infra, :media_client_adapter)
     end)
 
     :ok

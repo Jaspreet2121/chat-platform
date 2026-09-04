@@ -372,6 +372,15 @@ defmodule RealtimeGateway.ConversationChannel do
   defp create_message(payload, socket) do
     with :ok <- validate_message_payload(payload),
          {:ok, sender_user_id} <- current_user_id(socket),
+         # MEDIA OWNERSHIP on the realtime path too. `validate_message_payload/1` only checks that a
+         # media message CARRIES a media_id, never whose it is — so without this the socket is the
+         # same unvalidated attach surface the REST create was. Shared rule, one definition.
+         :ok <-
+           SharedInfra.MediaAttachPolicy.validate(
+             payload,
+             sender_user_id,
+             Map.get(socket.assigns, :app_id)
+           ),
          # SERVER-SIDE only-admins-can-send enforcement on the realtime path too — a plain member in a
          # locked group can't send even by pushing the socket event directly. This SAME call also carries the
          # BLOCK disposition: for a DIRECT chat the recipient has blocked, it returns delivery: "drop".
@@ -420,6 +429,11 @@ defmodule RealtimeGateway.ConversationChannel do
         {:reply,
          {:error,
           %{code: "group.only_admins_can_send", message: "Only admins can send messages"}},
+         socket}
+
+      # Mirrors the REST mapping, same code, same no-existence-leak reason.
+      {:error, :media_invalid} ->
+        {:reply, {:error, %{code: "message.media_invalid", message: "Invalid media attachment"}},
          socket}
 
       {:error, :message_unavailable} ->

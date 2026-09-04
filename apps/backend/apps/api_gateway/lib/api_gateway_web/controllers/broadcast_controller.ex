@@ -120,6 +120,11 @@ defmodule ApiGatewayWeb.BroadcastController do
     with {:ok, session} <- session(conn),
          :ok <- validate_message(params),
          :ok <- send_rate_limit(session.user_id),
+         # MEDIA OWNERSHIP, checked ONCE for the whole fan-out rather than per recipient: `media_id`
+         # rides through @message_fields into one create_message PER RECIPIENT, so an unvalidated
+         # attachment here is the same hole as on the REST create, multiplied by the list size.
+         :ok <-
+           SharedInfra.MediaAttachPolicy.validate(params, session.user_id, session_app(session)),
          {:ok, list} <-
            SharedInfra.ConversationClient.get_broadcast_list(%{
              "owner_user_id" => session.user_id,
@@ -303,6 +308,16 @@ defmodule ApiGatewayWeb.BroadcastController do
         conn,
         "broadcast.view_once_unsupported",
         "View-once messages cannot be broadcast"
+      )
+
+  # Same single code, and the same reason, as the REST create: no existence leak across the four ways
+  # an attachment can be refused.
+  defp handle_error(conn, {:error, :media_invalid}),
+    do:
+      ErrorResponse.unprocessable_entity(
+        conn,
+        "message.media_invalid",
+        "Invalid media attachment"
       )
 
   defp handle_error(conn, {:error, :invalid_name}),

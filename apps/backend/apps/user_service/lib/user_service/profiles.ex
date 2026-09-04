@@ -286,13 +286,13 @@ defmodule UserService.Profiles do
 
       is_nil(profile.upi_id) ->
         # Cleared: clear_payment already nulled the column; drop the stored asset off the path.
-        async_purge(old_qr, app_id)
+        async_purge(old_qr, app_id, profile.user_id)
         {:ok, profile, false}
 
       true ->
         # Identity set/changed: purge the replaced asset and drop the stale id NOW; the fresh QR is
         # rendered + stored asynchronously by regenerate_upi_qr/1.
-        async_purge(old_qr, app_id)
+        async_purge(old_qr, app_id, profile.user_id)
         {:ok, profile} = ProfileStore.update_profile(profile, %{"upi_qr_media_id" => nil})
         {:ok, profile, true}
     end
@@ -300,12 +300,16 @@ defmodule UserService.Profiles do
 
   # Best-effort delete of a replaced/cleared QR asset, OFF the request path. UpiQr.purge is itself
   # rescue-wrapped; the fire-and-forget Task keeps a slow media DELETE out of the PATCH latency.
-  defp async_purge(media_id, app_id) when is_binary(media_id) and media_id != "" do
-    Task.start(fn -> UserService.UpiQr.purge(media_id, app_id) end)
+  # The expected owner is the PROFILE's user_id — which is exactly the owner_user_id UpiQr.store_png/3
+  # stamped on the asset when it minted the QR. purge_asset is owner-scoped, so a mismatch here would
+  # simply refuse rather than delete the wrong row.
+  defp async_purge(media_id, app_id, user_id)
+       when is_binary(media_id) and media_id != "" and is_binary(user_id) and user_id != "" do
+    Task.start(fn -> UserService.UpiQr.purge(media_id, app_id, user_id) end)
     :ok
   end
 
-  defp async_purge(_media_id, _app_id), do: :ok
+  defp async_purge(_media_id, _app_id, _user_id), do: :ok
 
   @doc """
   Render + store the UPI QR for a user whose payment identity was just set/changed. Called

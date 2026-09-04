@@ -76,7 +76,19 @@ defmodule RealtimeGateway.ConversationUpdatedFreshnessTest do
     end
   end
 
+  # SharedInfra.MediaAttachPolicy resolves media_id before the socket may attach it, so the media case
+  # needs an asset owned by @sender.
+  defmodule MediaStub do
+    @moduledoc false
+    def get_asset(%{"media_id" => "m-9"}),
+      do: {:ok, %{media_id: "m-9", owner_user_id: "u1", status: "ready", purpose: "message"}}
+
+    def get_asset(_attrs), do: {:error, :not_found}
+  end
+
   setup do
+    prev_media = Application.get_env(:shared_infra, :media_client_adapter)
+    Application.put_env(:shared_infra, :media_client_adapter, MediaStub)
     prev_conv = Application.get_env(:shared_infra, :conversation_client_adapter)
     prev_msg = Application.get_env(:shared_infra, :message_client_adapter)
     prev_persist = Application.get_env(:conversation_service, :conversation_persistence)
@@ -86,6 +98,7 @@ defmodule RealtimeGateway.ConversationUpdatedFreshnessTest do
     Application.put_env(:conversation_service, :conversation_persistence, false)
 
     on_exit(fn ->
+      restore(:shared_infra, :media_client_adapter, prev_media)
       restore(:shared_infra, :conversation_client_adapter, prev_conv)
       restore(:shared_infra, :message_client_adapter, prev_msg)
       restore(:conversation_service, :conversation_persistence, prev_persist)

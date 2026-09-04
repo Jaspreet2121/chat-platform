@@ -48,6 +48,12 @@ defmodule ApiGatewayWeb.MessageController do
          # paying for the checks it was going to fail anyway.
          :ok <- send_rate_limit(session.user_id),
          :ok <- authorize_membership(conversation_id, session.user_id),
+         # MEDIA OWNERSHIP. `/v1` has always enforced this (validate_media/3); this path never did, so a
+         # `media_id` from client params reached create_message unchecked — which is how someone else's
+         # asset could be attached to your message and, through view-once, destroyed. Placed AFTER the
+         # session and membership checks so an unauthenticated or non-member caller learns nothing about
+         # which media ids exist. See SharedInfra.MediaAttachPolicy.
+         :ok <- SharedInfra.MediaAttachPolicy.validate(params, session.user_id, session.app_id),
          # SERVER-SIDE only-admins-can-send enforcement (a member can't bypass via the API). This SAME call
          # also carries the BLOCK disposition: for a DIRECT chat the recipient has blocked, delivery: "drop".
          {:ok, disposition} <-
@@ -108,6 +114,16 @@ defmodule ApiGatewayWeb.MessageController do
           conn,
           "message.view_once_invalid",
           "view_once is only valid on a media message"
+        )
+
+      # ONE CODE FOR EVERY ATTACHMENT FAILURE. Unknown id, another tenant's, another user's, and
+      # not-yet-ready are deliberately indistinguishable — the same no-existence-leak rule the media
+      # download path follows by collapsing every denial to 404.
+      {:error, :media_invalid} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "message.media_invalid",
+          "Invalid media attachment"
         )
 
       {:error, :message_unavailable} ->

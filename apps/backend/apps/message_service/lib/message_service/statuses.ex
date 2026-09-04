@@ -676,7 +676,9 @@ defmodule MessageService.Statuses do
 
       case rows do
         [[media_id, app_id]] ->
-          purge_media(status_id, media_id, app_id)
+          # `owner` is the authenticated deleter, and the UPDATE above already required the row to be
+          # theirs — so it is also the asset's expected owner.
+          purge_media(status_id, media_id, app_id, owner)
           {:ok, %{deleted: true}}
 
         _ ->
@@ -711,12 +713,12 @@ defmodule MessageService.Statuses do
         "UPDATE status_posts SET media_purged_at = now() WHERE id IN (" <>
           "SELECT id FROM status_posts WHERE media_purged_at IS NULL AND deleted_at IS NULL " <>
           "AND expires_at < now() - make_interval(secs => $1) LIMIT $2) " <>
-          "RETURNING id::text, media_id::text, app_id::text",
+          "RETURNING id::text, media_id::text, app_id::text, owner_user_id::text",
         [@sweep_grace_seconds, @sweep_batch]
       )
 
-    Enum.each(rows, fn [status_id, media_id, app_id] ->
-      purge_media(status_id, media_id, app_id)
+    Enum.each(rows, fn [status_id, media_id, app_id, owner_user_id] ->
+      purge_media(status_id, media_id, app_id, owner_user_id)
     end)
 
     # Tombstones + views past the retention window die for real (CASCADE takes the views).
@@ -732,10 +734,16 @@ defmodule MessageService.Statuses do
       :ok
   end
 
-  defp purge_media(_status_id, nil, _app_id), do: :ok
+  defp purge_media(_status_id, nil, _app_id, _owner_user_id), do: :ok
 
-  defp purge_media(status_id, media_id, app_id) do
-    case SharedInfra.MediaClient.purge_asset(%{"media_id" => media_id, "app_id" => app_id}) do
+  # The expected owner is the STATUS's own owner_user_id — the sweep deletes a user's expired status
+  # media and nobody else's (MediaService.Media.purge_asset/1 is owner-scoped).
+  defp purge_media(status_id, media_id, app_id, owner_user_id) do
+    case SharedInfra.MediaClient.purge_asset(%{
+           "media_id" => media_id,
+           "app_id" => app_id,
+           "expected_owner_user_id" => owner_user_id
+         }) do
       {:ok, _} ->
         :ok
 
