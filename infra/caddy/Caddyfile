@@ -120,3 +120,13 @@ livekit.growblic.com {
 turn.growblic.com {
 	respond "turn" 200
 }
+
+# Growblic marketing site (Next.js standalone). Separate compose project: growblic-site.
+# www is canonical (site metadataBase/sitemap/robots point at www); apex redirects.
+growblic.com {
+	redir https://www.growblic.com{uri} permanent
+}
+
+www.growblic.com {
+	reverse_proxy growblic-site:3000
+}
