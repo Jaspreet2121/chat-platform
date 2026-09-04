@@ -20,6 +20,8 @@ defmodule ApiGatewayWeb.V1.MediaController do
 
   use ApiGatewayWeb, :controller
 
+  require Logger
+
   alias ApiGatewayWeb.ErrorResponse
   alias ApiGatewayWeb.MediaAuthz
   alias ApiGatewayWeb.V1.ConversationAuthz
@@ -32,6 +34,12 @@ defmodule ApiGatewayWeb.V1.MediaController do
     app_id = conn.assigns.v1_app_id
 
     with {:ok, purpose} <- fetch_purpose(params),
+         # THE TENANT UPLOAD CEILING. The first-party path has been metered since it shipped; this one
+         # was not, so a B2B key could loop presigns without limit. Keyed on app_id (the tenant), not
+         # the resolved end user: an integrator's damage is measured per key, and an :app actor has no
+         # user to key on. Same numbers as first-party for now — see the deploy note about raising it
+         # per tenant if a real integrator's burst needs more.
+         :ok <- upload_rate_limit(app_id),
          {:ok, owner_user_id} <- resolve_owner(conn, app_id, params),
          :ok <- authorize_upload_conversation(conn, purpose, params["conversation_id"]),
          {:ok, response} <-
@@ -50,6 +58,7 @@ defmodule ApiGatewayWeb.V1.MediaController do
       {:error, :not_found} -> not_found(conn)
       {:error, :media_too_large} -> too_large(conn)
       {:error, :media_unavailable} -> service_unavailable(conn)
+      {:error, :rate_limited, retry_after} -> rate_limited(conn, retry_after)
       # Bad/absent purpose, missing conversation for a message/group_avatar, or an :app owner that doesn't
       # resolve to a user in this app → 400 (the caller supplied an invalid request, not a hidden resource).
       _ -> invalid_request(conn)
@@ -219,4 +228,55 @@ defmodule ApiGatewayWeb.V1.MediaController do
     do: ErrorResponse.payload_too_large(conn, "v1.media_too_large", "File is too large.")
 
   defp service_unavailable(conn), do: ErrorResponse.service_unavailable(conn, "v1.unavailable")
+
+  defp rate_limited(conn, retry_after_seconds) do
+    conn
+    |> Plug.Conn.put_resp_header("retry-after", Integer.to_string(retry_after_seconds))
+    |> ErrorResponse.rate_limited("v1.rate_limited")
+  end
+
+  # THE TENANT UPLOAD CEILING — same shape and same numbers as the first-party limiter
+  # (ApiGatewayWeb.MediaController): 60 per minute and 500 per day, both windows enforced, and the
+  # DEGRADED branch fails CLOSED for the same reason it does there.
+  @upload_burst_limit 60
+  @upload_burst_window_seconds 60
+  @upload_daily_limit 500
+  @upload_daily_window_seconds 86_400
+
+  defp upload_rate_limit(app_id) when is_binary(app_id) and app_id != "" do
+    with :ok <-
+           check_window(
+             "v1_media_upload_day:",
+             app_id,
+             @upload_daily_limit,
+             @upload_daily_window_seconds
+           ) do
+      check_window("v1_media_upload:", app_id, @upload_burst_limit, @upload_burst_window_seconds)
+    end
+  end
+
+  # No app_id is not a licence to skip the ceiling — but it also cannot key a counter, so it is
+  # refused outright. Every /v1 route runs behind V1Auth, which always assigns one.
+  defp upload_rate_limit(_app_id), do: {:error, :rate_limited, @upload_burst_window_seconds}
+
+  defp check_window(prefix, app_id, limit, window_seconds) do
+    case SharedInfra.RateLimiter.check_rate(%{
+           "key" => prefix <> app_id,
+           "limit" => limit,
+           "window_seconds" => window_seconds
+         }) do
+      :ok ->
+        :ok
+
+      {:error, :rate_limited, _retry} = limited ->
+        limited
+
+      other ->
+        Logger.error(
+          "v1 media upload limiter DEGRADED (failing closed) app=#{app_id}: #{inspect(other)}"
+        )
+
+        {:error, :rate_limited, window_seconds}
+    end
+  end
 end

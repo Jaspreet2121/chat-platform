@@ -1,6 +1,8 @@
 defmodule ApiGatewayWeb.MediaController do
   use ApiGatewayWeb, :controller
 
+  require Logger
+
   alias ApiGatewayWeb.ErrorResponse
 
   # UPLOAD CREATION LIMITS — two windows, per user.
@@ -118,9 +120,23 @@ defmodule ApiGatewayWeb.MediaController do
            "limit" => limit,
            "window_seconds" => window_seconds
          }) do
-      :ok -> :ok
-      {:error, :rate_limited, _retry} = limited -> limited
-      _ -> :ok
+      :ok ->
+        :ok
+
+      {:error, :rate_limited, _retry} = limited ->
+        limited
+
+      # FAILS CLOSED. This used to be `_ -> :ok`: any limiter fault (Redis down, a timeout, an
+      # unexpected shape) silently removed the upload cap entirely — the one moment the limit matters
+      # most is the one where it stopped applying, and nothing said so. An upload is a retryable,
+      # non-destructive action, so refusing it during a limiter outage costs a retry; admitting it
+      # uncapped costs unbounded storage with no record that the ceiling was ever lifted.
+      other ->
+        Logger.error(
+          "media upload limiter DEGRADED (failing closed) key=#{prefix}#{user_id}: #{inspect(other)}"
+        )
+
+        {:error, :rate_limited, window_seconds}
     end
   end
 

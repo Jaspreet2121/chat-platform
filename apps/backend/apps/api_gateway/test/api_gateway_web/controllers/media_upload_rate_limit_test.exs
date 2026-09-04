@@ -8,8 +8,15 @@ defmodule ApiGatewayWeb.MediaUploadRateLimitTest do
 
   Proves: both windows fire with 429 + Retry-After; a legitimate burst below the per-minute limit does
   not; the DAILY window is the one charged first (its Retry-After is what a client sees, and it is the
-  limit that bounds accumulation); the key is per-user; and it FAILS OPEN, because losing a user's
-  photo to a Redis blip costs more than briefly skipping an abuse guard.
+  limit that bounds accumulation); the key is per-user; and it FAILS CLOSED.
+
+  FAIL-CLOSED IS A REVERSAL, recorded here so the next reader does not "restore" it. This limiter used
+  to fail OPEN on the reasoning that losing a user's photo to a Redis blip costs more than briefly
+  skipping an abuse guard. What that traded away is worse: the moment the limiter breaks is exactly the
+  moment the cap stops existing, silently and with no upper bound, and nothing in the system says so.
+  An upload is retryable and non-destructive, so refusing during an outage costs a retry; admitting
+  uncapped costs unbounded storage. The degraded branch now logs at ERROR so an outage is visible
+  rather than inferred from a bill.
   """
   use ExUnit.Case, async: false
 
@@ -122,7 +129,7 @@ defmodule ApiGatewayWeb.MediaUploadRateLimitTest do
     refute upload("u-quiet").status == 429
   end
 
-  test "FAIL-OPEN: a limiter outage does not stop people uploading" do
+  test "FAIL-CLOSED: a limiter outage refuses the upload rather than silently uncapping it" do
     # Deliberate. Failing closed would be worth the breakage only if this were tight disk protection,
     # and it is not: at the 100 MB per-object cap a full daily budget is still ~50 GB per account.
     # It turns unbounded into bounded; the disk is properly defended by a byte quota and alerting.
@@ -130,8 +137,10 @@ defmodule ApiGatewayWeb.MediaUploadRateLimitTest do
 
     conn = upload("u-outage")
 
-    refute conn.status == 429
-    refute conn.status == 503
+    # 429, not 503: the client's correct response is to back off and retry, which is what a rate-limit
+    # status tells it to do. Retry-After is present so it knows how long.
+    assert conn.status == 429
+    assert get_resp_header(conn, "retry-after") != []
   end
 
   defp upload(user) do
