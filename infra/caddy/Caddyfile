@@ -12,11 +12,40 @@
 
 # --- API + realtime websocket ---
 api.growblic.com {
+	header {
+		# HSTS: the API is HTTPS-only in production and every client already speaks it.
+		Strict-Transport-Security "max-age=31536000"
+		# JSON is JSON. Stops a browser sniffing an error body into something executable.
+		X-Content-Type-Options "nosniff"
+	}
+
 	reverse_proxy gateway:4000
 }
 
 # --- Media (MinIO S3 API) — presigned PUT/GET; Host is preserved so SigV4 matches ---
+#
+# THE UPLOADED CONTENT-TYPE IS ATTACKER-CHOSEN. The presign signs `SignedHeaders=host` ONLY
+# (MediaService.Storage), so MinIO never validates the Content-Type a client sends on the PUT — the
+# server-side allowlist in MediaService.Media governs the DATABASE ROW, not the stored object. A user
+# can declare image/png at create, PUT bytes as text/html, and MinIO will serve them back as text/html.
+#
+# These three headers make that inert without touching the signing path:
+#   * Content-Disposition attachment — a top-level navigation DOWNLOADS instead of rendering, so
+#     stored HTML/SVG cannot execute on this origin. <img>/<video> subresource loading is UNAFFECTED
+#     (the header only governs how a navigation is handled), so chat media renders exactly as before.
+#   * nosniff — stops a browser inferring a richer type than the one served.
+#   * CSP sandbox — a fully-restricted origin for anything that does get rendered: no scripts, no
+#     forms, no same-origin privileges.
+#
+# Header manipulation does not disturb SigV4: the signature covers the request's host and query, and
+# these are RESPONSE headers.
 media.growblic.com {
+	header {
+		Content-Disposition "attachment"
+		X-Content-Type-Options "nosniff"
+		Content-Security-Policy "sandbox"
+	}
+
 	reverse_proxy minio:9000
 }
 
@@ -38,6 +67,18 @@ media.growblic.com {
 # MUST be updated in the same change — otherwise Android silently stops verifying and every deep link
 # reverts to the chooser dialog, with no server-side error to notice.
 web.growblic.com {
+	# Site-level response headers. Deliberately INSIDE the existing block — a second `web.growblic.com`
+	# block is an "ambiguous site definition" that restart-loops Caddy and takes api/web/media down with
+	# it (see the warning below; it has happened twice).
+	#
+	# NO full Content-Security-Policy here this pass: Next.js inlines bootstrap scripts and a CSP written
+	# without measuring which hashes/nonces it needs would break the app on deploy. That is its own slice.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
+
 	# First matching `handle` wins; the second is the catch-all. Explicit handles (rather than a bare
 	# reverse_proxy alongside a matcher) keep the precedence obvious to the next reader.
 	handle /.well-known/assetlinks.json {
@@ -52,6 +93,13 @@ web.growblic.com {
 }
 
 admin.growblic.com {
+	# Same three as the web host — one app serves both, so the posture must not differ by hostname.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+	}
+
 	reverse_proxy web:3000
 }
 
