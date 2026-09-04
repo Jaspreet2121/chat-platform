@@ -265,6 +265,15 @@ defmodule ApiGatewayWeb.MessageController do
              "user_id" => session.user_id,
              "emoji" => emoji
            }) do
+      # Same event + payload the socket's broadcast_reaction emits; conversation topic ONLY (not
+      # id-de-duplicated — see RealtimeFanOut.to_conversation/3). This path emitted NOTHING before:
+      # a REST reaction was invisible until the peer refetched.
+      ApiGatewayWeb.RealtimeFanOut.to_conversation(
+        conversation_id,
+        "reaction_updated",
+        reaction_payload(response)
+      )
+
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
@@ -287,6 +296,14 @@ defmodule ApiGatewayWeb.MessageController do
              "message_id" => message_id,
              "user_id" => session.user_id
            }) do
+      # Removal lands as the same reaction_updated frame — the payload's reaction set is simply
+      # smaller. One event name for both directions, exactly like reaction:set / reaction:remove.
+      ApiGatewayWeb.RealtimeFanOut.to_conversation(
+        conversation_id,
+        "reaction_updated",
+        reaction_payload(response)
+      )
+
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
@@ -296,6 +313,15 @@ defmodule ApiGatewayWeb.MessageController do
       {:error, :conversation_membership_forbidden} -> forbidden(conn)
       _ -> invalid_request(conn)
     end
+  end
+
+  # The socket's broadcast_reaction shape, verbatim (conversation_channel.ex): message_id + the full
+  # post-change reaction set, read through both key styles because the client seam may return either.
+  defp reaction_payload(response) do
+    %{
+      message_id: Map.get(response, :message_id) || Map.get(response, "message_id"),
+      reactions: Map.get(response, :reactions) || Map.get(response, "reactions") || []
+    }
   end
 
   defp require_emoji(params) do
@@ -573,6 +599,11 @@ defmodule ApiGatewayWeb.MessageController do
            params
            |> Map.put("actor_user_id", session.user_id)
            |> SharedInfra.MessageClient.update_message() do
+      # The event name /v1 and the socket already emit; conversation topic ONLY (an edit is not
+      # id-de-duplicated, so mirroring to user topics would double-render — RealtimeFanOut moduledoc).
+      # This path emitted NOTHING before: a REST edit was invisible until the peer refetched.
+      ApiGatewayWeb.RealtimeFanOut.to_conversation(conversation_id, "message_updated", response)
+
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
@@ -614,6 +645,10 @@ defmodule ApiGatewayWeb.MessageController do
              "message_id" => message_id,
              "actor_user_id" => session.user_id
            }) do
+      # Same rationale as message_updated above — and a delete the peer never sees is worse than a
+      # missing edit: the bubble keeps rendering content its author removed.
+      ApiGatewayWeb.RealtimeFanOut.to_conversation(conversation_id, "message_deleted", response)
+
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
@@ -702,6 +737,19 @@ defmodule ApiGatewayWeb.MessageController do
              "message_id" => message_id,
              "user_id" => session.user_id
            }) do
+      # The sender's grey double-tick. Same frame the socket's message_delivered emits (its
+      # conversation_reply map + receipt_type), and like there it is UNGATED — delivered ticks are
+      # never suppressed by the read-receipt privacy setting; only read ticks are. Conversation topic
+      # only, as with every receipt.
+      ApiGatewayWeb.RealtimeFanOut.to_conversation(conversation_id, "receipt_updated", %{
+        event: "message_delivered",
+        conversation_id: conversation_id,
+        user_id: session.user_id,
+        payload: %{"message_id" => message_id},
+        status: "accepted",
+        receipt_type: "delivered"
+      })
+
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)

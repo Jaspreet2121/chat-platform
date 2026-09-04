@@ -12,11 +12,12 @@ defmodule ApiGatewayWeb.RealtimeFanOut do
   Android-sent DM produced no live message at all and `view_once_opened` never reached the sender —
   the one participant guaranteed NOT to have the chat open.
 
-  WHAT IS DELIBERATELY *NOT* HERE: edits, deletes and receipts. Those are conversation-topic only on
-  purpose (see V1.MessageController.fan_out_mutation/3) — the SDK routes both topics into one channel
-  and, unlike `message_created`, they are not de-duplicated by id, so mirroring them would deliver
-  each twice to anyone watching the conversation. Duplicate suppression is a property of the EVENT,
-  not of the transport, and only events that carry it belong in here.
+  TWO SHAPES, ONE MODULE. `to_participants/4` mirrors an event onto BOTH topics — safe only for
+  events de-duplicated by id (`message_created`, `view_once_opened`). `to_conversation/3` broadcasts
+  to the conversation topic ONLY — the required shape for edits, deletes, reactions and receipts: the
+  SDK routes both topics into one channel and those events are NOT de-duplicated, so mirroring them
+  would deliver each twice to anyone watching the conversation. Duplicate suppression is a property
+  of the EVENT, not of the transport, and which helper an event uses is exactly that property.
   """
 
   @doc """
@@ -32,6 +33,29 @@ defmodule ApiGatewayWeb.RealtimeFanOut do
         conversation_id
         |> participants_except(actor_id)
         |> Enum.each(&ApiGatewayWeb.Endpoint.broadcast("user:" <> &1, event, payload))
+      rescue
+        _ -> :ok
+      end
+    end)
+
+    :ok
+  end
+
+  @doc """
+  Broadcast an event to the CONVERSATION topic only — the mutation shape.
+
+  For `message_updated` / `message_deleted` / `reaction_updated` / `receipt_updated`: same semantics
+  as the socket path's `broadcast_from` and `/v1`'s `fan_out_mutation/3` (which delegates here), and
+  deliberately NEVER mirrored to `user:<id>` — see the moduledoc. A recipient with the chat closed
+  learns of the change on their next open/refetch, which is the accepted cost of not double-rendering
+  for everyone with it open.
+
+  Fire-and-forget in a Task: a fan-out must never fail or slow the request that caused it.
+  """
+  def to_conversation(conversation_id, event, payload) do
+    Task.start(fn ->
+      try do
+        ApiGatewayWeb.Endpoint.broadcast("conversation:" <> conversation_id, event, payload)
       rescue
         _ -> :ok
       end

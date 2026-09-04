@@ -348,17 +348,8 @@ defmodule ApiGatewayWeb.V1.MessageController do
   # Deliberately NOT mirrored to user topics: the SDK routes both topics into the SAME channel and, unlike
   # `message_created`, updates/deletes are not de-duplicated by id — a mirror would emit message.updated /
   # message.deleted TWICE to any client watching the conversation. Fire-and-forget (never fails the request).
-  defp fan_out_mutation(conversation_id, event, message) do
-    Task.start(fn ->
-      try do
-        ApiGatewayWeb.Endpoint.broadcast("conversation:" <> conversation_id, event, message)
-      rescue
-        _ -> :ok
-      end
-    end)
-
-    :ok
-  end
+  defp fan_out_mutation(conversation_id, event, message),
+    do: ApiGatewayWeb.RealtimeFanOut.to_conversation(conversation_id, event, message)
 
   # Optional compound-keyset cursor pagination (additive — no cursor params → the unchanged recent page):
   #   forward backfill : after_created_at + after_id  (strictly-after, oldest→newest)
