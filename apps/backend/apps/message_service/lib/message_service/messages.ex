@@ -919,6 +919,11 @@ defmodule MessageService.Messages do
       reply_to_message_id: message.reply_to_message_id,
       status: message.status,
       metadata: message.metadata,
+      # THE OUTERMOST SERIALISER. This map is the public shape for the create ack, the timeline,
+      # Starred and Search alike — a field the stores return but this drops is invisible to every
+      # client no matter how correctly it was written. Map.get, not a struct read: the store passes a
+      # plain map here, and pre-115 rows carry no key at all.
+      view_once: Map.get(message, :view_once, false) || false,
       created_at: iso8601(message.created_at),
       edited_at: iso8601(message.edited_at),
       deleted_at: iso8601(message.deleted_at),

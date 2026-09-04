@@ -1418,6 +1418,10 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
       reply_to_message_id: attr(attrs, "reply_to_message_id"),
       status: attr(attrs, "status"),
       metadata: attr(attrs, "metadata") || %{},
+      # `|| false` is REQUIRED, not defensive. Pre-115 rows hold NULL here — a CQL `ALTER ... ADD`
+      # backfills nothing — and a null reaching the client is exactly the bug this fixes: it must
+      # read as "not view-once", never as "unknown".
+      view_once: attr(attrs, "view_once") || false,
       created_at: ScyllaCodec.decode_timestamp(attr(attrs, "created_at")),
       edited_at: ScyllaCodec.decode_timestamp(attr(attrs, "edited_at")),
       deleted_at: ScyllaCodec.decode_timestamp(attr(attrs, "deleted_at"))
@@ -1437,6 +1441,9 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
       reply_to_message_id: attr(row, "reply_to_message_id"),
       status: attr(row, "status"),
       metadata: ScyllaCodec.decode_metadata(attr(row, "metadata")),
+      # Same default, same reason as response_from_attrs/1 above: every row written before 115 has a
+      # NULL in this column, and the recipient's client must see false rather than null.
+      view_once: attr(row, "view_once") || false,
       created_at: ScyllaCodec.decode_timestamp(attr(row, "created_at")),
       edited_at: ScyllaCodec.decode_timestamp(attr(row, "edited_at")),
       deleted_at: ScyllaCodec.decode_timestamp(attr(row, "deleted_at"))

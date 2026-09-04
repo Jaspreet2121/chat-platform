@@ -659,6 +659,76 @@ defmodule MessageService.MessageStoreBoundaryTest do
            ]
   end
 
+  # THE TWO SERIALISERS, PINNED BY THEIR EXACT KEY SETS.
+  #
+  # view_once shipped written-but-invisible: the write plan bound it, all three read plans SELECTed
+  # it, and the two ScyllaAdapter builders 2100 lines away silently dropped it — so the 201 body and
+  # every read came back null while the data sat correctly in Scylla. Only the POSTGRES builder was
+  # updated, and production runs the Scylla adapter.
+  #
+  # Asserted as key SETS, not `assert %{"x" => _} = body`: a partial match cannot fail on a MISSING
+  # key, which is how both this and the auto_publish drop survived green suites. Any future field
+  # added to one builder and forgotten in the other fails here immediately.
+  @tag :postgres_integration
+  test "SERIALISER SHAPE: the create response and the read response carry the SAME fields" do
+    Application.put_env(:message_service, :message_store_adapter, MessageStore.ScyllaAdapter)
+    Application.put_env(:message_service, :scylla_client_adapter, MessageService.TestScyllaClient)
+
+    assert {:ok, created} =
+             Messages.create_message(%{
+               "conversation_id" => @conversation_id,
+               "sender_user_id" => @sender_user_id,
+               "message_type" => "media",
+               "media_id" => "44444444-4444-4444-8444-444444444444",
+               "view_once" => true
+             })
+
+    # The FULL public shape, enrichment keys included — this is what a client actually decodes.
+    expected_keys =
+      ~w(body caption conversation_id created_at deleted_at delivered_by_count edited_at is_starred
+         media_id message_id message_type metadata my_reaction poll reactions read_by_count
+         reply_to_message_id sender_user_id status view_once)a
+
+    # response_from_attrs/1 — this map IS the 201 body the client decodes.
+    assert created |> Map.keys() |> Enum.sort() == expected_keys
+    assert created.view_once == true
+
+    # response_from_row/1 — what every recipient reads back through the timeline.
+    assert {:ok, timeline} = Messages.list_messages(%{"conversation_id" => @conversation_id})
+    [read | _] = timeline.messages
+
+    assert read |> Map.keys() |> Enum.sort() == expected_keys,
+           "the read builder must emit the same fields as the create builder"
+
+    assert read.view_once == true, "view_once must survive the Scylla round-trip"
+  end
+
+  @tag :postgres_integration
+  test "SERIALISER DEFAULT: a row with no view_once serialises as false, never null" do
+    # Every message written before 115 has NULL in this column — a CQL `ALTER ... ADD` backfills
+    # nothing. Null reaching a client is the original bug in a different disguise: it must read as
+    # "not view-once", not as "unknown".
+    Application.put_env(:message_service, :message_store_adapter, MessageStore.ScyllaAdapter)
+    Application.put_env(:message_service, :scylla_client_adapter, MessageService.TestScyllaClient)
+
+    assert {:ok, created} =
+             Messages.create_message(%{
+               "conversation_id" => @conversation_id,
+               "sender_user_id" => @sender_user_id,
+               "message_type" => "text",
+               "body" => "An ordinary message"
+             })
+
+    assert created.view_once == false
+    refute is_nil(created.view_once)
+
+    assert {:ok, timeline} = Messages.list_messages(%{"conversation_id" => @conversation_id})
+    [read | _] = timeline.messages
+
+    assert read.view_once == false
+    refute is_nil(read.view_once)
+  end
+
   @tag :postgres_integration
   test "scylla adapter can use shared configured client boundary" do
     Application.put_env(:message_service, :message_store_adapter, MessageStore.ScyllaAdapter)
