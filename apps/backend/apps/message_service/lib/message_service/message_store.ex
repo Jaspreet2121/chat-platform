@@ -45,7 +45,8 @@ defmodule MessageService.MessageStore do
   def get_message(attrs), do: adapter().get_message(attrs)
   def list_messages(attrs), do: adapter().list_messages(attrs)
 
-  # Shared-media gallery (optional callback — only the Postgres adapter implements it).
+  # Shared-media gallery (optional callback). Implemented by BOTH stores: PostgresAdapter (:2737) and
+  # ScyllaAdapter (:1029, via the media-projection tables in CQL 002).
   def list_media(attrs) do
     store = ensure_loaded_adapter()
 
@@ -56,8 +57,11 @@ defmodule MessageService.MessageStore do
     end
   end
 
-  # Media-authorization support: the conversation a media_id was sent to (optional callback — Postgres
-  # only). Returns {:ok, %{conversation_id}} or {:error, :not_found} for an unsent/unknown media_id.
+  # Media-authorization support: the conversation a media_id was sent to (optional callback). Implemented
+  # by BOTH stores — PostgresAdapter (:2771) and ScyllaAdapter (:928) — and it MUST be: under
+  # MESSAGE_STORE_ADAPTER=scylla a Postgres-only implementation would leave this dispatcher answering
+  # {:error, :message_unavailable}, which MediaAuthz turns into a 404 for every recipient of plaintext
+  # media. Returns {:ok, %{conversation_id, message_id, sender_user_id}} or {:error, :not_found}.
   def get_by_media_id(attrs) do
     store = ensure_loaded_adapter()
 
@@ -68,8 +72,10 @@ defmodule MessageService.MessageStore do
     end
   end
 
-  # The OWNER-ANCHORED download rule (optional callback — Postgres only): is the viewer an active member
-  # of ANY conversation containing a message referencing this media_id whose SENDER is the asset's owner?
+  # The OWNER-ANCHORED download rule (optional callback): is the viewer an active member of ANY
+  # conversation containing a message referencing this media_id whose SENDER is the asset's owner?
+  # Implemented by BOTH stores — PostgresAdapter (:2816) and ScyllaAdapter (:975). This is the rule
+  # MediaAuthz.authorize_message_media/3 depends on, so a store without it denies every download.
   def media_download_allowed(attrs) do
     store = ensure_loaded_adapter()
 
