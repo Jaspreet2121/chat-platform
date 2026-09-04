@@ -167,6 +167,14 @@ services:
       MESSAGE_HTTP_API_ENABLED: "true"
       MESSAGE_HTTP_PORT: "4104"
       MESSAGE_DB_BACKED: "true"
+      # MEDIA OVER HTTP, REQUIRED — this release bundles only [shared_infra, message_service], so the
+      # default in-process media client (MediaService.MediaClientInProcess) does not EXIST here.
+      # Without these two lines every SharedInfra.MediaClient call in this container raises
+      # UndefinedFunctionError — which is how the status-media purge silently leaked 22 blobs until
+      # 2026-09-04 (found live; first fixed as a host-side edit on EC2, mirrored here so the next
+      # `git pull` doesn't conflict with or revert it — the same trap the Caddyfile hit that day).
+      MEDIA_CLIENT_ADAPTER: http
+      MEDIA_SERVICE_URL: http://media:4105
       # THE STORE. Scylla is authoritative for message writes AND reads since the cutover on
       # 2026-08-08. The Postgres `messages` table still exists but receives no writes — anything that
       # reads it is reading a frozen snapshot, which is how the inbox reconciler silently reverted
