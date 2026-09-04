@@ -677,8 +677,13 @@ defmodule MessageService.Statuses do
       case rows do
         [[media_id, app_id]] ->
           # `owner` is the authenticated deleter, and the UPDATE above already required the row to be
-          # theirs — so it is also the asset's expected owner.
-          purge_media(status_id, media_id, app_id, owner)
+          # theirs — so it is also the asset's expected owner. On success the row is stamped so the
+          # sweep never re-purges it; on failure it is left UNSTAMPED and the sweep (which now
+          # includes deleted rows) retries — before this, a failed delete-path purge leaked forever.
+          if media_id != nil and purge_media(status_id, media_id, app_id, owner) == :ok do
+            stamp_media_purged(status_id)
+          end
+
           {:ok, %{deleted: true}}
 
         _ ->
@@ -708,17 +713,37 @@ defmodule MessageService.Statuses do
 
   @doc false
   def run_sweep do
+    # SELECT candidates, purge, and stamp `media_purged_at` PER ROW — ONLY AFTER THE PURGE SUCCEEDS.
+    #
+    # This used to be one UPDATE...RETURNING that stamped the rows in the same statement that
+    # selected them, BEFORE any media call was attempted. A failed purge was rescued to a warning and
+    # the stamped row never selected again — a permanent, silent blob leak. Found in production
+    # 2026-09-04: the message release had no MEDIA_CLIENT_ADAPTER=http, every purge raised
+    # UndefinedFunctionError, and 22 rows sat stamped-but-never-purged. The stamp now MEANS
+    # "blob confirmed gone"; an unstamped row is retried on every sweep until it is.
+    #
+    # Scope: only rows that HAVE media. `media_id IS NULL` rows have nothing to purge and never need
+    # the stamp (nothing else reads it). DELETED rows are included — delete_status's synchronous
+    # purge is best-effort, and before this the sweep's `deleted_at IS NULL` filter excluded its
+    # failures from ever being retried. (The 082 partial index doesn't cover the deleted arm; batch
+    # is 25 on a small table, so the occasional seq scan is fine.)
+    #
+    # A permanently-failing row occupies a batch slot each sweep. Accepted: the alternative is the
+    # silent leak, and the ERROR log below names the row every time.
     %{rows: rows} =
       Repo.query!(
-        "UPDATE status_posts SET media_purged_at = now() WHERE id IN (" <>
-          "SELECT id FROM status_posts WHERE media_purged_at IS NULL AND deleted_at IS NULL " <>
-          "AND expires_at < now() - make_interval(secs => $1) LIMIT $2) " <>
-          "RETURNING id::text, media_id::text, app_id::text, owner_user_id::text",
+        "SELECT id::text, media_id::text, app_id::text, owner_user_id::text FROM status_posts " <>
+          "WHERE media_purged_at IS NULL AND media_id IS NOT NULL " <>
+          "AND (deleted_at IS NOT NULL OR expires_at < now() - make_interval(secs => $1)) " <>
+          "LIMIT $2",
         [@sweep_grace_seconds, @sweep_batch]
       )
 
     Enum.each(rows, fn [status_id, media_id, app_id, owner_user_id] ->
-      purge_media(status_id, media_id, app_id, owner_user_id)
+      case purge_media(status_id, media_id, app_id, owner_user_id) do
+        :ok -> stamp_media_purged(status_id)
+        :error -> :ok
+      end
     end)
 
     # Tombstones + views past the retention window die for real (CASCADE takes the views).
@@ -738,6 +763,12 @@ defmodule MessageService.Statuses do
 
   # The expected owner is the STATUS's own owner_user_id — the sweep deletes a user's expired status
   # media and nobody else's (MediaService.Media.purge_asset/1 is owner-scoped).
+  #
+  # RETURNS :ok | :error, and the caller stamps `media_purged_at` only on :ok. Any {:ok, _} counts as
+  # success — `purged: false` means the asset is already gone (or owner-mismatch, which the media
+  # service logs at ERROR itself); retrying either forever would never change the answer. A raise —
+  # the 2026-09-04 UndefinedFunctionError included — is :error at ERROR level, isolated to THIS row
+  # so the rest of the batch still runs.
   defp purge_media(status_id, media_id, app_id, owner_user_id) do
     case SharedInfra.MediaClient.purge_asset(%{
            "media_id" => media_id,
@@ -748,12 +779,30 @@ defmodule MessageService.Statuses do
         :ok
 
       other ->
-        Logger.warning(
-          "status media purge failed status=#{status_id} media=#{media_id}: #{inspect(other)}"
+        Logger.error(
+          "status media purge FAILED (will retry next sweep) " <>
+            "status=#{status_id} media=#{media_id}: #{inspect(other)}"
         )
+
+        :error
     end
   rescue
-    error -> Logger.warning("status media purge raised status=#{status_id}: #{inspect(error)}")
+    error ->
+      Logger.error(
+        "status media purge RAISED (will retry next sweep) status=#{status_id}: #{inspect(error)}"
+      )
+
+      :error
+  end
+
+  # "Blob confirmed gone." Written ONLY after a successful purge — never in the selecting statement.
+  defp stamp_media_purged(status_id) do
+    Repo.query!(
+      "UPDATE status_posts SET media_purged_at = now() WHERE id = $1::text::uuid",
+      [status_id]
+    )
+
+    :ok
   end
 
   # --- validation --------------------------------------------------------------------------------

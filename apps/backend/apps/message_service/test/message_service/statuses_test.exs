@@ -112,6 +112,35 @@ defmodule MessageService.StatusesTest do
     )
   end
 
+  defmodule FailingPurgeStub do
+    @moduledoc false
+    def purge_asset(_attrs), do: {:error, :media_unavailable}
+  end
+
+  defmodule RaisingPurgeStub do
+    @moduledoc false
+    # The 2026-09-04 production shape: the message release had no MEDIA_CLIENT_ADAPTER=http, so the
+    # default in-process adapter module did not EXIST in that release and every call raised.
+    def purge_asset(_attrs), do: raise(UndefinedFunctionError)
+  end
+
+  defp expire!(status_id) do
+    Repo.query!(
+      "UPDATE status_posts SET expires_at = now() - interval '2 hours' WHERE id = $1::text::uuid",
+      [status_id]
+    )
+  end
+
+  defp media_purged_at(status_id) do
+    %{rows: [[stamp]]} =
+      Repo.query!(
+        "SELECT media_purged_at FROM status_posts WHERE id = $1::text::uuid",
+        [status_id]
+      )
+
+    stamp
+  end
+
   defp post!(owner, overrides \\ %{}) do
     {:ok, post} =
       Statuses.post_status(
@@ -673,5 +702,84 @@ defmodule MessageService.StatusesTest do
     {:ok, _} = Statuses.delete_status(%{"owner_user_id" => owner, "status_id" => post.status_id})
     assert snap.excerpt == "ephemeral thought"
     assert {:error, :status_not_found} = for_reply(post.status_id, friend)
+  end
+
+  # --- stamp-after-success ordering (2026-09-04: 22 rows stamped purged, blobs never deleted) ------
+
+  @tag :postgres_integration
+  test "a FAILED purge leaves media_purged_at NULL, and the NEXT sweep retries and completes it" do
+    owner = user!()
+    media = Ecto.UUID.generate()
+    post = post!(owner, %{"kind" => "image", "media_id" => media})
+    expire!(post.status_id)
+
+    # Sweep 1: the media service is down. The row must NOT be stamped — a stamp here is the leak:
+    # it means "blob confirmed gone" while the blob still exists, and nothing ever retries.
+    Application.put_env(:shared_infra, :media_client_adapter, FailingPurgeStub)
+    assert :ok = Statuses.run_sweep()
+
+    assert media_purged_at(post.status_id) == nil,
+           "media_purged_at was stamped BEFORE the purge succeeded — a failed purge is now " <>
+             "permanently skipped and the blob leaks forever"
+
+    # Sweep 2: the media service is back. The unstamped row is re-selected, purged, and stamped.
+    Application.put_env(:shared_infra, :media_client_adapter, PurgeStub)
+    assert :ok = Statuses.run_sweep()
+
+    assert media in PurgeStub.purged()
+    refute media_purged_at(post.status_id) == nil
+  end
+
+  @tag :postgres_integration
+  test "a RAISING purge (the UndefinedFunctionError shape) is isolated per row — sweep survives, row retried" do
+    owner = user!()
+    media = Ecto.UUID.generate()
+    post = post!(owner, %{"kind" => "image", "media_id" => media})
+    expire!(post.status_id)
+
+    Application.put_env(:shared_infra, :media_client_adapter, RaisingPurgeStub)
+    assert :ok = Statuses.run_sweep()
+
+    assert media_purged_at(post.status_id) == nil
+  end
+
+  @tag :postgres_integration
+  test "a failed DELETE-path purge is retried by the sweep (deleted rows are now candidates)" do
+    owner = user!()
+    media = Ecto.UUID.generate()
+    post = post!(owner, %{"kind" => "image", "media_id" => media})
+
+    # Owner-delete while the media service is down: the tombstone lands (the user's delete must not
+    # fail), the purge fails, the stamp stays NULL.
+    Application.put_env(:shared_infra, :media_client_adapter, FailingPurgeStub)
+
+    assert {:ok, %{deleted: true}} =
+             Statuses.delete_status(%{"owner_user_id" => owner, "status_id" => post.status_id})
+
+    assert media_purged_at(post.status_id) == nil
+
+    # Before this fix the sweep's `deleted_at IS NULL` filter excluded this row FOREVER. Now the
+    # deleted-with-unpurged-media arm selects it regardless of expiry.
+    Application.put_env(:shared_infra, :media_client_adapter, PurgeStub)
+    assert :ok = Statuses.run_sweep()
+
+    assert media in PurgeStub.purged()
+    refute media_purged_at(post.status_id) == nil
+  end
+
+  @tag :postgres_integration
+  test "a SUCCESSFUL delete-path purge stamps the row, so the sweep never purges it twice" do
+    owner = user!()
+    media = Ecto.UUID.generate()
+    post = post!(owner, %{"kind" => "image", "media_id" => media})
+
+    assert {:ok, %{deleted: true}} =
+             Statuses.delete_status(%{"owner_user_id" => owner, "status_id" => post.status_id})
+
+    assert [^media] = PurgeStub.purged()
+    refute media_purged_at(post.status_id) == nil
+
+    assert :ok = Statuses.run_sweep()
+    assert [^media] = PurgeStub.purged()
   end
 end
