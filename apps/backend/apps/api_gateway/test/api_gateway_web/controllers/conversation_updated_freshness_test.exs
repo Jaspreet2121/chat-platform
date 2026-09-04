@@ -205,6 +205,38 @@ defmodule ApiGatewayWeb.ConversationUpdatedFreshnessTest do
 
   # --- HTTP (first-party) create path ---
 
+  # THE LIVE-DM FIX. The first-party create broadcast NO message_created at all — only the inbox row
+  # below — so an Android-sent DM produced an unread bump and nothing else: the recipient had to
+  # pull-to-refresh, and a recipient with the chat OPEN saw nothing either. /v1 and the socket path
+  # both did this correctly; only the path the mobile clients use did not.
+  test "FIRST-PARTY create fans message_created to the conversation AND every other participant" do
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "conversation:#{@conversation}")
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@peer}")
+
+    send_first_party(%{"message_type" => "text", "body" => "live?"})
+
+    assert_receive %Phoenix.Socket.Broadcast{
+                     topic: "conversation:" <> _,
+                     event: "message_created"
+                   },
+                   1500
+
+    assert_receive %Phoenix.Socket.Broadcast{
+                     topic: "user:" <> _,
+                     event: "message_created"
+                   },
+                   1500
+  end
+
+  test "FIRST-PARTY create: the sender gets no message_created echo on their own user topic" do
+    Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@sender}")
+
+    send_first_party(%{"message_type" => "text", "body" => "no echo"})
+
+    # conversation_updated still arrives for the sender (the inbox row) — but not the message itself.
+    refute_receive %Phoenix.Socket.Broadcast{event: "message_created"}, 400
+  end
+
   test "first-party create: the frame carries the COMMITTED timestamp, not the unprojected row's" do
     Phoenix.PubSub.subscribe(ApiGateway.PubSub, "user:#{@peer}")
 

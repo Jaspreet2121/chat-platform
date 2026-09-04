@@ -46,7 +46,7 @@ defmodule ApiGatewayWeb.ViewOnceController do
         purge_media(mget(result, :media_id), session.app_id)
       end
 
-      fan_out(conversation_id, %{
+      fan_out(conversation_id, session.user_id, %{
         message_id: message_id,
         user_id: session.user_id,
         opened_at: mget(result, :opened_at)
@@ -125,16 +125,17 @@ defmodule ApiGatewayWeb.ViewOnceController do
     :ok
   end
 
-  defp fan_out(conversation_id, frame) do
-    Task.start(fn ->
-      try do
-        ApiGatewayWeb.Endpoint.broadcast("conversation:" <> conversation_id, "view_once_opened", frame)
-      rescue
-        _ -> :ok
-      end
-    end)
-
-    :ok
+  # THE SENDER IS THE AUDIENCE, and the sender is the one participant guaranteed not to have this
+  # chat open — they are looking at their own list waiting for "Opened". A conversation-topic
+  # broadcast could never have reached them, so this event has never worked. The OPENER is excluded:
+  # they already got the 200 and do not need to be told what they just did.
+  defp fan_out(conversation_id, opener_id, frame) do
+    ApiGatewayWeb.RealtimeFanOut.to_participants(
+      conversation_id,
+      opener_id,
+      "view_once_opened",
+      frame
+    )
   end
 
   defp authorize_membership(conversation_id, user_id) do

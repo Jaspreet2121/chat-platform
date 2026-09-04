@@ -65,6 +65,17 @@ defmodule ApiGatewayWeb.MessageController do
       # through NO path: nothing persisted, and the inbox fan-out below (which would wake the blocker's list)
       # is skipped. The sender learns nothing.
       unless dropped? do
+        # THE MESSAGE ITSELF, which this path never broadcast at all — only the inbox row below. A
+        # recipient therefore saw an unread bump and had to pull-to-refresh to read it, and a
+        # recipient with the chat OPEN saw nothing until they left and came back. The socket path and
+        # /v1 both did this; first-party REST (what the mobile clients use) did not.
+        ApiGatewayWeb.RealtimeFanOut.to_participants(
+          conversation_id,
+          session.user_id,
+          "message_created",
+          response
+        )
+
         # Live inbox: new preview + updated_at for all, +1 unread for everyone but the sender.
         # The COMMITTED message rides along: its timestamp, preview and kind are what the frame carries.
         # Without it the frame serialises whatever `conversations.last_message_*` hold right now, which

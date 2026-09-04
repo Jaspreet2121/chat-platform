@@ -475,19 +475,14 @@ defmodule ApiGatewayWeb.V1.MessageController do
   defp notify_inbox_read(_type, _conversation_id, _user_id, _unread_before), do: :ok
 
   defp fan_out(conversation_id, sender_user_id, message) do
-    Task.start(fn ->
-      try do
-        ApiGatewayWeb.Endpoint.broadcast(
-          "conversation:" <> conversation_id,
-          "message_created",
-          message
-        )
-
-        notify_user_topics(conversation_id, sender_user_id, message)
-      rescue
-        _ -> :ok
-      end
-    end)
+    # The two-topic rule now lives in ONE place (ApiGatewayWeb.RealtimeFanOut) so the first-party
+    # paths cannot drift from it again — this path's behaviour is unchanged.
+    ApiGatewayWeb.RealtimeFanOut.to_participants(
+      conversation_id,
+      sender_user_id,
+      "message_created",
+      message
+    )
 
     # ...and the INBOX row (new preview, new updated_at, +1 unread for everyone but the sender — the unread
     # SQL excludes your own messages, so no special-casing here). Separate from the message fan-out above:
@@ -503,27 +498,6 @@ defmodule ApiGatewayWeb.V1.MessageController do
     )
 
     :ok
-  end
-
-  # Mirror message_created onto each OTHER participant's user:<id> topic — reuse the socket path's logic
-  # verbatim (participants via get_conversation, reject nil + the SENDER). Same as
-  # conversation_channel.notify_user_topics.
-  defp notify_user_topics(conversation_id, sender_user_id, message) do
-    case SharedInfra.ConversationClient.get_conversation(%{
-           "conversation_id" => conversation_id,
-           "user_id" => sender_user_id
-         }) do
-      {:ok, conversation} ->
-        (Map.get(conversation, :participants) || Map.get(conversation, "participants") || [])
-        |> Enum.map(fn p -> Map.get(p, :user_id) || Map.get(p, "user_id") end)
-        |> Enum.reject(&(&1 in [nil, sender_user_id]))
-        |> Enum.each(fn user_id ->
-          ApiGatewayWeb.Endpoint.broadcast("user:" <> user_id, "message_created", message)
-        end)
-
-      _ ->
-        :ok
-    end
   end
 
   defp do_send(conversation_id, sender_user_id, params) do
