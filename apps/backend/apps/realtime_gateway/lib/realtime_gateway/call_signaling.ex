@@ -44,6 +44,10 @@ defmodule RealtimeGateway.CallSignaling do
   def handle_event("call:hangup", payload, socket), do: hangup(payload, socket)
   # Group (Phase 3) — a SEPARATE event set; distinct handlers, no callee_id.
   def handle_event("call:group_invite", payload, socket), do: group_invite(payload, socket)
+  # Ad-hoc (116) — ring 1..8 named users with NO conversation. Separate event, deliberately: the
+  # shipped group path stays byte-untouched, a malformed group payload can never fall into this arm,
+  # and the rate limiter gets its own key.
+  def handle_event("call:adhoc_invite", payload, socket), do: adhoc_invite(payload, socket)
   def handle_event("call:group_join", payload, socket), do: group_join(payload, socket)
   def handle_event("call:group_decline", payload, socket), do: group_decline(payload, socket)
   def handle_event("call:group_leave", payload, socket), do: group_leave(payload, socket)
@@ -379,6 +383,137 @@ defmodule RealtimeGateway.CallSignaling do
   end
 
   defp group_invite(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  # ============================================================================================
+  # Ad-hoc calling (116): call:adhoc_invite %{"user_ids","type"} — ring named users, NO conversation.
+  # ORDER IS THE SECURITY PROPERTY: validate -> rate limit -> store (which runs the per-target
+  # exists/active/same-app/not-blocked gate all-or-nothing) -> only then ring. The fan-out is LAST;
+  # nothing above it broadcasts anything, so a refused invite rings nobody.
+  # ============================================================================================
+
+  # Mirrors CallStore's @adhoc_target_cap — the wire refuses early what the store would refuse anyway.
+  @adhoc_ring_cap 8
+
+  # FAIL-CLOSED, via SharedInfra.RateLimiter DIRECTLY — deliberately NOT RealtimeGateway.Limits,
+  # whose buckets are documented fail-open: an N-target ring with no shared context is a spam
+  # amplifier, and a spam amplifier's limiter is a security control (the broadcast-send and media
+  # upload limiters set this precedent). A degraded limiter refuses and logs at ERROR.
+  @adhoc_invite_burst_limit 5
+  @adhoc_invite_burst_window_seconds 60
+  @adhoc_invite_daily_limit 30
+  @adhoc_invite_daily_window_seconds 86_400
+
+  defp adhoc_invite(%{"user_ids" => user_ids, "type" => type}, socket)
+       when is_list(user_ids) and type in ["voice", "video"] do
+    me = current_user(socket)
+
+    with {:ok, targets} <- normalize_ring_targets(user_ids, me),
+         :ok <- adhoc_rate_limit(me),
+         {:ok, result} <-
+           ConversationClient.create_adhoc_group_call(%{
+             "initiator_id" => me,
+             "user_ids" => targets,
+             "type" => type,
+             "app_id" => app_id(socket)
+           }) do
+      call = cget(result, :call)
+      parts = cget(result, :participants) || []
+      others = cget(result, :member_ids) || []
+      call_id = cget(call, :id)
+      room = cget(call, :room_name)
+      {caller_name, caller_avatar_url} = resolve_caller(me, app_id(socket))
+
+      # FAN-OUT LAST. Same frame the group path rings with; conversation_id is nil by construction
+      # and the client renders caller_name + participants instead of a group title.
+      Enum.each(others, fn member_id ->
+        broadcast(
+          socket,
+          member_id,
+          "call:group_incoming",
+          %{
+            call_id: call_id,
+            room: room,
+            conversation_id: nil,
+            type: type,
+            caller_id: me,
+            caller_name: caller_name,
+            participants: parts
+          }
+          |> put_avatar(caller_avatar_url)
+        )
+      end)
+
+      # Same server-side ring timeout as the group path; the store's expiry marks still-invited
+      # members missed off the participant rows, so no conversation is consulted.
+      Process.send_after(self(), {:group_ring_timeout, call_id}, @ring_timeout_ms)
+
+      {:reply, {:ok, %{call_id: call_id, room: room, participants: parts}}, socket}
+    else
+      {:error, :invalid_list} -> reply_error(socket, "call.invalid_request")
+      {:error, :rate_limited} -> reply_error(socket, "call.rate_limited")
+      {:error, :invalid_targets} -> reply_error(socket, "call.invalid_targets")
+      {:error, _reason} -> reply_error(socket, "call.unavailable")
+    end
+  end
+
+  defp adhoc_invite(_payload, socket), do: reply_error(socket, "call.invalid_request")
+
+  # Shape validation: every entry a UUID (any malformed entry refuses the WHOLE request — a broken
+  # list is a client bug, not a per-target condition), dedupe silently, drop the caller silently,
+  # 1..cap afterwards. The store re-runs an equivalent normalisation as defense in depth.
+  # Canonical 8-4-4-4-12 hex UUID — realtime_gateway has no Ecto; the store re-validates with
+  # Ecto.UUID.dump as defense in depth, so this only needs to refuse obvious garbage early.
+  @uuid_shape ~r/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/
+
+  defp normalize_ring_targets(user_ids, me) do
+    if Enum.all?(user_ids, &(is_binary(&1) and Regex.match?(@uuid_shape, &1))) do
+      targets = user_ids |> Enum.uniq() |> Enum.reject(&(&1 == me))
+
+      if targets != [] and length(targets) <= @adhoc_ring_cap,
+        do: {:ok, targets},
+        else: {:error, :invalid_list}
+    else
+      {:error, :invalid_list}
+    end
+  end
+
+  defp adhoc_rate_limit(user_id) do
+    with :ok <-
+           adhoc_rate_window(
+             "call_adhoc_invite_day:",
+             user_id,
+             @adhoc_invite_daily_limit,
+             @adhoc_invite_daily_window_seconds
+           ) do
+      adhoc_rate_window(
+        "call_adhoc_invite:",
+        user_id,
+        @adhoc_invite_burst_limit,
+        @adhoc_invite_burst_window_seconds
+      )
+    end
+  end
+
+  defp adhoc_rate_window(prefix, user_id, limit, window_seconds) do
+    case SharedInfra.RateLimiter.check_rate(%{
+           "key" => prefix <> user_id,
+           "limit" => limit,
+           "window_seconds" => window_seconds
+         }) do
+      :ok ->
+        :ok
+
+      {:error, :rate_limited, _retry} ->
+        {:error, :rate_limited}
+
+      other ->
+        Logger.error(
+          "adhoc call invite limiter DEGRADED (failing closed) user=#{user_id}: #{inspect(other)}"
+        )
+
+        {:error, :rate_limited}
+    end
+  end
 
   # call:group_join %{"call_id"} — accept OR late-join. Notifies the other participants.
   defp group_join(%{"call_id" => call_id}, socket) when is_binary(call_id) and call_id != "" do
