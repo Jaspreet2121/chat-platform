@@ -13,6 +13,12 @@ defmodule MessageService.Events.OffsetRecoveryTest do
   The fake consumer below stands in for brod_consumer: `:brod.subscribe(ConsumerPid, self(), Opts)`
   is `GenServer.call(Pid, {:subscribe, SubscriberPid, Opts})` (brod_consumer.erl:272-273), so a stub
   GenServer receives exactly what a real consumer would.
+
+  SECOND WEDGE (2026-09-05, twice in 24h, broker innocent): a dropped payload connection replaces a
+  consumer, the worker's 2s loop skips any partition holding un-acked (:retry) deliveries FOREVER,
+  and NOTHING reaches the callback. The liveness backstop probes the client's current consumer pid
+  each interval and, on a change, re-subscribes at the COMMITTED offset — never :earliest (the
+  out-of-range path's choice) and never :latest. MUT-3 pins that the two paths never collapse.
   """
   use ExUnit.Case, async: false
 
@@ -177,5 +183,173 @@ defmodule MessageService.Events.OffsetRecoveryTest do
     # brod's safe_gen_call to a dead pid returns {:error, noproc}/raises — either way the worker
     # must survive and say the partition is still stuck.
     assert log =~ "resubscribe FAILED" or log =~ "recovery raised"
+  end
+
+  # --- the liveness backstop (dropped payload connection, 2026-09-05) ------------------------------
+
+  defmodule BrodStub do
+    @moduledoc false
+    def get_consumer(_client, _topic, _partition) do
+      Application.get_env(:message_service, :test_current_consumer) || {:error, :unknown_topic}
+    end
+
+    def fetch_committed_offsets(_client, _group) do
+      case Application.get_env(:message_service, :test_committed) do
+        nil ->
+          {:error, :no_broker}
+
+        offset ->
+          {:ok,
+           [
+             %{
+               name: "message.events.v1",
+               partitions: [%{partition_index: 4, committed_offset: offset}]
+             }
+           ]}
+      end
+    end
+  end
+
+  defp with_liveness_env(fun) do
+    keys = [
+      :consumer_liveness_brod,
+      :consumer_liveness_first_ms,
+      :consumer_liveness_interval_ms,
+      :test_current_consumer,
+      :test_committed
+    ]
+
+    prev = for k <- keys, into: %{}, do: {k, Application.get_env(:message_service, k)}
+    Application.put_env(:message_service, :consumer_liveness_brod, BrodStub)
+    Application.put_env(:message_service, :consumer_liveness_first_ms, 20)
+    Application.put_env(:message_service, :consumer_liveness_interval_ms, 60_000)
+
+    try do
+      fun.()
+    after
+      for {k, v} <- prev do
+        if v == nil,
+          do: Application.delete_env(:message_service, k),
+          else: Application.put_env(:message_service, k, v)
+      end
+    end
+  end
+
+  defp tick(state),
+    do: MessageService.Events.InboxProjectionConsumer.handle_info(:consumer_liveness_check, state)
+
+  test "init ARMS the first liveness probe — the backstop cannot be forgotten" do
+    with_liveness_env(fn ->
+      {:ok, _state} =
+        MessageService.Events.InboxProjectionConsumer.init(
+          %{group_id: "g", topic: "message.events.v1", partition: 4},
+          nil
+        )
+
+      # The tick arrives in THIS process — init runs in the worker process, and so did we.
+      assert_receive :consumer_liveness_check, 500
+    end)
+  end
+
+  test "first observation RECORDS the consumer pid silently; a healthy pid stays silent" do
+    with_liveness_env(fn ->
+      {:ok, consumer} = FakeConsumer.start_link(self())
+      Application.put_env(:message_service, :test_current_consumer, {:ok, consumer})
+
+      log =
+        capture_log(fn ->
+          assert {:noreply, state1} = tick(state(4))
+          assert state1.known_consumer == consumer
+
+          # Same pid on the next tick: no subscribe, no log — never a heartbeat line.
+          assert {:noreply, state2} = tick(state1)
+          assert state2.known_consumer == consumer
+        end)
+
+      refute_receive {:subscribed, _, _}, 50
+      refute log =~ "REPLACED"
+    end)
+  end
+
+  test "a REPLACED consumer is re-subscribed at the COMMITTED offset — not :earliest, not :latest" do
+    with_liveness_env(fn ->
+      {:ok, old} = FakeConsumer.start_link(self())
+      {:ok, fresh} = FakeConsumer.start_link(self())
+      Application.put_env(:message_service, :test_current_consumer, {:ok, fresh})
+      Application.put_env(:message_service, :test_committed, 493)
+
+      state = %{state(4) | known_consumer: old}
+
+      log =
+        capture_log(fn ->
+          assert {:noreply, repaired} = tick(state)
+          assert repaired.known_consumer == fresh
+        end)
+
+      assert_receive {:subscribed, subscriber, opts}
+      assert subscriber == self()
+
+      # THE OFFSET RULE. Committed (resume where we left off) — the out-of-range path resumes at
+      # :earliest and these two must never collapse into one choice.
+      assert Keyword.fetch!(opts, :begin_offset) == 493
+      refute Keyword.fetch!(opts, :begin_offset) == :earliest
+
+      assert log =~ "REPLACED"
+      assert log =~ "group=message-service-inbox-projection"
+      assert log =~ "topic=message.events.v1"
+      assert log =~ "partition=4"
+      assert log =~ "committed=493"
+    end)
+  end
+
+  test "committed offset unavailable → repair DEFERRED (no subscribe, no guessed offset), retried" do
+    with_liveness_env(fn ->
+      {:ok, old} = FakeConsumer.start_link(self())
+      {:ok, fresh} = FakeConsumer.start_link(self())
+      Application.put_env(:message_service, :test_current_consumer, {:ok, fresh})
+      # no :test_committed → the stub answers {:error, :no_broker}
+
+      state = %{state(4) | known_consumer: old}
+
+      log =
+        capture_log(fn ->
+          assert {:noreply, unchanged} = tick(state)
+          # known stays OLD so the next tick sees the mismatch again and retries the repair.
+          assert unchanged.known_consumer == old
+        end)
+
+      refute_receive {:subscribed, _, _}, 50
+      assert log =~ "committed offset unavailable"
+    end)
+  end
+
+  test "every tick re-arms the next probe — the loop survives a repair" do
+    with_liveness_env(fn ->
+      Application.put_env(:message_service, :consumer_liveness_interval_ms, 30)
+      {:ok, consumer} = FakeConsumer.start_link(self())
+      Application.put_env(:message_service, :test_current_consumer, {:ok, consumer})
+
+      capture_log(fn ->
+        assert {:noreply, _} = tick(state(4))
+      end)
+
+      assert_receive :consumer_liveness_check, 500
+    end)
+  end
+
+  test "a probe failure never crashes the worker and keeps the loop armed" do
+    with_liveness_env(fn ->
+      Application.put_env(:message_service, :consumer_liveness_interval_ms, 30)
+      # get_consumer answers {:error, ...} (the stub default with no :test_current_consumer)
+
+      log =
+        capture_log(fn ->
+          assert {:noreply, state} = tick(state(4))
+          assert state.known_consumer == nil
+        end)
+
+      assert log =~ "LIVENESS probe failed"
+      assert_receive :consumer_liveness_check, 500
+    end)
   end
 end

@@ -38,8 +38,10 @@ defmodule MessageService.Events.ConversationSummaryConsumer do
   # brod_utils:optional_callback (brod_group_subscriber_worker.erl:96), so an @impl would be a
   # compile warning (an error under --warnings-as-errors).
   def handle_info(info, state) do
-    MessageService.Events.OffsetRecovery.handle_fetch_error(info, state)
-    {:noreply, state}
+    # State MUST be threaded back (not discarded): the liveness backstop's memory of the current
+    # consumer pid lives in it. Covers BOTH recoveries — offset_out_of_range (resubscribe at
+    # :earliest) and the replaced-consumer wedge (resubscribe at the COMMITTED offset).
+    {:noreply, MessageService.Events.OffsetRecovery.handle_info(info, state)}
   end
 
   @impl true

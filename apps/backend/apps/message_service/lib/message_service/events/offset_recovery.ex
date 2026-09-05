@@ -41,6 +41,47 @@ defmodule MessageService.Events.OffsetRecovery do
   Every recovery logs at ERROR with the group, topic, partition, the committed and earliest offsets
   (best-effort — resolved out-of-band, `:unknown` when unreachable) and the derived skipped count,
   so the gap is visible and quantified even though the consumer no longer sits on it.
+
+  ## The SECOND wedge: a dropped payload connection (2026-09-05, twice in 24h — broker innocent)
+
+  brod logs `payload connection down ... {:shutdown, :tcp_closed}` and reconnects ~5 minutes later;
+  afterwards SOME partitions never resume — committed offset frozen, lag growing, no exception, no
+  log line, group membership intact. The broker was healthy both times (2 months uptime, zero
+  restarts, every rebalance in its log maps to one of our deploys); the socket died client-side.
+
+  What the source says happens (brod 4.5.5):
+
+    * `brod_consumer` SURVIVES the connection death — `handle_conn_down` clears the connection and
+      loops `?INIT_CONNECTION` until the client reconnects (brod_consumer.erl:509-512, :382-401),
+      then clears the orphaned in-flight request ref and resumes (:936-941). That is the designed
+      self-heal, and it is why SOME partitions come back on their own.
+    * A consumer that dies anyway (they are `{permanent, 2s}` children — brod_consumers_sup.erl:42,
+      :136) comes back FRESH and unsubscribed. The worker's monitor marks it ?DOWN
+      (brod_topic_subscriber.erl:365-377) and the 2s resubscribe loop repairs it — EXCEPT when
+      `AckedOffset =/= LastOffset` (a delivery our wrapper deliberately did NOT ack, i.e. the
+      `:retry` no-commit path for a transient DB error): `subscribe_partition`'s carve-out then
+      skips the partition "for now", and since the redelivery that would close the gap can only
+      come from the dead consumer, "for now" is FOREVER.
+    * In every variant, NOTHING reaches this callback: consumer 'DOWN's are consumed by the
+      worker's own handle_info clause BEFORE the callback catch-all
+      (brod_topic_subscriber.erl:365-377 vs :379-386), and fetch errors only arise from received
+      responses — a dead socket produces none.
+
+  So this module also runs a LIVENESS BACKSTOP in each worker: a periodic self-message (armed in
+  `init_state/2`, running in the worker process) probes the client's CURRENT consumer pid for the
+  partition. A changed pid means the consumer was replaced and this worker may no longer be
+  subscribed; the repair re-subscribes at the group's COMMITTED offset. Quiet when healthy — it
+  logs at ERROR only when it actually repairs (or cannot).
+
+  ## Committed for the connection path, EARLIEST for the out-of-range path — never collapse these
+
+  The two recoveries resume from DIFFERENT offsets, deliberately. Out-of-range means the committed
+  position NO LONGER EXISTS on the broker, so `:earliest` loses the least. A replaced consumer's
+  committed offset is perfectly valid — resuming there redelivers exactly the unprocessed tail
+  (including any un-acked `:retry` batch, which is precisely what retry wanted) and nothing else.
+  `:earliest` here would replay the whole retained partition for no reason; `:latest` would skip
+  real events. A future refactor that unifies them on one offset choice breaks one path or the
+  other — MUT-3 in the tests exists to catch exactly that.
   """
 
   require Logger
@@ -56,12 +97,33 @@ defmodule MessageService.Events.OffsetRecovery do
   partition), which `handle_fetch_error/2` needs to name the partition it is recovering.
   """
   def init_state(init_info, inner) do
+    # The first probe fires FAST (default 5s) so a consumer replaced during the boot window is
+    # caught quickly; steady state is the conservative interval. Armed HERE because init/2 runs in
+    # the worker process — the same process brod forwards unknown infos to, so the tick lands in
+    # handle_info/2 below.
+    Process.send_after(self(), :consumer_liveness_check, liveness_first_ms())
+
     %{
       group_id: Map.get(init_info, :group_id),
       topic: Map.get(init_info, :topic),
       partition: Map.get(init_info, :partition),
+      known_consumer: nil,
       inner: inner
     }
+  end
+
+  @doc """
+  Route a message forwarded to the callback's `handle_info/2`. Returns the (possibly updated)
+  callback state — consumers must thread it back, not discard it: the liveness probe's memory of
+  the current consumer pid lives here.
+  """
+  def handle_info(:consumer_liveness_check, state) do
+    liveness_check(state)
+  end
+
+  def handle_info(info, state) do
+    handle_fetch_error(info, state)
+    state
   end
 
   @doc """
@@ -132,10 +194,113 @@ defmodule MessageService.Events.OffsetRecovery do
       :error
   end
 
+  # --- the liveness backstop (the dropped-connection wedge, 2026-09-05) ----------------------------
+
+  defp liveness_check(state) do
+    # Re-arm FIRST — the loop must survive anything the probe does.
+    Process.send_after(self(), :consumer_liveness_check, liveness_interval_ms())
+
+    %{group_id: group, topic: topic, partition: partition, known_consumer: known} = state
+
+    case brod_api().get_consumer(SharedInfra.Kafka.BrodProducer.client_name(), topic, partition) do
+      {:ok, ^known} ->
+        # Healthy: the consumer we last confirmed is still the one registered. Deliberately silent —
+        # this fires every interval on every partition and must never be a heartbeat log line.
+        state
+
+      {:ok, current} when known == nil ->
+        # First observation after (re)init. The worker's own init subscribe targeted this same pid
+        # via the same client, so record it and say nothing.
+        %{state | known_consumer: current}
+
+      {:ok, current} ->
+        # THE CONSUMER WAS REPLACED under us. The fresh one may already have been re-subscribed by
+        # the worker's 2s loop (the acked==last case) — our re-subscribe is then an idempotent
+        # position refresh to the same offset. In the frozen case (an un-acked :retry delivery when
+        # the old consumer died) the 2s loop is skipping this partition FOREVER and this is the only
+        # repair there is.
+        repair_subscription(state, current)
+
+      {:error, reason} ->
+        Logger.error(
+          "kafka consumer LIVENESS probe failed (will retry next interval) " <>
+            "group=#{group} topic=#{topic} partition=#{partition} reason=#{inspect(reason)}"
+        )
+
+        state
+    end
+  rescue
+    error ->
+      Logger.error(
+        "kafka consumer liveness check raised (backstop still armed) " <>
+          "group=#{state[:group_id]} topic=#{state[:topic]} partition=#{state[:partition]}: " <>
+          inspect(error)
+      )
+
+      state
+  end
+
+  defp repair_subscription(state, current) do
+    %{group_id: group, topic: topic, partition: partition, known_consumer: known} = state
+
+    # COMMITTED, not :earliest, not :latest — see the moduledoc. The committed offset is REQUIRED
+    # here (unlike the out-of-range path, where it is log enrichment): guessing a position would
+    # either replay the partition or skip real events, so an unfetchable committed offset defers
+    # the repair to the next interval instead.
+    case committed_offset(group, topic, partition) do
+      committed when is_integer(committed) and committed >= 0 ->
+        case :brod.subscribe(current, self(), begin_offset: committed) do
+          :ok ->
+            Logger.error(
+              "kafka consumer REPLACED — resubscribed at the committed offset. " <>
+                "group=#{group} topic=#{topic} partition=#{partition} " <>
+                "committed=#{committed} consumer=#{inspect(known)} -> #{inspect(current)}. " <>
+                "(Liveness backstop: payload-connection wedge, seen 2026-09-04/05; " <>
+                "the worker's own resubscribe loop skips a partition with un-acked deliveries.)"
+            )
+
+            %{state | known_consumer: current}
+
+          {:error, reason} ->
+            Logger.error(
+              "kafka consumer REPLACED but resubscribe FAILED (will retry next interval) " <>
+                "group=#{group} topic=#{topic} partition=#{partition} reason=#{inspect(reason)}"
+            )
+
+            state
+        end
+
+      other ->
+        Logger.error(
+          "kafka consumer REPLACED but committed offset unavailable (#{inspect(other)}) — " <>
+            "deferring repair to the next interval. group=#{group} topic=#{topic} " <>
+            "partition=#{partition}"
+        )
+
+        state
+    end
+  end
+
+  defp liveness_first_ms,
+    do: Application.get_env(:message_service, :consumer_liveness_first_ms, 5_000)
+
+  defp liveness_interval_ms,
+    do: Application.get_env(:message_service, :consumer_liveness_interval_ms, 60_000)
+
+  # Seam for tests: get_consumer must be stubbable (there is no brod client in unit tests).
+  defp brod_api,
+    do: Application.get_env(:message_service, :consumer_liveness_brod, __MODULE__.RealBrod)
+
+  defmodule RealBrod do
+    @moduledoc false
+    defdelegate get_consumer(client, topic, partition), to: :brod
+    defdelegate fetch_committed_offsets(client, group), to: :brod
+  end
+
   # --- best-effort offset lookups (log-enrichment only — recovery proceeds without them) -----------
 
   defp committed_offset(group, topic, partition) do
-    case :brod.fetch_committed_offsets(SharedInfra.Kafka.BrodProducer.client_name(), group) do
+    case brod_api().fetch_committed_offsets(SharedInfra.Kafka.BrodProducer.client_name(), group) do
       {:ok, topics} ->
         topics
         |> Enum.find(%{}, &(name_of(&1) == topic))
