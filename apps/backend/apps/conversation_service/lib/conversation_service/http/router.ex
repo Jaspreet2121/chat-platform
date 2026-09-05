@@ -173,6 +173,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.CallStore.create_group_call(body(conn)))
   end
 
+  post "/internal/calls/adhoc/create" do
+    send_result(conn, ConversationService.CallStore.create_adhoc_group_call(body(conn)))
+  end
+
   post "/internal/calls/group/join" do
     send_result(conn, ConversationService.CallStore.join_group_call(body(conn)))
   end

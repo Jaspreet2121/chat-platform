@@ -252,6 +252,147 @@ defmodule ConversationService.CallStore do
     _ -> {:error, :call_invalid}
   end
 
+  # Ring-list ceiling for an AD-HOC call. LiveKit has no configured room cap and runs in a 256MB
+  # container over one muxed UDP port, so the wire contract is the only real bound; 8 covers the
+  # picker use-case and bounds the no-shared-context spam primitive to 8 rings per push. A
+  # conversation-backed group call still rings its whole membership — this cap is only for the
+  # primitive with no admission step.
+  @adhoc_target_cap 8
+
+  @doc """
+  Start an AD-HOC group call (116): the initiator names 1..#{@adhoc_target_cap} target user ids and
+  there is NO conversation — membership is only the participant rows this creates.
+
+  attrs: "initiator_id", "user_ids" (list), "type", "app_id" (the CALLER's authenticated tenant —
+  from the socket session, never the payload).
+
+  SECURITY-FIRST, ALL-OR-NOTHING. Before any row is written (and long before any ring), every target
+  must: exist AND be active AND belong to the SAME app as the caller (one batch query over
+  `users_auth` — the same-Postgres cross-service read precedent, so a cross-tenant id fails the same
+  membership test as a nonexistent one and is INDISTINGUISHABLE by construction), and have no block
+  in EITHER direction with the caller (one batch EXISTS over `user_blocks`, the exact
+  `Blocks.either_blocked?/1` semantics). Any failure refuses the WHOLE invite with the single uniform
+  `{:error, :invalid_targets}` — which target, and why, is never revealed: a partial ring would be a
+  block/existence oracle (send [victim, friend] and watch who appears).
+
+  `ensure_can_start` is deliberately NOT consulted: there is no conversation to read settings from;
+  the caller is the organizer and "everyone" semantics hold by construction.
+
+  Returns `{:ok, %{call, participants, member_ids}}` — the create_group_call shape, so the signaling
+  fan-out code is identical.
+  """
+  def create_adhoc_group_call(attrs) do
+    with :ok <- persistence(),
+         {:ok, initiator_id} <- required(attrs, "initiator_id"),
+         {:ok, type} <- required(attrs, "type"),
+         {:ok, app_id} <- required(attrs, "app_id"),
+         {:ok, targets} <- normalize_adhoc_targets(get(attrs, "user_ids"), initiator_id),
+         :ok <- authorize_adhoc_targets(targets, initiator_id, app_id) do
+      id = Ecto.UUID.generate()
+      now = DateTime.utc_now()
+
+      Repo.transaction(fn ->
+        call = insert_adhoc_call!(id, app_id, initiator_id, type, now)
+        insert_participant!(id, initiator_id, "joined", now, now)
+        Enum.each(targets, fn uid -> insert_participant!(id, uid, "invited", now, nil) end)
+        call
+      end)
+      |> case do
+        {:ok, call} ->
+          {:ok, %{call: response(call), participants: list_participants(id), member_ids: targets}}
+
+        {:error, _reason} ->
+          {:error, :call_invalid}
+      end
+    end
+  rescue
+    _ -> {:error, :call_invalid}
+  end
+
+  # Shape + normalisation (defense in depth — the signaling layer validates first): a list of
+  # non-empty binaries, deduped, the caller silently dropped, 1..cap afterwards. A malformed LIST is
+  # the caller's bug; an over-cap or empty list refuses with the same uniform code as the
+  # authorization checks so the error surface stays one code wide.
+  defp normalize_adhoc_targets(user_ids, initiator_id) when is_list(user_ids) do
+    if Enum.all?(user_ids, &(is_binary(&1) and &1 != "")) do
+      targets = user_ids |> Enum.uniq() |> Enum.reject(&(&1 == initiator_id))
+
+      if targets != [] and length(targets) <= @adhoc_target_cap,
+        do: {:ok, targets},
+        else: {:error, :invalid_targets}
+    else
+      {:error, :invalid_targets}
+    end
+  end
+
+  defp normalize_adhoc_targets(_user_ids, _initiator_id), do: {:error, :invalid_targets}
+
+  # THE PER-TARGET GATE. Two batch queries, zero cross-service round trips, refuse-before-ring.
+  defp authorize_adhoc_targets(targets, initiator_id, app_id) do
+    with {:ok, target_uuids} <- dump_uuid_list(targets),
+         {:ok, initiator_uuid} <- dump_uuid(initiator_id),
+         {:ok, app_uuid} <- dump_uuid(app_id) do
+      # (a)+(b) exists + active + SAME tenant. COUNT equality is the whole test: an id that is
+      # unknown, inactive, or in another app is simply absent from the result — indistinguishable.
+      %Postgrex.Result{rows: [[matched]]} =
+        Repo.query!(
+          "SELECT count(*)::int FROM users_auth " <>
+            "WHERE id = ANY($1) AND status = 'active' AND app_id = $2",
+          [target_uuids, app_uuid]
+        )
+
+      # (c) blocks, BOTH directions, any pair caller<->target — Blocks.either_blocked?/1 semantics
+      # ((blocker=A AND blocked=B) OR (blocker=B AND blocked=A)) applied across the whole set at once.
+      %Postgrex.Result{rows: [[blocked]]} =
+        Repo.query!(
+          "SELECT EXISTS (SELECT 1 FROM user_blocks " <>
+            "WHERE (blocker_user_id = $2 AND blocked_user_id = ANY($1)) " <>
+            "   OR (blocked_user_id = $2 AND blocker_user_id = ANY($1)))",
+          [target_uuids, initiator_uuid]
+        )
+
+      if matched == length(target_uuids) and blocked == false,
+        do: :ok,
+        else: {:error, :invalid_targets}
+    end
+  end
+
+  # A non-UUID target refuses with the SAME uniform code — shape errors must not be a different
+  # oracle from authorization errors.
+  defp dump_uuid_list(ids) do
+    dumped = Enum.map(ids, &dump_uuid/1)
+
+    if Enum.all?(dumped, &match?({:ok, _}, &1)),
+      do: {:ok, Enum.map(dumped, fn {:ok, uuid} -> uuid end)},
+      else: {:error, :invalid_targets}
+  end
+
+  defp dump_uuid(id) do
+    case Ecto.UUID.dump(id) do
+      {:ok, uuid} -> {:ok, uuid}
+      :error -> {:error, :invalid_targets}
+    end
+  end
+
+  # The adhoc calls row: kind "adhoc", NO conversation, NO single callee — membership is exclusively
+  # the participant rows written beside it.
+  defp insert_adhoc_call!(id, app_id, initiator_id, type, now) do
+    %{
+      id: id,
+      room_name: "call-" <> id,
+      app_id: app_id,
+      kind: "adhoc",
+      caller_id: initiator_id,
+      callee_id: nil,
+      conversation_id: nil,
+      type: type,
+      status: "ringing",
+      created_at: now
+    }
+    |> Call.create_changeset()
+    |> Repo.insert!()
+  end
+
   @doc """
   Late-join / accept a group call. attrs: "call_id", "user_id". Validates the call is a group in
   ringing/ongoing and the user is a member; upserts their participant → joined. A `ringing` call flips to

@@ -74,6 +74,8 @@ defmodule SharedInfra.ConversationClientHttp do
 
   @impl true
   def create_group_call(attrs), do: post("/internal/calls/group/create", attrs)
+  @impl true
+  def create_adhoc_group_call(attrs), do: post("/internal/calls/adhoc/create", attrs)
 
   @impl true
   def join_group_call(attrs), do: post("/internal/calls/group/join", attrs)

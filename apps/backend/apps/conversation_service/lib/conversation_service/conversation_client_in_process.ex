@@ -143,6 +143,10 @@ defmodule ConversationService.ConversationClientInProcess do
   def create_group_call(attrs), do: ConversationService.CallStore.create_group_call(attrs)
 
   @impl true
+  def create_adhoc_group_call(attrs),
+    do: ConversationService.CallStore.create_adhoc_group_call(attrs)
+
+  @impl true
   def join_group_call(attrs), do: ConversationService.CallStore.join_group_call(attrs)
 
   @impl true

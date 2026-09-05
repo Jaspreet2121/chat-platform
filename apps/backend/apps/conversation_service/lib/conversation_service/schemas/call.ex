@@ -12,7 +12,7 @@ defmodule ConversationService.Schemas.Call do
   @primary_key {:id, :binary_id, autogenerate: false}
 
   @types ~w(voice video)
-  @kinds ~w(direct group link)
+  @kinds ~w(direct group link adhoc)
   @statuses ~w(ringing accepted declined missed ended ongoing cancelled)
 
   schema "calls" do
@@ -78,6 +78,10 @@ defmodule ConversationService.Schemas.Call do
     case get_field(changeset, :kind) do
       "group" -> validate_required(changeset, [:conversation_id])
       "link" -> changeset
+      # ADHOC (116): like link, membership is ONLY the group_call_participants rows — no conversation,
+      # no single callee. Unlike link it is invite-driven; the target checks live in
+      # CallStore.create_adhoc_group_call, not here.
+      "adhoc" -> changeset
       _ -> validate_required(changeset, [:callee_id])
     end
   end

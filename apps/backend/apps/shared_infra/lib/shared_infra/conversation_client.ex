@@ -60,6 +60,7 @@ defmodule SharedInfra.ConversationClient do
   @callback list_calls_for_user(attrs()) :: result()
   # Phase-3 group calling — group lifecycle (CallStore).
   @callback create_group_call(attrs()) :: result()
+  @callback create_adhoc_group_call(attrs()) :: result()
   @callback join_group_call(attrs()) :: result()
   @callback decline_group_call(attrs()) :: result()
   @callback leave_group_call(attrs()) :: result()
@@ -118,6 +119,7 @@ defmodule SharedInfra.ConversationClient do
                       get_call: 1,
                       list_calls_for_user: 1,
                       create_group_call: 1,
+                      create_adhoc_group_call: 1,
                       join_group_call: 1,
                       decline_group_call: 1,
                       leave_group_call: 1,
@@ -209,6 +211,7 @@ defmodule SharedInfra.ConversationClient do
   def get_call(attrs), do: adapter().get_call(attrs)
   def list_calls_for_user(attrs), do: adapter().list_calls_for_user(attrs)
   def create_group_call(attrs), do: adapter().create_group_call(attrs)
+  def create_adhoc_group_call(attrs), do: adapter().create_adhoc_group_call(attrs)
   def join_group_call(attrs), do: adapter().join_group_call(attrs)
   def decline_group_call(attrs), do: adapter().decline_group_call(attrs)
   def leave_group_call(attrs), do: adapter().leave_group_call(attrs)
