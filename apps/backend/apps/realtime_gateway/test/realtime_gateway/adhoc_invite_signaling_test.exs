@@ -194,7 +194,10 @@ defmodule RealtimeGateway.AdhocInviteSignalingTest do
   test "9 targets refuse at the wire; 8 pass" do
     nine = for i <- 1..9, do: "aaaaaaa#{i}-0000-4000-8000-00000000000#{i}"
 
-    nine |> then(&invite(%{"user_ids" => &1, "type" => "voice"})) |> assert_error("call.invalid_request")
+    nine
+    |> then(&invite(%{"user_ids" => &1, "type" => "voice"}))
+    |> assert_error("call.invalid_request")
+
     refute_any_ring()
 
     assert {:reply, {:ok, _}, _} = invite(%{"user_ids" => Enum.take(nine, 8), "type" => "voice"})
@@ -235,7 +238,11 @@ defmodule RealtimeGateway.AdhocInviteSignalingTest do
   end
 
   test "a store outage refuses as call.unavailable and rings NOBODY" do
-    Application.put_env(:realtime_gateway, :adhoc_store_result, {:error, :conversation_unavailable})
+    Application.put_env(
+      :realtime_gateway,
+      :adhoc_store_result,
+      {:error, :conversation_unavailable}
+    )
 
     invite(%{"user_ids" => [@t1], "type" => "voice"}) |> assert_error("call.unavailable")
     refute_any_ring()

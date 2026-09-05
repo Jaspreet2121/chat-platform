@@ -888,6 +888,9 @@ defmodule RealtimeGateway.CallSignaling do
   # the 1-on-1 write_missed_message): one message_type=call row, sender = initiator, metadata.call_kind =
   # "group". Fans message_created to the conversation topic + each participant's user:<id>. Fire-and-forget:
   # a failed write never affects the (already-marked-missed) call.
+  # KNOWN, ACCEPTED GAP (116): an AD-HOC call has no conversation, so the guard below skips the pill
+  # entirely — a missed ad-hoc ring leaves only the ring screen and the call-history row. If a pill
+  # becomes a requirement, that is the moment the create-a-conversation option re-enters.
   defp write_missed_group_message(call, socket) do
     conversation_id = cget(call, :conversation_id)
     caller_id = cget(call, :caller_id)

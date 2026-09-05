@@ -151,7 +151,7 @@ defmodule ApiGatewayWeb.CallController do
     case cget(call, :kind) || "direct" do
       # GROUP + LINK (L1) calls authorize the same way — a group_call_participants row for (call, user).
       # A link call has no caller/callee, only join-created participant rows.
-      kind when kind in ["group", "link"] ->
+      kind when kind in ["group", "link", "adhoc"] ->
         case SharedInfra.ConversationClient.call_participant?(%{
                "call_id" => call_id,
                "user_id" => user_id

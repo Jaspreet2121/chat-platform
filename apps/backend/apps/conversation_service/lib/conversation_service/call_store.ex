@@ -404,7 +404,12 @@ defmodule ConversationService.CallStore do
          {:ok, user_id} <- required(attrs, "user_id"),
          {:ok, call} <- fetch_group_call(call_id),
          :ok <- ensure_joinable(call),
-         members <- ParticipantStore.list_active_participants(call.conversation_id),
+         # A conversationless call (adhoc, 116) has no member list to consult — the empty list makes
+         # ensure_member_or_participant's participant-row arm (C2) the ENTIRE rule, which is exactly
+         # the adhoc contract: only someone the create/add gate seated may join. NB the nil guard is
+         # load-bearing: list_active_participants(nil) raises, and the blanket rescue would turn
+         # every adhoc join into :call_invalid before the participant-row arm was ever consulted.
+         members <- conversation_members(call.conversation_id),
          :ok <- ensure_member_or_participant(members, call_id, user_id) do
       now = DateTime.utc_now()
       upsert_participant_status(call_id, user_id, %{status: "joined", joined_at: now})
@@ -535,8 +540,7 @@ defmodule ConversationService.CallStore do
          {:ok, user_id} <- required(attrs, "user_id"),
          {:ok, call} <- fetch_group_call(call_id),
          :ok <- ensure_joinable(call),
-         members <- ParticipantStore.list_active_participants(call.conversation_id),
-         :ok <- ensure_can_add(call.conversation_id, members, actor_id) do
+         :ok <- authorize_add(call, actor_id, user_id) do
       ensure_invited_participant(call_id, user_id)
 
       {:ok,
@@ -913,9 +917,12 @@ defmodule ConversationService.CallStore do
     |> Enum.map(&participant_response/1)
   end
 
+  # "adhoc" (116) is an N-party call exactly like "group" for every lifecycle purpose — join,
+  # add, decline, leave, timeout — differing only in WHERE membership comes from (participant rows
+  # alone; there is no conversation).
   defp fetch_group_call(call_id) do
     case Repo.get(Call, call_id) do
-      %Call{kind: "group"} = call -> {:ok, call}
+      %Call{kind: kind} = call when kind in ["group", "adhoc"] -> {:ok, call}
       %Call{} -> {:error, :not_a_group_call}
       nil -> {:error, :call_not_found}
     end
@@ -925,7 +932,7 @@ defmodule ConversationService.CallStore do
   # Only leave_group_call uses this — the other group-only functions keep the stricter fetch_group_call.
   defp fetch_group_or_link_call(call_id) do
     case Repo.get(Call, call_id) do
-      %Call{kind: kind} = call when kind in ["group", "link"] -> {:ok, call}
+      %Call{kind: kind} = call when kind in ["group", "link", "adhoc"] -> {:ok, call}
       %Call{} -> {:error, :not_a_group_call}
       nil -> {:error, :call_not_found}
     end
@@ -1019,6 +1026,37 @@ defmodule ConversationService.CallStore do
       true -> {:error, :not_a_member}
     end
   end
+
+  # Add-authorization, by kind. GROUP: the conversation-derived rule below, unchanged. ADHOC (116):
+  # the actor must hold a participant row on THIS call (the promote group-arm precedent), and the
+  # TARGET runs the SAME exists/active/same-app/not-blocked gate as create — which is where
+  # resolve_add_target's raw-user_id tenant gap is closed for this kind. The tenant is the CALL row's
+  # app_id (stamped from the creator's socket session); a nil app_id fails the gate closed.
+  defp authorize_add(%Call{kind: "adhoc"} = call, actor_id, user_id) do
+    cond do
+      not has_participant_row?(call.id, actor_id) ->
+        {:error, :call_add_forbidden}
+
+      is_nil(call.app_id) ->
+        {:error, :invalid_targets}
+
+      true ->
+        with {:ok, targets} <- normalize_adhoc_targets([user_id], actor_id) do
+          authorize_adhoc_targets(targets, actor_id, call.app_id)
+        end
+    end
+  end
+
+  defp authorize_add(%Call{} = call, actor_id, _user_id) do
+    members = ParticipantStore.list_active_participants(call.conversation_id)
+    ensure_can_add(call.conversation_id, members, actor_id)
+  end
+
+  # A conversationless call has NO conversation members; nil must not reach Ecto (it raises).
+  defp conversation_members(nil), do: []
+
+  defp conversation_members(conversation_id),
+    do: ParticipantStore.list_active_participants(conversation_id)
 
   # Actor authorization for adding a participant — the SAME rule as starting a call (active member; under
   # admins_only, owner/admin). Any failure collapses to :call_add_forbidden (signaling maps it to a code).

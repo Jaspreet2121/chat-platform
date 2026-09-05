@@ -115,7 +115,8 @@ defmodule ConversationService.AdhocCallStoreTest do
     a = user!()
     b = user!()
 
-    assert {:ok, %{call: call, participants: parts, member_ids: member_ids}} = adhoc(caller, [a, b])
+    assert {:ok, %{call: call, participants: parts, member_ids: member_ids}} =
+             adhoc(caller, [a, b])
 
     assert call.kind == "adhoc"
     assert is_nil(call.conversation_id)
@@ -127,6 +128,96 @@ defmodule ConversationService.AdhocCallStoreTest do
 
     by_user = Map.new(parts, &{&1.user_id, &1.status})
     assert by_user == %{caller => "joined", a => "invited", b => "invited"}
+  end
+
+  @tag :postgres_integration
+  test "JOIN works off the participant row alone (no conversation membership to consult)" do
+    caller = user!()
+    a = user!()
+    {:ok, %{call: call}} = adhoc(caller, [a])
+
+    assert {:ok, %{call: joined, participant: p}} =
+             CallStore.join_group_call(%{"call_id" => call.id, "user_id" => a})
+
+    assert joined.status == "ongoing"
+    assert p.status == "joined"
+  end
+
+  @tag :postgres_integration
+  test "a STRANGER (no participant row) cannot join, and the token predicate 403s them" do
+    caller = user!()
+    a = user!()
+    stranger = user!()
+    {:ok, %{call: call}} = adhoc(caller, [a])
+
+    assert {:error, :not_a_member} =
+             CallStore.join_group_call(%{"call_id" => call.id, "user_id" => stranger})
+
+    assert {:ok, %{authorized: false}} =
+             CallStore.call_participant?(%{"call_id" => call.id, "user_id" => stranger})
+
+    assert {:ok, %{authorized: true}} =
+             CallStore.call_participant?(%{"call_id" => call.id, "user_id" => a})
+  end
+
+  @tag :postgres_integration
+  test "ADD by a joined participant runs the SAME per-target gate as create" do
+    caller = user!()
+    a = user!()
+    {:ok, %{call: call}} = adhoc(caller, [a])
+    {:ok, _} = CallStore.join_group_call(%{"call_id" => call.id, "user_id" => a})
+
+    # A legitimate same-app target is added as invited.
+    newcomer = user!()
+
+    assert {:ok, %{added_user_id: ^newcomer}} =
+             CallStore.add_call_participant(%{
+               "call_id" => call.id,
+               "actor_id" => a,
+               "user_id" => newcomer
+             })
+
+    # A cross-tenant target refuses — this is where resolve_add_target's user_id tenant gap is
+    # CLOSED for the adhoc kind.
+    assert {:error, :invalid_targets} =
+             CallStore.add_call_participant(%{
+               "call_id" => call.id,
+               "actor_id" => a,
+               "user_id" => user_in_other_app!()
+             })
+
+    # A blocked-either-direction target refuses identically.
+    hostile = user!()
+    block!(hostile, a)
+
+    assert {:error, :invalid_targets} =
+             CallStore.add_call_participant(%{
+               "call_id" => call.id,
+               "actor_id" => a,
+               "user_id" => hostile
+             })
+
+    # A STRANGER cannot act as the adder at all.
+    outsider = user!()
+
+    assert {:error, :call_add_forbidden} =
+             CallStore.add_call_participant(%{
+               "call_id" => call.id,
+               "actor_id" => outsider,
+               "user_id" => user!()
+             })
+  end
+
+  @tag :postgres_integration
+  test "DECLINE and LEAVE work with no conversation behind the call" do
+    caller = user!()
+    a = user!()
+    b = user!()
+    {:ok, %{call: call}} = adhoc(caller, [a, b])
+
+    assert {:ok, _} = CallStore.decline_group_call(%{"call_id" => call.id, "user_id" => a})
+    {:ok, _} = CallStore.join_group_call(%{"call_id" => call.id, "user_id" => b})
+    assert {:ok, _} = CallStore.leave_group_call(%{"call_id" => call.id, "user_id" => b})
   end
 
   # --- 8. regression: the conversation-backed group rule is untouched ------------------------------
