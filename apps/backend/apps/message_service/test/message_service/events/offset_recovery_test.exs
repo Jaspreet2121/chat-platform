@@ -189,11 +189,16 @@ defmodule MessageService.Events.OffsetRecoveryTest do
 
   defmodule BrodStub do
     @moduledoc false
-    def get_consumer(_client, _topic, _partition) do
+    # Every probe records WHICH CLIENT it was made against. These run synchronously inside the test
+    # process (tick/1 calls handle_info directly), so self() is the test pid.
+    def get_consumer(client, _topic, _partition) do
+      send(self(), {:probed_client, :get_consumer, client})
       Application.get_env(:message_service, :test_current_consumer) || {:error, :unknown_topic}
     end
 
-    def fetch_committed_offsets(_client, _group) do
+    def fetch_committed_offsets(client, _group) do
+      send(self(), {:probed_client, :fetch_committed_offsets, client})
+
       case Application.get_env(:message_service, :test_committed) do
         nil ->
           {:error, :no_broker}
@@ -532,6 +537,25 @@ defmodule MessageService.Events.OffsetRecoveryTest do
 
       assert log =~ "resubscribe FAILED"
       assert log =~ "already_subscribed_by"
+    end)
+  end
+
+  test "the probes target the GROUP'S OWN client — never the producer's (per-group clients)" do
+    with_liveness_env(fn ->
+      {_consumer, state} = stalled_at(353, 359)
+
+      capture_log(fn ->
+        Enum.reduce(1..4, state, fn _, acc -> probe(acc) end)
+      end)
+
+      own = MessageService.Events.ConsumerClients.client_for("message-service-inbox-projection")
+      producer = SharedInfra.Kafka.BrodProducer.client_name()
+
+      # Load-bearing since one-client-per-group: `get_consumer` against the producer's client would
+      # answer consumer_not_found for every partition forever, and both backstops would go blind.
+      assert_receive {:probed_client, :get_consumer, ^own}
+      assert_receive {:probed_client, :fetch_committed_offsets, ^own}
+      refute_received {:probed_client, _, ^producer}
     end)
   end
 

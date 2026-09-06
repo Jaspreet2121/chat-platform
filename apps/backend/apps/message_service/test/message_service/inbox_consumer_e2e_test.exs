@@ -16,12 +16,14 @@ defmodule MessageService.InboxConsumerE2ETest do
     * the ledger transaction, against real Postgres
     * poison vs transient classification (bug 2b)
 
-  NOT COVERED HERE, and CI cannot cover it: the FLAG-TO-CLIENT wiring (bug 1 —
-  `kafka_client_needed?/0` omitting `kafka_inbox_consumer_enabled?/0`). Proving it requires booting
-  the supervision tree against a live broker and observing that the brod client exists, which is a
-  process-level fact no in-VM test reaches. It is verified manually by the end-to-end run; the
-  symptom is `failed to join group, reason: :client_down` with the child nonetheless "started".
-  Stated plainly rather than papered over with a test that would pass either way.
+  NOT COVERED HERE: the FLAG-TO-CLIENT wiring (bug 1 — the old `kafka_client_needed?/0` OR-list
+  omitting `kafka_inbox_consumer_enabled?/0`, so the consumer started with no client and looped on
+  `failed to join group, reason: :client_down` while the child read as "started"). That used to be
+  uncoverable in-VM — it was a live-broker process fact. It no longer is: one brod client per
+  consumer group (2026-09-06) means each group's client and subscriber are emitted as ONE pair from
+  the same group id, so the wiring is a property of the child-spec list, and
+  `MessageService.Events.ConsumerClientsTest` asserts it directly (every enabled group preceded by
+  its own client; a disabled group contributing neither).
   """
   use MessageService.DataCase, async: false
 

@@ -268,7 +268,7 @@ defmodule MessageService.Events.OffsetRecovery do
 
     %{group_id: group, topic: topic, partition: partition, known_consumer: known} = state
 
-    case brod_api().get_consumer(SharedInfra.Kafka.BrodProducer.client_name(), topic, partition) do
+    case brod_api().get_consumer(client_for(group), topic, partition) do
       {:ok, ^known} ->
         # The consumer we last confirmed is still the one registered — which proves nothing about
         # whether this worker is being FED by it (2026-09-06). Deliberately silent unless the stall
@@ -474,8 +474,13 @@ defmodule MessageService.Events.OffsetRecovery do
 
   # --- best-effort offset lookups (log-enrichment only — recovery proceeds without them) -----------
 
+  # THE GROUP'S OWN client, never the producer's. Since one-client-per-group, a probe against the
+  # producer's client would answer `consumer_not_found` for every partition, forever — the backstops
+  # would go blind exactly where they are needed. See MessageService.Events.ConsumerClients.
+  defp client_for(group), do: MessageService.Events.ConsumerClients.client_for(group)
+
   defp committed_offset(group, topic, partition) do
-    case brod_api().fetch_committed_offsets(SharedInfra.Kafka.BrodProducer.client_name(), group) do
+    case brod_api().fetch_committed_offsets(client_for(group), group) do
       {:ok, topics} ->
         topics
         |> Enum.find(%{}, &(name_of(&1) == topic))
