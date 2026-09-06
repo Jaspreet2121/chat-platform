@@ -439,6 +439,86 @@ defmodule ApiGatewayWeb.ConversationController do
     end
   end
 
+  @doc """
+  PATCH /api/v1/conversations/:conversation_id/settings — partial update; today only `wallpaper`.
+
+  {wallpaper: obj} sets, {wallpaper: null} clears; a body WITHOUT the key is invalid (nothing to
+  patch). Authorization lives in the store (ConversationService.Participants.set_wallpaper): DMs —
+  either participant; groups — owner/admin, the same rule as the PUT above. A non-member, unknown or
+  cross-tenant conversation all collapse to the SAME 404 — no existence reveal.
+
+  ON SUCCESS, three effects in order: the setting is PERSISTED (the source of truth every later
+  fetch reads); a SYSTEM message rides the normal message path so the change is visible in the
+  timeline ("<name> changed the wallpaper" — rendered client-side from metadata.kind); and a
+  `settings_updated` frame goes to the CONVERSATION topic as a live hint for anyone with the chat
+  open. Deliberately NOT a conversation-topic `conversation_updated`: that event name already means
+  "an inbox row" to every client (user-topic shape with unread/preview), and reusing the name with a
+  settings-shaped payload on a topic the SDK funnels into the same channel would collide the two
+  decoders. Conversation topic ONLY — closed chats read the persisted setting on next fetch.
+  """
+  def patch_settings(conn, %{"conversation_id" => conversation_id} = params) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         true <- Map.has_key?(params, "wallpaper") || {:error, :invalid_request},
+         {:ok, response} <-
+           SharedInfra.ConversationClient.set_wallpaper(%{
+             "conversation_id" => conversation_id,
+             "actor_user_id" => session.user_id,
+             "wallpaper" => params["wallpaper"]
+           }) do
+      wallpaper = Map.get(response, :wallpaper) || Map.get(response, "wallpaper")
+
+      # Timeline record — the same system-message shape the secret-chat events use (message_type
+      # "system" + structured metadata; best-effort, never fails the request).
+      ApiGatewayWeb.SecretChatEvents.system_message(conversation_id, session.user_id, %{
+        "kind" => "wallpaper",
+        "user" => session.user_id,
+        "state" => if(wallpaper, do: "set", else: "cleared")
+      })
+
+      # Live hint for the OPEN chat. Key-set pinned in tests — a frame is a wire contract.
+      ApiGatewayWeb.RealtimeFanOut.to_conversation(conversation_id, "settings_updated", %{
+        conversation_id: conversation_id,
+        wallpaper: wallpaper
+      })
+
+      json(conn, response)
+    else
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_unavailable} ->
+        service_unavailable(conn)
+
+      # Unknown, non-member and cross-tenant are ONE indistinguishable answer.
+      {:error, not_found}
+      when not_found in [:conversation_not_found, :participant_not_found, :conversation_forbidden] ->
+        ErrorResponse.not_found(conn, "conversation.not_found", "Conversation not found")
+
+      # A group MEMBER who is not owner/admin — same code as the PUT's rule.
+      {:error, :participant_forbidden} ->
+        ErrorResponse.forbidden(
+          conn,
+          "conversation.not_admin",
+          "Only an owner or admin can change this"
+        )
+
+      {:error, :wallpaper_invalid} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "conversation.wallpaper_invalid",
+          "Wallpaper must be a supported kind with valid fields (photos are device-local)"
+        )
+
+      _ ->
+        invalid_request(conn)
+    end
+  end
+
   # Build the settings attrs, including a field ONLY when the client actually sent it (so a
   # call_start_permission-only update doesn't reset only_admins_can_send, and vice-versa).
   defp settings_attrs(conversation_id, actor_user_id, params) do

@@ -531,6 +531,10 @@ defmodule ApiGatewayWeb.Router do
 
     put "/:conversation_id/settings", ConversationController, :set_group_settings
 
+    # 117: partial settings update — today only {wallpaper: obj|null}. PATCH, beside the group PUT,
+    # because its authorization differs (DMs: either participant; groups: owner/admin).
+    patch "/:conversation_id/settings", ConversationController, :patch_settings
+
     # Voluntary leave (078) — self-removal; the moderation DELETE /:id/participants/:user_id keeps its
     # owner/admin gates (a SELF-target there is a compatibility shim routing here — /leave is canonical).
     post "/:conversation_id/leave", ConversationController, :leave
