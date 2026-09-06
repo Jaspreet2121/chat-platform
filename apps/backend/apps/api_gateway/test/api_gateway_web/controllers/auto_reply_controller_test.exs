@@ -29,8 +29,13 @@ defmodule ApiGatewayWeb.AutoReplyControllerTest do
 
   defmodule UserStub do
     @moduledoc false
-    def get_auto_replies(_attrs),
-      do: {:ok, %{away: %{"enabled" => false}, greeting: %{"enabled" => false}}}
+    def get_auto_replies(_attrs) do
+      Application.get_env(
+        :api_gateway,
+        :auto_reply_get_result,
+        {:ok, %{away: %{"enabled" => false}, greeting: %{"enabled" => false}}}
+      )
+    end
 
     def update_auto_replies(attrs) do
       send(:auto_reply_ctl_test, {:update, attrs})
@@ -72,6 +77,7 @@ defmodule ApiGatewayWeb.AutoReplyControllerTest do
       end
 
       Application.delete_env(:api_gateway, :auto_reply_update_result)
+      Application.delete_env(:api_gateway, :auto_reply_get_result)
     end)
 
     :ok
@@ -99,6 +105,42 @@ defmodule ApiGatewayWeb.AutoReplyControllerTest do
     assert attrs["greeting"]["body"] == "Hi!"
 
     assert_receive %Phoenix.Socket.Broadcast{event: "auto_replies_changed"}
+  end
+
+  test "GET's JSON body is KEY-SET STABLE across both stored block shapes" do
+    # The store can hand back a string-keyed block (the normal path) or — before the skip_atomize
+    # pin — a rehydrated atom-keyed one. Both serialise to the SAME JSON, which is precisely why the
+    # UI looked correct for two weeks while the engine read nothing: the API could not reveal it.
+    # Pinned so the client contract cannot drift while that is being fixed underneath.
+    full = %{
+      "enabled" => true,
+      "mode" => "always",
+      "audience" => "everyone",
+      "except_ids" => [],
+      "schedule" => nil,
+      "body" => "brb"
+    }
+
+    for block <- [full, Map.new(full, fn {k, v} -> {String.to_atom(k), v} end)] do
+      Application.put_env(
+        :api_gateway,
+        :auto_reply_get_result,
+        {:ok, %{away: block, greeting: %{"enabled" => false, "resend_after_days" => 14}}}
+      )
+
+      conn = request(:show, %{}, :get)
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+
+      assert Map.keys(body) |> Enum.sort() == ["away", "greeting"]
+
+      assert body["away"] |> Map.keys() |> Enum.sort() ==
+               ["audience", "body", "enabled", "except_ids", "mode", "schedule"]
+
+      assert body["greeting"] |> Map.keys() |> Enum.sort() == ["enabled", "resend_after_days"]
+      assert body["away"]["enabled"] == true
+      assert body["away"]["body"] == "brb"
+    end
   end
 
   test "typed validation errors map to their envelope codes" do
