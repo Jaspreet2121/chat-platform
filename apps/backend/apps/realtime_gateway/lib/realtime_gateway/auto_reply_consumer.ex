@@ -221,10 +221,32 @@ defmodule RealtimeGateway.AutoReplyConsumer do
     end
   end
 
-  defp auto_message?(message) do
+  @doc """
+  Is this inbound message one of OUR OWN auto-replies? THE LOOP GUARD — `decide/1` skips any message
+  carrying the flag, so an auto-reply can never trigger an auto-reply.
+
+  It must accept the STORED shape, not the sent one. `MessageService.Messages.stringify_value/1`
+  coerces every metadata value to a string at create time, so the boolean `true` this consumer sends
+  at `send_reply/3` is stored — and read back here — as the STRING `"true"`. Comparing against the
+  boolean alone made this guard dead for every stored message: proven in production on 2026-09-06,
+  where an auto-reply came back as `{"auto": "true", "auto_kind": "away"}`. It had not manifested
+  only because the test pair had a rule on one side; with rules on both, each side sends one extra
+  reply per claim window.
+
+  Public because the only honest test of it is a ROUND TRIP through the real create path — a fixture
+  that hand-builds metadata asserts the SEND shape and passes either way, which is exactly how this
+  went unnoticed.
+
+  Accepts the boolean and the stored string, and NOTHING else: `"false"` is not auto.
+  """
+  def auto_message?(message) do
     metadata = mget(message, :metadata) || %{}
-    Map.get(metadata, "auto") == true or Map.get(metadata, :auto) == true
+    auto_flag?(Map.get(metadata, "auto")) or auto_flag?(Map.get(metadata, :auto))
   end
+
+  defp auto_flag?(true), do: true
+  defp auto_flag?("true"), do: true
+  defp auto_flag?(_), do: false
 
   # Fail CLOSED on a block-check error — a broken check must not cause a reply to a blocked party.
   # Explicit matches, NOT mget: `false` is a legal value and the `||` fallback would swallow it

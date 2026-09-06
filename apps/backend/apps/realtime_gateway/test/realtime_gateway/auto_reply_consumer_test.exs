@@ -165,6 +165,26 @@ defmodule RealtimeGateway.AutoReplyConsumerTest do
     assert_receive {:broadcast, "user:" <> @recipient, "message_created", _}
   end
 
+  test "LOOP GUARD shapes: the flag is true and \"true\" ONLY — never any other present value" do
+    # The stored shape is the string (Messages.stringify_value/1 coerces every metadata value); the
+    # sent shape is the boolean. Both must count. Everything else must not — a guard that matched
+    # any present value would treat auto:false as automated and silently stop replying.
+    for value <- [true, "true"] do
+      assert AutoReplyConsumer.auto_message?(%{metadata: %{"auto" => value}}),
+             "#{inspect(value)} must count as the auto flag"
+    end
+
+    for value <- [false, "false", "TRUE", "True", "yes", 1, "1", nil, ""] do
+      refute AutoReplyConsumer.auto_message?(%{metadata: %{"auto" => value}}),
+             "#{inspect(value)} must NOT count as the auto flag"
+    end
+
+    # Either key spelling, and a message with no metadata at all.
+    assert AutoReplyConsumer.auto_message?(%{metadata: %{auto: "true"}})
+    refute AutoReplyConsumer.auto_message?(%{metadata: %{}})
+    refute AutoReplyConsumer.auto_message?(%{})
+  end
+
   test "ATOM-KEYED settings still fire — no transport can starve the decision core (2026-09-06)" do
     # EXACTLY what the HTTP adapter used to hand the consumer: InternalApi.decode_result rehydrates
     # keys with String.to_existing_atom/1, so only the keys whose atoms already exist convert — a
@@ -198,14 +218,21 @@ defmodule RealtimeGateway.AutoReplyConsumerTest do
   end
 
   test "LOOP-PROOF: an inbound message that itself carries the auto flag is skipped outright" do
-    Application.put_env(:realtime_gateway, :test_inbound_metadata, %{
-      "auto" => true,
-      "auto_kind" => "away"
-    })
+    # BOTH SHAPES, and the string one is the one production actually stores: the create path
+    # coerces every metadata value (Messages.stringify_value/1), so a real auto-reply comes back as
+    # "true". This stub hands the consumer a shape of our choosing, which is why the boolean-only
+    # version of this test passed for weeks while the guard was dead on every stored message — see
+    # MessageService.AutoReplyLoopGuardTest for the round trip that cannot be faked.
+    for flag <- [true, "true"] do
+      Application.put_env(:realtime_gateway, :test_inbound_metadata, %{
+        "auto" => flag,
+        "auto_kind" => "away"
+      })
 
-    assert :ok = AutoReplyConsumer.handle_value(event())
-    refute_receive {:claim, _}, 100
-    refute_receive {:reply_sent, _}, 100
+      assert :ok = AutoReplyConsumer.handle_value(event())
+      refute_receive {:claim, _}, 100
+      refute_receive {:reply_sent, _}, 100
+    end
   end
 
   test "SECRET CHATS (108): the engine skips a secret conversation outright — no claim, no reply" do
