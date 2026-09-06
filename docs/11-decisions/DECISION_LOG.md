@@ -43,13 +43,56 @@ Architecture decisions, newest first. Each entry: context → decision → ratio
   ```
   Distinct subscriber pids across partitions (or fewer subscribed workers than groups × partitions)
   confirms it.
-- **Named follow-up:** one brod client per consumer group (or per group-subscriber), which is what
-  brod's own documentation prescribes. Until then the new branch cannot repair this shape — the
-  slot's holder is alive, so the re-subscribe returns `{error, {already_subscribed_by, Pid}}` — but
-  it now logs that at ERROR **naming the holder**, turning a wholly silent stall into a decisive
-  diagnosis.
-- **Status:** trigger shipped (message-service only, no schema, no API). Root-cause fix deferred
-  pending the verification above.
+- **Named follow-up — NOW DONE, see the entry below:** one brod client per consumer group, which is
+  what brod's own documentation prescribes. Until that shipped the new branch could not repair this
+  shape — the slot's holder is alive, so the re-subscribe returns
+  `{error, {already_subscribed_by, Pid}}` — but it logs that at ERROR **naming the holder**, turning
+  a wholly silent stall into a decisive diagnosis.
+- **Status:** trigger shipped (message-service only, no schema, no API). Root cause CONFIRMED on the
+  box (six subscriptions where 4 groups × 6 partitions needs 24) and fixed in the next entry.
+
+## [2026-09-06] One brod client per consumer group — the root cause, fixed
+
+- **Context:** the verification above came back decisive. `:brod.get_consumer/3` + `:sys.get_state`
+  across `message.events.v1` p0–p5 showed exactly ONE subscriber pid per partition (0.2000, 0.2002,
+  0.2004, 0.2007, 0.2010, 0.2014) — six subscriptions for four consumer groups over six partitions,
+  where a healthy topology needs twenty-four. Three of the four groups were starved on any given
+  partition, retrying every 2s forever, invisibly (`brod_topic_subscriber` contains no log
+  statement), and a restart merely reshuffled the winners. This is the root cause behind the
+  offset-out-of-range, replaced-consumer, dropped-connection and frozen-committed stalls chased over
+  four days.
+- **Decision:** each consumer group gets its OWN brod client, named for the group and started in the
+  same supervision pair as its subscriber (`MessageService.Events.ConsumerClients` is the single
+  source of truth; `MessageService.Application.kafka_children/0` emits `[client, subscriber]`
+  derived from one group id, so the two can never drift and the client is always started first).
+  `OffsetRecovery`'s probes now resolve the group's own client — against the producer's they would
+  answer `consumer_not_found` forever and both backstops would go blind.
+- **The producer is NOT separated:** brod's constraint is about subscription slots only. Producers
+  are `brod_producer` processes under a different supervisor and `:brod.produce` never subscribes,
+  so a producer may share a client with any number of consumers. It keeps its own client
+  (`auto_start_producers: true`, unchanged name) so the produce path stays byte-identical and a
+  produce-side connection fault cannot stall a group. Group clients run
+  `auto_start_producers: false`.
+- **Cost, measured before multiplying (1 broker, 1 GB Kafka container, small EC2):** a brod client
+  holds one metadata connection plus one payload connection per broker, both lazy and reused by
+  endpoint (brod_client.erl:741-747); group coordinator connections are unchanged (each
+  `brod_group_coordinator` already dials its own from the endpoint `do_get_group_coordinator`
+  returns, :684-695). So message-service goes from 1 client to 5 — **about +8 TCP connections**, at
+  Kafka's default 100 KB socket buffers ≈ **1.6 MB against a 1 GB limit**, with `max.connections`
+  and `max.connections.per.ip` both effectively unlimited and 3 network threads multiplexing them.
+  On broker restart each client reconnects on its own 1s cooldown
+  (`?DEFAULT_RECONNECT_COOL_DOWN_SECONDS`, brod_client.erl:74) — N independent single-socket
+  retries instead of one, which is cheaper than it sounds and strictly better isolated.
+- **Second win:** one payload connection per client, shared by every consumer on it, is exactly the
+  bottleneck behind the 2026-09-05 dropped-connection wedge — one dead socket stalled all four
+  groups at once. Now it stalls one.
+- **Scope — only message-service was affected.** The gateway's `gateway_auto_reply` group runs in a
+  different release on `:realtime_gateway_kafka_client` and is the only group on it (brod client
+  names are node-local, so cross-release sharing is impossible anyway). notification-service runs
+  three groups on one client but on three DIFFERENT topics, and slots are per (client, topic,
+  partition) — no contention. conversation-service produces only.
+- **Status:** shipped. Post-deploy verification is the same loop per group client; it must now show
+  24 subscriptions with 24 distinct subscriber pids.
 
 ## [2026-09-06] Per-DM E2EE toggle: OFF is two-party (request + accept); ON stays immediate (118)
 
