@@ -42,10 +42,35 @@ defmodule RealtimeGateway.AutoReplyConsumer do
 
   @doc false
   # Public so tests drive the full evaluate-claim-send path without Kafka plumbing.
+  #
+  # THE ENVELOPE IS THE PRODUCER'S, MATCHED EXACTLY (2026-09-06). This used to match
+  # %{"type" => "message.created"} with the ids at the top level — a shape that has never existed on
+  # the wire (EventOutbox emits SharedInfra.Events.Envelope: "event_type" => "message.created.v1"
+  # with the ids under "payload"). Every event since the feature shipped fell into the silent
+  # catch-all and committed: healthy group, lag 0, zero replies, zero log lines, for weeks. The
+  # fixture had been hand-typed to the same imagined shape, so the tests agreed with the consumer
+  # and both disagreed with the producer — the tests are now built from Envelope.build itself.
   def handle_value(value) do
     case Jason.decode(value) do
-      {:ok, %{"type" => "message.created"} = event} -> evaluate(event)
-      _ -> :ok
+      {:ok, %{"event_type" => "message.created.v1", "payload" => %{} = payload}} ->
+        evaluate(payload)
+
+      # The ONLY other type this topic carries today (EventOutbox stages exactly two) — matched and
+      # ignored EXPLICITLY so the unrecognized-envelope warning below stays meaningful.
+      {:ok, %{"event_type" => "message.deleted.v1"}} ->
+        :ok
+
+      {:ok, %{} = other} ->
+        Logger.warning(
+          "[auto_reply] event ignored: unrecognized envelope " <>
+            "(event_type=#{Map.get(other, "event_type", "absent")} " <>
+            "type=#{Map.get(other, "type", "absent")})"
+        )
+
+        :ok
+
+      _ ->
+        :ok
     end
   rescue
     # ASYNC ISOLATION: whatever blew up, the original message was already delivered — log loudly,
@@ -59,25 +84,31 @@ defmodule RealtimeGateway.AutoReplyConsumer do
       :ok
   end
 
-  defp evaluate(event) do
-    conversation_id = event["conversation_id"]
-    sender_id = event["sender_user_id"]
-    message_id = event["message_id"]
+  # `payload` is the envelope's payload map — exactly the three keys EventOutbox.stage_created
+  # writes (event_outbox.ex): conversation_id, message_id, sender_user_id.
+  defp evaluate(payload) do
+    conversation_id = payload["conversation_id"]
+    sender_id = payload["sender_user_id"]
+    message_id = payload["message_id"]
 
-    with true <- is_binary(conversation_id) and is_binary(sender_id) and is_binary(message_id),
-         {:ok, message} <-
-           SharedInfra.MessageClient.get_message(%{
-             "conversation_id" => conversation_id,
-             "message_id" => message_id
-           }),
-         {:ok, conversation} <-
-           SharedInfra.ConversationClient.get_conversation(%{
-             "conversation_id" => conversation_id,
-             "user_id" => sender_id
-           }),
-         recipient_id when is_binary(recipient_id) <- direct_peer(conversation, sender_id),
-         {:ok, settings} <-
-           SharedInfra.UserClient.get_auto_replies(%{"user_id" => recipient_id}) do
+    with {:ids, true} <-
+           {:ids, is_binary(conversation_id) and is_binary(sender_id) and is_binary(message_id)},
+         {:message, {:ok, message}} <-
+           {:message,
+            SharedInfra.MessageClient.get_message(%{
+              "conversation_id" => conversation_id,
+              "message_id" => message_id
+            })},
+         {:conversation, {:ok, conversation}} <-
+           {:conversation,
+            SharedInfra.ConversationClient.get_conversation(%{
+              "conversation_id" => conversation_id,
+              "user_id" => sender_id
+            })},
+         {:peer, recipient_id} when is_binary(recipient_id) <-
+           {:peer, direct_peer(conversation, sender_id)},
+         {:settings, {:ok, settings}} <-
+           {:settings, SharedInfra.UserClient.get_auto_replies(%{"user_id" => recipient_id})} do
       context = %{
         conversation_type: mget(conversation, :type),
         # SECRET CHATS (108): EXPLICIT boolean (the falsy-mget trap) — the engine must skip.
@@ -97,11 +128,22 @@ defmodule RealtimeGateway.AutoReplyConsumer do
 
       case AutoReply.decide(context) do
         {:send, kind} -> claim_and_send(kind, context, conversation_id)
-        :skip -> :ok
+        {:skip, reason} -> skip(reason, conversation_id, sender_id)
       end
     else
-      _ -> :ok
+      # ONE LINE PER DECISION (2026-09-06): these paths used to fall through a bare `_ -> :ok`,
+      # which is what made "zero replies ever" a week-long hunt instead of a ten-second log read.
+      {:ids, _} -> skip(:invalid_event, conversation_id, sender_id)
+      {:message, _} -> skip("fetch_failed:get_message", conversation_id, sender_id)
+      {:conversation, _} -> skip("fetch_failed:get_conversation", conversation_id, sender_id)
+      {:peer, _} -> skip(:not_direct, conversation_id, sender_id)
+      {:settings, _} -> skip("fetch_failed:get_auto_replies", conversation_id, sender_id)
     end
+  end
+
+  defp skip(reason, conversation_id, sender_id) do
+    Logger.info("[auto_reply] skip conv=#{conversation_id} sender=#{sender_id} reason=#{reason}")
+    :ok
   end
 
   # CLAIM BEFORE SEND: a redelivered event that already claimed is :throttled here and sends
@@ -118,7 +160,12 @@ defmodule RealtimeGateway.AutoReplyConsumer do
            "window_seconds" => window
          }) do
       {:ok, outcome} ->
-        if mget_atomish(outcome) == "claimed", do: send_reply(kind, context, conversation_id)
+        if mget_atomish(outcome) == "claimed" do
+          send_reply(kind, context, conversation_id)
+        else
+          skip(:throttled, conversation_id, context.sender_id)
+        end
+
         :ok
 
       other ->
@@ -154,7 +201,13 @@ defmodule RealtimeGateway.AutoReplyConsumer do
         :ok
 
       other ->
-        Logger.warning("[auto_reply] send failed for #{kind}: #{inspect(other)}")
+        # ERROR, not warning: a claimed-but-unsent reply is a real user-visible failure (the claim
+        # window now suppresses the retry until it expires).
+        Logger.error(
+          "[auto_reply] send FAILED kind=#{kind} conv=#{conversation_id} " <>
+            "user=#{context.recipient_id} reason=#{inspect(other)}"
+        )
+
         :ok
     end
   end

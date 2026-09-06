@@ -50,13 +50,17 @@ defmodule RealtimeGateway.AutoReplyTest do
   test "every HARD SKIP, in order: group, self, automated inbound (loop-proof), blocked, disabled" do
     live = %{settings: %{away: away(), greeting: greeting()}}
 
-    assert AutoReply.decide(context(Map.merge(live, %{conversation_type: "group"}))) == :skip
-    assert AutoReply.decide(context(Map.merge(live, %{sender_id: @recipient}))) == :skip
+    assert AutoReply.decide(context(Map.merge(live, %{conversation_type: "group"}))) ==
+             {:skip, :not_direct}
+
+    assert AutoReply.decide(context(Map.merge(live, %{sender_id: @recipient}))) == {:skip, :self}
     # THE LOOP-PROOF: an inbound message carrying the auto flag never triggers a reply — our own
     # replies always carry it, so auto can never answer auto.
-    assert AutoReply.decide(context(Map.merge(live, %{sender_auto?: true}))) == :skip
-    assert AutoReply.decide(context(Map.merge(live, %{blocked?: true}))) == :skip
-    assert AutoReply.decide(context()) == :skip
+    assert AutoReply.decide(context(Map.merge(live, %{sender_auto?: true}))) ==
+             {:skip, :auto_inbound}
+
+    assert AutoReply.decide(context(Map.merge(live, %{blocked?: true}))) == {:skip, :blocked}
+    assert AutoReply.decide(context()) == {:skip, :disabled}
 
     assert AutoReply.decide(context(live)) == {:send, :greeting}
   end
@@ -65,7 +69,7 @@ defmodule RealtimeGateway.AutoReplyTest do
     live = context(%{settings: %{away: away(), greeting: greeting()}})
     assert AutoReply.decide(live) == {:send, :greeting}
 
-    assert AutoReply.decide(Map.put(live, :conversation_secret?, true)) == :skip
+    assert AutoReply.decide(Map.put(live, :conversation_secret?, true)) == {:skip, :sealed}
     # Explicit boolean discipline: absent or non-true never skips.
     assert AutoReply.decide(Map.put(live, :conversation_secret?, false)) == {:send, :greeting}
   end
@@ -102,7 +106,9 @@ defmodule RealtimeGateway.AutoReplyTest do
 
     # except: a listed sender is excluded; everyone else replies.
     excepted = away(%{"audience" => "except", "except_ids" => [@sender]})
-    assert AutoReply.decide(context(%{settings: %{away: excepted, greeting: %{}}})) == :skip
+
+    assert AutoReply.decide(context(%{settings: %{away: excepted, greeting: %{}}})) ==
+             {:skip, :not_due}
   end
 
   test "GREETING: due on first message (nil last activity) and after the idle window; not while active" do
@@ -117,7 +123,9 @@ defmodule RealtimeGateway.AutoReplyTest do
              {:send, :greeting}
 
     recent = DateTime.add(~U[2026-08-26 10:00:00Z], -3 * 86_400, :second)
-    assert AutoReply.decide(context(%{settings: settings, last_activity_at: recent})) == :skip
+
+    assert AutoReply.decide(context(%{settings: settings, last_activity_at: recent})) ==
+             {:skip, :not_due}
   end
 
   test "SCHEDULE: timezone conversion — 22:00-06:00 IST crossing midnight, both sides + off-hours" do

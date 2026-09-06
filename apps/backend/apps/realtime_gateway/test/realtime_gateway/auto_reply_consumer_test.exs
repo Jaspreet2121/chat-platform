@@ -118,13 +118,28 @@ defmodule RealtimeGateway.AutoReplyConsumerTest do
     :ok
   end
 
+  # THE WIRE SHAPE IS THE PRODUCER'S, NOT OURS (2026-09-06). The old fixture hand-typed
+  # %{"type" => "message.created"} with top-level ids — an imagined envelope the consumer also
+  # matched, so consumer and tests agreed with each other and both disagreed with production, where
+  # every event silently no-opped for weeks. This helper builds the envelope through
+  # SharedInfra.Events.Envelope.build — the exact constructor EventOutbox publishes through — so the
+  # fixture can only drift from the wire if the producer itself changes.
   defp event do
-    Jason.encode!(%{
-      "type" => "message.created",
-      "conversation_id" => @conversation,
-      "message_id" => "msg-1",
-      "sender_user_id" => @sender
-    })
+    {:ok, envelope} =
+      SharedInfra.Events.Envelope.build(%{
+        event_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        event_type: "message.created.v1",
+        producer: "message-service",
+        occurred_at: "2026-09-06T10:00:00Z",
+        correlation_id: "corr-auto-reply-test",
+        payload: %{
+          "conversation_id" => @conversation,
+          "message_id" => "msg-1",
+          "sender_user_id" => @sender
+        }
+      })
+
+    Jason.encode!(envelope)
   end
 
   test "the full path: claim rides the settings window, the reply is a REAL flagged text, triple broadcast" do
@@ -202,9 +217,85 @@ defmodule RealtimeGateway.AutoReplyConsumerTest do
     refute_receive {:reply_sent, _}, 50
   end
 
-  test "non-created event types and junk bytes are ignored" do
-    assert :ok = AutoReplyConsumer.handle_value(Jason.encode!(%{"type" => "message.deleted"}))
-    assert :ok = AutoReplyConsumer.handle_value("{not json")
+  test "message.deleted.v1 is matched-and-ignored EXPLICITLY (no warning); junk bytes are ignored" do
+    log =
+      capture_log(fn ->
+        assert :ok =
+                 AutoReplyConsumer.handle_value(
+                   Jason.encode!(%{"event_type" => "message.deleted.v1", "payload" => %{}})
+                 )
+
+        assert :ok = AutoReplyConsumer.handle_value("{not json")
+      end)
+
+    refute log =~ "unrecognized envelope"
     refute_receive {:claim, _}, 50
+  end
+
+  test "a genuinely unknown envelope WARNS with both key spellings — the silent no-op is dead" do
+    log =
+      capture_log(fn ->
+        # The exact imagined shape the old consumer matched: today it must be loudly unrecognized.
+        assert :ok =
+                 AutoReplyConsumer.handle_value(
+                   Jason.encode!(%{
+                     "type" => "message.created",
+                     "conversation_id" => @conversation
+                   })
+                 )
+      end)
+
+    assert log =~ "[auto_reply] event ignored: unrecognized envelope"
+    assert log =~ "event_type=absent"
+    assert log =~ "type=message.created"
+    refute_receive {:claim, _}, 50
+  end
+
+  test "PRODUCER-ANCHORED: an envelope built inline by Envelope.build evaluates end-to-end" do
+    # Deliberately NOT the event/0 helper: if someone reverts the consumer to the imagined shape AND
+    # hand-types the helper back to match it (the fixture-mirrors-the-bug failure, again), every
+    # helper-based test goes conveniently green — and THIS one stays red, because its shape comes
+    # from the producer's own constructor and nothing else.
+    {:ok, envelope} =
+      SharedInfra.Events.Envelope.build(%{
+        event_id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        event_type: "message.created.v1",
+        producer: "message-service",
+        occurred_at: "2026-09-06T11:00:00Z",
+        correlation_id: "corr-producer-anchored",
+        payload: %{
+          "conversation_id" => @conversation,
+          "message_id" => "msg-2",
+          "sender_user_id" => @sender
+        }
+      })
+
+    assert :ok = AutoReplyConsumer.handle_value(Jason.encode!(envelope))
+    assert_receive {:claim, claim}
+    assert claim["user_id"] == @recipient
+  end
+
+  test "a SEALED skip logs its reason — one INFO line per decision (MUT-4's target)" do
+    Application.put_env(:realtime_gateway, :test_conversation_secret, true)
+    on_exit(fn -> Application.delete_env(:realtime_gateway, :test_conversation_secret) end)
+
+    log =
+      capture_log(fn ->
+        assert :ok = AutoReplyConsumer.handle_value(event())
+      end)
+
+    assert log =~ "[auto_reply] skip conv=#{@conversation} sender=#{@sender} reason=sealed"
+    refute_receive {:claim, _}, 50
+  end
+
+  test "a THROTTLED claim logs reason=throttled" do
+    Application.put_env(:realtime_gateway, :test_claim_result, :throttled)
+
+    log =
+      capture_log(fn ->
+        assert :ok = AutoReplyConsumer.handle_value(event())
+      end)
+
+    assert log =~ "reason=throttled"
   end
 end

@@ -1,7 +1,8 @@
 defmodule RealtimeGateway.AutoReply do
   @moduledoc """
   Auto-reply DECISION CORE (102) — pure: `decide(context)` looks at one inbound 1:1 message and the
-  recipient's settings and returns `:skip` or `{:send, :greeting | :away}`. All I/O (event decode,
+  recipient's settings and returns `{:skip, reason}` or `{:send, :greeting | :away}` — the reason feeds the consumer's
+  one-line-per-decision skip log (the 2026-09-06 lesson: silent skips cost a week of debugging). All I/O (event decode,
   lookups, the claim, the send) lives in `RealtimeGateway.AutoReplyConsumer`; this module is where
   the product rules are, so the whole matrix is unit-testable without any infrastructure.
 
@@ -29,24 +30,30 @@ defmodule RealtimeGateway.AutoReply do
           required(:now) => DateTime.t()
         }
 
-  @spec decide(context()) :: :skip | {:send, :greeting} | {:send, :away}
+  @spec decide(context()) :: {:skip, atom()} | {:send, :greeting} | {:send, :away}
   def decide(context) do
     away = context.settings.away
     greeting = context.settings.greeting
 
     cond do
-      context.conversation_type != "direct" -> :skip
+      context.conversation_type != "direct" -> {:skip, :not_direct}
       # SECRET CHATS (108): the engine cannot read intent in a sealed conversation — greeting and
       # away must never fire there. Explicit true match (the falsy-mget discipline).
-      Map.get(context, :conversation_secret?) == true -> :skip
-      is_nil(context.sender_id) or is_nil(context.recipient_id) -> :skip
-      context.sender_id == context.recipient_id -> :skip
-      context.sender_auto? -> :skip
-      context.blocked? -> :skip
-      not (enabled?(away) or enabled?(greeting)) -> :skip
+      #
+      # PRODUCT DECISION, recorded: auto-replies are NOT sent in sealed (E2EE) conversations, by
+      # design — sending the recipient's canned plaintext into a chat both sides believe is sealed
+      # would breach the "everything here is E2EE" invariant (the create path even rejects plaintext
+      # there). The CLIENT shows copy for it instead: "Auto-replies aren't sent in end-to-end
+      # encrypted chats" (client slice).
+      Map.get(context, :conversation_secret?) == true -> {:skip, :sealed}
+      is_nil(context.sender_id) or is_nil(context.recipient_id) -> {:skip, :invalid_ids}
+      context.sender_id == context.recipient_id -> {:skip, :self}
+      context.sender_auto? -> {:skip, :auto_inbound}
+      context.blocked? -> {:skip, :blocked}
+      not (enabled?(away) or enabled?(greeting)) -> {:skip, :disabled}
       greeting_due?(greeting, context) -> {:send, :greeting}
       away_due?(away, context) -> {:send, :away}
-      true -> :skip
+      true -> {:skip, :not_due}
     end
   end
 
