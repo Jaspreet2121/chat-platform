@@ -1,10 +1,13 @@
 defmodule ConversationService.EncryptionTest do
   @moduledoc """
-  Secret-chat control plane (108) on real SQL: enable preconditions (direct only, member only —
-  unknown and non-member are the SAME :conversation_not_found, no reveal; both members need a live
-  device key from 107, and the error NAMES the missing side), ONE-WAY enable (disable refused —
-  recorded decision), idempotent re-enable, create-with-secret running the same preconditions
-  BEFORE the insert, and the keys_changed fan-out lookup.
+  Secret-chat control plane (108; two-party OFF in 118) on real SQL: enable preconditions (direct
+  only, member only — unknown and non-member are the SAME :conversation_not_found, no reveal; both
+  members need a live device key from 107, and the error NAMES the missing side), idempotent
+  re-enable, create-with-secret running the same preconditions BEFORE the insert, the keys_changed
+  fan-out lookup — and the 118 contract: a single-sided OFF NEVER flips the flag (it records a
+  request), the OTHER member's own OFF is the acceptance, the requester cannot self-accept, ON
+  clears both the pending request and the explicit-off marker, a request expires after 7 days, and
+  only the requester can cancel.
   """
   use ConversationService.DataCase, async: false
 
@@ -12,6 +15,8 @@ defmodule ConversationService.EncryptionTest do
   alias ConversationService.Encryption
 
   @tenant_zero "00000000-0000-0000-0000-000000000001"
+
+  @result_keys [:already, :change, :e2ee_disabled, :enabled, :member_ids, :off_pending]
 
   setup do
     prev = Application.get_env(:conversation_service, :conversation_persistence, false)
@@ -76,11 +81,55 @@ defmodule ConversationService.EncryptionTest do
     })
   end
 
+  defp off(conversation, user), do: enable(conversation, user, false)
+
+  defp cancel(conversation, user) do
+    Encryption.set_encryption(%{
+      "conversation_id" => conversation,
+      "user_id" => user,
+      "enabled" => false,
+      "cancel" => true
+    })
+  end
+
   defp secret?(conversation) do
     %{rows: [[value]]} =
       Repo.query!("SELECT secret FROM conversations WHERE id = $1::text::uuid", [conversation])
 
     value
+  end
+
+  # The three 118 columns, straight from the row — the store's result is never trusted to prove
+  # its own writes.
+  defp columns(conversation) do
+    %{rows: [[secret, disabled_at, requested_by, requested_at]]} =
+      Repo.query!(
+        "SELECT secret, e2ee_disabled_at, e2ee_off_requested_by::text, e2ee_off_requested_at " <>
+          "FROM conversations WHERE id = $1::text::uuid",
+        [conversation]
+      )
+
+    %{
+      secret: secret,
+      disabled_at: disabled_at,
+      requested_by: requested_by,
+      requested_at: requested_at
+    }
+  end
+
+  defp backdate!(conversation, days) do
+    Repo.query!(
+      "UPDATE conversations SET e2ee_off_requested_at = now() - ($2 || ' days')::interval " <>
+        "WHERE id = $1::text::uuid",
+      [conversation, Integer.to_string(days)]
+    )
+  end
+
+  defp detail(conversation, user) do
+    {:ok, detail} =
+      Conversations.get_conversation(%{"conversation_id" => conversation, "user_id" => user})
+
+    detail
   end
 
   @tag :postgres_integration
@@ -122,18 +171,25 @@ defmodule ConversationService.EncryptionTest do
   end
 
   @tag :postgres_integration
-  test "enable is ONE-WAY and idempotent; secret_conversations_of lists it" do
+  test "ON is either-party, immediate, idempotent; a bare single-sided OFF NEVER changes secret; secret_conversations_of lists it" do
     a = user!()
     b = user!()
     direct = conversation!([a, b])
 
-    assert {:ok, %{enabled: true, already: false, member_ids: members}} = enable(direct, a)
+    assert {:ok,
+            %{enabled: true, already: false, change: "enabled", member_ids: members} = result} =
+             enable(direct, a)
+
+    assert Map.keys(result) |> Enum.sort() == @result_keys
     assert Enum.sort(members) == Enum.sort([a, b])
     assert secret?(direct)
 
-    # Idempotent re-enable; DISABLE is refused (recorded decision — one-way in v1).
-    assert {:ok, %{already: true}} = enable(direct, b)
-    assert {:error, :secret_cannot_disable} = enable(direct, a, false)
+    # Idempotent re-enable from the other side: nothing moved, nothing to announce.
+    assert {:ok, %{enabled: true, already: true, change: nil}} = enable(direct, b)
+
+    # A bare single-sided OFF is recorded as a REQUEST and the flag is untouched — the v1 rule
+    # (no one-sided downgrade) survives 118 unchanged.
+    assert {:ok, %{enabled: true, change: "off_requested"}} = off(direct, a)
     assert secret?(direct)
 
     assert {:ok, %{conversation_ids: [^direct]}} =
@@ -179,6 +235,212 @@ defmodule ConversationService.EncryptionTest do
              })
 
     assert secret?(created.conversation_id)
+  end
+
+  # ---- 118: two-party OFF ---------------------------------------------------------------------------
+
+  @tag :postgres_integration
+  test "OFF is TWO-PARTY: A's request records without flipping; B's own OFF accepts, flips, stamps the marker; ON clears both" do
+    a = user!()
+    b = user!()
+    direct = conversation!([a, b])
+    {:ok, _} = enable(direct, a)
+
+    # A requests. The flag does NOT move (MUT-1); the request is on the row and in the detail.
+    assert {:ok, request} = off(direct, a)
+    assert Map.keys(request) |> Enum.sort() == @result_keys
+
+    assert %{
+             enabled: true,
+             already: false,
+             change: "off_requested",
+             e2ee_disabled: false,
+             off_pending: %{requested_by: ^a, requested_at: requested_at}
+           } = request
+
+    assert {:ok, _, _} = DateTime.from_iso8601(requested_at)
+    assert secret?(direct)
+    assert %{requested_by: ^a, requested_at: %DateTime{}, disabled_at: nil} = columns(direct)
+
+    # The other member's detail fetch carries the pending request, nested, and the marker false.
+    seen_by_b = detail(direct, b)
+    assert seen_by_b.secret == true
+    assert seen_by_b.e2ee_disabled == false
+    assert seen_by_b.e2ee_off_pending == %{requested_by: a, requested_at: requested_at}
+
+    # B's own OFF is the acceptance: the ONLY call that ever flips to plain; the marker is stamped.
+    assert {:ok, accepted} = off(direct, b)
+
+    assert %{
+             enabled: false,
+             already: false,
+             change: "disabled",
+             e2ee_disabled: true,
+             off_pending: nil
+           } = accepted
+
+    refute secret?(direct)
+
+    assert %{secret: false, disabled_at: %DateTime{}, requested_by: nil, requested_at: nil} =
+             columns(direct)
+
+    seen_by_a = detail(direct, a)
+    assert seen_by_a.secret == false
+    assert seen_by_a.e2ee_disabled == true
+    assert seen_by_a.e2ee_off_pending == nil
+
+    # A further OFF on a plain chat is idempotent — nothing to request.
+    assert {:ok, %{enabled: false, already: true, change: nil, e2ee_disabled: true}} =
+             off(direct, a)
+
+    assert columns(direct).requested_by == nil
+
+    # ON from either side clears the explicit-off marker (MUT-4) — otherwise the client-side
+    # opportunistic upgrade would treat the chat as "turned off" forever.
+    assert {:ok, %{enabled: true, already: false, change: "enabled", e2ee_disabled: false}} =
+             enable(direct, b)
+
+    assert secret?(direct)
+    assert %{disabled_at: nil, requested_by: nil} = columns(direct)
+    assert detail(direct, a).e2ee_disabled == false
+  end
+
+  @tag :postgres_integration
+  test "SELF-ACCEPT is impossible: the requester's repeat OFF is the SAME request — no flip, no second request" do
+    a = user!()
+    b = user!()
+    direct = conversation!([a, b])
+    {:ok, _} = enable(direct, a)
+
+    {:ok, %{off_pending: %{requested_at: first}}} = off(direct, a)
+
+    # MUT-2: the requester asking again must never be read as the other party accepting.
+    assert {:ok,
+            %{
+              enabled: true,
+              already: true,
+              change: nil,
+              off_pending: %{requested_by: ^a, requested_at: ^first}
+            }} = off(direct, a)
+
+    assert secret?(direct)
+    assert columns(direct).requested_by == a
+  end
+
+  @tag :postgres_integration
+  test "ON from either side INVALIDATES a pending request; the next OFF starts fresh, it does not accept" do
+    a = user!()
+    b = user!()
+    direct = conversation!([a, b])
+    {:ok, _} = enable(direct, a)
+    {:ok, _} = off(direct, a)
+
+    # MUT-3: B turning ON again is an "off_cancelled" change with the request gone.
+    assert {:ok, %{enabled: true, already: true, change: "off_cancelled", off_pending: nil}} =
+             enable(direct, b)
+
+    assert secret?(direct)
+    assert %{requested_by: nil, requested_at: nil} = columns(direct)
+
+    # ...so B's OFF now is a NEW request by B, never an acceptance of A's dead one.
+    assert {:ok, %{enabled: true, change: "off_requested", off_pending: %{requested_by: ^b}}} =
+             off(direct, b)
+
+    assert secret?(direct)
+  end
+
+  @tag :postgres_integration
+  test "EXPIRY: a request older than 7 days is ABSENT — the other side's OFF starts fresh; a 6-day-old one is honoured; the detail read cleans the stale row" do
+    a = user!()
+    b = user!()
+    direct = conversation!([a, b])
+    {:ok, _} = enable(direct, a)
+
+    {:ok, _} = off(direct, a)
+    backdate!(direct, 8)
+
+    # MUT-5: B's OFF must NOT accept an 8-day-old request — it records B's own.
+    assert {:ok, %{enabled: true, change: "off_requested", off_pending: %{requested_by: ^b}}} =
+             off(direct, b)
+
+    assert secret?(direct)
+
+    # Inside the window the request still counts: A accepts B's 6-day-old request.
+    backdate!(direct, 6)
+    assert {:ok, %{enabled: false, change: "disabled"}} = off(direct, a)
+    refute secret?(direct)
+
+    # The READ path: a stale request is reported absent and cleared from the row.
+    {:ok, _} = enable(direct, a)
+    {:ok, _} = off(direct, a)
+    backdate!(direct, 8)
+
+    assert detail(direct, b).e2ee_off_pending == nil
+    assert %{requested_by: nil, requested_at: nil} = columns(direct)
+  end
+
+  @tag :postgres_integration
+  test "CANCEL: the requester withdraws; the other member cannot; nothing pending is idempotent" do
+    a = user!()
+    b = user!()
+    direct = conversation!([a, b])
+    {:ok, _} = enable(direct, a)
+    {:ok, _} = off(direct, a)
+
+    assert {:error, :secret_not_requester} = cancel(direct, b)
+    assert columns(direct).requested_by == a
+
+    assert {:ok, %{enabled: true, already: false, change: "off_cancelled", off_pending: nil}} =
+             cancel(direct, a)
+
+    assert %{requested_by: nil, requested_at: nil} = columns(direct)
+    assert secret?(direct)
+
+    assert {:ok, %{enabled: true, already: true, change: nil, off_pending: nil}} =
+             cancel(direct, a)
+  end
+
+  @tag :postgres_integration
+  test "GROUP refuses OFF and cancel like ON; non-member/unknown are ONE answer for all three and record NOTHING; malformed bodies refuse" do
+    a = user!()
+    b = user!()
+    outsider = user!()
+
+    # MUT-6: a group owner's OFF is :secret_not_supported, never a recorded request.
+    group = conversation!([a, b], "group")
+    assert {:error, :secret_not_supported} = off(group, a)
+    assert {:error, :secret_not_supported} = cancel(group, a)
+    assert columns(group).requested_by == nil
+
+    direct = conversation!([a, b])
+    {:ok, _} = enable(direct, a)
+
+    # MUT-7 (store half): unknown id and non-member are byte-identical refusals for every shape,
+    # and the outsider's OFF leaves no request behind.
+    for call <- [&enable/2, &off/2, &cancel/2] do
+      assert {:error, :conversation_not_found} = call.(direct, outsider)
+      assert {:error, :conversation_not_found} = call.(Ecto.UUID.generate(), a)
+    end
+
+    assert %{secret: true, requested_by: nil} = columns(direct)
+
+    assert {:error, :secret_invalid} =
+             Encryption.set_encryption(%{"conversation_id" => direct, "user_id" => a})
+
+    assert {:error, :secret_invalid} =
+             Encryption.set_encryption(%{
+               "conversation_id" => direct,
+               "user_id" => a,
+               "enabled" => false,
+               "cancel" => "yes"
+             })
+
+    assert {:error, :conversation_invalid} =
+             Encryption.set_encryption(%{
+               "conversation_id" => "nope",
+               "user_id" => a,
+               "enabled" => true
+             })
   end
 
   # ---- v2 (109): opportunistic auto-secret at create -----------------------------------------------

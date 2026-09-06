@@ -123,6 +123,8 @@ defmodule ConversationService.WallpaperSettingsTest do
              :call_start_permission,
              :conversation_id,
              :created_by,
+             :e2ee_disabled,
+             :e2ee_off_pending,
              :group_avatar_media_id,
              :only_admins_can_send,
              :participants,

@@ -280,7 +280,8 @@ defmodule ConversationService.Conversations do
          group_avatar(conversation),
          only_admins_can_send(conversation),
          call_start_permission(conversation),
-         wallpaper(conversation)
+         wallpaper(conversation),
+         ConversationService.Encryption.off_state(conversation.id)
        )}
     end
   rescue
@@ -368,7 +369,8 @@ defmodule ConversationService.Conversations do
          group_avatar,
          only_admins_can_send,
          call_start_permission,
-         wallpaper
+         wallpaper,
+         off_state
        ) do
     %{
       conversation_id: conversation.id,
@@ -395,7 +397,12 @@ defmodule ConversationService.Conversations do
       # of truth — the live settings_updated frame is only a hint for the open chat.
       wallpaper: wallpaper,
       # 108: secret (E2EE) flag — clients switch to sealed sends; the auto-reply engine skips.
-      secret: conversation.secret == true
+      secret: conversation.secret == true,
+      # 118: the two-party OFF state. `e2ee_disabled` is the explicit "turned off" marker the
+      # client-side opportunistic upgrade (109 §9 ii) must respect; `e2ee_off_pending` is the OFF
+      # request awaiting the other member — {requested_by, requested_at}, nil when none or expired.
+      e2ee_disabled: off_state.e2ee_disabled,
+      e2ee_off_pending: off_state.off_pending
     }
   end
 
