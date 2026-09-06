@@ -167,7 +167,25 @@ defmodule MessageService.EventOutboxTest do
     assert key == a["conversation_id"]
     assert envelope["payload"]["message_id"] || envelope[:payload]["message_id"]
     # Broker-acked -> the row is DELETED, not marked: published intent has no read value.
-    assert row(id) == :gone
+    #
+    # AWAITED, not asserted flat: the produce notification is sent BEFORE the Task's DELETE commits,
+    # so under load (the 100-suite sweep) a flat read races the delete and reads "pending" — observed
+    # flaking 2026-09-06 while passing solo every time. The property under test is "the row ends up
+    # gone via the fast path", not "the delete beats a mailbox hop".
+    assert await_gone(id), "outbox row still present 2s after the broker ack: #{inspect(row(id))}"
+  end
+
+  defp await_gone(id, deadline_ms \\ 2_000) do
+    if row(id) == :gone do
+      true
+    else
+      if deadline_ms <= 0 do
+        false
+      else
+        Process.sleep(20)
+        await_gone(id, deadline_ms - 20)
+      end
+    end
   end
 
   # --- (a) the crash window ------------------------------------------------------------------------
