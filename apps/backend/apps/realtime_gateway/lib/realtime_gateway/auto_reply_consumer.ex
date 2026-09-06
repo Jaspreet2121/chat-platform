@@ -118,8 +118,8 @@ defmodule RealtimeGateway.AutoReplyConsumer do
         sender_auto?: auto_message?(message),
         blocked?: blocked?(sender_id, recipient_id),
         settings: %{
-          away: mget(settings, :away) || %{},
-          greeting: mget(settings, :greeting) || %{}
+          away: string_keyed(mget(settings, :away)),
+          greeting: string_keyed(mget(settings, :greeting))
         },
         contact?: contact?(recipient_id, sender_id),
         last_activity_at: last_activity_before(conversation, message),
@@ -300,6 +300,16 @@ defmodule RealtimeGateway.AutoReplyConsumer do
 
   defp mget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
   defp mget(_, _), do: nil
+
+  # `RealtimeGateway.AutoReply` reads STRING keys ("enabled", "audience", "except_ids"). Normalising
+  # here means NO transport can starve the decision core. `InternalApi.decode_result/2` rehydrates
+  # keys with `String.to_existing_atom/1`, converting only the ones whose atoms already exist, so a
+  # settings block arrived as a MIXED map (`%{:enabled => true, "resend_after_days" => 14}`) and
+  # every `Map.get(block, "enabled")` read nil — the engine skipped with reason=disabled for two
+  # weeks while the GET endpoint looked perfect (both key styles serialise to the same JSON).
+  # `UserClientHttp` also pins these blocks with skip_atomize; this is the belt to that's braces.
+  defp string_keyed(%{} = block), do: Map.new(block, fn {k, v} -> {to_string(k), v} end)
+  defp string_keyed(_), do: %{}
 
   defp mget_atomish(value) when is_atom(value), do: to_string(value)
   defp mget_atomish(value), do: to_string(value)

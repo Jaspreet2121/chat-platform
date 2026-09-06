@@ -165,6 +165,30 @@ defmodule RealtimeGateway.AutoReplyConsumerTest do
     assert_receive {:broadcast, "user:" <> @recipient, "message_created", _}
   end
 
+  test "ATOM-KEYED settings still fire — no transport can starve the decision core (2026-09-06)" do
+    # EXACTLY what the HTTP adapter used to hand the consumer: InternalApi.decode_result rehydrates
+    # keys with String.to_existing_atom/1, so only the keys whose atoms already exist convert — a
+    # MIXED map. The engine reads Map.get(block, "enabled"), got nil, and skipped every message with
+    # reason=disabled for two weeks while the GET endpoint looked perfect.
+    Application.put_env(:realtime_gateway, :test_settings, %{
+      away: %{},
+      greeting: %{
+        :enabled => true,
+        :body => "Welcome! We reply fast.",
+        "audience" => "everyone",
+        "resend_after_days" => 14
+      }
+    })
+
+    assert :ok = AutoReplyConsumer.handle_value(event())
+
+    assert_receive {:claim, claim}
+    assert claim["kind"] == "greeting"
+
+    assert_receive {:reply_sent, attrs}
+    assert attrs["body"] == "Welcome! We reply fast."
+  end
+
   test "a THROTTLED claim sends nothing (at-least-once redelivery is harmless)" do
     Application.put_env(:realtime_gateway, :test_claim_result, :throttled)
 

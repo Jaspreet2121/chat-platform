@@ -113,17 +113,39 @@ defmodule SharedInfra.UserClientHttp do
   @impl true
   def dating_attach_conversation(attrs), do: post("/internal/dating/attach_conversation", attrs)
 
-  @impl true
-  def get_auto_replies(attrs), do: post("/internal/auto_replies/get", attrs)
+  # ⚠️ THE `away` / `greeting` BLOCKS STAY STRING-KEYED, like a message's `metadata`.
+  #
+  # `InternalApi.decode_result/2` rehydrates map keys with `String.to_existing_atom/1`, which for
+  # these blocks is worse than either extreme: it converts only the keys whose atoms happen to exist
+  # in the VM, so `%{"enabled" => true, "resend_after_days" => 14}` decodes to
+  # `%{:enabled => true, "resend_after_days" => 14}` — a MIXED map. The auto-reply engine reads
+  # `Map.get(block, "enabled")` (string key), got nil, and skipped every message with
+  # `reason=disabled` while the GET endpoint looked perfectly correct (atom and string keys serialise
+  # to the same JSON, so the UI never showed a thing). Two weeks of "enabled but never fires".
+  @auto_reply_decode [skip_atomize: ["away", "greeting"]]
+
+  @doc """
+  The decode options the auto-reply calls use. Public so the wire-shape contract is assertable:
+  these blocks MUST come back string-keyed, whatever atoms happen to exist in the VM.
+  """
+  def auto_reply_decode_opts, do: @auto_reply_decode
 
   @impl true
-  def update_auto_replies(attrs), do: post("/internal/auto_replies/update", attrs)
+  def get_auto_replies(attrs),
+    do: post("/internal/auto_replies/get", attrs, @auto_reply_decode)
+
+  @impl true
+  def update_auto_replies(attrs),
+    do: post("/internal/auto_replies/update", attrs, @auto_reply_decode)
 
   @impl true
   def claim_auto_reply(attrs), do: post("/internal/auto_replies/claim", attrs)
 
-  defp post(path, attrs) do
-    SharedInfra.HttpClient.post_result(base_url(), path, attrs, unavailable: @unavailable)
+  defp post(path, attrs, decode \\ []) do
+    SharedInfra.HttpClient.post_result(base_url(), path, attrs,
+      unavailable: @unavailable,
+      decode: decode
+    )
   end
 
   defp base_url do
