@@ -279,7 +279,8 @@ defmodule ConversationService.Conversations do
          participants,
          group_avatar(conversation),
          only_admins_can_send(conversation),
-         call_start_permission(conversation)
+         call_start_permission(conversation),
+         wallpaper(conversation)
        )}
     end
   rescue
@@ -352,12 +353,22 @@ defmodule ConversationService.Conversations do
 
   defp call_start_permission(_), do: "everyone"
 
+  # 117: unlike the two group-governance settings above, the wallpaper applies to EVERY conversation
+  # type — a DM's settings row exists solely to carry it.
+  defp wallpaper(%{id: id}) do
+    case ConversationSettingsStore.get_settings(id) do
+      %{wallpaper: wallpaper} -> wallpaper
+      _ -> nil
+    end
+  end
+
   defp conversation_detail_response(
          conversation,
          participants,
          group_avatar,
          only_admins_can_send,
-         call_start_permission
+         call_start_permission,
+         wallpaper
        ) do
     %{
       conversation_id: conversation.id,
@@ -380,6 +391,9 @@ defmodule ConversationService.Conversations do
       only_admins_can_send: only_admins_can_send,
       # Group-call permission — the client gates the "start call" button (Phase-3).
       call_start_permission: call_start_permission,
+      # 117: the SHARED wallpaper (both DMs and groups; nil = unset). The settings row is the source
+      # of truth — the live settings_updated frame is only a hint for the open chat.
+      wallpaper: wallpaper,
       # 108: secret (E2EE) flag — clients switch to sealed sends; the auto-reply engine skips.
       secret: conversation.secret == true
     }

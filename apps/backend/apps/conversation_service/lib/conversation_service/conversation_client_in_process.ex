@@ -99,6 +99,9 @@ defmodule ConversationService.ConversationClientInProcess do
   def set_group_settings(attrs), do: ConversationService.Participants.set_group_settings(attrs)
 
   @impl true
+  def set_wallpaper(attrs), do: ConversationService.Participants.set_wallpaper(attrs)
+
+  @impl true
   def authorize_send(attrs), do: ConversationService.Participants.authorize_send(attrs)
 
   @impl true

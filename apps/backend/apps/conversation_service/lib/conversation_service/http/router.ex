@@ -122,6 +122,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Participants.set_group_settings(body(conn)))
   end
 
+  post "/internal/conversations/set_wallpaper" do
+    send_result(conn, ConversationService.Participants.set_wallpaper(body(conn)))
+  end
+
   post "/internal/conversations/authorize_send" do
     send_result(conn, ConversationService.Participants.authorize_send(body(conn)))
   end

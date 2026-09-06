@@ -119,6 +119,108 @@ defmodule ConversationService.Participants do
     _ -> {:error, :participant_invalid}
   end
 
+  # 117: the storable wallpaper kinds. "photo" is DELIBERATELY absent — photos stay device-local
+  # (a shared photo needs an upload + a cross-participant ACL; out of scope), so kind=photo is
+  # refused exactly like an unknown kind.
+  @wallpaper_kinds ["pattern", "scene", "solid", "gradient"]
+
+  @doc """
+  Set (or clear, with nil) the SHARED chat wallpaper (117). attrs: "conversation_id",
+  "actor_user_id", "wallpaper" (map | nil).
+
+  AUTHORIZATION differs from the other settings ON PURPOSE: a wallpaper is decor, not governance.
+  DMs — EITHER participant may change it. Groups — the SAME owner/admin rule as every other
+  conversation setting (require_owner_or_admin), so a locked group's look stays with its admins.
+  A non-member (which is also what a cross-tenant caller is — tenancy rides membership on the
+  first-party path) gets :participant_not_found, which the gateway collapses to 404: byte-identical
+  to an unknown conversation, no existence reveal.
+
+  The wallpaper map is validated against a WHITELIST and rebuilt key-by-key — unknown keys are
+  dropped, never stored, so the column can only ever hold the documented shape.
+  """
+  def set_wallpaper(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, actor_user_id} <- required_attr(attrs, "actor_user_id"),
+         {:ok, wallpaper} <- wallpaper_attr(Map.get(attrs, "wallpaper")) do
+      if conversation_persistence_enabled?() do
+        with {:ok, conversation} <- fetch_active_conversation(conversation_id),
+             {:ok, _actor} <- require_wallpaper_setter(conversation, actor_user_id),
+             {:ok, _settings} <- upsert_wallpaper(conversation_id, wallpaper) do
+          {:ok, %{conversation_id: conversation_id, wallpaper: wallpaper}}
+        end
+      else
+        {:ok, %{conversation_id: conversation_id, wallpaper: wallpaper}}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :conversation_not_found}
+  end
+
+  defp require_wallpaper_setter(%{type: "group", id: id}, actor_user_id),
+    do: require_owner_or_admin(id, actor_user_id)
+
+  defp require_wallpaper_setter(%{id: id}, actor_user_id),
+    do: fetch_active_participant(id, actor_user_id)
+
+  # nil clears. A map is rebuilt against the whitelist; anything else is invalid. Every refusal is
+  # the ONE code :wallpaper_invalid — the gateway maps it to a single 422.
+  defp wallpaper_attr(nil), do: {:ok, nil}
+
+  defp wallpaper_attr(%{} = raw) do
+    with kind when kind in @wallpaper_kinds <- Map.get(raw, "kind"),
+         {:ok, wallpaper} <- build_wallpaper(%{"kind" => kind}, raw) do
+      {:ok, wallpaper}
+    else
+      _ -> {:error, :wallpaper_invalid}
+    end
+  end
+
+  defp wallpaper_attr(_other), do: {:error, :wallpaper_invalid}
+
+  # {key, validator} — present-and-valid is kept, absent is fine, present-and-invalid refuses the
+  # whole request. Unknown keys never enter the accumulator, so they are stripped by construction.
+  defp wallpaper_fields do
+    [
+      {"id", &short_string?/1},
+      {"background", &short_string?/1},
+      {"color", &color_string?/1},
+      {"intensity", &intensity?/1},
+      {"dim", &dim?/1}
+    ]
+  end
+
+  defp build_wallpaper(acc, raw) do
+    Enum.reduce_while(wallpaper_fields(), {:ok, acc}, fn {key, valid?}, {:ok, acc} ->
+      case Map.fetch(raw, key) do
+        :error ->
+          {:cont, {:ok, acc}}
+
+        {:ok, value} ->
+          if valid?.(value),
+            do: {:cont, {:ok, Map.put(acc, key, value)}},
+            else: {:halt, {:error, :wallpaper_invalid}}
+      end
+    end)
+  end
+
+  defp short_string?(v), do: is_binary(v) and v != "" and byte_size(v) <= 64
+  defp color_string?(v), do: is_binary(v) and v != "" and byte_size(v) <= 32
+  defp intensity?(v), do: is_number(v) and v >= 0.05 and v <= 0.30
+  defp dim?(v), do: is_number(v) and v >= 0 and v <= 0.6
+
+  defp upsert_wallpaper(conversation_id, wallpaper) do
+    case ConversationSettingsStore.get_settings(conversation_id) do
+      nil ->
+        ConversationSettingsStore.create_settings(%{
+          "conversation_id" => conversation_id,
+          "wallpaper" => wallpaper
+        })
+
+      settings ->
+        ConversationSettingsStore.update_settings(settings, %{"wallpaper" => wallpaper})
+    end
+  end
+
   @doc """
   SEND authorization for the enforced only-admins-can-send mode. :ok unless the conversation is a group
   with only_admins_can_send = true AND the sender's role is "member" (or not an active participant).

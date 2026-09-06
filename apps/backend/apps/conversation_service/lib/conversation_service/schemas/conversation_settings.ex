@@ -18,6 +18,9 @@ defmodule ConversationService.Schemas.ConversationSettings do
     # Phase-3 group calling: who may START a group call — everyone (default) or admins/owner only.
     field(:call_start_permission, :string, default: "everyone")
     field(:message_retention_days, :integer)
+    # 117: the SHARED chat wallpaper — the client's own encoding, whitelist-validated in
+    # Participants.set_wallpaper before it ever reaches this changeset. NULL = unset.
+    field(:wallpaper, :map)
     field(:created_at, :utc_datetime_usec)
     field(:updated_at, :utc_datetime_usec)
   end
@@ -29,7 +32,8 @@ defmodule ConversationService.Schemas.ConversationSettings do
       :only_admins_can_send,
       :only_admins_can_add_members,
       :call_start_permission,
-      :message_retention_days
+      :message_retention_days,
+      :wallpaper
     ])
     |> validate_required([:conversation_id, :only_admins_can_send, :only_admins_can_add_members])
     |> validate_inclusion(:call_start_permission, @call_permissions)
@@ -43,7 +47,8 @@ defmodule ConversationService.Schemas.ConversationSettings do
       :only_admins_can_send,
       :only_admins_can_add_members,
       :call_start_permission,
-      :message_retention_days
+      :message_retention_days,
+      :wallpaper
     ])
     |> validate_required([:only_admins_can_send, :only_admins_can_add_members])
     |> validate_inclusion(:call_start_permission, @call_permissions)
