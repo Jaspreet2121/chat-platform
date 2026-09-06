@@ -2,6 +2,26 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-09-06] Per-DM E2EE toggle: OFF is two-party (request + accept); ON stays immediate (118)
+
+- **Context:** 108 made enabling E2EE one-way — a downgrade toggle is a content-exposure attack
+  surface (`ConversationService.Encryption`). Users want to turn encryption off for a chat, and the
+  opportunistic upgrade (109 §9 ii) would silently turn it back ON the next time a capable client
+  opened the chat, so a bare OFF would be a no-op in practice.
+- **Decision:** ON is unchanged (either participant, immediate). OFF requires BOTH participants: one
+  requests, the OTHER member's own OFF accepts, and only then does `secret` flip — a single-sided
+  OFF never changes the flag, so the 108 rationale is preserved (no one party can expose the
+  other's future messages). A pending request expires after 7 days, is cancellable by its requester
+  only, and is invalidated when either side turns ON again. An accepted OFF stamps
+  `conversations.e2ee_disabled_at`, exposed as `e2ee_disabled` in the detail — the marker the
+  client-side auto-upgrade MUST respect (E2EE_FRAME.md §9.1). A real ON purges the conversation's
+  `message_search` rows, best-effort, keeping 108's "its content does not exist here".
+- **Not decided here:** groups stay `secret.not_supported` — group E2EE is a new feature (pairwise
+  per-device sealing has no group key, no re-key, no joiner history), sized separately. The client
+  halves (web + Android) ship as their own slices.
+- **Status:** server half shipped — schema 118 (three nullable columns, no backfill), the store,
+  the gateway contract, the search-purge seam. Clients pending.
+
 ## [2026-08-26] Secret chats default-on: auto-replies won't fire in E2EE chats (product note)
 
 - **Context:** Secret chats v2 (109) makes E2EE the DEFAULT for the first-party apps (tenant-zero +

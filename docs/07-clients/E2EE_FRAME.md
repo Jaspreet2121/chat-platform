@@ -120,7 +120,9 @@ multi-device safety numbers are a later refinement.
 - No plaintext is persisted: a reload re-decrypts from the stored ciphertext (in-memory LRU only).
 - A newly linked device cannot read prior sealed history — the server relays ciphertext it was never
   a recipient of. "History transfer between own devices" is a deferred follow-up.
-- Disabling encryption is not supported (server one-way); start a new normal chat to leave.
+- Disabling encryption is TWO-PARTY (118, §9.1): one member requests, the other member's own OFF
+  accepts, and only then does the chat go plain. A single-sided OFF never changes the flag — the
+  v1 reason (a one-way downgrade is a content-exposure surface) still stands.
 
 ## 8. Media (encrypted attachments) — NORMATIVE
 
@@ -208,6 +210,40 @@ Two upgrade triggers, both idempotent (enabling an already-secret conversation i
   and keeps working (old clients, or a peer who hasn't opened the app, are never broken).
 
 The client MUST treat both as best-effort: a failed upgrade never blocks sending a normal message.
+
+### 9.1 Turning encryption OFF — two-party consent (118) — client contract
+
+`POST /conversations/{id}/encryption` stays the one endpoint; the body picks the shape:
+
+    {"enabled": true}                   ON — either participant, immediate (unchanged). Also clears
+                                        the explicit-off marker and any pending OFF request.
+    {"enabled": false}                  OFF — RECORDS a request when none is pending; ACCEPTS when the
+                                        pending request is the OTHER member's (the only call that
+                                        ever flips to plain); idempotent when it is the caller's own.
+    {"enabled": false, "cancel": true}  the requester withdraws their own pending request.
+
+Every 200 is `{enabled, e2ee_disabled, off_requested, requested_by, requested_at}`. A pending
+request expires after 7 days. Errors: 404 `conversation.not_found` (unknown / non-member /
+cross-tenant — one body, never a 403), 422 `secret.not_supported` (groups), 403
+`secret.not_requester` (cancelling someone else's request), 400 `secret.invalid`, 409
+`secret.peer_keys_missing` (ON only, names the keyless side).
+
+The conversation DETAIL carries `e2ee_disabled` (bool) and `e2ee_off_pending`
+(`{requested_by, requested_at}` | null). Every real change writes a `{kind: "encryption", state, by}`
+system message — `off_requested`, `disabled`, `off_cancelled`, beside the existing `enabled` /
+`keys_changed` — and a `conversation_encryption_changed` frame on BOTH members' user topics carrying
+`{enabled, e2ee_disabled, e2ee_off_pending}` (the detail's three encryption fields, applyable
+without a refetch).
+
+**The marker rule for trigger (ii):** a client MUST NOT run the opportunistic upgrade on a
+conversation whose detail says `e2ee_disabled: true` — the pair turned it off on purpose. Only an
+explicit "Turn on encryption" re-enables it, and the server clears the marker on that ON.
+
+Required UI rails: a confirm dialog before requesting OFF (new messages become server-readable,
+searchable and previewable; auto-replies resume; past sealed messages stay sealed), the pending
+state visible in the header while a request is open, and the three new system-message states
+rendered — a build that predates them shows the generic "Encryption enabled" label, so ship the
+labels before or with the server.
 
 ## 10. Calls (end-to-end encrypted voice/video) — NORMATIVE
 
