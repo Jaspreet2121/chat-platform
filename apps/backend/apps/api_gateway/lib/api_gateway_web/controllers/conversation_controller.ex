@@ -44,11 +44,15 @@ defmodule ApiGatewayWeb.ConversationController do
         "by" => actor_id
       })
 
+      # The SAME frame shape the toggle emits (118): a born-secret chat has no explicit-off marker
+      # and no pending request, so the two 118 keys ride as false / nil rather than being absent.
       for member <- members, is_binary(member) do
         ApiGatewayWeb.Endpoint.broadcast("user:" <> member, "conversation_encryption_changed", %{
           "type" => "conversation_encryption_changed",
           "conversation_id" => conversation_id,
-          "enabled" => true
+          "enabled" => true,
+          "e2ee_disabled" => false,
+          "e2ee_off_pending" => nil
         })
       end
     end

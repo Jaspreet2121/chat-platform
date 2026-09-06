@@ -97,14 +97,21 @@ defmodule ApiGatewayWeb.BornSecretTest do
     assert message["message_type"] == "system"
     assert message["metadata"] == %{"kind" => "encryption", "state" => "enabled", "by" => @me}
 
+    # The toggle's frame shape (118), key-set pinned: a born-secret chat carries the two 118 keys
+    # as false / nil, never absent — clients decode ONE frame.
     expected = %{
       "type" => "conversation_encryption_changed",
       "conversation_id" => @conv,
-      "enabled" => true
+      "enabled" => true,
+      "e2ee_disabled" => false,
+      "e2ee_off_pending" => nil
     }
 
     assert_receive %Phoenix.Socket.Broadcast{topic: "user:" <> @me, payload: ^expected}
     assert_receive %Phoenix.Socket.Broadcast{topic: "user:" <> @peer, payload: ^expected}
+
+    assert Map.keys(expected) |> Enum.sort() ==
+             ["conversation_id", "e2ee_disabled", "e2ee_off_pending", "enabled", "type"]
   end
 
   test "a NORMAL create emits nothing; an idempotent existing-direct (created:false) emits nothing" do
