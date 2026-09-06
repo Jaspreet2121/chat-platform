@@ -2,6 +2,46 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-09-06] Auto-replies never fired: TWO independent encoding bugs, not one
+
+- **Context:** enabled away/greeting rules had never produced a reply. The envelope fix (0d5ff4e)
+  made the engine's skips visible, and production then logged
+  `[auto_reply] skip conv=… sender=… reason=disabled` for a DM whose recipient had `away.enabled =
+  true`. Investigation found the settings blocks double-encoded in Postgres:
+  `jsonb_typeof(away) = 'string'` on every patched row. Fixing that alone would NOT have made a
+  reply fire — there was a second, independent break on the read side.
+- **Bug 1 — WRITE: double-encoded jsonb.** `UserService.AutoReplies.update_settings/1` ran
+  `Jason.encode!(block)` and bound the resulting STRING to a `$N::jsonb` parameter. Postgrex encodes
+  a jsonb parameter with its own JSON encoder, so the text was encoded a second time and stored as a
+  jsonb *string*: `away ->> 'enabled'` is NULL and every SQL-side read of the block sees nothing.
+  The `'{}'::jsonb` defaults in the same INSERT are SQL literals, never parameters, so they were
+  stored correctly — which is why a row could hold a string `away` beside an object `greeting` that
+  had only ever been defaulted. Fixed by passing the MAP through one `jsonb_param/1` used by both
+  blocks and both arms of the upsert. Verified against real SQL, both directions.
+- **Bug 2 — READ: partial atom rehydration across the internal HTTP seam.** This is what actually
+  produced `reason=disabled`. `get_settings/1` already decoded the legacy string, so user-service
+  returned a correct map; but the gateway reads it through `UserClientHttp`, and
+  `InternalApi.decode_result/2` rehydrates map keys with `String.to_existing_atom/1`, converting
+  only the keys whose atoms happen to exist in that release. The block arrived as a MIXED map —
+  observed: `[:audience, :body, :enabled, :mode, "except_ids", "schedule"]` — and
+  `RealtimeGateway.AutoReply` reads STRING keys, so `Map.get(block, "enabled")` was nil and every
+  message skipped as disabled. Fixed twice over: `UserClientHttp` pins both blocks with
+  `skip_atomize` (the precedent is a message's `metadata` in `MessageClientHttp`), and the consumer
+  normalises the blocks to string keys before handing them to the decision core, so no transport can
+  starve it again.
+- **Why it survived two weeks:** the GET endpoint was correct throughout. `get_settings/1` decoded
+  the string, and atom- and string-keyed maps serialise to identical JSON — so the API, and the UI
+  reading it, looked perfect while the engine saw an empty block. Neither bug was reachable from any
+  in-process test: one is only visible in the COLUMN, the other only across the HTTP seam.
+- **Decision:** fix both, tolerate legacy rows on read with a WARNING naming the user (so stragglers
+  are countable and the tolerance can be removed once it stops appearing), and backfill with
+  migration 119 — per column independently, guarded on `jsonb_typeof = 'string'`, which is also what
+  makes a re-run a no-op. Tests assert the stored COLUMN type and run the shipped migration file
+  itself, plus an end-to-end that saves through the context, reads back through the consumer's own
+  load path, and asserts `decide/1` says send.
+- **Status:** shipped. Note for deploy: `AUTO_REPLY_CONSUMER_ENABLED` defaults to false
+  (docker-compose.prod.yml) — with it off nothing fires regardless of this fix.
+
 ## [2026-09-06] Consumer stalls: a lag-based liveness trigger, and the shared-brod-client finding
 
 - **Context:** a fourth silent-stall variant. p0 of `message-service-inbox-projection` sat at
