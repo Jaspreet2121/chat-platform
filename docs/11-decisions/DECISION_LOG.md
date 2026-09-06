@@ -2,6 +2,55 @@
 
 Architecture decisions, newest first. Each entry: context → decision → rationale → status.
 
+## [2026-09-06] Consumer stalls: a lag-based liveness trigger, and the shared-brod-client finding
+
+- **Context:** a fourth silent-stall variant. p0 of `message-service-inbox-projection` sat at
+  committed 353 / log-end 359 for over an hour — SAME consumer pid, offsets well in range, no
+  exception, no log line — while p1–p5 of the same group and the whole `search-index` group (same
+  topic) ran normally. A restart cleared it. Neither existing backstop can see this: the
+  out-of-range hook needs a fetch error, the liveness probe needs a CHANGED consumer pid.
+- **Decision — lag-based trigger (shipped):** the existing 60s per-worker probe gains a second
+  condition. When the consumer pid is unchanged, compare the group's COMMITTED offset against the
+  partition's LOG-END offset; if committed has not advanced across 3 consecutive probes AND lag > 0,
+  log at ERROR and re-subscribe at the COMMITTED offset. Zero lag means no action, ever — a
+  caught-up partition is indistinguishable from a frozen one by offsets alone, and quiet partitions
+  are the majority. brod exposes no progress signal of its own (no "last message at", nothing beyond
+  `get_consumer/3` in its consumer-side API), so the module tracks the committed offset itself in
+  the callback state. Three branches now coexist, each with its own trigger and offset rule; the
+  offsets must never be unified (`OffsetRecovery` moduledoc has the table).
+- **Finding — the likely ROOT CAUSE, not fixed here:** brod permits exactly ONE subscriber per
+  consumer ("if you want to read at different places... you have to create separate consumers (and
+  thus also separate clients)", brod.erl:827-829; enforced at brod_consumer.erl:430-446), and
+  `brod_topic_subscriber` subscribes THROUGH THE CLIENT (:462). All four of our consumer groups pass
+  the same `SharedInfra.Kafka.BrodProducer.client_name()`, so all four contend for ONE subscriber
+  slot per (topic, partition). Lose the slot once — a worker restart on a rebalance while a sibling
+  group takes it — and the loser retries every 2s forever while `brod_topic_subscriber` logs
+  NOTHING (it contains no log statement at all), with `get_consumer` still returning the same live
+  pid. That reproduces the observed signature exactly, including why a sibling group kept
+  committing and why a restart cleared it.
+- **Consequence if true:** the four groups are not merely racing on one partition — each partition's
+  slot is won by one group, so the others are chronically starved on it. **Verify on the box** (per
+  partition: who holds the subscription, and is the consumer suspended or waiting on a fetch):
+  ```
+  docker compose -f docker-compose.prod.yml exec -T message bin/message_service rpc '
+    client = SharedInfra.Kafka.BrodProducer.client_name()
+    for p <- 0..5 do
+      {:ok, c} = :brod.get_consumer(client, "message.events.v1", p)
+      s = :sys.get_state(c)
+      IO.inspect({p, consumer: c, subscriber: elem(s, 13), suspended: elem(s, 16),
+                  waiting_on_fetch: elem(s, 12) != :undefined})
+    end'
+  ```
+  Distinct subscriber pids across partitions (or fewer subscribed workers than groups × partitions)
+  confirms it.
+- **Named follow-up:** one brod client per consumer group (or per group-subscriber), which is what
+  brod's own documentation prescribes. Until then the new branch cannot repair this shape — the
+  slot's holder is alive, so the re-subscribe returns `{error, {already_subscribed_by, Pid}}` — but
+  it now logs that at ERROR **naming the holder**, turning a wholly silent stall into a decisive
+  diagnosis.
+- **Status:** trigger shipped (message-service only, no schema, no API). Root-cause fix deferred
+  pending the verification above.
+
 ## [2026-09-06] Per-DM E2EE toggle: OFF is two-party (request + accept); ON stays immediate (118)
 
 - **Context:** 108 made enabling E2EE one-way — a downgrade toggle is a content-exposure attack
