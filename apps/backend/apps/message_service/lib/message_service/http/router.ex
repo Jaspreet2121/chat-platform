@@ -97,6 +97,11 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Search.search_messages(body(conn)))
   end
 
+  # 118: the gateway's best-effort purge when a conversation turns secret.
+  post "/internal/search/purge_conversation" do
+    send_result(conn, MessageService.Projections.SearchIndex.purge_conversation(body(conn)))
+  end
+
   # list_timeline → Timeline.list_messages (distinct from Messages.list_messages above).
   post "/internal/timeline/list" do
     send_result(conn, MessageService.Timeline.list_messages(body(conn)))

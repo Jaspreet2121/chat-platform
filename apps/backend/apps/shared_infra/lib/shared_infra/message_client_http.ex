@@ -148,6 +148,9 @@ defmodule SharedInfra.MessageClientHttp do
   def search_messages(attrs), do: post("/internal/search/messages", attrs)
 
   @impl true
+  def purge_search_index(attrs), do: post("/internal/search/purge_conversation", attrs)
+
+  @impl true
   def pin_message(attrs), do: post("/internal/messages/pin", attrs)
 
   @impl true

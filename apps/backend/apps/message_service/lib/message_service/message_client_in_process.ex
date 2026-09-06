@@ -173,6 +173,10 @@ defmodule MessageService.MessageClientInProcess do
   def search_messages(attrs), do: Search.search_messages(attrs)
 
   @impl true
+  def purge_search_index(attrs),
+    do: MessageService.Projections.SearchIndex.purge_conversation(attrs)
+
+  @impl true
   def pin_message(attrs), do: MessageService.Pins.pin_message(attrs)
 
   @impl true

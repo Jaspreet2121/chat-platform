@@ -168,6 +168,34 @@ defmodule MessageService.Projections.SearchIndex do
     end
   end
 
+  @doc """
+  118: drop EVERY index row of one conversation. Called (best-effort) by the gateway when a
+  conversation turns secret, so the plaintext indexed while it was plain does not outlive the flip —
+  108's promise that a secret conversation's content "does not exist here". Sealed rows never
+  entered, so afterwards the conversation has no search-only copy at all.
+  → {:ok, %{conversation_id, purged: n}}; a malformed id is :message_invalid.
+  """
+  def purge_conversation(attrs) when is_map(attrs) do
+    with {:ok, conversation_id} <- conversation_id(attrs) do
+      %{num_rows: purged} =
+        Repo.query!(
+          "DELETE FROM message_search WHERE conversation_id = $1::text::uuid",
+          [conversation_id]
+        )
+
+      {:ok, %{conversation_id: conversation_id, purged: purged}}
+    end
+  end
+
+  defp conversation_id(attrs) do
+    value = Map.get(attrs, "conversation_id") || Map.get(attrs, :conversation_id)
+
+    case is_binary(value) and Ecto.UUID.cast(value) do
+      {:ok, _uuid} -> {:ok, value}
+      _ -> {:error, :message_invalid}
+    end
+  end
+
   defp do_upsert(message) do
     Repo.query!(
       "INSERT INTO message_search (message_id, conversation_id, sender_user_id, created_at, search_text) " <>

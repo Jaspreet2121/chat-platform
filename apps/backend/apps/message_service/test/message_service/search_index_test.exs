@@ -291,4 +291,48 @@ defmodule MessageService.SearchIndexTest do
       end)
     end
   end
+
+  # 118: the gateway's best-effort purge when a conversation turns secret.
+  describe "purge_conversation" do
+    defp index!(conversation_id, message_id) do
+      :ok =
+        SearchIndex.upsert(%{
+          message_id: message_id,
+          conversation_id: conversation_id,
+          sender_user_id: Ecto.UUID.generate(),
+          message_type: "text",
+          body: "plaintext that must not outlive the flip",
+          created_at: DateTime.utc_now()
+        })
+    end
+
+    @tag :postgres_integration
+    test "drops EVERY row of THAT conversation and nothing else; reports the count; idempotent" do
+      turning_secret = Ecto.UUID.generate()
+      bystander = Ecto.UUID.generate()
+      [m1, m2, m3] = for _ <- 1..3, do: Ecto.UUID.generate()
+
+      index!(turning_secret, m1)
+      index!(turning_secret, m2)
+      index!(bystander, m3)
+      assert indexed_text(m1) != :no_row
+
+      assert {:ok, %{conversation_id: ^turning_secret, purged: 2}} =
+               SearchIndex.purge_conversation(%{"conversation_id" => turning_secret})
+
+      # MUT-8 (message-service half): the flipped conversation has NO search-only copy left, and
+      # the bystander's row is untouched — the DELETE is scoped by conversation_id, exactly.
+      assert indexed_text(m1) == :no_row
+      assert indexed_text(m2) == :no_row
+      assert indexed_text(m3) != :no_row
+
+      assert {:ok, %{purged: 0}} =
+               SearchIndex.purge_conversation(%{"conversation_id" => turning_secret})
+
+      assert {:error, :message_invalid} =
+               SearchIndex.purge_conversation(%{"conversation_id" => "nope"})
+
+      assert {:error, :message_invalid} = SearchIndex.purge_conversation(%{})
+    end
+  end
 end

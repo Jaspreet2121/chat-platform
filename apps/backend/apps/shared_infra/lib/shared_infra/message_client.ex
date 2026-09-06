@@ -96,7 +96,10 @@ defmodule SharedInfra.MessageClient do
   @callback view_once_state(attrs()) :: result()
   @callback open_view_once(attrs()) :: result()
   @callback expired_view_once_media(attrs()) :: result()
+  # 118: drop a conversation's search-only copy when it turns secret (best-effort at the caller).
+  @callback purge_search_index(attrs()) :: result()
   @optional_callbacks message_info: 1,
+                      purge_search_index: 1,
                       get_message: 1,
                       event_outbox_summary: 1,
                       event_outbox_list: 1,
@@ -131,6 +134,7 @@ defmodule SharedInfra.MessageClient do
   def delete_message(attrs), do: normalize(adapter().delete_message(attrs))
   def mark_read(attrs), do: normalize(adapter().mark_read(attrs))
   def message_info(attrs), do: normalize(adapter().message_info(attrs))
+  def purge_search_index(attrs), do: normalize(adapter().purge_search_index(attrs))
   def get_message(attrs), do: normalize(adapter().get_message(attrs))
   def event_outbox_summary(attrs), do: normalize(adapter().event_outbox_summary(attrs))
   def event_outbox_list(attrs), do: normalize(adapter().event_outbox_list(attrs))
