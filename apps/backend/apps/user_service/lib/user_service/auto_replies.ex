@@ -9,7 +9,19 @@ defmodule UserService.AutoReplies do
   cannot be a unique index, so the check+insert runs under `pg_advisory_xact_lock` keyed on
   (user, conversation, kind) — the lock serializes exactly the contending pair, holds only for the
   transaction, and leaves no table bloat behind.
+
+  ## The stored SHAPE is part of the contract, not an implementation detail
+
+  Validation being strict is not enough for the engine to trust what it reads — for two weeks it
+  read nothing, because the blocks were stored as jsonb STRINGS rather than objects (a
+  `Jason.encode!` before a `$N::jsonb` parameter, which Postgrex then encoded again). A map went in
+  and a map came back out, so every in-process test passed while `away ->> 'enabled'` was NULL in
+  SQL. `jsonb_param/1` is now the single place a block becomes a parameter, `decode_block/3` still
+  accepts a legacy string but WARNS with the user id, and migration 119 backfills. The tests that
+  matter assert `jsonb_typeof`, not the round trip.
   """
+
+  require Logger
 
   alias UserService.Repo
 
@@ -30,8 +42,11 @@ defmodule UserService.AutoReplies do
 
       {away, greeting} =
         case rows do
-          [[away, greeting]] -> {decode_json(away), decode_json(greeting)}
-          [] -> {%{}, %{}}
+          [[away, greeting]] ->
+            {decode_block(away, user_id, "away"), decode_block(greeting, user_id, "greeting")}
+
+          [] ->
+            {%{}, %{}}
         end
 
       {:ok, %{away: away_with_defaults(away), greeting: greeting_with_defaults(greeting)}}
@@ -50,9 +65,6 @@ defmodule UserService.AutoReplies do
          {:ok, app_id} <- required(attrs, "app_id"),
          {:ok, away} <- validate_away(Map.get(attrs, "away")),
          {:ok, greeting} <- validate_greeting(Map.get(attrs, "greeting")) do
-      away_json = if away, do: Jason.encode!(away), else: nil
-      greeting_json = if greeting, do: Jason.encode!(greeting), else: nil
-
       Repo.query!(
         """
         INSERT INTO auto_reply_settings (user_id, app_id, away, greeting, updated_at)
@@ -64,7 +76,7 @@ defmodule UserService.AutoReplies do
           greeting = COALESCE($4::jsonb, auto_reply_settings.greeting),
           updated_at = now()
         """,
-        [user_id, app_id, away_json, greeting_json]
+        [user_id, app_id, jsonb_param(away), jsonb_param(greeting)]
       )
 
       get_settings(%{"user_id" => user_id})
@@ -122,18 +134,48 @@ defmodule UserService.AutoReplies do
     Ecto.Query.CastError -> {:error, :auto_reply_invalid}
   end
 
-  # jsonb comes back as a map through Ecto types but as a STRING through some raw-query paths —
-  # accept both (the engine reads through this too; guessing wrong is a silent all-off).
-  defp decode_json(value) when is_map(value), do: value
+  # THE ONE PLACE A BLOCK BECOMES A jsonb PARAMETER — both blocks, both arms of the upsert.
+  #
+  # Hand Postgrex THE MAP, never `Jason.encode!(map)`. A `$N::jsonb` parameter is encoded by
+  # Postgrex's own JSON encoder, so a pre-encoded STRING is encoded a SECOND time and lands as a
+  # jsonb *string* rather than an object: `jsonb_typeof(away) = 'string'`, `away->>'enabled'` = NULL,
+  # and every SQL-side read of the block silently sees nothing. That is what production held for
+  # every patched row (2026-09-06). Proven both ways in AutoRepliesTest's real-SQL round trip.
+  #
+  # The `'{}'::jsonb` defaults in the INSERT are SQL LITERALS, not parameters, so they never went
+  # through the encoder — which is why a row could hold a string `away` beside an object `greeting`
+  # that had only ever been defaulted, never patched.
+  defp jsonb_param(nil), do: nil
+  defp jsonb_param(block) when is_map(block), do: block
 
-  defp decode_json(value) when is_binary(value) do
+  # LEGACY TOLERANCE (119). Rows written before the fix hold a JSON-encoded string; Postgrex hands
+  # those back as an Elixir binary instead of a map. Decode once and say so, naming the user, so the
+  # stragglers are countable — when the warning stops appearing, this clause and the tolerance in
+  # the consumer can go. The 119 backfill converts the rows that existed at deploy time; this covers
+  # anything an older release writes during the rollout window.
+  defp decode_block(value, _user_id, _field) when is_map(value), do: value
+
+  defp decode_block(value, user_id, field) when is_binary(value) do
     case Jason.decode(value) do
-      {:ok, decoded} when is_map(decoded) -> decoded
-      _ -> %{}
+      {:ok, decoded} when is_map(decoded) ->
+        Logger.warning(
+          "[auto_reply] LEGACY double-encoded #{field} decoded on read — user_id=#{user_id}. " <>
+            "The column holds a jsonb string, not an object (pre-119 write path); " <>
+            "run migration 119 to backfill."
+        )
+
+        decoded
+
+      _ ->
+        Logger.warning(
+          "[auto_reply] unreadable #{field} block, treating as empty — user_id=#{user_id}"
+        )
+
+        %{}
     end
   end
 
-  defp decode_json(_), do: %{}
+  defp decode_block(_value, _user_id, _field), do: %{}
 
   # --- defaults ----------------------------------------------------------------------------------
 
