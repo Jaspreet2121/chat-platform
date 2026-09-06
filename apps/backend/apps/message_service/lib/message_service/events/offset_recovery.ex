@@ -73,15 +73,75 @@ defmodule MessageService.Events.OffsetRecovery do
   subscribed; the repair re-subscribes at the group's COMMITTED offset. Quiet when healthy — it
   logs at ERROR only when it actually repairs (or cannot).
 
-  ## Committed for the connection path, EARLIEST for the out-of-range path — never collapse these
+  ## The THIRD wedge: same consumer pid, offsets in range, no progress (2026-09-06)
 
-  The two recoveries resume from DIFFERENT offsets, deliberately. Out-of-range means the committed
-  position NO LONGER EXISTS on the broker, so `:earliest` loses the least. A replaced consumer's
-  committed offset is perfectly valid — resuming there redelivers exactly the unprocessed tail
-  (including any un-acked `:retry` batch, which is precisely what retry wanted) and nothing else.
-  `:earliest` here would replay the whole retained partition for no reason; `:latest` would skip
-  real events. A future refactor that unifies them on one offset choice breaks one path or the
-  other — MUT-3 in the tests exists to catch exactly that.
+  Partition 0 of `message-service-inbox-projection` sat at committed 353 / log-end 359 for over an
+  hour: the SAME consumer pid throughout, offsets well inside the retained range, no exception, no
+  log line, while partitions 1–5 of the same group processed the day's traffic normally and the
+  `search-index` group — same topic, same partitions — kept committing. A restart cleared it.
+
+  Neither existing branch can see this. The out-of-range hook needs a fetch error (none is
+  produced), and the pid-change probe needs a NEW consumer pid (the pid never changed). What all
+  three variants share is that brod's own progress gating is silent by design — after subscriber,
+  connection and `is_suspended` are all fine, `maybe_send_fetch_request/1` still has two return-
+  without-fetching clauses (brod_consumer.erl:768-791), and a worker can also simply not be
+  subscribed while its consumer stays alive:
+
+    * FED BUT NOT ACKING — `Count > PrefetchCount andalso Bytes > PrefetchBytes` (:781-791). The
+      pending-ack queue drains ONLY through `handle_cast({ack, Offset})` (:466-469), which the
+      worker sends when the callback returns `{ok, ack | commit, _}`
+      (brod_group_subscriber_worker.erl:70-88). Our `:retry` path deliberately does not ack.
+    * SUBSCRIBED BUT NOT FED — `last_req_ref` still holds a reference (:777-780, "waiting for the
+      last request"). A response whose ref does not match is discarded WITHOUT clearing the field
+      (:522-526), and the field is otherwise only cleared when a NEW connection is established
+      (`maybe_init_connection`, :936-941). A half-open socket whose connection process stays alive
+      produces no `DOWN`, so no reconnect, so the wait never ends.
+    * NOT SUBSCRIBED AT ALL, PID UNCHANGED — the likeliest fit for this occurrence. brod allows
+      exactly ONE subscriber per consumer ("Only one process can be subscribed to a consumer...
+      you have to create separate consumers (and thus also separate clients)", brod.erl:827-829),
+      the slot is defended in `handle_call({subscribe, ...})` (:430-446), and
+      `brod_topic_subscriber` subscribes THROUGH THE CLIENT (:462). All four of our groups share
+      one brod client (`MessageService.Application`), so all four contend for one slot per
+      (topic, partition). Lose the slot once — a worker restart on a rebalance while a sibling
+      group takes it — and `subscribe_partition` records `?DOWN(reason)` and retries every 2s
+      forever, logging NOTHING (`brod_topic_subscriber` has no log statement at all). Meanwhile
+      `get_consumer` keeps returning the same live pid.
+
+  brod exposes NO per-partition progress signal to hang a check on — no "last message at", no lag,
+  nothing beyond `get_consumer/3` in its consumer-side API — so this module tracks progress itself,
+  in the callback state, using the only two numbers it can always ask the broker for: the group's
+  COMMITTED offset (already fetched by the pid-change repair) and the partition's LOG-END offset.
+
+  The rule is deliberately conservative, because this branch is the only one with no error to
+  anchor on. Repair requires BOTH real lag (log-end > committed) AND a committed offset that has
+  not moved across N consecutive probes (default 3, i.e. ~3 minutes at the 60s interval). Zero lag
+  means no action, ever — a caught-up partition is indistinguishable from a frozen one by offset
+  alone, and quiet partitions are the overwhelming majority. An unmeasurable partition (either
+  offset unavailable) is treated as no-lag: no action, no log. And like every other branch here, it
+  logs only when it actually repairs — never a heartbeat.
+
+  A re-subscribe is a real cure for the first two shapes: `handle_subscribe_call` (:819-836) runs
+  `reset_buffer`, which clears BOTH `pending_acks` and `last_req_ref` (:894-903), then clears
+  `is_suspended` and fetches again. For the third it cannot be — the slot's holder is alive, so
+  brod answers `{error, {already_subscribed_by, Pid}}` — but the failure log then NAMES the pid
+  holding the subscription, which turns a wholly silent stall into a decisive diagnosis. (The
+  standing fix for that shape is a separate brod client per consumer group — brod's own prescription
+  — with the on-box verification command in DECISION_LOG [2026-09-06]. Not done here.)
+
+  ## Three branches, three triggers, three offset rules — never collapse them
+
+  | trigger                                   | detected by                | resubscribe at |
+  |-------------------------------------------|----------------------------|----------------|
+  | `offset_out_of_range` fetch error         | brod's cast → handle_info  | `:earliest`    |
+  | consumer pid CHANGED                      | liveness probe             | COMMITTED      |
+  | committed frozen N probes AND lag > 0     | liveness probe             | COMMITTED      |
+
+  Out-of-range means the committed position NO LONGER EXISTS on the broker, so `:earliest` loses
+  the least. In the other two the committed offset is perfectly valid — resuming there redelivers
+  exactly the unprocessed tail (including any un-acked `:retry` batch, which is precisely what
+  retry wanted) and nothing else. `:earliest` there would replay the whole retained partition for
+  no reason; `:latest` would skip real events. A refactor that unifies them on one offset choice
+  breaks one path or the other — MUT-3 in the tests exists to catch exactly that.
   """
 
   require Logger
@@ -108,6 +168,12 @@ defmodule MessageService.Events.OffsetRecovery do
       topic: Map.get(init_info, :topic),
       partition: Map.get(init_info, :partition),
       known_consumer: nil,
+      # The stall detector's whole memory (brod keeps no progress signal of its own): the committed
+      # offset seen at the previous probe, and how many CONSECUTIVE probes have since seen it
+      # unmoved WITH lag behind it. Both reset on any progress, on zero/unmeasurable lag, and after
+      # a repair attempt.
+      last_committed: nil,
+      stalled_probes: 0,
       inner: inner
     }
   end
@@ -204,13 +270,16 @@ defmodule MessageService.Events.OffsetRecovery do
 
     case brod_api().get_consumer(SharedInfra.Kafka.BrodProducer.client_name(), topic, partition) do
       {:ok, ^known} ->
-        # Healthy: the consumer we last confirmed is still the one registered. Deliberately silent —
-        # this fires every interval on every partition and must never be a heartbeat log line.
-        state
+        # The consumer we last confirmed is still the one registered — which proves nothing about
+        # whether this worker is being FED by it (2026-09-06). Deliberately silent unless the stall
+        # detector below actually repairs: this fires every interval on every partition and must
+        # never be a heartbeat log line.
+        check_progress(state)
 
       {:ok, current} when known == nil ->
         # First observation after (re)init. The worker's own init subscribe targeted this same pid
-        # via the same client, so record it and say nothing.
+        # via the same client, so record it and say nothing. Progress accounting starts at the NEXT
+        # probe, which is where this partition's committed baseline is taken.
         %{state | known_consumer: current}
 
       {:ok, current} ->
@@ -259,7 +328,9 @@ defmodule MessageService.Events.OffsetRecovery do
                 "the worker's own resubscribe loop skips a partition with un-acked deliveries.)"
             )
 
-            %{state | known_consumer: current}
+            # A fresh subscription makes the old progress baseline meaningless — start the stall
+            # detector over rather than counting this repair's own quiet moment against it.
+            %{state | known_consumer: current, last_committed: nil, stalled_probes: 0}
 
           {:error, reason} ->
             Logger.error(
@@ -281,6 +352,109 @@ defmodule MessageService.Events.OffsetRecovery do
     end
   end
 
+  # --- the stall detector (same pid, offsets in range, no progress — 2026-09-06) -------------------
+
+  # Runs on EVERY probe of a healthy-looking partition, so its default answer must be "do nothing,
+  # say nothing". Two independent conditions have to hold before it touches anything: the partition
+  # must have real lag, and its committed offset must have failed to move across @stall_probes
+  # consecutive probes. Either one alone is normal.
+  defp check_progress(state) do
+    case lag_probe(state) do
+      {:ok, committed, log_end} when log_end > committed ->
+        cond do
+          # Progress since the last probe — or the first measurement on this subscription. Either
+          # way this is the new baseline and the counter starts over.
+          state.last_committed != committed ->
+            %{state | last_committed: committed, stalled_probes: 0}
+
+          state.stalled_probes + 1 >= stall_probes() ->
+            repair_stalled(state, committed, log_end)
+
+          true ->
+            %{state | stalled_probes: state.stalled_probes + 1}
+        end
+
+      _ ->
+        # NO LAG (the overwhelming majority of probes: a quiet partition is caught up, not stuck)
+        # or an offset we could not read. Both are "not a stall": a partition with nothing to do
+        # looks byte-identical to a frozen one from the offsets alone, so this branch must never
+        # act on it and must never log about it.
+        %{state | stalled_probes: 0}
+    end
+  end
+
+  defp repair_stalled(state, committed, log_end) do
+    %{group_id: group, topic: topic, partition: partition, known_consumer: consumer} = state
+    stalled_for_s = div(stall_probes() * liveness_interval_ms(), 1000)
+
+    Logger.error(
+      "kafka consumer STALLED — same consumer pid, offsets in range, committed offset frozen " <>
+        "while the partition has lag. group=#{group} topic=#{topic} partition=#{partition} " <>
+        "committed=#{committed} log_end=#{log_end} lag=#{log_end - committed} " <>
+        "stalled_for=#{stalled_for_s}s consumer=#{inspect(consumer)}. " <>
+        "Resubscribing at the committed offset (this clears brod's pending-ack backpressure and " <>
+        "any orphaned in-flight fetch ref; if the subscription was lost to another group sharing " <>
+        "this brod client, the resubscribe below names the holder). " <>
+        "(2026-09-06: p0 of the inbox projection sat at committed 353 / log-end 359 for 1h+, " <>
+        "silently, while its sibling partitions and the search-index group ran normally.)"
+    )
+
+    # COMMITTED ONLY — never :earliest (that is the out-of-range branch's rule and would replay the
+    # whole retained partition), never :latest (that would skip the very events this lag is made
+    # of). `committed` is an integer by construction: lag_probe/1 returns nothing else.
+    case :brod.subscribe(consumer, self(), begin_offset: committed) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "kafka consumer STALLED and resubscribe FAILED (will re-evaluate after another " <>
+            "#{stall_probes()} probes) group=#{group} topic=#{topic} partition=#{partition} " <>
+            "reason=#{inspect(reason)}"
+        )
+    end
+
+    # Whatever happened, start the count over: give the partition a full window to show progress
+    # before the next attempt, so a partition we cannot repair logs once per window, not per probe.
+    %{state | last_committed: committed, stalled_probes: 0}
+  rescue
+    error ->
+      Logger.error(
+        "kafka consumer stall repair raised (backstop still armed) group=#{state[:group_id]} " <>
+          "topic=#{state[:topic]} partition=#{state[:partition]}: #{inspect(error)}"
+      )
+
+      %{state | stalled_probes: 0}
+  end
+
+  # Both numbers or nothing: a partition whose lag cannot be established is never repaired.
+  defp lag_probe(state) do
+    %{group_id: group, topic: topic, partition: partition} = state
+
+    with committed when is_integer(committed) and committed >= 0 <-
+           committed_offset(group, topic, partition),
+         log_end when is_integer(log_end) and log_end >= 0 <- log_end_offset(topic, partition) do
+      {:ok, committed, log_end}
+    else
+      _ -> :unavailable
+    end
+  end
+
+  defp log_end_offset(topic, partition) do
+    case brod_api().resolve_offset(endpoints(), topic, partition, :latest) do
+      {:ok, offset} -> offset
+      _ -> :unknown
+    end
+  rescue
+    _ -> :unknown
+  end
+
+  # 3 probes ≈ 3 minutes at the default interval. Conservative on purpose: the cost of waiting one
+  # more minute is a minute of lag; the cost of firing early is re-subscribing a partition that was
+  # merely between batches.
+  defp stall_probes,
+    do: Application.get_env(:message_service, :consumer_stall_probes, 3)
+
   defp liveness_first_ms,
     do: Application.get_env(:message_service, :consumer_liveness_first_ms, 5_000)
 
@@ -295,6 +469,7 @@ defmodule MessageService.Events.OffsetRecovery do
     @moduledoc false
     defdelegate get_consumer(client, topic, partition), to: :brod
     defdelegate fetch_committed_offsets(client, group), to: :brod
+    defdelegate resolve_offset(endpoints, topic, partition, time), to: :brod
   end
 
   # --- best-effort offset lookups (log-enrichment only — recovery proceeds without them) -----------

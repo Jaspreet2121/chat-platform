@@ -208,6 +208,15 @@ defmodule MessageService.Events.OffsetRecoveryTest do
            ]}
       end
     end
+
+    # The partition's LOG-END offset — the other half of lag. Unset answers like an unreachable
+    # broker, which is what the pre-stall-detector tests exercise (and must stay silent under).
+    def resolve_offset(_endpoints, _topic, _partition, :latest) do
+      case Application.get_env(:message_service, :test_log_end) do
+        nil -> {:error, :no_broker}
+        offset -> {:ok, offset}
+      end
+    end
   end
 
   defp with_liveness_env(fun) do
@@ -215,8 +224,10 @@ defmodule MessageService.Events.OffsetRecoveryTest do
       :consumer_liveness_brod,
       :consumer_liveness_first_ms,
       :consumer_liveness_interval_ms,
+      :consumer_stall_probes,
       :test_current_consumer,
-      :test_committed
+      :test_committed,
+      :test_log_end
     ]
 
     prev = for k <- keys, into: %{}, do: {k, Application.get_env(:message_service, k)}
@@ -334,6 +345,211 @@ defmodule MessageService.Events.OffsetRecoveryTest do
       end)
 
       assert_receive :consumer_liveness_check, 500
+    end)
+  end
+
+  # --- the stall detector (same pid, offsets in range, no progress — 2026-09-06) -------------------
+
+  defmodule RefusingConsumer do
+    @moduledoc false
+    # brod's answer when ANOTHER process holds the one subscriber slot this consumer has
+    # (brod_consumer.erl:445) — the shape the shared-client contention wedge produces.
+    use GenServer
+
+    def start_link(test_pid), do: GenServer.start_link(__MODULE__, test_pid)
+
+    @impl true
+    def init(test_pid), do: {:ok, test_pid}
+
+    @impl true
+    def handle_call({:subscribe, subscriber_pid, opts}, _from, test_pid) do
+      send(test_pid, {:subscribe_refused, subscriber_pid, opts})
+      {:reply, {:error, {:already_subscribed_by, self()}}, test_pid}
+    end
+  end
+
+  # A partition sitting at `committed` with the log ending at `log_end`, consumer pid unchanged.
+  defp stalled_at(committed, log_end) do
+    {:ok, consumer} = FakeConsumer.start_link(self())
+    Application.put_env(:message_service, :test_current_consumer, {:ok, consumer})
+    Application.put_env(:message_service, :test_committed, committed)
+    Application.put_env(:message_service, :test_log_end, log_end)
+    # Start PAST the first observation: the pid is already known, so every tick below is the
+    # same-pid path — exactly the state the 2026-09-06 partition was wedged in.
+    {consumer, %{state(4) | known_consumer: consumer}}
+  end
+
+  defp probe(state) do
+    {:noreply, next} = tick(state)
+    next
+  end
+
+  test "ZERO LAG is never touched: a caught-up partition sits for twice the window in silence" do
+    with_liveness_env(fn ->
+      # committed == log_end: nothing to consume. Indistinguishable from a wedge by offsets alone,
+      # which is exactly why lag — not stillness — is the trigger.
+      {_consumer, state} = stalled_at(353, 353)
+
+      log =
+        capture_log(fn ->
+          Enum.reduce(1..6, state, fn _, acc -> probe(acc) end)
+        end)
+
+      refute_receive {:subscribed, _, _}, 100
+      refute log =~ "STALLED"
+      assert log == "" or not (log =~ "kafka consumer")
+    end)
+  end
+
+  test "THREE consecutive frozen probes are required — the baseline and the next two act silently" do
+    with_liveness_env(fn ->
+      {_consumer, state} = stalled_at(353, 359)
+
+      log =
+        capture_log(fn ->
+          # 1: baseline (first measurement on this subscription). 2: stalled=1. 3: stalled=2.
+          state = state |> probe() |> probe() |> probe()
+
+          refute_receive {:subscribed, _, _}, 100
+          refute_received {:subscribed, _, _}
+
+          # 4: stalled=3 → the threshold, and only now.
+          _ = probe(state)
+        end)
+
+      assert_receive {:subscribed, _pid, _opts}
+      assert log =~ "STALLED"
+    end)
+  end
+
+  test "the stall repair resubscribes at the COMMITTED offset — not :earliest, not :latest" do
+    with_liveness_env(fn ->
+      {_consumer, state} = stalled_at(353, 359)
+
+      capture_log(fn ->
+        Enum.reduce(1..4, state, fn _, acc -> probe(acc) end)
+      end)
+
+      assert_receive {:subscribed, subscriber, opts}
+      assert subscriber == self()
+
+      # THE OFFSET RULE, third branch. Committed resumes exactly the unprocessed tail; :earliest is
+      # the out-of-range branch's choice and would replay the partition; :latest would skip the
+      # very events this lag is made of.
+      assert Keyword.fetch!(opts, :begin_offset) == 353
+      refute Keyword.fetch!(opts, :begin_offset) == :earliest
+      refute Keyword.fetch!(opts, :begin_offset) == :latest
+      refute Keyword.fetch!(opts, :begin_offset) == 359
+    end)
+  end
+
+  test "SAME PID, lag > 0, committed frozen → repaired, and the log quantifies the wedge" do
+    with_liveness_env(fn ->
+      {consumer, state} = stalled_at(353, 359)
+
+      log =
+        capture_log(fn ->
+          Enum.reduce(1..4, state, fn _, acc -> probe(acc) end)
+        end)
+
+      assert_receive {:subscribed, _pid, _opts}
+
+      # Loud, named and quantified — the whole point is that this state produced NO log line at all.
+      assert log =~ "STALLED"
+      assert log =~ "group=message-service-inbox-projection"
+      assert log =~ "topic=message.events.v1"
+      assert log =~ "partition=4"
+      assert log =~ "committed=353"
+      assert log =~ "log_end=359"
+      assert log =~ "lag=6"
+      assert log =~ "stalled_for="
+      assert log =~ inspect(consumer)
+    end)
+  end
+
+  test "PROGRESS resets the counter — a partition that keeps committing is never repaired" do
+    with_liveness_env(fn ->
+      {_consumer, state} = stalled_at(353, 400)
+
+      log =
+        capture_log(fn ->
+          Enum.reduce(1..8, {state, 353}, fn _, {acc, committed} ->
+            # Each probe sees a committed offset one higher: slow, but moving.
+            Application.put_env(:message_service, :test_committed, committed + 1)
+            {probe(acc), committed + 1}
+          end)
+        end)
+
+      refute_receive {:subscribed, _, _}, 100
+      refute log =~ "STALLED"
+    end)
+  end
+
+  test "an UNMEASURABLE partition (no committed / no log-end) is never repaired and never logs" do
+    with_liveness_env(fn ->
+      {_consumer, state} = stalled_at(353, 359)
+
+      for missing <- [:test_committed, :test_log_end] do
+        Application.delete_env(:message_service, missing)
+
+        log =
+          capture_log(fn ->
+            Enum.reduce(1..5, state, fn _, acc -> probe(acc) end)
+          end)
+
+        refute_receive {:subscribed, _, _}, 50
+        refute log =~ "STALLED"
+
+        Application.put_env(:message_service, :test_committed, 353)
+        Application.put_env(:message_service, :test_log_end, 359)
+      end
+    end)
+  end
+
+  test "a REFUSED resubscribe (another group holds the slot) logs the holder and retries a window later" do
+    with_liveness_env(fn ->
+      {:ok, refusing} = RefusingConsumer.start_link(self())
+      Application.put_env(:message_service, :test_current_consumer, {:ok, refusing})
+      Application.put_env(:message_service, :test_committed, 353)
+      Application.put_env(:message_service, :test_log_end, 359)
+      state = %{state(4) | known_consumer: refusing}
+
+      log =
+        capture_log(fn ->
+          state = Enum.reduce(1..4, state, fn _, acc -> probe(acc) end)
+
+          # Exactly ONE attempt in the first window.
+          assert_receive {:subscribe_refused, _pid, _opts}
+          refute_received {:subscribe_refused, _, _}
+
+          # The counter restarts: no second attempt until another full window has passed.
+          state = state |> probe() |> probe()
+          refute_received {:subscribe_refused, _, _}
+
+          _ = probe(state)
+          assert_receive {:subscribe_refused, _, _}
+        end)
+
+      assert log =~ "resubscribe FAILED"
+      assert log =~ "already_subscribed_by"
+    end)
+  end
+
+  test "the stall detector is live on the OTHER consumers too — all four share this backstop" do
+    with_liveness_env(fn ->
+      {_consumer, state} = stalled_at(353, 359)
+
+      capture_log(fn ->
+        Enum.reduce(1..4, state, fn _, acc ->
+          {:noreply, next} =
+            MessageService.Events.SearchIndexConsumer.handle_info(:consumer_liveness_check, acc)
+
+          next
+        end)
+      end)
+
+      assert_receive {:subscribed, _pid, opts}
+      assert Keyword.fetch!(opts, :begin_offset) == 353
     end)
   end
 
