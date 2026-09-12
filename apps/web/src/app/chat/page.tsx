@@ -71,6 +71,7 @@ import {
   decryptMessage,
   maybeUpgradeConversation,
   invalidateKeyCaches,
+  prefetchSenderKeys,
   realignOwnKeys,
   registerDeviceKeys,
   setOwnUserId,
@@ -81,6 +82,7 @@ import {
   type DecryptOutcome
 } from "@/lib/e2ee/secretChat";
 import { makeImageThumb } from "@/lib/e2ee/thumbnail";
+import { sendFailureMessage } from "@/lib/sendError";
 import {
   qrCaption,
   resolveTemplate,
@@ -326,6 +328,12 @@ export default function ChatPage() {
 
     let cancelled = false;
     void (async () => {
+      // ONE registry fetch for the whole batch, BEFORE the fan-out. Without this each decrypt below
+      // starts its own lookup: on a cold cache all of them miss at once and a 20-message thread
+      // sends 20 identical GET /keys/users in a single tick, which trips the 30/60s limit and
+      // surfaces as "Too many requests" on the next send (2026-09-12).
+      await prefetchSenderKeys(pending.map((m) => m.sender_user_id));
+
       const resolved = await Promise.all(
         pending.map(async (m) => [m.message_id, await decryptMessage(m)] as const)
       );
@@ -852,7 +860,7 @@ export default function ChatPage() {
       setStatus(selectedFile ? "Media message sent." : "Message sent.");
       void channel?.stopTyping().catch(() => undefined);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Message send failed.");
+      setStatus(sendFailureMessage(error));
     } finally {
       setIsSending(false);
     }

@@ -93,10 +93,14 @@ export async function turnOnEncryption(conversationId: string): Promise<void> {
 }
 
 async function memberDeviceKeys(memberIds: string[]): Promise<KeyCache> {
-  const users = await fetchUserKeys(memberIds);
+  // Reads the SHARED registry cache rather than fetching unconditionally, and warms it in ONE
+  // batched request (never one per member — that would trade the old always-fetch for a fan-out).
+  // Safe because a rotation invalidates it: see invalidateKeyCaches and the freshness backstop.
+  await prefetchSenderKeys(memberIds);
+
   const cache: KeyCache = new Map();
-  for (const user of users) {
-    for (const device of user.devices) cache.set(device.device_id, device);
+  for (const id of memberIds) {
+    for (const device of deviceKeyCache.get(id) ?? []) cache.set(device.device_id, device);
   }
   return cache;
 }
@@ -375,29 +379,121 @@ function extractSealed(message: Message): SealedPayload | null {
   return null;
 }
 
-// sender_user_id → device_id → ed25519 public (b64). Refetched on `force`.
-const senderKeyCache = new Map<string, string>();
+// user_id → that user's live devices, as the registry last reported them. ONE cache serves both the
+// decrypt path (ed25519, to verify a signature) and the send path (x25519, to seal to).
+const deviceKeyCache = new Map<string, DeviceKey[]>();
+
+// user_id → when we last fetched it. The backstop for a MISSED rotation notice (see below).
+const keysFetchedAt = new Map<string, number>();
+
+// user_id → the fetch currently in flight. THE STAMPEDE FIX (2026-09-12): senderEd25519 used to
+// check the cache synchronously and only populate it AFTER the network resolved, so N parallel
+// decrypts of a cold thread all missed and all fetched the SAME user's keys in one tick. Opening a
+// 20-message sealed chat sent 20 identical GET /keys/users, against a limit of 30/60s — the 429
+// that surfaced as "Too many requests" on the next send. Callers now share one request.
+const inFlightKeyFetch = new Map<string, Promise<void>>();
+
+// How long a cached registry entry may be trusted WITHOUT a rotation notice. Not the primary
+// correctness mechanism — invalidateKeyCaches is — just the bound on a notice we never saw.
+const KEY_CACHE_TTL_MS = 10 * 60 * 1000;
+
+function keysAreFresh(userId: string): boolean {
+  const at = keysFetchedAt.get(userId);
+  return at !== undefined && Date.now() - at < KEY_CACHE_TTL_MS;
+}
+
+/**
+ * Load one user's devices into the cache, COALESCED and TTL'd.
+ *
+ * Concurrent callers for the same user share ONE request; the map entry is dropped when the promise
+ * settles — on REJECT as well as resolve, so a single 429 or offline blip can never be cached as a
+ * permanent failure for the rest of the session.
+ */
+function loadUserKeys(userId: string): Promise<void> {
+  if (keysAreFresh(userId)) return Promise.resolve();
+
+  const existing = inFlightKeyFetch.get(userId);
+  if (existing) return existing;
+
+  const flight = fetchUserKeys([userId])
+    .then((users) => {
+      for (const user of users) deviceKeyCache.set(user.user_id, user.devices);
+      // Stamp the REQUESTED id, not just returned ones: a user the membership gate omits is absent
+      // from the response, and re-asking every time would rebuild the stampede for that user.
+      keysFetchedAt.set(userId, Date.now());
+    })
+    .finally(() => {
+      inFlightKeyFetch.delete(userId);
+    });
+
+  inFlightKeyFetch.set(userId, flight);
+  return flight;
+}
+
+/**
+ * Warm the cache for MANY users in one request — the chat-open path. Without this each message's
+ * decrypt would start its own (coalesced, but still per-user) fetch; with it a chat open is ONE
+ * request no matter how many senders or messages the thread holds.
+ */
+export async function prefetchSenderKeys(userIds: string[]): Promise<void> {
+  const wanted = Array.from(new Set(userIds.filter((id) => typeof id === "string" && id !== "")));
+  const stale = wanted.filter((id) => !keysAreFresh(id) && !inFlightKeyFetch.has(id));
+
+  // Anything already in flight is joined rather than re-requested.
+  const joins = wanted.filter((id) => inFlightKeyFetch.has(id)).map((id) => inFlightKeyFetch.get(id)!);
+
+  if (stale.length > 0) {
+    const flight = fetchUserKeys(stale)
+      .then((users) => {
+        for (const user of users) deviceKeyCache.set(user.user_id, user.devices);
+        const now = Date.now();
+        for (const id of stale) keysFetchedAt.set(id, now);
+      })
+      .finally(() => {
+        for (const id of stale) {
+          if (inFlightKeyFetch.get(id) === flight) inFlightKeyFetch.delete(id);
+        }
+      });
+
+    for (const id of stale) inFlightKeyFetch.set(id, flight);
+    joins.push(flight);
+  }
+
+  await Promise.all(joins.map((p) => p.catch(() => undefined)));
+}
 
 /**
  * Drop cached key material after a ROTATION.
  *
- * Two things must go, and only one of them is obvious:
- *   1. `senderKeyCache` — the ed25519 key we verify signatures against. Keeping a rotated-away key
- *      makes every NEW message from that peer fail as sig_failed.
- *   2. the NEGATIVE entries in the decrypt LRU — a failure was cached for the session, so a message
+ * Three things must go, and only one of them is obvious:
+ *   1. `deviceKeyCache` — the keys we verify signatures against AND seal to. Keeping a rotated-away
+ *      key makes every NEW message from that peer fail as sig_failed, and — since the send path now
+ *      reads this cache — would make US seal to a key the recipient can no longer open with.
+ *   2. `keysFetchedAt` — the freshness stamp. Dropping the entry without it would leave the user
+ *      marked fresh and suppress the refetch.
+ *   3. the NEGATIVE entries in the decrypt LRU — a failure was cached for the session, so a message
  *      that failed during the misaligned window would keep rendering its stub even after keys
  *      re-align. Successful decrypts are kept (they cost CPU and can't go stale).
  *
- * The SEND path needs no invalidation: memberDeviceKeys() calls fetchUserKeys() on every send and
- * `request` is cache:"no-store", so a send always seals to the registry's current keys.
+ * THE SEND PATH DEPENDS ON THIS. It used to refetch on every send, which was correct by brute
+ * force; it now reads the cache, so this invalidation is what keeps it correct. It is driven by the
+ * `{kind:"encryption", state:"keys_changed"}` system message the server already emits into every
+ * secret conversation on a rotation, applied BOTH live (onMessageCreated) and on backfill when a
+ * conversation is opened — so a sender always invalidates before it can send into that thread. The
+ * TTL above bounds the one residual case: a notice that never arrived at all.
+ *
+ * In-flight fetches are deliberately NOT cancelled: one may resolve with pre-rotation data, so its
+ * freshness stamp is cleared here and the next read re-fetches.
  */
 export function invalidateKeyCaches(userId?: string): void {
   if (userId) {
-    for (const key of Array.from(senderKeyCache.keys())) {
-      if (key.startsWith(`${userId}:`)) senderKeyCache.delete(key);
-    }
+    deviceKeyCache.delete(userId);
+    keysFetchedAt.delete(userId);
+    inFlightKeyFetch.delete(userId);
   } else {
-    senderKeyCache.clear();
+    deviceKeyCache.clear();
+    keysFetchedAt.clear();
+    inFlightKeyFetch.clear();
   }
 
   for (const [messageId, outcome] of Array.from(decryptLru.entries())) {
@@ -475,21 +571,24 @@ async function senderEd25519(
   deviceId: string,
   force: boolean
 ): Promise<string | null> {
-  const key = `${userId}:${deviceId}`;
-  if (!force && senderKeyCache.has(key)) return senderKeyCache.get(key) ?? null;
+  const cached = cachedEd25519(userId, deviceId);
+  if (!force && cached) return cached;
+
+  // `force` (a sig failure — the sender may have rotated) must not read a stale stamp.
+  if (force) keysFetchedAt.delete(userId);
 
   try {
-    const users = await fetchUserKeys([userId]);
-    for (const user of users) {
-      for (const device of user.devices) {
-        senderKeyCache.set(`${userId}:${device.device_id}`, device.ed25519_public);
-      }
-    }
+    await loadUserKeys(userId);
   } catch {
     /* leave the cache as-is; a miss returns null → bad_sig stub */
   }
 
-  return senderKeyCache.get(key) ?? null;
+  return cachedEd25519(userId, deviceId);
+}
+
+function cachedEd25519(userId: string, deviceId: string): string | null {
+  const device = (deviceKeyCache.get(userId) ?? []).find((d) => d.device_id === deviceId);
+  return device?.ed25519_public ?? null;
 }
 
 function rememberDecrypt(messageId: string, outcome: DecryptOutcome) {
@@ -509,7 +608,9 @@ function remember(messageId: string, outcome: DecryptOutcome): DecryptOutcome {
 export const __canonicalString = canonicalString;
 export function __clearCaches() {
   decryptLru.clear();
-  senderKeyCache.clear();
+  deviceKeyCache.clear();
+  keysFetchedAt.clear();
+  inFlightKeyFetch.clear();
 }
 
 // ---- opportunistic upgrade (§9) ------------------------------------------------------------------
