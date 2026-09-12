@@ -93,6 +93,39 @@ export function setupServerError(code: string | undefined): string | null {
 
 // ---- photos --------------------------------------------------------------------------------------
 
+/** One photo tile in the editor: the id the next PATCH sends, and the URL that renders it. */
+export type PhotoEntry = {
+  mediaId: string;
+  /**
+   * What to draw. Either the server's presigned URL for a SAVED photo, or a local object URL for one
+   * uploaded this session (which has no server URL until the save round-trips).
+   */
+  preview: string | null;
+};
+
+/**
+ * Zip the profile's ordered ids with the URLs the server presigned for them.
+ *
+ * THE EDITOR'S BUG, in one function: the profile read returned ids only, so every saved photo drew
+ * an empty "Photo N" tile and the screen made no media request at all. It looked fine right after an
+ * upload — that tile held a local object URL — and only reappeared empty after a reload.
+ *
+ * `current` preserves those session-local object URLs across a save: a photo uploaded moments ago
+ * keeps rendering even if its presign is momentarily unavailable. Index, not id, decides which URL
+ * belongs to which photo, because that is the server's contract.
+ */
+export function photoEntries(
+  profile: { photos?: string[]; photo_urls?: (string | null)[] },
+  current: readonly PhotoEntry[] = []
+): PhotoEntry[] {
+  const previousById = new Map(current.map((entry) => [entry.mediaId, entry.preview]));
+
+  return (profile.photos ?? []).map((mediaId, index) => ({
+    mediaId,
+    preview: profile.photo_urls?.[index] ?? previousById.get(mediaId) ?? null
+  }));
+}
+
 /** Drag-reorder: move index `from` to `to`, returning the NEW ordered media-id payload. */
 export function reorderPhotos(photos: string[], from: number, to: number): string[] {
   if (from === to || from < 0 || to < 0 || from >= photos.length || to >= photos.length) {

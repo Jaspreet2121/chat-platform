@@ -1800,8 +1800,14 @@ export type DatingProfile = {
   /** v2 (106): 0..15 turn-on keys, order = the user's tap order. */
   turn_ons: string[];
   bio: string | null;
-  /** Ordered media ids (first = main). */
+  /** Ordered media ids (first = main). This is what a PATCH sends back. */
   photos: string[];
+  /**
+   * Presigned URLs for `photos`, IN THE SAME ORDER — photo_urls[i] renders photos[i]. A photo whose
+   * presign failed is null and keeps its slot, so the two lists never fall out of step. Optional:
+   * a gateway older than this field simply omits it and the editor falls back to placeholders.
+   */
+  photo_urls?: (string | null)[];
   location: DatingLocation;
   prefs: DatingPrefs;
 };

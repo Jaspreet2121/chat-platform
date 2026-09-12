@@ -17,6 +17,7 @@ import {
   MAX_TURN_ONS,
   MIN_PHOTOS,
   computeAge,
+  photoEntries,
   fallbackLocationName,
   partitionTurnOns,
   prefsPayload,
@@ -24,18 +25,12 @@ import {
   setupServerError,
   toggleTurnOn,
   validateSetup,
+  type PhotoEntry,
   type SetupErrors
 } from "@/lib/dating";
 import { uploadMediaBlob } from "@/lib/upload";
 import { compressImage } from "@/lib/imageCompression";
 import { cn } from "@/lib/cn";
-
-type PhotoEntry = {
-  mediaId: string;
-  /** Local object URL for photos uploaded THIS session; saved photos render as placeholder tiles
-   *  (the profile stores raw media ids and the web app cannot presign without the object key). */
-  preview: string | null;
-};
 
 const GENDER_LABEL: Record<string, string> = {
   woman: "Woman",
@@ -66,9 +61,9 @@ export function DatingSetup({ profile, catalog, onSaved }: DatingSetupProps) {
   const [prefIntentions, setPrefIntentions] = useState<string[]>(profile.prefs.intentions ?? []);
   const [requireShared, setRequireShared] = useState(profile.prefs.require_shared_turn_on === true);
   const [bio, setBio] = useState(profile.bio ?? "");
-  const [photos, setPhotos] = useState<PhotoEntry[]>(
-    (profile.photos ?? []).map((mediaId) => ({ mediaId, preview: null }))
-  );
+  // Saved photos render from the server's presigned photo_urls (zipped by index); a photo uploaded
+  // this session renders from its local object URL until the next save round-trips.
+  const [photos, setPhotos] = useState<PhotoEntry[]>(() => photoEntries(profile));
   const [location, setLocation] = useState<{ lat: number; lng: number } | null>(
     profile.location.lat != null && profile.location.lng != null
       ? { lat: profile.location.lat, lng: profile.location.lng }
@@ -195,6 +190,9 @@ export function DatingSetup({ profile, catalog, onSaved }: DatingSetupProps) {
     try {
       const body = { ...patch, ...(enable === null ? {} : { enabled: enable }) };
       const saved = await updateDatingProfile(body);
+      // Re-seed from the response so the tiles show what the SERVER now holds, in its order —
+      // keeping this session's object URLs for anything it could not presign.
+      setPhotos((current) => photoEntries(saved, current));
       onSaved(saved);
       setStatus(enable === false ? "Dating is off — you've been removed from every deck." : "Saved.");
       setConfirmDisable(false);
