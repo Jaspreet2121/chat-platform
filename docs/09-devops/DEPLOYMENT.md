@@ -171,7 +171,9 @@ cp .env.prod.example .env
 #   OTP_SECRET=$(openssl rand -hex 32)
 
 # 2. Build all images (one umbrella compile, shared across releases; then 6 release assemblies).
-docker compose -f docker-compose.prod.yml build
+#    GIT_SHA rides in as a build arg and becomes an ENV in the runtime stage, so every /health
+#    response reports the commit it was built from. Omitting it builds fine and reports "unknown".
+GIT_SHA=$(git rev-parse --short HEAD) docker compose -f docker-compose.prod.yml build
 
 # 3. Start. Postgres comes up + runs the init SQL on first boot; services wait for it (healthcheck).
 docker compose -f docker-compose.prod.yml up -d

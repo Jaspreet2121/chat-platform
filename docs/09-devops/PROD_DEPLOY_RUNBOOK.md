@@ -52,13 +52,25 @@ echo "MINIO_ROOT_USER=chatmedia"   # any non-default name
 The `${VAR:?...}` guards mean compose **won't start** if a required secret is missing — that's intended.
 
 ## 4. 🖥️ Build the images (2-vCPU-safe)
-Build sequentially so the box doesn't OOM (with swap this is the safe path):
+Build sequentially so the box doesn't OOM (with swap this is the safe path). **Prefix every build
+with `GIT_SHA`** — the image has no `.git` (the Dockerfile COPYs `apps/` and `config/` only), so the
+commit can only get in as a build arg:
 ```bash
+export GIT_SHA=$(git rev-parse --short HEAD)
 for svc in postgres auth conversation user message media notification gateway; do
   docker compose -f docker-compose.prod.yml build "$svc"
 done
 # (postgres/kafka/redis/minio are pulled, not built)
 ```
+A build with no `GIT_SHA` in the environment still succeeds and reports `"unknown"` — the label must
+never be what fails a deploy.
+
+**Verify what is actually running** (this is what the SHA is for):
+```bash
+curl -s https://api.growblic.com/health          # {"status":"ok","service":"api_gateway","git_sha":"2cc6370"}
+```
+Each service reports its own on `/internal/health`, so a fleet that is a commit apart mid-deploy is
+visible from outside the box.
 
 ## 5. 🖥️ Bring it up (phase 1 — Kafka OFF, Caddy on :80)
 One command brings up the whole stack **including Caddy**, with the Kafka trio excluded by default (it's
