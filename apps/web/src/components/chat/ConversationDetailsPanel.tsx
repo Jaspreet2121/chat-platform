@@ -44,7 +44,7 @@ import {
   setParticipantRole,
   removeParticipant
 } from "@/lib/api";
-import imageCompression from "browser-image-compression";
+import { compressImage } from "@/lib/imageCompression";
 import { Avatar, IconButton } from "@/components";
 import { cn } from "@/lib/cn";
 import { PublicProfileCard } from "./PublicProfileCard";
@@ -269,12 +269,7 @@ export function ConversationDetailsPanel({
     setIsSavingGroupPhoto(true);
     setActionError("");
     try {
-      const compressed = await imageCompression(file, {
-        maxSizeMB: 0.5,
-        maxWidthOrHeight: 512,
-        initialQuality: 0.8,
-        useWebWorker: true
-      }).catch(() => file);
+      const compressed = await compressImage(file, "avatar");
       const contentType = compressed.type || file.type || "image/jpeg";
       const { mediaId, objectKey } = await uploadMediaBlob({
         blob: compressed,

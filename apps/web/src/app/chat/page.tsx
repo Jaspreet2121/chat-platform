@@ -92,9 +92,9 @@ import {
   type PickerItem
 } from "@/lib/slashCommands";
 import { cn } from "@/lib/cn";
-import imageCompression from "browser-image-compression";
 import { reuploadMediaForForward } from "@/lib/forward";
 import { uploadMediaBlob } from "@/lib/upload";
+import { compressImage } from "@/lib/imageCompression";
 import { ForwardPicker } from "./ForwardPicker";
 import { LocationShareSheet } from "@/components/chat/LocationShareSheet";
 
@@ -1309,16 +1309,7 @@ export default function ChatPage() {
     let uploadFile = file;
     if (compressibleImageTypes.has(file.type)) {
       setMediaStatus("Compressing image...");
-      try {
-        uploadFile = await imageCompression(file, {
-          maxSizeMB: 1,
-          maxWidthOrHeight: 1920,
-          initialQuality: 0.8,
-          useWebWorker: true
-        });
-      } catch {
-        uploadFile = file;
-      }
+      uploadFile = await compressImage(file, "attachment");
     }
 
     const contentType = uploadFile.type || file.type || "application/octet-stream";

@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { ArrowRight, Camera, Loader2 } from "lucide-react";
-import imageCompression from "browser-image-compression";
+import { compressImage } from "@/lib/imageCompression";
 import { updateMe } from "@/lib/api";
 import { uploadMediaBlob } from "@/lib/upload";
 import { Avatar, Button, Card } from "@/components";
@@ -43,12 +43,7 @@ export function OnboardingStep({ userId, onDone, onSkip }: OnboardingStepProps) 
     setIsUploading(true);
     setError("");
     try {
-      const compressed = await imageCompression(file, {
-        maxSizeMB: 0.5,
-        maxWidthOrHeight: 512,
-        initialQuality: 0.8,
-        useWebWorker: true
-      }).catch(() => file);
+      const compressed = await compressImage(file, "avatar");
 
       const contentType = compressed.type || file.type || "image/jpeg";
       const { mediaId, objectKey } = await uploadMediaBlob({

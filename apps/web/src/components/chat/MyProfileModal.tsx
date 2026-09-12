@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Camera, Loader2, X } from "lucide-react";
-import imageCompression from "browser-image-compression";
+import { compressImage } from "@/lib/imageCompression";
 import {
   UserProfile,
   updateMe
@@ -66,12 +66,7 @@ export function MyProfileModal({ onClose, profile, userId, onSaved }: MyProfileM
     setIsUploading(true);
     setError("");
     try {
-      const compressed = await imageCompression(file, {
-        maxSizeMB: 0.5,
-        maxWidthOrHeight: 512,
-        initialQuality: 0.8,
-        useWebWorker: true
-      }).catch(() => file);
+      const compressed = await compressImage(file, "avatar");
 
       const contentType = compressed.type || file.type || "image/jpeg";
       const { mediaId, objectKey } = await uploadMediaBlob({
