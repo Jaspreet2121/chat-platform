@@ -2,6 +2,7 @@ defmodule RealtimeGateway.ConversationChannel do
   use Phoenix.Channel
 
   alias RealtimeGateway.Limits
+  alias RealtimeGateway.Receipts
   alias RealtimeGateway.Presence
   alias RealtimeGateway.TopicAuthorization
 
@@ -278,6 +279,66 @@ defmodule RealtimeGateway.ConversationChannel do
       broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "delivered"))
 
       {:reply, {:ok, reply}, socket}
+    end
+  end
+
+  # --- BATCHED RECEIPTS (2026-09-12) ---------------------------------------------------------------
+  #
+  # ONE push, ONE limiter charge, N receipts. Opening a thread with 50 unread used to send 50
+  # `message_read` pushes (one per message, in a client-side loop) and adding delivered on that shape
+  # would have doubled it — the key-registry stampede in another costume. The single-message events
+  # above are UNCHANGED and stay supported: Android and the SDK use them, so this is purely additive.
+  #
+  # The server loops over the existing single-row persist rather than inventing a bulk store call —
+  # the write path, its idempotency and its inbox bookkeeping are all already correct per message.
+
+  def handle_in("messages_read", payload, socket) do
+    with :ok <- Limits.check_ephemeral(socket),
+         {:ok, user_id} <- current_user_id(socket),
+         {:ok, message_ids} <- Receipts.batch(payload) do
+      conversation_id = socket.assigns.conversation_id
+      unread_before = reader_unread_before(socket)
+
+      Receipts.persist(:read, conversation_id, message_ids, user_id)
+
+      # The SAME join-time reciprocity gate as the single event — a batch is not a way around it.
+      if Map.get(socket.assigns, :emit_read_receipts, true) do
+        broadcast_from(
+          socket,
+          "receipt_updated",
+          Receipts.frame("messages_read", conversation_id, user_id, message_ids, "read")
+        )
+      end
+
+      notify_inbox_read(socket, unread_before)
+
+      {:reply, {:ok, %{accepted: length(message_ids)}}, socket}
+    else
+      {:noreply, socket} -> {:noreply, socket}
+      {:error, :missing_user} -> unauthorized_reply(socket)
+      {:error, code} -> {:reply, {:error, %{code: code}}, socket}
+    end
+  end
+
+  def handle_in("messages_delivered", payload, socket) do
+    with :ok <- Limits.check_ephemeral(socket),
+         {:ok, user_id} <- current_user_id(socket),
+         {:ok, message_ids} <- Receipts.batch(payload) do
+      conversation_id = socket.assigns.conversation_id
+      Receipts.persist(:delivered, conversation_id, message_ids, user_id)
+
+      # Delivered is about arrival, not content — never gated by the read-receipt setting.
+      broadcast_from(
+        socket,
+        "receipt_updated",
+        Receipts.frame("messages_delivered", conversation_id, user_id, message_ids, "delivered")
+      )
+
+      {:reply, {:ok, %{accepted: length(message_ids)}}, socket}
+    else
+      {:noreply, socket} -> {:noreply, socket}
+      {:error, :missing_user} -> unauthorized_reply(socket)
+      {:error, code} -> {:reply, {:error, %{code: code}}, socket}
     end
   end
 
