@@ -50,7 +50,7 @@ defmodule ApiGatewayWeb.DatingController do
     with {:ok, session} <- session(conn),
          {:ok, profile} <-
            SharedInfra.UserClient.get_dating_profile(%{"user_id" => session.user_id}) do
-      json(conn, own_profile_view(profile))
+      json(conn, own_profile_view(profile, session))
     else
       error -> handle_error(conn, error)
     end
@@ -78,7 +78,7 @@ defmodule ApiGatewayWeb.DatingController do
         "type" => "dating_profile_changed"
       })
 
-      json(conn, own_profile_view(profile))
+      json(conn, own_profile_view(profile, session))
     else
       error -> handle_error(conn, error)
     end
@@ -282,6 +282,12 @@ defmodule ApiGatewayWeb.DatingController do
     end
   end
 
+  # INDEX CORRESPONDENCE IS THE WHOLE CONTRACT: photo_urls[i] is the URL for photos[i]. A presign that
+  # fails therefore keeps its slot as null instead of being dropped — the deck rejects nils (it renders
+  # only URLs), but doing that here would shift every later photo one tile to the left and put the
+  # wrong face in the wrong slot, silently, in an editor whose next save writes that order back.
+  defp own_photo_urls(photos, app_id), do: Enum.map(photos, &photo_url(&1, app_id))
+
   # ---- card presentation --------------------------------------------------------------------------
 
   # The dating card — its OWN presentation (never ProfilePresenter): photo media ids become
@@ -349,7 +355,9 @@ defmodule ApiGatewayWeb.DatingController do
     end
   end
 
-  defp own_profile_view(profile) do
+  defp own_profile_view(profile, session) do
+    photos = mget(profile, :photos) || []
+
     %{
       enabled: bool_of(profile, :enabled, false),
       dob: mget(profile, :dob),
@@ -359,7 +367,13 @@ defmodule ApiGatewayWeb.DatingController do
       bio: mget(profile, :bio),
       intention: mget(profile, :intention),
       turn_ons: mget(profile, :turn_ons) || [],
-      photos: mget(profile, :photos) || [],
+      # The ordered media IDS stay exactly as they were: the editor sends this list straight back on
+      # the next PATCH, and the store validates ownership against ids.
+      photos: photos,
+      # ...and the URLs to RENDER them with, added alongside. Without this the editor held ids it
+      # could not resolve and drew empty "Photo N" tiles for every saved photo — the network panel on
+      # that screen made no media request at all.
+      photo_urls: own_photo_urls(photos, session_app(session)),
       location: %{
         lat: mget(profile, :latitude),
         lng: mget(profile, :longitude),

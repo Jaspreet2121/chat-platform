@@ -32,16 +32,30 @@ defmodule ApiGatewayWeb.DatingControllerTest do
     def current_session(_), do: {:error, :session_invalid}
   end
 
+  # Two saved photos, in order — what a real profile holds.
+  @photo_a "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+  @photo_b "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
   defmodule UserStub do
+    @photos ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+
     def get_dating_profile(_attrs) do
-      {:ok, %{enabled: true, dob: "1999-01-01", age: 27, gender: "woman", interested_in: ["man"]}}
+      {:ok,
+       %{
+         enabled: true,
+         dob: "1999-01-01",
+         age: 27,
+         gender: "woman",
+         interested_in: ["man"],
+         photos: Application.get_env(:api_gateway, :test_dating_photos, @photos)
+       }}
     end
 
     def update_dating_profile(attrs) do
       send(:dating_test, {:update_profile, attrs})
 
       case Application.get_env(:api_gateway, :test_dating_update, :ok) do
-        :ok -> {:ok, %{enabled: true, age: 27}}
+        :ok -> {:ok, %{enabled: true, age: 27, photos: @photos}}
         error -> error
       end
     end
@@ -97,8 +111,15 @@ defmodule ApiGatewayWeb.DatingControllerTest do
   end
 
   defmodule MediaStub do
-    def get_download_url(%{"media_id" => media_id}) do
-      {:ok, %{download_url: "https://cdn.test/signed/" <> media_id}}
+    # The URL carries the media id, so index correspondence is checkable rather than assumed.
+    def get_download_url(%{"media_id" => media_id} = attrs) do
+      send(:dating_test, {:presign, attrs})
+
+      if media_id in Application.get_env(:api_gateway, :test_presign_failures, []) do
+        {:error, :media_unavailable}
+      else
+        {:ok, %{download_url: "https://cdn.test/signed/" <> media_id}}
+      end
     end
   end
 
@@ -141,7 +162,12 @@ defmodule ApiGatewayWeb.DatingControllerTest do
           else: Application.delete_env(:shared_infra, key)
       end
 
-      for key <- [:test_dating_update, :test_dating_swipe],
+      for key <- [
+            :test_dating_update,
+            :test_dating_swipe,
+            :test_presign_failures,
+            :test_dating_photos
+          ],
           do: Application.delete_env(:api_gateway, key)
     end)
   end
@@ -395,5 +421,84 @@ defmodule ApiGatewayWeb.DatingControllerTest do
       event: "dating_unmatched",
       payload: ^expected
     }
+  end
+
+  # --- THE EDITOR'S OWN PHOTOS ---------------------------------------------------------------------
+  #
+  # The deck presigned its cards from day one; the profile read never did, so the editor received ids
+  # it could not resolve and drew empty "Photo N" tiles for every saved photo. `photos` stays the id
+  # list (the editor sends it straight back on the next PATCH); `photo_urls` is added beside it.
+
+  describe "GET /dating/profile — photo_urls" do
+    test "carries a URL for EVERY photo id, in the SAME order" do
+      %{"photos" => photos, "photo_urls" => urls} = own_profile()
+
+      assert photos == [@photo_a, @photo_b],
+             "the id list must survive untouched — the editor PATCHes it straight back"
+
+      assert urls == [
+               "https://cdn.test/signed/" <> @photo_a,
+               "https://cdn.test/signed/" <> @photo_b
+             ],
+             "the editor got ids with no URLs to render them with (or in the wrong order): #{inspect(urls)}"
+
+      # Said again as a rule rather than a literal: slot i's URL belongs to slot i's id. A reorder
+      # here would silently put the wrong face in the wrong tile, and the next save would write it.
+      assert length(urls) == length(photos)
+
+      for {id, url} <- Enum.zip(photos, urls) do
+        assert url == "https://cdn.test/signed/" <> id
+      end
+    end
+
+    test "presigns through the CACHEABLE profile, exactly as the deck does" do
+      own_profile()
+
+      assert_receive {:presign, %{"media_id" => @photo_a, "url_profile" => "cacheable"}}
+      assert_receive {:presign, %{"media_id" => @photo_b, "url_profile" => "cacheable"}}
+    end
+
+    test "a FAILED presign keeps its slot as null — it never shifts the photos after it" do
+      Application.put_env(:api_gateway, :test_presign_failures, [@photo_a])
+
+      %{"photos" => photos, "photo_urls" => urls} = own_profile()
+
+      assert photos == [@photo_a, @photo_b]
+
+      assert urls == [nil, "https://cdn.test/signed/" <> @photo_b],
+             "a failed presign was dropped instead of holding its slot — every later photo moves " <>
+               "one tile left and the editor saves that order back"
+    end
+
+    test "a profile with no photos answers empty lists, and presigns nothing" do
+      Application.put_env(:api_gateway, :test_dating_photos, [])
+
+      assert %{"photos" => [], "photo_urls" => []} = own_profile()
+      refute_receive {:presign, _attrs}
+    end
+
+    test "the PATCH response carries the same pair, so a save leaves no stale tile behind" do
+      params = %{"enabled" => true}
+
+      conn =
+        authed(:patch, "/api/v1/dating/profile", params)
+        |> DatingController.update_profile(params)
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+
+      assert body["photos"] == [@photo_a, @photo_b]
+
+      assert body["photo_urls"] == [
+               "https://cdn.test/signed/" <> @photo_a,
+               "https://cdn.test/signed/" <> @photo_b
+             ]
+    end
+  end
+
+  defp own_profile do
+    conn = authed(:get, "/api/v1/dating/profile") |> DatingController.profile(%{})
+    assert conn.status == 200
+    Jason.decode!(conn.resp_body)
   end
 end
