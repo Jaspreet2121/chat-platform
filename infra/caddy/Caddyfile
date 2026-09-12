@@ -46,6 +46,24 @@ media.growblic.com {
 		Content-Security-Policy "sandbox"
 	}
 
+	# CACHEABLE MEDIA — dating deck photos, and ONLY those.
+	#
+	# MinIO sends no Cache-Control, so every fetch re-downloads even when the URL is unchanged. The
+	# media service now mints dating photo URLs with a 2h window (X-Amz-Expires=7200) and a signature
+	# rounded to a 1h bucket, so the SAME URL comes back for an hour — which is what makes a browser
+	# cache able to hit at all. This header is the other half.
+	#
+	# MATCHED ON THE SIGNED WINDOW, deliberately, rather than applied to the whole host: 7200 is the
+	# cacheable profile's window and nothing else uses it (chat media 900s, status 300s, view-once
+	# 120s). A blanket Cache-Control here would make VIEW-ONCE bytes re-readable from the browser
+	# cache after the server-side deny — the one thing this host must never do.
+	#
+	# max-age = the BUCKET (3600), not the window: an hour is the longest a cached entry can still be
+	# the current URL, and it is also the minimum validity a freshly-issued URL has left. `immutable`
+	# because the bytes behind an object key never change — no revalidation inside the hour.
+	@cacheable_media query X-Amz-Expires=7200
+	header @cacheable_media Cache-Control "private, max-age=3600, immutable"
+
 	reverse_proxy minio:9000
 }
 
