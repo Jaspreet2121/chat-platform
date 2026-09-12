@@ -299,8 +299,12 @@ function MessageGroup({
   // Group chats only: the run's header (avatar + name, once). Direct chats show neither.
   const showHeader = !isOwn && !isDirect;
 
+  // NO cross-axis alignment on these columns. `items-end` / `items-start` here shrink-wrapped every
+  // bubble row to its own text, and the bubble's percentage max-width then resolved against THAT —
+  // so a bubble was capped at 78% of the space its own words needed and wrapped a single word.
+  // Children stretch to the full column; each bubble row aligns itself (flex-row-reverse for own).
   return (
-    <div className={cn("flex flex-col", isOwn ? "items-end" : "items-start")}>
+    <div className="flex flex-col">
       {showHeader ? (
         <div className="mb-0.5 flex items-center gap-2 pl-1">
           <Avatar
@@ -313,12 +317,7 @@ function MessageGroup({
         </div>
       ) : null}
 
-      <div
-        className={cn(
-          "flex w-full flex-col gap-0.5",
-          isOwn ? "items-end" : cn("items-start", showHeader && "pl-10")
-        )}
-      >
+      <div className={cn("flex w-full flex-col gap-0.5", showHeader && "pl-10")}>
         {group.map((message) => (
           <MessageBubble
             key={message.message_id}

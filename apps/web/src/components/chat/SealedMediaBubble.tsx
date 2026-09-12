@@ -112,8 +112,13 @@ export function SealedMediaBubble({
   }, [autoLoad, media, objectUrl]);
 
   const lockBadge = (
-    <span className={cn("flex items-center gap-1 text-[10px]", isOwn ? "text-white/70" : "text-faint")}>
-      <Lock className="h-2.5 w-2.5" aria-hidden />
+    <span
+      className={cn(
+        "flex items-center gap-1 whitespace-nowrap text-[10px]",
+        isOwn ? "text-white/70" : "text-faint"
+      )}
+    >
+      <Lock className="h-2.5 w-2.5 shrink-0" aria-label="Encrypted" />
       {footer}
     </span>
   );

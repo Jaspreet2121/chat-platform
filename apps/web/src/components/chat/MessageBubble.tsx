@@ -47,6 +47,43 @@ export function sealedStubCopy(reason: DecryptFailure): string {
   }
 }
 
+/**
+ * THE BUBBLE CHROME — one definition for every text-like bubble, sealed or plain. The sealed branch
+ * used to paint its own surface (plain rounded-2xl, no gradient, no tail); it now shares this, so a
+ * sealed bubble next to a plain one is indistinguishable except for its lock badge.
+ */
+export function bubbleSurfaceClass(isOwn: boolean): string {
+  return cn(
+    "rounded-[18px] px-3 py-1.5 text-sm leading-snug transition-shadow",
+    // Locked periwinkle bubbles: OUTGOING = accent gradient with white text and a soft glow;
+    // INCOMING = periwinkle-tinted surface with dark text. 18px radius, 5px tail corner on the
+    // sender's side.
+    isOwn
+      ? "bubble-own-gradient rounded-br-[5px] text-white shadow-accent-glow"
+      : "rounded-bl-[5px] bg-[var(--bubble-other-bg)] text-[var(--bubble-other-fg)] shadow-subtle hover:bg-[var(--bubble-other-bg-hover)]"
+  );
+}
+
+/**
+ * The bubble ROW spans the FULL run column (`w-full`), and the column below it caps the bubble at a
+ * percentage of THAT. The percentage must never resolve against a shrink-wrapped box — that is
+ * exactly the bug where "hiii" got a bubble narrower than its own timestamp. Own messages sit on
+ * the right via flex-row-reverse; nothing above this row is allowed to un-stretch it.
+ */
+export function bubbleRowClass(isOwn: boolean, isHighlighted?: boolean): string {
+  return cn(
+    "group flex w-full items-end gap-2 animate-bubble-in rounded-2xl transition-colors duration-700",
+    isOwn ? "flex-row-reverse" : "flex-row",
+    // Brief flash when jumped-to from a search/starred result (fades via the transition above).
+    isHighlighted && "bg-brand/15"
+  );
+}
+
+/** 78% of the COLUMN. Inside it the surface hugs its text (items-end/start), capped by the column. */
+export function bubbleColumnClass(isOwn: boolean): string {
+  return cn("flex min-w-0 max-w-[78%] flex-col", isOwn ? "items-end" : "items-start");
+}
+
 // Leaflet needs `window` — load the interactive map client-side only (no SSR) so the build/SSR never
 // touch it. A neutral skeleton reserves the space while the chunk loads.
 const LeafletMap = dynamic(() => import("./LeafletMap"), {
@@ -245,25 +282,31 @@ export function MessageBubble({
 
   // WhatsApp-style IN-BUBBLE stamp: time (+ edited) and, on own messages, the read-ticks — floated to
   // the bubble's bottom-right so text wraps around it. Seamless media gets an overlay pill instead.
-  const stamp = !isDeleted && !isEditing ? (
-    <span
-      className={cn(
-        "pointer-events-none float-right ml-2 mt-1.5 flex translate-y-0.5 items-center gap-1 text-[10px] leading-none",
-        seamlessMedia
-          ? "absolute bottom-2 right-2 float-none mt-0 rounded-full bg-black/45 px-1.5 py-1 text-white backdrop-blur-sm"
-          : isOwn
-            ? "text-white/75"
-            : "text-faint"
-      )}
-    >
-      {isStarred ? (
-        <Star className="h-2.5 w-2.5 text-amber-400" fill="currentColor" aria-hidden />
-      ) : null}
-      {time}
-      {isEdited ? <span className="italic">· edited</span> : null}
-      {isOwn ? <ReadTicks message={message} inline /> : null}
-    </span>
-  ) : null;
+  // A META LINE NEVER WRAPS: whitespace-nowrap on the span and shrink-0 on every icon, so however
+  // narrow the bubble, "01:52 PM" stays on one line and the lock renders at full size.
+  const stampFor = (lock: boolean) =>
+    !isDeleted && !isEditing ? (
+      <span
+        data-stamp
+        className={cn(
+          "pointer-events-none float-right ml-2 mt-1.5 flex translate-y-0.5 items-center gap-1 whitespace-nowrap text-[10px] leading-none",
+          seamlessMedia
+            ? "absolute bottom-2 right-2 float-none mt-0 rounded-full bg-black/45 px-1.5 py-1 text-white backdrop-blur-sm"
+            : isOwn
+              ? "text-white/75"
+              : "text-faint"
+        )}
+      >
+        {lock ? <Lock className="h-2.5 w-2.5 shrink-0" aria-label="Encrypted" /> : null}
+        {isStarred ? (
+          <Star className="h-2.5 w-2.5 shrink-0 text-amber-400" fill="currentColor" aria-hidden />
+        ) : null}
+        {time}
+        {isEdited ? <span className="italic">· edited</span> : null}
+        {isOwn ? <ReadTicks message={message} inline /> : null}
+      </span>
+    ) : null;
+  const stamp = stampFor(false);
 
   // Missed-call entry (Slice-5b): a minimal, non-interactive system pill — NO bubble chrome, reactions,
   // edit, or read-ticks. Aligned by sender (own = right) like a normal message, red accent, phone/video
@@ -286,51 +329,42 @@ export function MessageBubble({
 
   // 108: SEALED messages — render the DECRYPTED body as a normal text bubble with a lock badge, or
   // an inline stub. Never crash the list on an undecryptable message.
+  // Same row, column and surface as a plain bubble (bubbleRowClass / bubbleColumnClass /
+  // bubbleSurfaceClass) — the only visible difference is the lock in the stamp.
   if (message.message_type === "sealed") {
     const decrypted = sealedDecryption;
     const failed = decrypted && !decrypted.ok;
-    const isMedia = decrypted?.ok && decrypted.kind === "media";
+    const isSealedMedia = decrypted?.ok && decrypted.kind === "media";
+    // Sealed media keeps SealedMediaBubble's own lock badge; the footer it wraps is nowrap too.
     const footer = (
-      <>
-        {formatTime(message.created_at)}
+      <span className="inline-flex items-center gap-1 whitespace-nowrap">
+        {time}
         {isOwn ? <ReadTicks message={message} inline /> : null}
-      </>
+      </span>
     );
     return (
-      <div className={cn("flex px-1 py-0.5", isOwn ? "justify-end" : "justify-start")}>
-        <div
-          className={cn(
-            "max-w-[75%] rounded-2xl px-3 py-2 text-sm shadow-subtle",
-            isOwn ? "bg-brand text-white" : "bg-elevated text-fg",
-            failed && "italic opacity-70"
-          )}
-        >
-          {isMedia && decrypted?.ok && decrypted.kind === "media" ? (
-            <SealedMediaBubble media={decrypted.media} isOwn={isOwn} footer={footer} />
-          ) : (
-            <>
-              {decrypted?.ok && decrypted.kind === "text" ? (
-                <p className="whitespace-pre-wrap break-words">
-                  <LinkifiedText text={decrypted.body} />
-                </p>
-              ) : failed && decrypted && !decrypted.ok ? (
-                <p className="whitespace-pre-wrap break-words">
-                  {sealedStubCopy(decrypted.reason)}
-                </p>
-              ) : (
-                <p className="opacity-60">Decrypting…</p>
-              )}
-              <span
-                className={cn(
-                  "mt-0.5 flex items-center gap-1 text-[10px]",
-                  isOwn ? "text-white/70" : "text-faint"
-                )}
-              >
-                <Lock className="h-2.5 w-2.5" aria-hidden />
-                {footer}
-              </span>
-            </>
-          )}
+      <div id={`msg-${message.message_id}`} className={bubbleRowClass(isOwn, isHighlighted)}>
+        <div className={bubbleColumnClass(isOwn)}>
+          <div className={cn(bubbleSurfaceClass(isOwn), failed && "italic opacity-70")}>
+            {isSealedMedia && decrypted?.ok && decrypted.kind === "media" ? (
+              <SealedMediaBubble media={decrypted.media} isOwn={isOwn} footer={footer} />
+            ) : decrypted?.ok && decrypted.kind === "text" ? (
+              <p className="whitespace-pre-wrap break-words">
+                <LinkifiedText text={decrypted.body} />
+                {stampFor(true)}
+              </p>
+            ) : failed && decrypted && !decrypted.ok ? (
+              <p className="whitespace-pre-wrap break-words">
+                {sealedStubCopy(decrypted.reason)}
+                {stampFor(true)}
+              </p>
+            ) : (
+              <p className="opacity-60">
+                Decrypting…
+                {stampFor(true)}
+              </p>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -355,15 +389,7 @@ export function MessageBubble({
   }
 
   return (
-    <div
-      id={`msg-${message.message_id}`}
-      className={cn(
-        "group flex items-end gap-2 animate-bubble-in rounded-2xl transition-colors duration-700",
-        isOwn ? "flex-row-reverse" : "flex-row",
-        // Brief flash when jumped-to from a search/starred result (fades via the transition above).
-        isHighlighted && "bg-brand/15"
-      )}
-    >
+    <div id={`msg-${message.message_id}`} className={bubbleRowClass(isOwn, isHighlighted)}>
       {!isOwn && !hideAvatar && (
         <Avatar
           id={message.sender_user_id}
@@ -374,24 +400,15 @@ export function MessageBubble({
         />
       )}
 
-      <div className={cn("flex min-w-0 max-w-[78%] flex-col", isOwn ? "items-end" : "items-start")}>
+      <div className={bubbleColumnClass(isOwn)}>
         <div
-          className={cn(
-            "text-sm leading-snug",
+          className={
             seamlessMedia
               ? // Seamless photo/video: no bubble surface — only the media's own rounded box shows.
                 // (relative so the overlay time/ticks pill can sit on the media's corner.)
-                "relative max-w-full text-fg"
-              : cn(
-                  // Locked periwinkle bubbles: OUTGOING = accent gradient with white text and a soft
-                  // glow; INCOMING = periwinkle-tinted surface with dark text. 18px radius, 5px tail
-                  // corner on the sender's side.
-                  "rounded-[18px] px-3 py-1.5 transition-shadow",
-                  isOwn
-                    ? "bubble-own-gradient rounded-br-[5px] text-white shadow-accent-glow"
-                    : "rounded-bl-[5px] bg-[var(--bubble-other-bg)] text-[var(--bubble-other-fg)] shadow-subtle hover:bg-[var(--bubble-other-bg-hover)]"
-                )
-          )}
+                "relative max-w-full text-sm leading-snug text-fg"
+              : bubbleSurfaceClass(isOwn)
+          }
         >
           {!isDeleted && !isEditing && isForwarded ? (
             <p className="mb-1 flex items-center gap-1 text-[11px] italic opacity-70">
@@ -684,7 +701,7 @@ function ReadTicks({ message, inline }: { message: Message; inline?: boolean }) 
     return (
       <span title="Read" aria-label="Read">
         <CheckCheck
-          className={cn("h-3.5 w-3.5", inline ? "text-white" : "text-brand-hover")}
+          className={cn("h-3.5 w-3.5 shrink-0", inline ? "text-white" : "text-brand-hover")}
           aria-hidden
         />
       </span>
@@ -694,7 +711,7 @@ function ReadTicks({ message, inline }: { message: Message; inline?: boolean }) 
     return (
       <span title="Delivered" aria-label="Delivered">
         <CheckCheck
-          className={cn("h-3.5 w-3.5", inline ? "text-white/60" : "text-faint")}
+          className={cn("h-3.5 w-3.5 shrink-0", inline ? "text-white/60" : "text-faint")}
           aria-hidden
         />
       </span>
@@ -702,7 +719,10 @@ function ReadTicks({ message, inline }: { message: Message; inline?: boolean }) 
   }
   return (
     <span title="Sent" aria-label="Sent">
-      <Check className={cn("h-3.5 w-3.5", inline ? "text-white/60" : "text-faint")} aria-hidden />
+      <Check
+        className={cn("h-3.5 w-3.5 shrink-0", inline ? "text-white/60" : "text-faint")}
+        aria-hidden
+      />
     </span>
   );
 }
