@@ -32,16 +32,48 @@ defmodule ApiGatewayWeb.LinkStore do
     @moduledoc false
     @behaviour ApiGatewayWeb.LinkStore
 
+    require Logger
+
     @impl true
     def put(key, value, ttl), do: SharedInfra.RedisKV.put(key, value, ttl)
 
     @impl true
-    def get(key) do
-      case SharedInfra.RedisKV.get(key) do
-        {:ok, :null} -> :not_found
-        {:ok, value} when is_binary(value) -> {:ok, value}
-        {:ok, _other} -> :not_found
-        {:error, reason} -> {:error, reason}
+    def get(key), do: get(key, &SharedInfra.RedisKV.get/1)
+
+    @doc """
+    Translate `SharedInfra.RedisKV.get/1`'s reply into THIS module's contract
+    ({:ok, value} | :not_found | {:error, reason}).
+
+    A MISSING KEY IS `:miss`, and this clause is the fix: it was absent, so an expired or unknown
+    link code — the ordinary end of every 60s QR's life — fell off the case with a CaseClauseError.
+    The controller's rescue caught it and answered "pending", so the browser polled a dead code
+    forever instead of being told to mint a new one, and the phone's approve of an expired QR 500'd
+    instead of returning its 410. `ApiGatewayWeb.NearbyBleStore` translates the same reply correctly;
+    this seam was simply written against a shape RedisKV does not return.
+
+    The unknown-reply arm returns :not_found rather than raising, ON PURPOSE: for the QR flow
+    "unresolvable" degrades to "expired", which the client recovers from by minting a fresh code. It
+    logs, so a future contract drift names itself instead of repeating this bug silently.
+
+    `read` is the reader, injectable so the translation is testable without Redis.
+    """
+    def get(key, read) when is_function(read, 1) do
+      case read.(key) do
+        {:ok, value} when is_binary(value) ->
+          {:ok, value}
+
+        :miss ->
+          :not_found
+
+        {:error, reason} ->
+          {:error, reason}
+
+        other ->
+          Logger.warning(
+            "[link_qr] unexpected store reply, treated as not_found: #{inspect(other)}"
+          )
+
+          :not_found
       end
     end
 

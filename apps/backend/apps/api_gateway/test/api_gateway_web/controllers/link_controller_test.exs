@@ -10,6 +10,7 @@ defmodule ApiGatewayWeb.LinkControllerTest do
 
   import Plug.Conn
   import Plug.Test
+  import ExUnit.CaptureLog
 
   alias ApiGatewayWeb.LinkController
 
@@ -249,6 +250,98 @@ defmodule ApiGatewayWeb.LinkControllerTest do
       assert conn.status == 200
       assert Jason.decode!(conn.resp_body)["state"] in ["pending", "approved"]
     end
+  end
+
+  # --- THE PROD CRASH (2026-09-13): an expired code answered "pending" forever -----------------------
+  #
+  # `SharedInfra.RedisKV.get/1` answers `:miss` for a missing key. LinkStore.Redis had no clause for
+  # it, so the ordinary expiry of a 60s QR raised a CaseClauseError; the wait rescue caught it and
+  # answered "pending", and the browser — which has NO backoff on pending, because a pending normally
+  # costs a 10s server-side hold — re-polled every ~150ms against a code that could never resolve.
+  #
+  # This store is the production translation wired to a reader that misses, so the test reproduces
+  # the exact reply the box sees rather than a stand-in for it.
+  defmodule MissingKeyStore do
+    @moduledoc false
+    @behaviour ApiGatewayWeb.LinkStore
+
+    @impl true
+    def put(key, value, ttl), do: ApiGatewayWeb.LinkControllerTest.MemStore.put(key, value, ttl)
+
+    @impl true
+    def get(key), do: ApiGatewayWeb.LinkStore.Redis.get(key, fn _ -> :miss end)
+
+    @impl true
+    def put_get(key, value, ttl),
+      do: ApiGatewayWeb.LinkControllerTest.MemStore.put_get(key, value, ttl)
+
+    @impl true
+    def del(key), do: ApiGatewayWeb.LinkControllerTest.MemStore.del(key)
+  end
+
+  defp with_missing_key_store do
+    Application.put_env(:api_gateway, :link_store_adapter, MissingKeyStore)
+    on_exit(fn -> Application.put_env(:api_gateway, :link_store_adapter, MemStore) end)
+  end
+
+  test "a MISSING KEY tells the browser EXPIRED — not pending, and without crashing" do
+    created = create!()
+    with_missing_key_store()
+
+    log =
+      capture_log(fn ->
+        send(self(), {:conn, poll(created["link_id"], created["poll_token"])})
+      end)
+
+    assert_received {:conn, conn}
+
+    assert conn.status == 200
+
+    assert %{"state" => "expired"} = Jason.decode!(conn.resp_body),
+           "an expired/unknown code was reported as pending — the browser polls a dead link forever " <>
+             "instead of minting a new one"
+
+    # The flow reached the expired branch on its own, not via the crash rescue.
+    assert log =~ "[link_qr] poll on expired/unknown link_id=#{created["link_id"]}"
+    refute log =~ "wait crashed"
+  end
+
+  test "approving an expired code is a clean 410, not a 500 from the same missing clause" do
+    created = create!()
+    qr = "skifi-link:v1:" <> created["link_id"] <> ":nonce-does-not-matter"
+    with_missing_key_store()
+
+    conn = approve(qr)
+
+    assert conn.status == 410
+    assert %{"error" => %{"code" => "link.expired"}} = Jason.decode!(conn.resp_body)
+  end
+
+  test "a CRASH still answers pending, but the log NAMES it — exception and link_id" do
+    created = create!()
+    start_supervised!(%{id: FlakyStore, start: {FlakyStore, :start_link, []}})
+    Application.put_env(:api_gateway, :link_store_adapter, FlakyStore)
+    on_exit(fn -> Application.put_env(:api_gateway, :link_store_adapter, MemStore) end)
+
+    # FlakyStore raises on its first read.
+    log =
+      capture_log(fn ->
+        send(self(), {:conn, poll(created["link_id"], created["poll_token"])})
+      end)
+
+    assert_received {:conn, conn}
+
+    assert conn.status == 200
+    assert %{"state" => "pending"} = Jason.decode!(conn.resp_body)
+
+    assert log =~ "[link_qr] wait crashed"
+
+    assert log =~ "exception=RuntimeError",
+           "the rescue logged a stack with no named reason — a swallowed crash reads like ordinary " <>
+             "traffic, which is why this went unnoticed in production"
+
+    assert log =~ "link_id=#{created["link_id"]}",
+           "the rescue named no link, so a crash cannot be traced to the code that caused it"
   end
 
   test "a decrypt failure answers pending and does NOT consume the approved state" do

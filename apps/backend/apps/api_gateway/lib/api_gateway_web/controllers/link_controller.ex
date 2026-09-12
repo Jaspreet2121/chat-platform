@@ -79,9 +79,13 @@ defmodule ApiGatewayWeb.LinkController do
     # machine is untouched because the consume step now decrypts BEFORE it writes (below). The full
     # stack is logged loudly so the next occurrence names itself instead of surfacing as a 500.
     error ->
+      # NAME THE REASON. This line previously carried only a stack trace, so a crash that the flow
+      # then reported as "pending" read like ordinary traffic — which is precisely why an expired QR
+      # crashing ~7×/second went unnoticed. exception= and link_id= make one cause groupable and one
+      # link traceable from the log alone.
       Logger.error(
-        "[link_qr] wait crashed — returned pending: " <>
-          Exception.format(:error, error, __STACKTRACE__)
+        "[link_qr] wait crashed — returned pending: exception=#{inspect(error.__struct__)} " <>
+          "link_id=#{link_id} " <> Exception.format(:error, error, __STACKTRACE__)
       )
 
       json(conn, %{state: "pending"})
