@@ -129,6 +129,7 @@ defmodule ConversationService.WallpaperSettingsTest do
              :only_admins_can_send,
              :participants,
              :secret,
+             :sharing_disabled,
              :tenant_id,
              :title,
              :type,

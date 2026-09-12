@@ -46,6 +46,7 @@ defmodule SharedInfra.ConversationClient do
   @callback set_participant_role(attrs()) :: result()
   @callback set_group_settings(attrs()) :: result()
   @callback set_wallpaper(attrs()) :: result()
+  @callback set_sharing_disabled(attrs()) :: result()
   @callback authorize_send(attrs()) :: result()
   @callback get_call_conversation(attrs()) :: result()
   @callback admin_list_conversations(attrs()) :: result()
@@ -190,6 +191,7 @@ defmodule SharedInfra.ConversationClient do
   def set_participant_role(attrs), do: adapter().set_participant_role(attrs)
   def set_group_settings(attrs), do: adapter().set_group_settings(attrs)
   def set_wallpaper(attrs), do: adapter().set_wallpaper(attrs)
+  def set_sharing_disabled(attrs), do: adapter().set_sharing_disabled(attrs)
   def authorize_send(attrs), do: adapter().authorize_send(attrs)
 
   @doc "Block/unblock/list — the first-party block management endpoints. %{blocker_user_id, blocked_user_id}."

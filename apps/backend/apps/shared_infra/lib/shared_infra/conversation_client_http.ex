@@ -204,6 +204,10 @@ defmodule SharedInfra.ConversationClientHttp do
   def set_wallpaper(attrs), do: post("/internal/conversations/set_wallpaper", attrs)
 
   @impl true
+  def set_sharing_disabled(attrs),
+    do: post("/internal/conversations/set_sharing_disabled", attrs)
+
+  @impl true
   def authorize_send(attrs), do: post("/internal/conversations/authorize_send", attrs)
 
   @impl true

@@ -102,6 +102,10 @@ defmodule ConversationService.ConversationClientInProcess do
   def set_wallpaper(attrs), do: ConversationService.Participants.set_wallpaper(attrs)
 
   @impl true
+  def set_sharing_disabled(attrs),
+    do: ConversationService.Participants.set_sharing_disabled(attrs)
+
+  @impl true
   def authorize_send(attrs), do: ConversationService.Participants.authorize_send(attrs)
 
   @impl true

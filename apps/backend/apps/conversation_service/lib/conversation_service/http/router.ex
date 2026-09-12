@@ -126,6 +126,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Participants.set_wallpaper(body(conn)))
   end
 
+  post "/internal/conversations/set_sharing_disabled" do
+    send_result(conn, ConversationService.Participants.set_sharing_disabled(body(conn)))
+  end
+
   post "/internal/conversations/authorize_send" do
     send_result(conn, ConversationService.Participants.authorize_send(body(conn)))
   end

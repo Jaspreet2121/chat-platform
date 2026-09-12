@@ -156,6 +156,55 @@ defmodule ConversationService.Participants do
     Ecto.Query.CastError -> {:error, :conversation_not_found}
   end
 
+  @doc """
+  Set the conversation's "restrict sharing" flag (120).
+
+  THE SAME SHAPE AS set_wallpaper/1, deliberately: a DM's either participant may change it, a
+  group's owner/admin only (the settings rule's own :participant_forbidden), and an unknown,
+  cross-tenant or non-member conversation is one indistinguishable refusal — no existence reveal.
+
+  Only a real boolean is accepted; anything else (including "true") is :sharing_invalid, which the
+  gateway maps to a single 422. A string that silently became `true` would be a setting the user
+  believes is on and the server believes is off.
+  """
+  def set_sharing_disabled(attrs) do
+    with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
+         {:ok, actor_user_id} <- required_attr(attrs, "actor_user_id"),
+         {:ok, sharing_disabled} <- sharing_attr(Map.get(attrs, "sharing_disabled")) do
+      if conversation_persistence_enabled?() do
+        with {:ok, conversation} <- fetch_active_conversation(conversation_id),
+             {:ok, _actor} <- require_wallpaper_setter(conversation, actor_user_id),
+             {:ok, _settings} <- upsert_sharing_disabled(conversation_id, sharing_disabled) do
+          {:ok, %{conversation_id: conversation_id, sharing_disabled: sharing_disabled}}
+        end
+      else
+        {:ok, %{conversation_id: conversation_id, sharing_disabled: sharing_disabled}}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :conversation_not_found}
+  end
+
+  defp sharing_attr(value) when is_boolean(value), do: {:ok, value}
+  defp sharing_attr(_other), do: {:error, :sharing_invalid}
+
+  defp upsert_sharing_disabled(conversation_id, sharing_disabled) do
+    case ConversationSettingsStore.get_settings(conversation_id) do
+      nil ->
+        ConversationSettingsStore.create_settings(%{
+          "conversation_id" => conversation_id,
+          "sharing_disabled" => sharing_disabled
+        })
+
+      settings ->
+        ConversationSettingsStore.update_settings(settings, %{
+          "sharing_disabled" => sharing_disabled
+        })
+    end
+  end
+
+  # The setter rule is SHARED with the wallpaper: whoever may change one conversation-wide setting
+  # may change the other. Named for its first caller; read it as "the settings setter".
   defp require_wallpaper_setter(%{type: "group", id: id}, actor_user_id),
     do: require_owner_or_admin(id, actor_user_id)
 

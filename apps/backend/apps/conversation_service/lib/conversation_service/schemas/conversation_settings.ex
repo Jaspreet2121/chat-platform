@@ -21,6 +21,9 @@ defmodule ConversationService.Schemas.ConversationSettings do
     # 117: the SHARED chat wallpaper — the client's own encoding, whitelist-validated in
     # Participants.set_wallpaper before it ever reaches this changeset. NULL = unset.
     field(:wallpaper, :map)
+    # 120: "restrict sharing" — the members agree this conversation's messages are not to be
+    # forwarded out of it. NOT NULL DEFAULT false, so an absent settings row reads as unrestricted.
+    field(:sharing_disabled, :boolean, default: false)
     field(:created_at, :utc_datetime_usec)
     field(:updated_at, :utc_datetime_usec)
   end
@@ -33,7 +36,8 @@ defmodule ConversationService.Schemas.ConversationSettings do
       :only_admins_can_add_members,
       :call_start_permission,
       :message_retention_days,
-      :wallpaper
+      :wallpaper,
+      :sharing_disabled
     ])
     |> validate_required([:conversation_id, :only_admins_can_send, :only_admins_can_add_members])
     |> validate_inclusion(:call_start_permission, @call_permissions)
@@ -48,7 +52,8 @@ defmodule ConversationService.Schemas.ConversationSettings do
       :only_admins_can_add_members,
       :call_start_permission,
       :message_retention_days,
-      :wallpaper
+      :wallpaper,
+      :sharing_disabled
     ])
     |> validate_required([:only_admins_can_send, :only_admins_can_add_members])
     |> validate_inclusion(:call_start_permission, @call_permissions)

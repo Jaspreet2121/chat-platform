@@ -281,6 +281,7 @@ defmodule ConversationService.Conversations do
          only_admins_can_send(conversation),
          call_start_permission(conversation),
          wallpaper(conversation),
+         sharing_disabled(conversation),
          ConversationService.Encryption.off_state(conversation.id)
        )}
     end
@@ -363,6 +364,15 @@ defmodule ConversationService.Conversations do
     end
   end
 
+  # 120: ALWAYS a boolean, never nil — the client hides the "restrict sharing" toggle while the key
+  # is ABSENT, so a false must be on the wire as false. No settings row = unrestricted.
+  defp sharing_disabled(%{id: id}) do
+    case ConversationSettingsStore.get_settings(id) do
+      %{sharing_disabled: true} -> true
+      _ -> false
+    end
+  end
+
   defp conversation_detail_response(
          conversation,
          participants,
@@ -370,6 +380,7 @@ defmodule ConversationService.Conversations do
          only_admins_can_send,
          call_start_permission,
          wallpaper,
+         sharing_disabled,
          off_state
        ) do
     %{
@@ -396,6 +407,9 @@ defmodule ConversationService.Conversations do
       # 117: the SHARED wallpaper (both DMs and groups; nil = unset). The settings row is the source
       # of truth — the live settings_updated frame is only a hint for the open chat.
       wallpaper: wallpaper,
+      # 120: "restrict sharing" — ALWAYS present (false when unset). Its presence is what enables the
+      # client's toggle; its value is what the forward path enforces server-side.
+      sharing_disabled: sharing_disabled,
       # 108: secret (E2EE) flag — clients switch to sealed sends; the auto-reply engine skips.
       secret: conversation.secret == true,
       # 118: the two-party OFF state. `e2ee_disabled` is the explicit "turned off" marker the
