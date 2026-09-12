@@ -17,13 +17,23 @@
 # Ports: auth 4101, conversation 4102, user 4103, message 4104, media 4105, gateway 4000.
 
 ARG RELEASE=chat_platform
+# The commit this image was built from. The build context is apps/backend and the COPYs below bring
+# in apps/ + config/ — NOT .git — so nothing inside the build can ask git what it is building. The
+# SHA has to be passed in:
+#
+#   GIT_SHA=$(git rev-parse --short HEAD) docker compose -f docker-compose.prod.yml build gateway
+#
+# It defaults to "unknown" and is never validated: a build that forgets it must still succeed and
+# say so, because failing a deploy over a provenance label would be worse than the missing label.
+ARG GIT_SHA=unknown
 
 # ---- Build stage --------------------------------------------------------------------------
 # Match CI's toolchain: Elixir 1.18.4 / OTP 27 (official image is debian-bookworm based).
 FROM elixir:1.18.4-otp-27 AS build
 
-# ARG must be re-declared after FROM to be visible in this stage.
+# ARG must be re-declared after FROM to be visible in this stage (ARGs do not cross stages).
 ARG RELEASE
+ARG GIT_SHA
 
 # Build deps INCLUDING cmake + build-essential for brod's crc32cer NIF (same reason CI needs it).
 RUN apt-get update -y \
@@ -57,16 +67,21 @@ FROM debian:bookworm-slim AS runtime
 # (ARGs are not available at container runtime — only ENV is).
 ARG RELEASE
 ARG SERVICE_PORT=4000
+ARG GIT_SHA
 
 RUN apt-get update -y \
   && apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 ca-certificates locales \
   && rm -rf /var/lib/apt/lists/*
 
+# GIT_SHA becomes an ENV because ARGs do not exist at container runtime — and because the release
+# reads it at CALL time (SharedInfra.BuildInfo.git_sha/0), not at compile time, so this is the value
+# every /health response reports.
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     MIX_ENV=prod \
     PORT=4000 \
-    RELEASE_BIN=${RELEASE}
+    RELEASE_BIN=${RELEASE} \
+    GIT_SHA=${GIT_SHA}
 
 WORKDIR /app
 

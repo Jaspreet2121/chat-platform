@@ -72,7 +72,7 @@ services:
     build:
       context: ./apps/backend
       dockerfile: Dockerfile
-      args: {RELEASE: auth_service, SERVICE_PORT: "4101"}
+      args: {RELEASE: auth_service, SERVICE_PORT: "4101", GIT_SHA: "${GIT_SHA:-unknown}"}
     environment:
       <<: *secrets
       AUTH_HTTP_API_ENABLED: "true"
@@ -113,7 +113,7 @@ services:
     build:
       context: ./apps/backend
       dockerfile: Dockerfile
-      args: {RELEASE: conversation_service, SERVICE_PORT: "4102"}
+      args: {RELEASE: conversation_service, SERVICE_PORT: "4102", GIT_SHA: "${GIT_SHA:-unknown}"}
     environment:
       <<: *secrets
       CONVERSATION_HTTP_API_ENABLED: "true"
@@ -141,7 +141,7 @@ services:
     build:
       context: ./apps/backend
       dockerfile: Dockerfile
-      args: {RELEASE: user_service, SERVICE_PORT: "4103"}
+      args: {RELEASE: user_service, SERVICE_PORT: "4103", GIT_SHA: "${GIT_SHA:-unknown}"}
     environment:
       <<: *secrets
       USER_HTTP_API_ENABLED: "true"
@@ -161,7 +161,7 @@ services:
     build:
       context: ./apps/backend
       dockerfile: Dockerfile
-      args: {RELEASE: message_service, SERVICE_PORT: "4104"}
+      args: {RELEASE: message_service, SERVICE_PORT: "4104", GIT_SHA: "${GIT_SHA:-unknown}"}
     environment:
       <<: *secrets
       MESSAGE_HTTP_API_ENABLED: "true"
@@ -231,7 +231,7 @@ services:
     build:
       context: ./apps/backend
       dockerfile: Dockerfile
-      args: {RELEASE: media_service, SERVICE_PORT: "4105"}
+      args: {RELEASE: media_service, SERVICE_PORT: "4105", GIT_SHA: "${GIT_SHA:-unknown}"}
     environment:
       <<: *secrets
       MEDIA_HTTP_API_ENABLED: "true"
@@ -335,7 +335,7 @@ services:
     build:
       context: ./apps/backend
       dockerfile: Dockerfile
-      args: {RELEASE: notification_service, SERVICE_PORT: "4106"}
+      args: {RELEASE: notification_service, SERVICE_PORT: "4106", GIT_SHA: "${GIT_SHA:-unknown}"}
     restart: unless-stopped
     networks: [chatnet]
     profiles: ["kafka"]
@@ -538,7 +538,7 @@ services:
     build:
       context: ./apps/backend
       dockerfile: Dockerfile
-      args: {RELEASE: gateway, SERVICE_PORT: "4000"}
+      args: {RELEASE: gateway, SERVICE_PORT: "4000", GIT_SHA: "${GIT_SHA:-unknown}"}
     restart: unless-stopped
     networks: [chatnet]
     # Slightly higher cap than the domain services: bundles api_gateway + realtime_gateway (sockets).
