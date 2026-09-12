@@ -25,6 +25,13 @@ export type ConversationChannel = {
   /** Mark a message read (durable: the server persists the receipt, then broadcasts receipt_updated). */
   markRead: (messageId: string) => Promise<unknown>;
   markDelivered: (messageId: string) => Promise<unknown>;
+  /**
+   * Batched receipts — ONE push for up to RECEIPT_BATCH_MAX ids (the server REFUSES a larger batch;
+   * chunk beyond it, see lib/receipts.ts). The server persists one receipt per id and broadcasts ONE
+   * receipt_updated frame whose payload.message_ids names them all.
+   */
+  markReadBatch: (messageIds: string[]) => Promise<unknown>;
+  markDeliveredBatch: (messageIds: string[]) => Promise<unknown>;
   /** Set/change the caller's reaction on a message (server persists, then broadcasts reaction_updated). */
   reactToMessage: (messageId: string, emoji: string) => Promise<unknown>;
   /** Remove the caller's reaction from a message. */
@@ -82,7 +89,12 @@ export type ReceiptPayload = {
   receipt_type?: "read" | "delivered";
   user_id?: string;
   conversation_id?: string;
-  payload?: { message_id?: string };
+  /**
+   * A single-message frame carries `message_id`. A BATCHED frame carries `message_ids` (all of them)
+   * AND `message_id` (the first, so a consumer written against the single shape still advances one
+   * tick). Apply to every id in `message_ids` when present — see lib/receipts.ts applyReceipt.
+   */
+  payload?: { message_id?: string; message_ids?: string[] };
 };
 
 function realtimeUrl() {
@@ -223,6 +235,12 @@ export type UserChannel = {
   onProfileChanged: (callback: () => void) => () => void;
   /** Push a call:* control event; `call:invite` resolves with the `{ call_id, room }` ack. */
   pushCall: (event: CallClientEvent, payload: Record<string, unknown>) => Promise<unknown>;
+  /**
+   * Delivered for a thread this tab does NOT have open (the message arrived here, on the user topic).
+   * The server re-checks membership of `conversationId` per push and broadcasts the receipt frame to
+   * the conversation topic, so the sender's open thread ticks grey.
+   */
+  reportDelivered: (conversationId: string, messageIds: string[]) => Promise<unknown>;
   leave: () => void;
 };
 
@@ -290,6 +308,11 @@ export function joinUserChannel(socket: Socket, userId: string): Promise<UserCha
             subscribe(channel, "quick_replies_changed", () => callback()),
           onProfileChanged: (callback) => subscribe(channel, "profile_changed", () => callback()),
           pushCall: (event, payload) => push(channel, event, payload),
+          reportDelivered: (conversationId, messageIds) =>
+            push(channel, "messages_delivered", {
+              conversation_id: conversationId,
+              message_ids: messageIds
+            }),
           leave: () => {
             stopHeartbeat();
             if (typeof document !== "undefined") {
@@ -337,6 +360,10 @@ export function joinConversationChannel(
           markRead: (messageId) => push(channel, "message_read", { message_id: messageId }),
           markDelivered: (messageId) =>
             push(channel, "message_delivered", { message_id: messageId }),
+          markReadBatch: (messageIds) =>
+            push(channel, "messages_read", { message_ids: messageIds }),
+          markDeliveredBatch: (messageIds) =>
+            push(channel, "messages_delivered", { message_ids: messageIds }),
           reactToMessage: (messageId, emoji) =>
             push(channel, "reaction:set", { message_id: messageId, emoji }),
           removeReaction: (messageId) =>

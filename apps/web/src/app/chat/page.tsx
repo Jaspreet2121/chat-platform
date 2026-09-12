@@ -83,6 +83,8 @@ import {
 } from "@/lib/e2ee/secretChat";
 import { makeImageThumb } from "@/lib/e2ee/thumbnail";
 import { sendFailureMessage } from "@/lib/sendError";
+import { applyReceipt, createDeliveredQueue, type DeliveredQueue } from "@/lib/receipts";
+import { useReceiptReporter } from "@/components/chat/useReceiptReporter";
 import {
   qrCaption,
   resolveTemplate,
@@ -134,8 +136,6 @@ export default function ChatPage() {
   // One-shot guard: a redirect to /login fires at most once per mount, so no re-trigger can hammer
   // history.replaceState into the browser's "more than 100 times per 10 seconds" SecurityError.
   const hasRedirectedRef = useRef(false);
-  // message_ids already marked read this conversation (dedupes the mark-on-view socket pushes).
-  const markedReadRef = useRef<Set<string>>(new Set());
 
   const [session, setSession] = useState<Session | null>(null);
   const [currentProfile, setCurrentProfile] = useState<UserProfile | null>(null);
@@ -535,23 +535,9 @@ export default function ChatPage() {
             if (isActive) setOnlineUserIds(ids);
           }),
           joinedChannel.onReceipt((data) => {
-            const messageId = data?.payload?.message_id;
-            if (!messageId) return;
-            setMessages((current) =>
-              current.map((item) => {
-                if (item.message_id !== messageId) return item;
-                // A read implies delivered, so bump both; delivered bumps only delivered. We track a
-                // count (≥1 = at least one other has read/received) — exact for 1:1.
-                const delivered = Math.max(item.delivered_by_count ?? 0, 1);
-                return data.receipt_type === "read"
-                  ? {
-                      ...item,
-                      read_by_count: Math.max(item.read_by_count ?? 0, 1),
-                      delivered_by_count: delivered
-                    }
-                  : { ...item, delivered_by_count: delivered };
-              })
-            );
+            // ONE frame may cover N messages (payload.message_ids) — apply it to all of them.
+            if (!data) return;
+            setMessages((current) => applyReceipt(current, data));
           }),
           joinedChannel.onReactionUpdated((data) => {
             if (!data?.message_id) return;
@@ -616,28 +602,17 @@ export default function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedConversationId, session?.user_id]);
 
-  // Reset the per-conversation "already marked read" set when switching conversations.
-  useEffect(() => {
-    markedReadRef.current = new Set();
-  }, [selectedConversationId]);
-
-  // Mark OTHERS' messages as read once, while the conversation is open (channel connected). Ref-guarded
-  // so it's idempotent — steady state pushes nothing; only newly-arrived messages trigger a mark. The
-  // server persists each receipt and broadcasts receipt_updated, flipping the sender's tick to blue.
-  useEffect(() => {
-    if (!channel || !session?.user_id) return;
-    for (const message of messages) {
-      if (
-        message.sender_user_id !== session.user_id &&
-        !markedReadRef.current.has(message.message_id)
-      ) {
-        markedReadRef.current.add(message.message_id);
-        void channel.markRead(message.message_id).catch(() => {
-          markedReadRef.current.delete(message.message_id); // allow a retry on failure
-        });
-      }
-    }
-  }, [channel, messages, session?.user_id]);
+  // Report OTHERS' messages in the open thread as delivered, then read — BATCHED (one push per 100,
+  // not one per message), once each, reset per thread. Both report points — the live arrival above
+  // (onMessageCreated → mergeMessage) and the loadConversation backfill (setMessages(rows)) — land in
+  // `messages`, which is what the hook watches. The server persists each receipt and broadcasts ONE
+  // receipt_updated frame for the batch, flipping the sender's ticks grey then blue.
+  useReceiptReporter({
+    channel,
+    messages,
+    selfUserId: session?.user_id,
+    conversationId: selectedConversationId
+  });
 
   useEffect(() => {
     return () => {
@@ -1619,6 +1594,7 @@ export default function ChatPage() {
     let quickRepliesUnsub: (() => void) | null = null;
     let profileUnsub: (() => void) | null = null;
     let leave: (() => void) | null = null;
+    let deliveredQueue: DeliveredQueue | null = null;
 
     (async () => {
       try {
@@ -1631,10 +1607,18 @@ export default function ChatPage() {
         leave = joined.leave;
         // Publish the channel so the CallProvider can subscribe to call:* on it.
         setUserChannel(joined);
+        // DELIVERED for threads I'm NOT viewing: the message reached this tab, so tell the sender
+        // (grey double-tick) even though no conversation channel is joined. A burst becomes one push
+        // per conversation; the open thread reports through its own channel (useReceiptReporter).
+        const queue = createDeliveredQueue((conversationId, messageIds) =>
+          joined.reportDelivered(conversationId, messageIds)
+        );
+        deliveredQueue = queue;
         unsubscribe = joined.onMessageCreated((message) => {
           if (!message?.conversation_id) return;
           if (message.sender_user_id === session.user_id) return;
           if (message.conversation_id === selectedConversationRef.current) return;
+          queue.enqueue(message.conversation_id, message.message_id);
 
           // Live unread bump + fresh preview on the list row (server remains the source of truth on
           // the next list fetch). Unknown conversation (brand-new chat) → refetch the list.
@@ -1697,6 +1681,7 @@ export default function ChatPage() {
       autoRepliesUnsub?.();
       quickRepliesUnsub?.();
       profileUnsub?.();
+      deliveredQueue?.dispose();
       leave?.();
       setUserChannel(null);
     };
