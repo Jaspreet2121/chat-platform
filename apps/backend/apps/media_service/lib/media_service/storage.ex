@@ -53,6 +53,25 @@ defmodule MediaService.Storage do
   @doc "Discard an unfinished multipart upload and free its parts. Idempotent."
   def abort_multipart_upload(attrs), do: adapter().abort_multipart_upload(attrs)
 
+  @doc """
+  Floor `datetime` to the start of its bucket — the primitive behind a CACHEABLE presign.
+
+  A presigned URL is signed over its own `X-Amz-Date`, so minting one per request produces a fresh
+  URL every time and a URL-keyed cache can never hit: looking at the same dating card twice
+  re-downloads every photo. Rounding the signing instant down to a bucket makes every request inside
+  that bucket produce byte-identical URL bytes, which is what lets the browser cache hit at all.
+
+  `nil` bucket → the datetime unchanged (every existing caller signs exactly as it always did).
+  """
+  def bucket_start(datetime, nil), do: datetime
+
+  def bucket_start(%DateTime{} = datetime, seconds) when is_integer(seconds) and seconds > 0 do
+    unix = DateTime.to_unix(datetime)
+    DateTime.from_unix!(unix - Integer.mod(unix, seconds))
+  end
+
+  def bucket_start(datetime, _seconds), do: datetime
+
   defp adapter do
     Application.get_env(
       :media_service,
@@ -147,6 +166,7 @@ defmodule MediaService.Storage.MinioAdapter do
   def get_download_url(attrs) do
     with {:ok, config} <- config(),
          config = override_url_expiry(config, attrs["url_expires_seconds"]),
+         config = override_url_bucket(config, attrs["url_bucket_seconds"]),
          {:ok, download_url} <- presigned_url("GET", attrs["object_key"], config) do
       {:ok,
        %{
@@ -386,12 +406,23 @@ defmodule MediaService.Storage.MinioAdapter do
 
   defp override_url_expiry(config, _seconds), do: config
 
+  # CACHEABLE presigns: sign as of the START of the current bucket instead of "now", so every request
+  # inside one bucket produces the SAME URL bytes. Download-only, and only when the caller asks — an
+  # absent/zero bucket leaves the signing instant exactly as it was.
+  defp override_url_bucket(config, seconds) when is_integer(seconds) and seconds > 0,
+    do: Keyword.put(config, :url_bucket_seconds, seconds)
+
+  defp override_url_bucket(config, _seconds), do: config
+
   # `extra_query` folds additional S3 query parameters (partNumber, uploadId, …) into the CANONICAL
   # query string BEFORE signing, which is what SigV4 requires — a parameter appended to the URL after
   # signing is not covered by the signature and MinIO rejects it. Defaults to none, so every existing
   # caller signs exactly the same bytes it always did.
   defp presigned_url(method, object_key, config, extra_query \\ %{}) do
-    now = Keyword.get(config, :now) || DateTime.utc_now()
+    now =
+      (Keyword.get(config, :now) || DateTime.utc_now())
+      |> MediaService.Storage.bucket_start(Keyword.get(config, :url_bucket_seconds))
+
     amz_date = Calendar.strftime(now, "%Y%m%dT%H%M%SZ")
     date_stamp = Calendar.strftime(now, "%Y%m%d")
     credential_scope = "#{date_stamp}/#{config[:region]}/#{@service}/aws4_request"

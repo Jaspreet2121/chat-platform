@@ -15,6 +15,25 @@ defmodule MediaService.Media do
   # Status presign TTL (seconds) — deliberately shorter than the default chat-media TTL.
   @status_url_expires_seconds 300
 
+  # CACHEABLE presign profile — the dating deck's photos, and nothing else today.
+  #
+  # THE PROBLEM IT SOLVES: every deck fetch minted a fresh 900s URL for the same bytes, so a
+  # URL-keyed browser cache could never hit — opening the same card twice re-downloaded every photo.
+  #
+  # TWO parts, and BOTH are needed: a window long enough to be worth caching (2h), and a signing
+  # instant rounded down to a 1h bucket so the same asset yields byte-identical URL bytes for
+  # everyone, for that hour. Bucket < window by design: a URL minted at the very end of a bucket
+  # still has a full hour of validity left, so a cached page never holds a URL that is already dead.
+  #
+  # THE TRADE-OFF, stated plainly: a dating photo URL that leaks out of the app works for up to 2h
+  # instead of 15min. That is acceptable for THIS media and no other — dating photos are shown to
+  # strangers by design (it is the product), the client strips EXIF/GPS before upload, and the URL
+  # stays an unguessable capability. Which is why the profile is clamped below to `user_avatar`
+  # assets: a caller that asked for it on a message attachment, a view-once asset or a status post
+  # gets today's behaviour instead.
+  @cacheable_url_expires_seconds 7200
+  @cacheable_url_bucket_seconds 3600
+
   # Kept in sync with the frontend allowedMediaTypes set (apps/web chat page). video/quicktime (.mov)
   # is what Mac screen recordings / iPhone clips use; video/webm + video/x-matroska (.mkv) are common too.
   # audio/webm + audio/ogg are the typical MediaRecorder voice-message outputs (Chrome/Firefox); Safari
@@ -372,7 +391,8 @@ defmodule MediaService.Media do
             media_id,
             app_id,
             expected_purpose(attrs),
-            requested_expires_seconds(attrs)
+            requested_expires_seconds(attrs),
+            optional_attr(attrs, "url_profile")
           )
         end
       else
@@ -513,12 +533,24 @@ defmodule MediaService.Media do
     end
   end
 
+  # THE CLAMP. Only an avatar asset — which is what a dating photo is stored as — may take the long,
+  # cacheable window, and only when the caller asks for it by name. A mistaken (or malicious) caller
+  # can therefore never widen a message attachment's, a view-once asset's or a status post's URL.
+  defp cacheable?(%MediaAsset{purpose: "user_avatar"}, "cacheable"), do: true
+  defp cacheable?(_asset, _url_profile), do: false
+
   defp shortest(nil, nil), do: nil
   defp shortest(nil, requested), do: requested
   defp shortest(purpose_override, nil), do: purpose_override
   defp shortest(purpose_override, requested), do: min(purpose_override, requested)
 
-  defp download_persisted(media_id, app_id, expected_purpose, requested_expires_seconds) do
+  defp download_persisted(
+         media_id,
+         app_id,
+         expected_purpose,
+         requested_expires_seconds,
+         url_profile
+       ) do
     case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
       nil ->
         {:error, :not_found}
@@ -533,15 +565,30 @@ defmodule MediaService.Media do
           # without a short TTL an already-issued URL would outlive it by up to the 900s default).
           # It can never LENGTHEN one — min/2 with the purpose override, so a client cannot widen
           # its own window by asking.
-          purpose_override = if asset.purpose == "status", do: @status_url_expires_seconds, else: nil
+          purpose_override =
+            cond do
+              cacheable?(asset, url_profile) -> @cacheable_url_expires_seconds
+              asset.purpose == "status" -> @status_url_expires_seconds
+              true -> nil
+            end
+
           override = shortest(purpose_override, requested_expires_seconds)
-          expires_at = expires_at(override)
+          bucket = if cacheable?(asset, url_profile), do: @cacheable_url_bucket_seconds
+
+          # The signature is minted from the bucket start (in the adapter, which owns the clock), so
+          # the advertised expiry is measured from there too rather than from "now".
+          expires_at =
+            DateTime.utc_now()
+            |> Storage.bucket_start(bucket)
+            |> DateTime.add(override || configured_expires_seconds(), :second)
+            |> DateTime.truncate(:second)
 
           case Storage.get_download_url(%{
                  "object_key" => asset.object_key,
                  "media_id" => media_id,
                  "expires_at" => expires_at,
-                 "url_expires_seconds" => override
+                 "url_expires_seconds" => override,
+                 "url_bucket_seconds" => bucket
                }) do
             {:ok, media} -> {:ok, download_response(media, asset, expires_at)}
             {:error, reason} -> {:error, reason}
@@ -977,12 +1024,14 @@ defmodule MediaService.Media do
     end
   end
 
+  defp configured_expires_seconds do
+    :media_service
+    |> Application.get_env(:minio, [])
+    |> Keyword.get(:url_expires_seconds, 900)
+  end
+
   defp expires_at(override \\ nil) do
-    expires_in_seconds =
-      override ||
-        :media_service
-        |> Application.get_env(:minio, [])
-        |> Keyword.get(:url_expires_seconds, 900)
+    expires_in_seconds = override || configured_expires_seconds()
 
     DateTime.utc_now()
     |> DateTime.add(expires_in_seconds, :second)

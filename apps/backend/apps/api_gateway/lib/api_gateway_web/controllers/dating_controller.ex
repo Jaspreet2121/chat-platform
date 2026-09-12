@@ -300,8 +300,15 @@ defmodule ApiGatewayWeb.DatingController do
     end)
   end
 
+  # CACHEABLE presign (see MediaService.Media's @cacheable_url_expires_seconds): a long window and a
+  # bucket-stable signature, so the same card viewed twice inside the hour hits the browser cache
+  # instead of re-downloading every photo. The media service clamps the profile to avatar assets.
   defp photo_url(media_id, app_id) do
-    case SharedInfra.MediaClient.get_download_url(%{"media_id" => media_id, "app_id" => app_id}) do
+    case SharedInfra.MediaClient.get_download_url(%{
+           "media_id" => media_id,
+           "app_id" => app_id,
+           "url_profile" => "cacheable"
+         }) do
       {:ok, download} -> mget(download, :download_url)
       _ -> nil
     end
