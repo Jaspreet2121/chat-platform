@@ -444,12 +444,18 @@ defmodule ApiGatewayWeb.ConversationController do
   end
 
   @doc """
-  PATCH /api/v1/conversations/:conversation_id/settings — partial update; today only `wallpaper`.
+  PATCH /api/v1/conversations/:conversation_id/settings — partial update. Two keys today:
 
-  {wallpaper: obj} sets, {wallpaper: null} clears; a body WITHOUT the key is invalid (nothing to
-  patch). Authorization lives in the store (ConversationService.Participants.set_wallpaper): DMs —
-  either participant; groups — owner/admin, the same rule as the PUT above. A non-member, unknown or
-  cross-tenant conversation all collapse to the SAME 404 — no existence reveal.
+    * `{"wallpaper": obj}` sets, `{"wallpaper": null}` clears (117).
+    * `{"sharing_disabled": true|false}` restricts/unrestricts forwarding out of this chat (120).
+      Only a real boolean; anything else is a 422 conversation.sharing_invalid.
+
+  A body with NEITHER key is invalid (nothing to patch); a body with both patches both. Only the
+  keys the caller actually sent are touched, echoed, and carried on the frame — a wallpaper-only
+  PATCH never mentions sharing_disabled, and vice versa. Authorization lives in the store
+  (ConversationService.Participants): DMs — either participant; groups — owner/admin, the same rule
+  as the PUT above. A non-member, unknown or cross-tenant conversation all collapse to the SAME
+  404 — no existence reveal.
 
   ON SUCCESS, three effects in order: the setting is PERSISTED (the source of truth every later
   fetch reads); a SYSTEM message rides the normal message path so the change is visible in the
@@ -464,30 +470,32 @@ defmodule ApiGatewayWeb.ConversationController do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
-         true <- Map.has_key?(params, "wallpaper") || {:error, :invalid_request},
-         {:ok, response} <-
-           SharedInfra.ConversationClient.set_wallpaper(%{
-             "conversation_id" => conversation_id,
-             "actor_user_id" => session.user_id,
-             "wallpaper" => params["wallpaper"]
-           }) do
-      wallpaper = Map.get(response, :wallpaper) || Map.get(response, "wallpaper")
-
+         {:ok, requested} <- requested_settings(params),
+         {:ok, changed} <- apply_settings(conversation_id, session.user_id, requested, params) do
       # Timeline record — the same system-message shape the secret-chat events use (message_type
-      # "system" + structured metadata; best-effort, never fails the request).
-      ApiGatewayWeb.SecretChatEvents.system_message(conversation_id, session.user_id, %{
-        "kind" => "wallpaper",
-        "user" => session.user_id,
-        "state" => if(wallpaper, do: "set", else: "cleared")
-      })
+      # "system" + structured metadata; best-effort, never fails the request). One per setting that
+      # actually changed.
+      #
+      # For sharing_disabled this is NOT decoration: it is the user-visible receipt AND the only way
+      # the change reaches a client whose chat is CLOSED, since only an open chat joins the
+      # conversation topic that carries the frame below.
+      Enum.each(changed, fn {key, value} ->
+        ApiGatewayWeb.SecretChatEvents.system_message(
+          conversation_id,
+          session.user_id,
+          settings_system_metadata(key, value, session.user_id)
+        )
+      end)
 
-      # Live hint for the OPEN chat. Key-set pinned in tests — a frame is a wire contract.
-      ApiGatewayWeb.RealtimeFanOut.to_conversation(conversation_id, "settings_updated", %{
-        conversation_id: conversation_id,
-        wallpaper: wallpaper
-      })
+      # Live hint for the OPEN chat, carrying ONLY the keys that changed. Key-set pinned in tests —
+      # a frame is a wire contract.
+      ApiGatewayWeb.RealtimeFanOut.to_conversation(
+        conversation_id,
+        "settings_updated",
+        Map.put(changed, :conversation_id, conversation_id)
+      )
 
-      json(conn, response)
+      json(conn, Map.put(changed, :conversation_id, conversation_id))
     else
       {:error, :session_invalid} ->
         session_invalid(conn)
@@ -518,10 +526,81 @@ defmodule ApiGatewayWeb.ConversationController do
           "Wallpaper must be a supported kind with valid fields (photos are device-local)"
         )
 
+      {:error, :sharing_invalid} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "conversation.sharing_invalid",
+          "sharing_disabled must be true or false"
+        )
+
       _ ->
         invalid_request(conn)
     end
   end
+
+  # Which settings keys did the caller actually send? Order is fixed so a body carrying both patches
+  # deterministically. An empty body has nothing to patch and is refused rather than treated as a
+  # no-op success the client would read as "saved".
+  defp requested_settings(params) do
+    case Enum.filter([:wallpaper, :sharing_disabled], &Map.has_key?(params, Atom.to_string(&1))) do
+      [] -> {:error, :invalid_request}
+      requested -> {:ok, requested}
+    end
+  end
+
+  # Apply each requested key through its own store call, accumulating what CHANGED. The first
+  # refusal short-circuits, so a rejected key never emits a system message or a frame.
+  defp apply_settings(conversation_id, actor_user_id, requested, params) do
+    Enum.reduce_while(requested, {:ok, %{}}, fn key, {:ok, acc} ->
+      case set_setting(key, conversation_id, actor_user_id, params) do
+        {:ok, response} ->
+          {:cont, {:ok, Map.put(acc, key, aget(response, key))}}
+
+        error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp set_setting(:wallpaper, conversation_id, actor_user_id, params) do
+    SharedInfra.ConversationClient.set_wallpaper(%{
+      "conversation_id" => conversation_id,
+      "actor_user_id" => actor_user_id,
+      "wallpaper" => params["wallpaper"]
+    })
+  end
+
+  defp set_setting(:sharing_disabled, conversation_id, actor_user_id, params) do
+    SharedInfra.ConversationClient.set_sharing_disabled(%{
+      "conversation_id" => conversation_id,
+      "actor_user_id" => actor_user_id,
+      "sharing_disabled" => params["sharing_disabled"]
+    })
+  end
+
+  defp settings_system_metadata(:wallpaper, wallpaper, actor) do
+    %{
+      "kind" => "wallpaper",
+      "user" => actor,
+      "state" => if(wallpaper, do: "set", else: "cleared")
+    }
+  end
+
+  defp settings_system_metadata(:sharing_disabled, disabled, actor) do
+    %{"kind" => "sharing", "user" => actor, "state" => if(disabled, do: "on", else: "off")}
+  end
+
+  # FETCH, never `||`. A settings value can legitimately be `false`, and `false || Map.get(...)`
+  # would hand back nil — turning "sharing_disabled: false" into an absent key on the echo, a
+  # missing key on the frame, and a system message that says "off" when the caller said "on".
+  defp aget(map, key) when is_map(map) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
+
+  defp aget(_map, _key), do: nil
 
   # Build the settings attrs, including a field ONLY when the client actually sent it (so a
   # call_start_permission-only update doesn't reset only_admins_can_send, and vice-versa).
