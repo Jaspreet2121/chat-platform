@@ -500,6 +500,15 @@ defmodule RealtimeGateway.ConversationChannel do
       {:error, :message_unavailable} ->
         unavailable_reply(socket)
 
+      # RESTRICTED SHARING (120) carries its own code on the socket too (mirror of the REST mapping).
+      {:error, :forward_restricted} ->
+        {:reply,
+         {:error,
+          %{
+            code: "conversation.sharing_disabled",
+            message: "Forwarding is turned off for this chat"
+          }}, socket}
+
       # Malformed polls carry their SPECIFIC code to the socket sender too (mirror of the REST mapping).
       {:error, poll_error}
       when poll_error in [

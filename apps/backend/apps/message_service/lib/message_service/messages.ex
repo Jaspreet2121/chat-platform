@@ -235,6 +235,7 @@ defmodule MessageService.Messages do
          {:ok, sender_user_id} <- required_attr(attrs, "sender_user_id"),
          {:ok, message_type} <- required_attr(attrs, "message_type"),
          :ok <- check_secret_policy(conversation_id, message_type, attrs),
+         :ok <- check_forward_policy(attrs),
          {:ok, client_msg_id} <- client_msg_id(attrs),
          {:ok, media_id} <- media_id(attrs, message_type),
          {:ok, caption} <- caption(attrs, message_type),
@@ -377,6 +378,42 @@ defmodule MessageService.Messages do
       true ->
         :ok
     end
+  end
+
+  # RESTRICTED SHARING (120) — the only part of the feature that is not client-side friction.
+  #
+  # A forward declares its lineage (`forwarded_from_message_id` + `forwarded_from_conversation_id`);
+  # if that SOURCE conversation has sharing_disabled, the send is refused before anything is stored.
+  # Read straight from the shared Postgres, exactly as conversation_secret?/1 reads `secret` — the
+  # message service does not take a runtime dependency on the conversation service for this.
+  #
+  # HONEST LIMIT, and it is the same one the forward-depth badge lives with: this enforces on the
+  # DECLARED source. A client that forwards without declaring lineage — or that copies the text and
+  # sends it as a new message — is indistinguishable from a user retyping it, and no server can tell
+  # those apart. What this does close is the one path that silently carried a restricted message out
+  # of the chat while the UI said sharing was off.
+  defp check_forward_policy(attrs) do
+    with source_id when is_binary(source_id) and source_id != "" <-
+           get_attr(attrs, "forwarded_from_message_id"),
+         source_conversation when is_binary(source_conversation) and source_conversation != "" <-
+           get_attr(attrs, "forwarded_from_conversation_id"),
+         true <- sharing_disabled?(source_conversation) do
+      {:error, :forward_restricted}
+    else
+      _ -> :ok
+    end
+  end
+
+  defp sharing_disabled?(conversation_id) do
+    case MessageService.Repo.query(
+           "SELECT sharing_disabled FROM conversation_settings WHERE conversation_id = $1::text::uuid",
+           [conversation_id]
+         ) do
+      {:ok, %{rows: [[true]]}} -> true
+      _ -> false
+    end
+  rescue
+    _ -> false
   end
 
   defp conversation_secret?(conversation_id) do

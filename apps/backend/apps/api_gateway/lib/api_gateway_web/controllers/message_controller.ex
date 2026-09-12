@@ -165,6 +165,16 @@ defmodule ApiGatewayWeb.MessageController do
           "Sealed payload is malformed, too large, or addresses unknown devices"
         )
 
+      # RESTRICTED SHARING (120): the source conversation has forwarding turned off. A DISTINCT code
+      # so the client can say why — a generic invalid_request would surface as "something went
+      # wrong" on a refusal the user is entitled to understand.
+      {:error, :forward_restricted} ->
+        ErrorResponse.forbidden(
+          conn,
+          "conversation.sharing_disabled",
+          "Forwarding is turned off for this chat"
+        )
+
       # Malformed polls are rejected with SPECIFIC codes — never stored broken.
       {:error, poll_error}
       when poll_error in [
