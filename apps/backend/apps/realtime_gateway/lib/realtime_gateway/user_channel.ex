@@ -2,6 +2,7 @@ defmodule RealtimeGateway.UserChannel do
   use Phoenix.Channel
 
   alias RealtimeGateway.Limits
+  alias RealtimeGateway.Receipts
   alias RealtimeGateway.UserPresence, as: ChannelPresence
   alias RealtimeGateway.TopicAuthorization
 
@@ -101,6 +102,39 @@ defmodule RealtimeGateway.UserChannel do
 
       dropped ->
         dropped
+    end
+  end
+
+  # DELIVERED for a thread the user does NOT have open. The message reached this tab on the user topic
+  # (in-app toast / unread badge) — that IS delivery, but the client isn't joined to the conversation
+  # topic, so it cannot use the conversation channel's event. This is the batched delivered event on
+  # the user topic, addressed by conversation_id.
+  #
+  # NOT A WEAKER DOOR: the conversation channel gets membership for free at join. Here the payload names
+  # the conversation, so membership is checked PER PUSH through the SAME gate the conversation join
+  # uses (tenant + participant, `TopicAuthorization.authorize_join`), and identity is the socket's —
+  # never the payload's. The frame goes to the conversation topic so the sender's open thread ticks.
+  @impl true
+  def handle_in("messages_delivered", payload, socket) do
+    with :ok <- Limits.check_ephemeral(socket),
+         {:ok, conversation_id} <- receipt_conversation_id(payload),
+         :ok <- TopicAuthorization.authorize_join("conversation:" <> conversation_id, socket),
+         {:ok, message_ids} <- Receipts.batch(payload) do
+      user_id = socket.assigns.current_user_id
+      Receipts.persist(:delivered, conversation_id, message_ids, user_id)
+
+      socket.endpoint.broadcast(
+        "conversation:" <> conversation_id,
+        "receipt_updated",
+        Receipts.frame("messages_delivered", conversation_id, user_id, message_ids, "delivered")
+      )
+
+      {:reply, {:ok, %{accepted: length(message_ids)}}, socket}
+    else
+      {:noreply, socket} -> {:noreply, socket}
+      # authorize_join's shape: a forbidden/unavailable map. Reply with its code; persist nothing.
+      {:error, %{code: code}} -> {:reply, {:error, %{code: code}}, socket}
+      {:error, code} -> {:reply, {:error, %{code: code}}, socket}
     end
   end
 
@@ -227,6 +261,11 @@ defmodule RealtimeGateway.UserChannel do
     Application.get_env(:realtime_gateway, :socket_auth_persistence, false) ||
       System.get_env("REALTIME_AUTH_DB_BACKED") in ["true", "1", "yes"]
   end
+
+  defp receipt_conversation_id(%{"conversation_id" => id}) when is_binary(id) and id != "",
+    do: {:ok, id}
+
+  defp receipt_conversation_id(_payload), do: {:error, "receipt.invalid_request"}
 
   defp mark_app(user_id) when is_binary(user_id) do
     Task.start(fn -> SharedInfra.PresenceMarker.mark_app(user_id) end)
