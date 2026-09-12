@@ -37,6 +37,30 @@ defmodule MessageService.Persistence.MessageReceipts do
     )
   end
 
+  @doc """
+  Every receipt for a PAGE of messages, in ONE query. The partition key is `conversation_id` and
+  `message_id` is the first clustering column, so an `IN` over the page's ids is a single-partition
+  slice — never one query per message (the timeline renders up to 50 rows a page).
+  """
+  def list_for_messages_plan(attrs) do
+    message_ids = Attrs.get(attrs, :message_ids) || []
+    placeholders = Enum.map_join(message_ids, ", ", fn _ -> "?" end)
+
+    QueryPlan.new(
+      :list_message_receipts_page,
+      @table,
+      """
+      SELECT message_id, user_id, delivered_at, read_at
+      FROM message_receipts_by_conversation
+      WHERE conversation_id = ? AND message_id IN (#{placeholders})
+      """,
+      [
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :conversation_id))
+        | Enum.map(message_ids, &ScyllaCodec.encode_uuid/1)
+      ]
+    )
+  end
+
   def list_for_message_plan(attrs) do
     QueryPlan.new(
       :list_message_receipts,

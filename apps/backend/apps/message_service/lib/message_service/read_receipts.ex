@@ -16,7 +16,9 @@ defmodule MessageService.ReadReceipts do
   Consumers (all three expand the SAME macro — the count, the list, and status views cannot drift):
     1. `MessageStore.PostgresAdapter.receipt_counts/2` — read_by_count (the aggregate);
     2. `MessageStore.PostgresAdapter.message_info/1` — the per-message reader list;
-    3. `MessageService.Statuses` — status viewer lists + the owner's view counts (082, commit 2).
+    3. `MessageService.Statuses` — status viewer lists + the owner's view counts (082, commit 2);
+    4. `MessageStore.ScyllaAdapter` — message_info AND the timeline's tick counts, both through
+       `readers_enabled/1` + `viewer_sees_read_receipts?/1` (Scylla cannot JOIN Postgres privacy).
 
   Extracted from PostgresAdapter (where it was a `defmacrop`, unreachable outside that module) precisely
   so the status surface could consume it instead of re-expressing the rule in raw SQL.
@@ -34,6 +36,34 @@ defmodule MessageService.ReadReceipts do
   defmacro read_receipts_on(ps) do
     quote do
       is_nil(unquote(ps).read_receipts_enabled) or unquote(ps).read_receipts_enabled
+    end
+  end
+
+  @doc """
+  The READER half, resolved APP-SIDE for a set of users in ONE query: `user_id => kept receipts on`.
+  A user with no privacy row (or a NULL) is ENABLED — the same semantics `read_receipts_on/1`
+  expands inside an Ecto query, restated here for the paths that cannot JOIN: Scylla holds the
+  receipts, Postgres holds the privacy.
+
+  Shared by BOTH Scylla read paths — `message_info` (the per-message reader list) and the timeline's
+  tick counts — so the per-message view and the counts can never disagree about who is disclosed.
+  """
+  def readers_enabled([]), do: %{}
+
+  def readers_enabled(user_ids) when is_list(user_ids) do
+    ids = user_ids |> Enum.filter(&(is_binary(&1) and &1 != "")) |> Enum.uniq()
+
+    if ids == [] do
+      %{}
+    else
+      %{rows: rows} =
+        Repo.query!(
+          "SELECT user_id::text, read_receipts_enabled FROM user_privacy_settings " <>
+            "WHERE user_id = ANY($1::text[]::uuid[])",
+          [ids]
+        )
+
+      Map.new(rows, fn [user_id, enabled] -> {user_id, enabled != false} end)
     end
   end
 

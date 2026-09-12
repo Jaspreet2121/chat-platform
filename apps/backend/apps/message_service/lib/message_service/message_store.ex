@@ -406,17 +406,111 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   def list_messages(attrs) do
     conversation_id = attr(attrs, "conversation_id")
     limit = int_attr(attrs, "limit", @default_limit)
+    viewer = attr(attrs, "viewer_user_id")
 
     with {:ok, client} <- client_adapter(),
          {:ok, rows, next_cursor} <- walk_buckets(client, conversation_id, cursor(attrs), limit) do
+      messages =
+        rows
+        |> Enum.map(&response_from_row/1)
+        |> with_receipt_counts(client, conversation_id, viewer)
+
       {:ok,
        %{
          conversation_id: conversation_id,
-         messages: Enum.map(rows, &response_from_row/1),
+         messages: messages,
          next_cursor: next_cursor
        }}
     end
   end
+
+  # TICK COUNTS FOR THE WHOLE PAGE — ONE query, never one per message.
+  #
+  # Until this existed the Scylla timeline returned no counts at all, so `Messages.message_response`
+  # fell back to 0 for both and a sender's OWN messages rendered a single tick after every reload,
+  # however they had actually landed: the live `receipt_updated` frames moved the ticks and a refresh
+  # silently reverted them. The UI was never wrong — the data was.
+  #
+  # Reciprocity is the SAME rule `message_info` applies, through the SAME two shared halves so the
+  # per-message view and the counts cannot drift:
+  #   * reader half — `ReadReceipts.readers_enabled/1`: a reader who turned receipts OFF is not counted;
+  #   * viewer half — `ReadReceipts.viewer_sees_read_receipts?/1`: a viewer who turned them off sees no
+  #     read counts at all. ONE lookup for the page, not per message.
+  #
+  # DELIVERED IS NEVER GATED, deliberately: the grey double-tick is unaffected by the read-receipt
+  # setting, exactly as the socket and REST `delivered` broadcasts are ungated.
+  defp with_receipt_counts([], _client, _conversation_id, _viewer), do: []
+
+  defp with_receipt_counts(messages, client, conversation_id, viewer) do
+    counts = receipt_counts_for_page(client, conversation_id, Enum.map(messages, & &1.message_id))
+    show_read = MessageService.ReadReceipts.viewer_sees_read_receipts?(viewer)
+
+    Enum.map(messages, fn message ->
+      tally = Map.get(counts, message.message_id, %{read: 0, delivered: 0})
+
+      Map.merge(message, %{
+        read_by_count: if(show_read, do: tally.read, else: 0),
+        delivered_by_count: tally.delivered
+      })
+    end)
+  end
+
+  defp receipt_counts_for_page(client, conversation_id, message_ids) do
+    plan =
+      MessageReceipts.list_for_messages_plan(%{
+        "conversation_id" => conversation_id,
+        "message_ids" => message_ids
+      })
+
+    case execute(client, plan) do
+      {:ok, result} ->
+        receipt_rows = rows(result)
+
+        enabled =
+          MessageService.ReadReceipts.readers_enabled(
+            Enum.map(receipt_rows, &attr(&1, "user_id"))
+          )
+
+        tally_receipts(receipt_rows, enabled)
+
+      {:error, reason} ->
+        # A receipts read must never fail the timeline — the page still renders and ticks fall back
+        # to "sent". LOUD, because silently-zero ticks is precisely the bug this closes.
+        Logger.error(
+          "receipt counts unavailable, ticks degraded to sent — " <>
+            "conversation=#{conversation_id}: #{inspect(reason)}"
+        )
+
+        %{}
+    end
+  end
+
+  # A READ implies DELIVERED (the same rule message_info uses when it reads `delivered_at || read_at`,
+  # and the same one the client applies to a live read frame) — a message cannot be read without
+  # having arrived, and the reporter for delivered may never have run.
+  defp tally_receipts(receipt_rows, enabled) do
+    Enum.reduce(receipt_rows, %{}, fn row, acc ->
+      user_id = attr(row, "user_id")
+      read_at = attr(row, "read_at")
+      read? = read_at != nil and Map.get(enabled, user_id, true)
+      delivered? = attr(row, "delivered_at") != nil or read_at != nil
+
+      Map.update(
+        acc,
+        attr(row, "message_id"),
+        %{read: count_of(read?), delivered: count_of(delivered?)},
+        fn current ->
+          %{
+            read: current.read + count_of(read?),
+            delivered: current.delivered + count_of(delivered?)
+          }
+        end
+      )
+    end)
+  end
+
+  defp count_of(true), do: 1
+  defp count_of(false), do: 0
 
   @impl true
   def update_message(attrs) do
@@ -1210,20 +1304,10 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     end
   end
 
-  # The reader half of reciprocity, resolved in ONE Postgres query: enabled unless a privacy row says
-  # explicitly false (missing row = enabled — read_receipts_on's NULL semantics, restated app-side).
-  defp privacy_visibility([]), do: %{}
-
-  defp privacy_visibility(user_ids) do
-    %{rows: rows} =
-      Repo.query!(
-        "SELECT user_id::text, read_receipts_enabled FROM user_privacy_settings " <>
-          "WHERE user_id = ANY($1::text[]::uuid[])",
-        [user_ids]
-      )
-
-    Map.new(rows, fn [user_id, enabled] -> {user_id, enabled != false} end)
-  end
+  # The reader half of reciprocity. Delegates to the SHARED definition so message_info and the
+  # timeline's tick counts cannot drift apart — they are the same disclosure question asked twice.
+  defp privacy_visibility(user_ids),
+    do: MessageService.ReadReceipts.readers_enabled(user_ids)
 
   # --- point read + bucket resolution --------------------------------------------------------------
 

@@ -591,6 +591,228 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
     assert unread.(sender) == 0
   end
 
+  # --- DURABLE TICK COUNTS ON THE TIMELINE READ ----------------------------------------------------
+  #
+  # The counts are what the sender's ticks are MADE OF, and this adapter produced none: the response
+  # fell back to 0/0, so every own message rendered a single tick after any reload however it had
+  # actually landed. A test that builds the response map by hand would have "passed" throughout —
+  # so these write real receipts to a real keyspace and re-read through the real timeline call.
+
+  # Counts the receipts query so "ONE query per page, never one per message" is a measured fact.
+  defmodule CountingClient do
+    @moduledoc false
+    def execute(statement, params, opts) do
+      if String.contains?(statement, "message_receipts_by_conversation") and
+           String.contains?(statement, "SELECT") do
+        Agent.update(__MODULE__.Counter, &(&1 + 1))
+      end
+
+      SharedInfra.Scylla.XandraAdapter.execute(statement, params, opts)
+    end
+  end
+
+  defp with_counted_receipts(fun) do
+    {:ok, _} = Agent.start_link(fn -> 0 end, name: CountingClient.Counter)
+    previous = Application.get_env(:message_service, :scylla_client_adapter)
+    Application.put_env(:message_service, :scylla_client_adapter, CountingClient)
+
+    try do
+      result = fun.()
+      {result, Agent.get(CountingClient.Counter, & &1)}
+    after
+      Application.put_env(:message_service, :scylla_client_adapter, previous)
+      Agent.stop(CountingClient.Counter)
+    end
+  end
+
+  # A conversation with a sender + N readers, seeded in Postgres (privacy + membership live there).
+  defp seed_tick_conversation!(reader_count) do
+    case MessageService.Repo.start_link() do
+      {:ok, pid} -> Process.unlink(pid)
+      {:error, {:already_started, _}} -> :ok
+    end
+
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(MessageService.Repo)
+
+    tenant = "00000000-0000-0000-0000-000000000001"
+    conversation_id = Ecto.UUID.generate()
+    sender = Ecto.UUID.generate()
+    readers = for _ <- 1..reader_count, do: Ecto.UUID.generate()
+
+    for u <- [sender | readers] do
+      MessageService.Repo.query!(
+        "INSERT INTO users_auth (id, app_id, phone_number, status) " <>
+          "VALUES ($1::text::uuid, $2::text::uuid, $3, 'active')",
+        [u, tenant, "+1555#{System.unique_integer([:positive])}"]
+      )
+    end
+
+    MessageService.Repo.query!(
+      "INSERT INTO conversations (id, app_id, type, created_by) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, 'group', $3::text::uuid)",
+      [conversation_id, tenant, sender]
+    )
+
+    for u <- [sender | readers] do
+      MessageService.Repo.query!(
+        "INSERT INTO conversation_participants (conversation_id, user_id, role, joined_at) " <>
+          "VALUES ($1::text::uuid, $2::text::uuid, 'member', now())",
+        [conversation_id, u]
+      )
+    end
+
+    {conversation_id, sender, readers}
+  end
+
+  defp disable_read_receipts!(user_id) do
+    MessageService.Repo.query!(
+      "INSERT INTO user_privacy_settings (user_id, read_receipts_enabled) " <>
+        "VALUES ($1::text::uuid, false) " <>
+        "ON CONFLICT (user_id) DO UPDATE SET read_receipts_enabled = false",
+      [user_id]
+    )
+  end
+
+  defp timeline!(conversation_id, viewer) do
+    {:ok, %{messages: messages}} =
+      ScyllaAdapter.list_messages(%{
+        "conversation_id" => conversation_id,
+        "viewer_user_id" => viewer,
+        "limit" => 50
+      })
+
+    Map.new(messages, &{&1.message_id, &1})
+  end
+
+  test "a READ message comes back read_by_count > 0 from a FRESH timeline fetch (not just live)" do
+    {conversation_id, sender, [reader]} = seed_tick_conversation!(1)
+    {message_id, _} = put!(conversation_id, DateTime.utc_now(), %{"sender_user_id" => sender})
+
+    # Before anyone reads: one tick.
+    before = timeline!(conversation_id, sender)[message_id]
+    assert before.read_by_count == 0
+    assert before.delivered_by_count == 0
+
+    assert {:ok, _} =
+             ScyllaAdapter.mark_read(%{
+               "conversation_id" => conversation_id,
+               "message_id" => message_id,
+               "user_id" => reader
+             })
+
+    # THE ASSERTION: a NEW read of the timeline — exactly what a reload does — carries the count.
+    after_read = timeline!(conversation_id, sender)[message_id]
+
+    assert after_read.read_by_count == 1,
+           "a read message still reports read_by_count 0 on a fresh fetch — the sender's tick " <>
+             "reverts to 'sent' on every reload, which is the bug this closes"
+
+    # A read implies delivered: the message cannot have been read without arriving.
+    assert after_read.delivered_by_count == 1
+  end
+
+  test "DELIVERED alone shows the grey double tick, and read is still 0" do
+    {conversation_id, sender, [reader]} = seed_tick_conversation!(1)
+    {message_id, _} = put!(conversation_id, DateTime.utc_now(), %{"sender_user_id" => sender})
+
+    assert {:ok, _} =
+             ScyllaAdapter.mark_delivered(%{
+               "conversation_id" => conversation_id,
+               "message_id" => message_id,
+               "user_id" => reader
+             })
+
+    message = timeline!(conversation_id, sender)[message_id]
+    assert message.delivered_by_count == 1
+    assert message.read_by_count == 0
+  end
+
+  test "RECIPROCITY: a reader with receipts OFF is not counted, but their DELIVERED still is" do
+    {conversation_id, sender, [quiet_reader, open_reader]} = seed_tick_conversation!(2)
+    {message_id, _} = put!(conversation_id, DateTime.utc_now(), %{"sender_user_id" => sender})
+
+    disable_read_receipts!(quiet_reader)
+
+    for user <- [quiet_reader, open_reader] do
+      assert {:ok, _} =
+               ScyllaAdapter.mark_read(%{
+                 "conversation_id" => conversation_id,
+                 "message_id" => message_id,
+                 "user_id" => user
+               })
+    end
+
+    message = timeline!(conversation_id, sender)[message_id]
+
+    # The READER half: only the reader who kept receipts on is disclosed.
+    assert message.read_by_count == 1,
+           "a reader who disabled read receipts was counted — the reader half of reciprocity is " <>
+             "not being applied to the tick counts"
+
+    # ...and DELIVERED is NEVER gated: both arrived, both count.
+    assert message.delivered_by_count == 2,
+           "the delivered count was filtered by the read-receipt setting — the grey tick must " <>
+             "never be suppressed by it"
+  end
+
+  test "RECIPROCITY: a VIEWER with receipts off sees NO read counts at all (the owner half)" do
+    {conversation_id, sender, [reader]} = seed_tick_conversation!(1)
+    {message_id, _} = put!(conversation_id, DateTime.utc_now(), %{"sender_user_id" => sender})
+
+    assert {:ok, _} =
+             ScyllaAdapter.mark_read(%{
+               "conversation_id" => conversation_id,
+               "message_id" => message_id,
+               "user_id" => reader
+             })
+
+    # The sender still has receipts on: they see it.
+    assert timeline!(conversation_id, sender)[message_id].read_by_count == 1
+
+    # The sender turns their own receipts off → they are disclosed nothing, both directions.
+    disable_read_receipts!(sender)
+    hidden = timeline!(conversation_id, sender)[message_id]
+
+    assert hidden.read_by_count == 0
+    # Delivered survives the owner half too.
+    assert hidden.delivered_by_count == 1
+  end
+
+  test "ONE receipts query per PAGE, not one per message" do
+    {conversation_id, sender, [reader]} = seed_tick_conversation!(1)
+
+    base = DateTime.utc_now()
+
+    message_ids =
+      for offset <- 0..5 do
+        {id, _} =
+          put!(conversation_id, DateTime.add(base, -offset, :second), %{
+            "sender_user_id" => sender
+          })
+
+        assert {:ok, _} =
+                 ScyllaAdapter.mark_read(%{
+                   "conversation_id" => conversation_id,
+                   "message_id" => id,
+                   "user_id" => reader
+                 })
+
+        id
+      end
+
+    {messages, receipt_queries} =
+      with_counted_receipts(fn -> timeline!(conversation_id, sender) end)
+
+    assert map_size(messages) == 6
+    assert Enum.all?(message_ids, &(messages[&1].read_by_count == 1))
+
+    # THE ASSERTION: six messages, ONE receipts query. Per-message lookup is the same class of bug
+    # as the key-registry stampede — O(page size) round trips where one slice suffices.
+    assert receipt_queries == 1,
+           "the timeline issued #{receipt_queries} receipts queries for a 6-message page — " <>
+             "the page must resolve in exactly one single-partition slice"
+  end
+
   # --- SEARCH OVER THE INDEX, END TO END THROUGH THE REAL ADAPTER ----------------------------------
   #
   # SearchIndexTest proves the projection; this proves the ADAPTER's query + hydration against a
