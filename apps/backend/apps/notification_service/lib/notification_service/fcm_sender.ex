@@ -104,22 +104,45 @@ defmodule NotificationService.FcmSender do
   end
 
   defp deliver_to_recipients(context, attrs, recipients) do
-    for recipient <- recipients,
-        not PushContext.muted?(attrs.conversation_id, recipient),
-        # The SAME gates as the web leg, including FAIL-OPEN: a Redis miss reads as "not present"
-        # and we SEND. A redundant push beats a missed one.
-        not presence().app_present?(recipient),
-        not presence().present?(recipient, attrs.conversation_id) do
-      unread = PushContext.unread_count(attrs.conversation_id, recipient)
-      data = message_data(context, attrs, unread)
+    Enum.each(recipients, fn recipient ->
+      case skip_reason(attrs, recipient) do
+        nil ->
+          unread = PushContext.unread_count(attrs.conversation_id, recipient)
+          send_to_devices(recipient, message_data(context, attrs, unread))
 
-      for token <- tokens_for(recipient), do: send_one(token, data)
+        reason ->
+          log_skipped(recipient, reason)
+      end
+    end)
+  end
+
+  # The SAME gates as the web leg, in the same order, including FAIL-OPEN: a Redis miss reads as
+  # "not present" and we SEND. A redundant push beats a missed one.
+  #
+  # Returns the REASON rather than a boolean so the skip can name itself in the log. Each of these
+  # was previously a silent filter clause, which is why "was this recipient skipped, or sent to and
+  # ignored?" could only be answered by reading the source.
+  defp skip_reason(attrs, recipient) do
+    cond do
+      PushContext.muted?(attrs.conversation_id, recipient) -> "muted"
+      presence().app_present?(recipient) -> "app_present"
+      presence().present?(recipient, attrs.conversation_id) -> "viewing_conversation"
+      true -> nil
+    end
+  end
+
+  # THE ONE FAN-OUT over a user's devices, shared by all three legs. An empty token list is a real
+  # outcome ("registered nothing / everything was pruned"), not an absence of one — it says so.
+  defp send_to_devices(user_id, data, android_extra \\ %{}) do
+    case tokens_for(user_id) do
+      [] -> log_skipped(user_id, "no_tokens")
+      targets -> Enum.each(targets, &send_one(&1, data, android_extra))
     end
   end
 
   @doc false
   def deliver_call(attrs, callee_id) do
-    unless presence().app_present?(callee_id) do
+    if not presence().app_present?(callee_id) do
       data = call_data(attrs)
 
       # collapse_key ties the ring and its stop together: a later call.cancelled push with the SAME key
@@ -128,7 +151,9 @@ defmodule NotificationService.FcmSender do
       # ring window is for a call that has already timed out — it must die in transit, never ring a
       # dead call late (the recorded MIUI 40s-late ring).
       android = %{"ttl" => "35s", "collapse_key" => collapse_key(attrs)}
-      for token <- tokens_for(callee_id), do: send_one(token, data, android)
+      send_to_devices(callee_id, data, android)
+    else
+      log_skipped(callee_id, "call_callee_foreground")
     end
   rescue
     error -> Logger.warning("fcm call deliver raised, ignored: #{inspect(error)}")
@@ -142,7 +167,7 @@ defmodule NotificationService.FcmSender do
   def deliver_call_cancelled(attrs, callee_id) do
     data = call_cancelled_data(attrs)
     android = %{"ttl" => "60s", "collapse_key" => collapse_key(attrs)}
-    for token <- tokens_for(callee_id), do: send_one(token, data, android)
+    send_to_devices(callee_id, data, android)
   rescue
     error -> Logger.warning("fcm cancel deliver raised, ignored: #{inspect(error)}")
   end
@@ -220,42 +245,60 @@ defmodule NotificationService.FcmSender do
 
   # ---- Transport ----
 
-  defp send_one(token, data, android_extra \\ %{}) do
+  # `target` is %{user_id, token, device_id} — every outcome below names the user and the DEVICE,
+  # which is what makes a per-handset delivery question answerable from the log alone.
+  defp send_one(target, data, android_extra) do
     with {:ok, access_token} <- access_token(),
          {:ok, project_id} <- project_id() do
       url = "https://fcm.googleapis.com/v1/projects/#{project_id}/messages:send"
 
-      case http().post(url, build_envelope(token, data, android_extra), access_token) do
-        {:ok, %{status: status}} when status in 200..299 ->
-          :ok
+      case http().post(url, build_envelope(target.token, data, android_extra), access_token) do
+        {:ok, %{status: status, body: body}} when status in 200..299 ->
+          # THE SILENT SUCCESS PATH, no longer silent. `name` is FCM's own handle for the accepted
+          # message — the only thing that can later separate "never sent" from "sent, and the
+          # handset dropped it", which is exactly the question a whole inspection was spent on.
+          Logger.info("fcm sent #{who(target)} name=#{response_name(body)}")
 
         {:ok, %{status: status, body: body}} ->
-          handle_error(token, status, body)
+          handle_error(target, status, body)
 
         {:error, reason} ->
-          Logger.warning("fcm send failed for token #{redact(token)}: #{inspect(reason)}")
+          Logger.warning("fcm send failed #{who(target)}: #{inspect(reason)}")
       end
     else
       _ -> :ok
     end
   rescue
-    error -> Logger.warning("fcm send raised for token #{redact(token)}: #{inspect(error)}")
+    error -> Logger.warning("fcm send raised #{who(target)}: #{inspect(error)}")
   end
 
-  # UNREGISTERED = the app was uninstalled or the token rotated; INVALID_ARGUMENT on a token means it
-  # was never valid. Either way it will never deliver again, so drop the row rather than keep paying
-  # for it — the token twin of the web leg's 404/410 pruning.
-  defp handle_error(token, status, body) do
+  # PRUNE ON THE HTTP STATUS, not on the body's shape.
+  #
+  # FCM v1 answers a dead token with 404 and a body whose top-level `error.status` is "NOT_FOUND";
+  # "UNREGISTERED" lives one level down, in details[].errorCode. The old rule read error.status only,
+  # so it never matched — one user's two dead tokens were re-sent to on every message for three
+  # weeks, logging "fcm rejected (404)" each time. The status is the part of that response we do not
+  # have to guess about, and the web leg has keyed on it all along (`status in [404, 410] -> prune`).
+  # Deliberately NOT extended to walk details[]: the lesson is to stop depending on Google's body
+  # shape, not to depend on more of it.
+  defp handle_error(target, status, _body) when status in [404, 410] do
+    prune(target, status)
+  end
+
+  # 400 INVALID_ARGUMENT on a token means it was never valid. That one really IS top-level, and a
+  # 400 is not fatal by itself (a malformed payload is also a 400), so this arm still reads the body.
+  defp handle_error(target, status, body) do
     if dead_token?(body) do
-      prune(token)
+      prune(target, status)
     else
-      Logger.warning("fcm rejected (#{status}) for token #{redact(token)}")
+      Logger.warning("fcm rejected (#{status}) #{who(target)} token=#{redact(target.token)}")
     end
   end
 
   # Drop the dead row so we stop paying for it — the token twin of the web leg's `prune/1`.
-  defp prune(token) do
-    Repo.query("DELETE FROM fcm_tokens WHERE token = $1", [token])
+  defp prune(target, status) do
+    Repo.query("DELETE FROM fcm_tokens WHERE token = $1", [target.token])
+    Logger.info("fcm token pruned #{who(target)} status=#{status}")
     :ok
   rescue
     _ -> :ok
@@ -287,13 +330,47 @@ defmodule NotificationService.FcmSender do
   # only reads it, and only deletes rows FCM has declared dead (below). It does NOT call
   # AuthService.FcmTokens: notification_service has no dependency on auth_service and must not grow one.
   defp tokens_for(user_id) do
-    case Repo.query("SELECT token FROM fcm_tokens WHERE user_id = $1::text::uuid", [user_id]) do
-      {:ok, %{rows: rows}} -> Enum.map(rows, fn [token] -> token end)
-      _ -> []
+    query = "SELECT token, device_id FROM fcm_tokens WHERE user_id = $1::text::uuid"
+
+    case Repo.query(query, [user_id]) do
+      {:ok, %{rows: rows}} ->
+        Enum.map(rows, fn [token, device_id] ->
+          %{user_id: user_id, token: token, device_id: device_id}
+        end)
+
+      _ ->
+        []
     end
   rescue
     _ -> []
   end
+
+  # ---- Logging ----
+
+  # The shared prefix for every per-send line. device_id is NULLABLE (074 declares no NOT NULL, and
+  # rows written before the client sent one carry null), so it renders as "none" rather than blowing
+  # up an interpolation inside a fire-and-forget task nobody is watching.
+  defp who(%{user_id: user_id} = target),
+    do: "user=#{user_id} device=#{device_label(Map.get(target, :device_id))}"
+
+  defp device_label(device_id) when is_binary(device_id) and device_id != "", do: device_id
+  defp device_label(_device_id), do: "none"
+
+  defp log_skipped(user_id, reason),
+    do: Logger.info("fcm skipped user=#{user_id} reason=#{reason}")
+
+  # FCM's handle for an accepted message ("projects/<p>/messages/<id>"). Absent or unparseable → the
+  # line still prints; a missing trace handle must not cost the send its log.
+  defp response_name(%{"name" => name}) when is_binary(name), do: name
+
+  defp response_name(body) when is_binary(body) do
+    case Jason.decode(body) do
+      {:ok, decoded} -> response_name(decoded)
+      _ -> "none"
+    end
+  end
+
+  defp response_name(_body), do: "none"
 
   # ---- OAuth2 (RFC 7523 JWT-bearer), cached ----
 

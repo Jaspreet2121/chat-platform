@@ -9,6 +9,8 @@ defmodule NotificationService.FcmSenderTest do
   """
   use NotificationService.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias NotificationService.FcmFakes
   alias NotificationService.MessageStoreFixture
   alias NotificationService.FcmSender
@@ -125,19 +127,39 @@ defmodule NotificationService.FcmSenderTest do
       refute_receive {:fcm_post, _url, _body, _token}, 100
     end
 
+    # THE REAL FCM v1 404 BODY, verbatim. "UNREGISTERED" is NOT at error.status — it lives one level
+    # down in details[].errorCode, and error.status is "NOT_FOUND". The fixture this replaced was
+    # hand-typed as %{"error" => %{"status" => "UNREGISTERED"}}, a shape FCM never emits, so the
+    # suite certified a prune that could not fire in production: two dead tokens for one user were
+    # re-sent to on every message for three weeks, logging "fcm rejected (404)" each time.
+    @unregistered_404 %{
+      "error" => %{
+        "code" => 404,
+        "message" => "Requested entity was not found.",
+        "status" => "NOT_FOUND",
+        "details" => [
+          %{
+            "@type" => "type.googleapis.com/google.firebase.fcm.v1.FcmError",
+            "errorCode" => "UNREGISTERED"
+          }
+        ]
+      }
+    }
+
     @tag :postgres_integration
-    test "UNREGISTERED prunes the dead token row" do
+    test "a REAL FCM 404 prunes the dead token row" do
       seed_message!()
       seed_tokens!([@token_a])
 
-      FcmFakes.respond_with([
-        {:ok, %{status: 404, body: %{"error" => %{"status" => "UNREGISTERED"}}}}
-      ])
+      FcmFakes.respond_with([{:ok, %{status: 404, body: @unregistered_404}}])
 
       FcmSender.deliver(attrs(), [@recipient])
 
       assert_receive {:fcm_post, _url, _body, _token}
-      assert token_count(@token_a) == 0
+
+      assert token_count(@token_a) == 0,
+             "a token FCM answered 404 for is still in the table — every later message re-sends " <>
+               "to a device that can never receive it"
     end
 
     @tag :postgres_integration
@@ -160,6 +182,152 @@ defmodule NotificationService.FcmSenderTest do
 
       FcmSender.deliver(attrs(), [@recipient])
       # A transient server error is NOT a dead device — the row stays.
+      assert token_count(@token_a) == 1
+    end
+
+    @tag :postgres_integration
+    test "a 500 carrying the IDENTICAL body does NOT prune — only the status decides" do
+      seed_message!()
+      seed_tokens!([@token_a])
+
+      # Byte-for-byte the 404 body, behind a 500. A transient server error is not a dead device, and
+      # the difference between the two is the status — which is exactly why the rule reads it.
+      FcmFakes.respond_with([{:ok, %{status: 500, body: @unregistered_404}}])
+
+      FcmSender.deliver(attrs(), [@recipient])
+
+      assert_receive {:fcm_post, _url, _body, _token}
+
+      assert token_count(@token_a) == 1,
+             "a 500 pruned the token — an FCM outage would delete the fleet's registrations"
+    end
+
+    @tag :postgres_integration
+    test "410 prunes as well as 404 — the web leg's rule, unchanged" do
+      seed_message!()
+      seed_tokens!([@token_a])
+
+      FcmFakes.respond_with([{:ok, %{status: 410, body: %{}}}])
+
+      FcmSender.deliver(attrs(), [@recipient])
+      assert token_count(@token_a) == 0
+    end
+
+    # ---- every outcome names itself -------------------------------------------------------------
+
+    @tag :postgres_integration
+    test "SUCCESS logs user, device and FCM's message name — the path that used to be silent" do
+      seed_message!()
+      seed_device_token!(@token_a, "android-a7a76c7a")
+
+      FcmFakes.respond_with([
+        {:ok, %{status: 200, body: %{"name" => "projects/p/messages/0:169"}}}
+      ])
+
+      log = capture_log([level: :info], fn -> FcmSender.deliver(attrs(), [@recipient]) end)
+
+      assert log =~
+               "fcm sent user=#{@recipient} device=android-a7a76c7a name=projects/p/messages/0:169",
+             "a successful send logged nothing — 'was this device sent to, or skipped?' is then " <>
+               "unanswerable from the log, which is what cost an entire inspection"
+    end
+
+    @tag :postgres_integration
+    test "PRUNE logs the user, device and status it pruned on" do
+      seed_message!()
+      seed_device_token!(@token_a, "android-c2b03c8c")
+
+      FcmFakes.respond_with([{:ok, %{status: 404, body: @unregistered_404}}])
+
+      log = capture_log([level: :info], fn -> FcmSender.deliver(attrs(), [@recipient]) end)
+
+      assert log =~ "fcm token pruned user=#{@recipient} device=android-c2b03c8c status=404",
+             "a token vanished from the table with no log line — a silent delete is how you lose " <>
+               "the ability to explain a device that stopped receiving"
+    end
+
+    @tag :postgres_integration
+    test "a NULL device_id logs device=none and never crashes the send" do
+      seed_message!()
+      # seed_tokens!/1 writes no device_id at all — the pre-client rows in production.
+      seed_tokens!([@token_a])
+
+      FcmFakes.respond_with([{:ok, %{status: 404, body: @unregistered_404}}])
+
+      log = capture_log([level: :info], fn -> FcmSender.deliver(attrs(), [@recipient]) end)
+
+      assert log =~ "fcm token pruned user=#{@recipient} device=none status=404"
+      assert token_count(@token_a) == 0, "the prune did not complete — the null blew up the line"
+    end
+
+    @tag presence: FcmFakes.PresentEverywhere
+    @tag :postgres_integration
+    test "SKIP logs its reason — app_present" do
+      seed_message!()
+      seed_tokens!([@token_a])
+
+      log = capture_log([level: :info], fn -> FcmSender.deliver(attrs(), [@recipient]) end)
+
+      assert log =~ "fcm skipped user=#{@recipient} reason=app_present",
+             "a suppressed recipient left no trace — indistinguishable from a send that was never " <>
+               "attempted"
+
+      refute_receive {:fcm_post, _url, _body, _token}, 100
+    end
+
+    @tag presence: FcmFakes.ViewingThisChat
+    @tag :postgres_integration
+    test "SKIP logs its reason — viewing_conversation" do
+      seed_message!()
+      seed_tokens!([@token_a])
+
+      log = capture_log([level: :info], fn -> FcmSender.deliver(attrs(), [@recipient]) end)
+      assert log =~ "reason=viewing_conversation"
+    end
+
+    @tag :postgres_integration
+    test "SKIP logs its reason — muted" do
+      seed_message!()
+      seed_tokens!([@token_a])
+      mute!()
+
+      log = capture_log([level: :info], fn -> FcmSender.deliver(attrs(), [@recipient]) end)
+      assert log =~ "reason=muted"
+    end
+
+    @tag :postgres_integration
+    test "SKIP logs its reason — no_tokens (registered nothing, or everything was pruned)" do
+      seed_message!()
+
+      log = capture_log([level: :info], fn -> FcmSender.deliver(attrs(), [@recipient]) end)
+      assert log =~ "fcm skipped user=#{@recipient} reason=no_tokens"
+    end
+
+    @tag presence: FcmFakes.PresentEverywhere
+    @tag :postgres_integration
+    test "SKIP logs its reason — call_callee_foreground" do
+      seed_tokens!([@token_a])
+
+      log =
+        capture_log([level: :info], fn ->
+          FcmSender.deliver_call(%{"call_id" => "call-9", "callee_id" => @recipient}, @recipient)
+        end)
+
+      assert log =~ "fcm skipped user=#{@recipient} reason=call_callee_foreground"
+    end
+
+    @tag :postgres_integration
+    test "a NON-fatal rejection keeps the existing line, now naming the user and device" do
+      seed_message!()
+      seed_device_token!(@token_a, "android-ceb80ff9")
+
+      FcmFakes.respond_with([
+        {:ok, %{status: 429, body: %{"error" => %{"status" => "RESOURCE_EXHAUSTED"}}}}
+      ])
+
+      log = capture_log(fn -> FcmSender.deliver(attrs(), [@recipient]) end)
+
+      assert log =~ "fcm rejected (429) user=#{@recipient} device=android-ceb80ff9"
       assert token_count(@token_a) == 1
     end
 
@@ -281,6 +449,22 @@ defmodule NotificationService.FcmSenderTest do
         [@recipient, token]
       )
     end)
+  end
+
+  # The NULL-device_id twin of seed_tokens!/1. 074 declares no NOT NULL on device_id and rows
+  # predate the client ever sending one, so "device_id is null" is a REAL production shape — the one
+  # a log line interpolating it would crash on.
+  defp seed_device_token!(token, device_id) do
+    Repo.query!(
+      "INSERT INTO users_auth (id, phone_number) VALUES ($1::text::uuid, $2) ON CONFLICT DO NOTHING",
+      [@recipient, "+917222222222"]
+    )
+
+    Repo.query!(
+      "INSERT INTO fcm_tokens (user_id, token, device_id) VALUES ($1::text::uuid, $2, $3) " <>
+        "ON CONFLICT (token) DO UPDATE SET user_id = EXCLUDED.user_id, device_id = EXCLUDED.device_id",
+      [@recipient, token, device_id]
+    )
   end
 
   defp mute! do
