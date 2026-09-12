@@ -46,6 +46,9 @@ defmodule ApiGatewayWeb.AdminHealthController do
     json(conn, %{
       status: overall(dependencies, services),
       checked_at: DateTime.utc_now() |> DateTime.to_iso8601(),
+      # THIS GATEWAY's build. Each service reports its own on its /internal/health; a mixed fleet
+      # mid-deploy is exactly what this is for.
+      git_sha: SharedInfra.BuildInfo.git_sha(),
       dependencies: dependencies,
       services: services
     })

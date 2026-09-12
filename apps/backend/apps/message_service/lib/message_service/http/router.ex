@@ -259,7 +259,16 @@ defmodule MessageService.HTTP.Router do
       kafka: SharedInfra.Health.kafka(System.get_env("KAFKA_BROKERS") || "localhost:9092")
     }
 
-    send_result(conn, {:ok, %{service: "message", status: "ok", deps: deps}})
+    send_result(
+      conn,
+      {:ok,
+       %{
+         service: "message",
+         status: "ok",
+         deps: deps,
+         git_sha: SharedInfra.BuildInfo.git_sha()
+       }}
+    )
   end
 
   match _ do

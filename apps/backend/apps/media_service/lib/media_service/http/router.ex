@@ -65,7 +65,16 @@ defmodule MediaService.HTTP.Router do
 
     deps = %{minio: SharedInfra.Health.http_ok(endpoint <> "/minio/health/ready")}
 
-    send_result(conn, {:ok, %{service: "media", status: "ok", deps: deps}})
+    send_result(
+      conn,
+      {:ok,
+       %{
+         service: "media",
+         status: "ok",
+         deps: deps,
+         git_sha: SharedInfra.BuildInfo.git_sha()
+       }}
+    )
   end
 
   match _ do

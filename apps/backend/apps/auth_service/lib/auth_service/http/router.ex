@@ -298,7 +298,10 @@ defmodule AuthService.HTTP.Router do
   end
 
   get "/internal/health" do
-    send_result(conn, {:ok, %{service: "auth", status: "ok", deps: %{}}})
+    send_result(
+      conn,
+      {:ok, %{service: "auth", status: "ok", deps: %{}, git_sha: SharedInfra.BuildInfo.git_sha()}}
+    )
   end
 
   match _ do
