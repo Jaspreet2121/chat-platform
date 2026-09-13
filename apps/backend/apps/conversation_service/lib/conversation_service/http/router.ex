@@ -58,6 +58,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Encryption.secret_conversations_of(body(conn)))
   end
 
+  post "/internal/conversations/peers_of" do
+    send_result(conn, ConversationService.Conversations.peers_of(body(conn)))
+  end
+
   post "/internal/conversations/call_conversation" do
     send_result(conn, ConversationService.Conversations.get_call_conversation(body(conn)))
   end

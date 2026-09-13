@@ -289,6 +289,48 @@ defmodule ConversationService.Conversations do
     Ecto.Query.CastError -> {:error, :conversation_invalid}
   end
 
+  @doc """
+  Every user who shares an ACTIVE conversation with `user_id` — the fan-out set for a change to that
+  user's own profile (their avatar), computed ONCE at change time.
+
+  This is the cheapest CORRECT set: precisely the people who can already see this user's card, and
+  nobody else. A per-DM fallback would be cheaper still but wrong — a group member sees the same
+  avatar in every message row, and would keep a stale one until their next card fetch.
+
+  Self is excluded (a user's own devices learn from the response they just got), and so is anyone who
+  has left. Indexed both ways: `idx_conversation_participants_user_id` finds this user's rows, the
+  (conversation_id, user_id) primary key serves the join back out.
+
+  Shaped like `ConversationService.Encryption.secret_conversations_of/1` — one query, one list, read
+  through the same internal-API seam.
+  """
+  def peers_of(attrs) do
+    with {:ok, user_id} <- required_attr(attrs, "user_id") do
+      %{rows: rows} =
+        Repo.query!(
+          """
+          SELECT DISTINCT peer.user_id::text
+          FROM conversation_participants mine
+          JOIN conversations c ON c.id = mine.conversation_id AND c.status = 'active'
+          JOIN conversation_participants peer ON peer.conversation_id = mine.conversation_id
+          WHERE mine.user_id = $1::text::uuid
+            AND mine.left_at IS NULL
+            AND peer.left_at IS NULL
+            AND peer.user_id <> mine.user_id
+          """,
+          [user_id]
+        )
+
+      {:ok, %{user_ids: Enum.map(rows, fn [id] -> id end)}}
+    end
+  rescue
+    # BOTH, because the cast happens in Postgres here: `$1::text::uuid` on a malformed id raises a
+    # Postgrex.Error, not a CastError, and an unhandled raise would 500 the internal route rather
+    # than refuse the argument.
+    Ecto.Query.CastError -> {:error, :conversation_invalid}
+    _error in Postgrex.Error -> {:error, :conversation_invalid}
+  end
+
   # Group avatar id/key for the detail payload (the gateway presigns → group_avatar_url). nil for DMs.
   defp group_avatar(%{type: "group", id: id}) do
     case GroupProfileStore.get_group_profile(id) do

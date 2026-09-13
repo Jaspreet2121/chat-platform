@@ -46,6 +46,9 @@ defmodule SharedInfra.ConversationClientHttp do
   def secret_conversations_of(attrs), do: post("/internal/conversations/secret_of", attrs)
 
   @impl true
+  def peers_of(attrs), do: post("/internal/conversations/peers_of", attrs)
+
+  @impl true
   def get_call_conversation(attrs), do: post("/internal/conversations/call_conversation", attrs)
 
   @impl true

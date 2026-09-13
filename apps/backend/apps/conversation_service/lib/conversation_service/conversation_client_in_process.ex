@@ -44,6 +44,9 @@ defmodule ConversationService.ConversationClientInProcess do
     do: ConversationService.Encryption.secret_conversations_of(attrs)
 
   @impl true
+  def peers_of(attrs), do: ConversationService.Conversations.peers_of(attrs)
+
+  @impl true
   def get_call_conversation(attrs), do: Conversations.get_call_conversation(attrs)
 
   @impl true
