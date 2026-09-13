@@ -246,20 +246,6 @@ defmodule NotificationService.FcmSenderTest do
                "the ability to explain a device that stopped receiving"
     end
 
-    @tag :postgres_integration
-    test "a NULL device_id logs device=none and never crashes the send" do
-      seed_message!()
-      # seed_tokens!/1 writes no device_id at all — the pre-client rows in production.
-      seed_tokens!([@token_a])
-
-      FcmFakes.respond_with([{:ok, %{status: 404, body: @unregistered_404}}])
-
-      log = capture_log([level: :info], fn -> FcmSender.deliver(attrs(), [@recipient]) end)
-
-      assert log =~ "fcm token pruned user=#{@recipient} device=none status=404"
-      assert token_count(@token_a) == 0, "the prune did not complete — the null blew up the line"
-    end
-
     @tag presence: FcmFakes.PresentEverywhere
     @tag :postgres_integration
     test "SKIP logs its reason — app_present" do
@@ -442,18 +428,11 @@ defmodule NotificationService.FcmSenderTest do
       [@recipient, "+917222222222"]
     )
 
-    Enum.each(tokens, fn token ->
-      Repo.query!(
-        "INSERT INTO fcm_tokens (user_id, token) VALUES ($1::text::uuid, $2) " <>
-          "ON CONFLICT (token) DO UPDATE SET user_id = EXCLUDED.user_id",
-        [@recipient, token]
-      )
-    end)
+    # device_id is NOT NULL since 121 (one row per device) — derive one per token.
+    Enum.each(tokens, fn token -> seed_device_token!(token, "device-of-" <> token) end)
   end
 
-  # The NULL-device_id twin of seed_tokens!/1. 074 declares no NOT NULL on device_id and rows
-  # predate the client ever sending one, so "device_id is null" is a REAL production shape — the one
-  # a log line interpolating it would crash on.
+  # seed_tokens!/1 with a chosen device id, for the tests that assert it in a log line.
   defp seed_device_token!(token, device_id) do
     Repo.query!(
       "INSERT INTO users_auth (id, phone_number) VALUES ($1::text::uuid, $2) ON CONFLICT DO NOTHING",
