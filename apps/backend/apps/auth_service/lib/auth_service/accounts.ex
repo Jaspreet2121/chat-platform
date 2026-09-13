@@ -18,6 +18,38 @@ defmodule AuthService.Accounts do
     |> Repo.insert()
   end
 
+  @doc """
+  create_user/1 PLUS the user's profile row, in ONE transaction — the registration path (122).
+
+  Only PATCH /users/me ever created user_profiles, so an account that signed up and never saved a
+  name had no card at all: every peer's fetch for it was a 404 while the account messaged freely.
+  The row is minimal (no name, no avatar) and copies the tenant from the account row itself; the
+  profile's app_id must match users_auth.app_id or the app-scoped card read cannot find it.
+
+  ON CONFLICT DO NOTHING keeps a race (two verifies for one new number) and a re-run harmless.
+  Written with raw SQL through THIS repo: auth does not depend on user_service, and both share the
+  database.
+  """
+  def register_user(attrs) do
+    Repo.transaction(fn ->
+      with {:ok, user} <- create_user(attrs),
+           {:ok, _} <- insert_profile_row(user.id) do
+        user
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp insert_profile_row(user_id) do
+    Repo.query(
+      "INSERT INTO user_profiles (user_id, app_id, display_name) " <>
+        "SELECT id, app_id, NULL FROM users_auth WHERE id = $1::text::uuid " <>
+        "ON CONFLICT (user_id) DO NOTHING",
+      [user_id]
+    )
+  end
+
   def get_user(id), do: Repo.get(UserAuth, id)
 
   def get_by_phone_number(phone_number) do

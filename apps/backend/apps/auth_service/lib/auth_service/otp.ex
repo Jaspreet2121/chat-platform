@@ -328,7 +328,8 @@ defmodule AuthService.OTP do
   defp find_or_create_user(destination, "sms") do
     case Accounts.get_by_phone_number(destination) do
       nil ->
-        Accounts.create_user(%{
+        # The account AND its profile row (122) — a user must never exist without a card.
+        Accounts.register_user(%{
           "id" => Ecto.UUID.generate(),
           "phone_number" => destination,
           "status" => "active"
