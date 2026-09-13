@@ -31,6 +31,12 @@ both to `false`. Leaves the conversations in place.
 B's socket, does a REAL avatar upload as A (describe → PUT bytes → complete), PATCHes
 `avatar_media_id`, and prints what B received. Observes the live socket — no server change needed.
 
+`socket_latency.mjs` — send→receive latency over the socket: A pushes 20 `message:create`s on the
+A–B conversation channel while B's socket timestamps `message_created` on the same topic; then
+turns encryption ON, sends 20 sealed envelopes (real libsodium boxes to both devices), and hands
+the DM back with the two-party OFF. Prints p50/p95/max per leg plus the send ack. Needs
+`libsodium-wrappers` from `apps/web/node_modules` (already installed there).
+
 ## Running
 
 ```bash
