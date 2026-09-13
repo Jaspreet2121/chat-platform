@@ -511,6 +511,18 @@ defmodule ApiGatewayWeb.UserController do
         ApiGatewayWeb.UpiQr.regenerate_async(session.user_id, session_app(session))
       end
 
+      # AVATAR CHANGED → tell everyone who shares a conversation with this user, so their cached
+      # copy (keyed on avatar_media_id) is replaced now rather than on their next card fetch an hour
+      # from now. AFTER the store call above: the event must never describe a write that has not
+      # landed. Only when the request actually carried an avatar field — a name or bio edit is not
+      # an avatar change, and `avatar_media_id: ""` is the CLEAR path, which is one.
+      if Map.has_key?(params, "avatar_media_id") do
+        ApiGatewayWeb.UserEvents.avatar_changed(
+          session.user_id,
+          Map.get(response, :avatar_media_id)
+        )
+      end
+
       client_response = Map.delete(response, :upi_qr_pending)
       json(conn, client_response |> ProfilePresenter.with_avatar_url() |> put_email(email))
     else
