@@ -111,10 +111,29 @@ if [ "$excluded_count" -gt 0 ]; then
   printf '%b' "$excluded" | sed 's/^/      EXCLUDED: /'
 fi
 
+# EVERY SUITE RUNS, AND THE RUN ENDS WITH A TABLE.
+#
+# It did not used to. The failure branch below piped awk into `head -80`; when head had its 80 lines
+# it exited, awk took SIGPIPE, and under `set -o pipefail` + `set -e` that non-zero status killed the
+# WHOLE SCRIPT at the first failing suite. Every suite after it silently never ran — and because the
+# script died mid-loop it printed no verdict either, so the output looked like a run that had simply
+# stopped. Two real failures were hidden behind one flake that way.
+#
+# Nothing here pipes into a short-circuiting reader any more: awk writes a FILE and `sed -n 1,80p`
+# reads that file, so there is no upstream process left to signal. `|| true` guards the greps whose
+# "no match" is a perfectly normal outcome (pipefail would otherwise treat it as a fatal error).
+#
+# Results accumulate into a temp file rather than an array: macOS ships bash 3.2, which has neither
+# associative arrays nor `mapfile`.
 fail=0
+results="$(mktemp)"
+failure_block="$(mktemp)"
+trap 'rm -f "$results" "$failure_block"' EXIT
+
 for suite in $suites; do
   # Skip the ones just reported, so the count above and the runs below can never disagree.
   if grep -qE '@(module)?tag :requires_[a-z_]+' "$suite" 2>/dev/null; then
+    printf 'SKIP\t-\t%s\n' "$suite" >> "$results"
     continue
   fi
 
@@ -122,20 +141,42 @@ for suite in $suites; do
   # ELIXIR_LOG_LEVEL=warning: without it, SQL debug logging floods the output and (as happened in CI)
   # buries the actual assertion so far above the failure marker that a tail cannot reach it.
   if out="$(ELIXIR_LOG_LEVEL=warning mix test --include postgres_integration "$suite" 2>&1)"; then
-    echo "$(echo "$out" | grep -E '^Result:' | tail -1)"
+    line="$(printf '%s\n' "$out" | grep -E '^Result:' | tail -1 || true)"
+    echo "$line"
+    printf 'PASS\t%s\t%s\n' "$(printf '%s' "$line" | grep -oE '[0-9]+ passed' || echo '? passed')" "$suite" >> "$results"
   else
     echo "FAILED"
     # Print the ExUnit FAILURE BLOCKS (test name → stacktrace), not a raw tail: the raw tail showed
     # whatever happened to be last — usually noise — and the person reading CI never saw the assertion.
-    echo "$out" | awk '/^  [0-9]+\) test /{p=1} p{print} p&&/^$/{blank++; if (blank>=2) {p=0; blank=0}}' | head -80
-    echo "$out" | grep -E "tests, [0-9]+ failure" | tail -1
+    printf '%s\n' "$out" |
+      awk '/^  [0-9]+\) test /{p=1} p{print} p&&/^$/{blank++; if (blank>=2) {p=0; blank=0}}' \
+      > "$failure_block"
+    sed -n '1,80p' "$failure_block"
+
+    summary="$(printf '%s\n' "$out" | grep -E "tests, [0-9]+ failure" | tail -1 || true)"
+    [ -n "$summary" ] && echo "$summary"
     echo "--------------------------------------------------------------------------------"
+
+    printf 'FAIL\t%s\t%s\n' "$(printf '%s' "$summary" | grep -oE '[0-9]+ failures?' || echo '? failures')" "$suite" >> "$results"
     fail=1
   fi
 done
 
+# THE TABLE. A run that ends without one is indistinguishable from a run that died halfway, which is
+# exactly the ambiguity this replaces.
+passed_suites=$(grep -c '^PASS' "$results" || true)
+failed_suites=$(grep -c '^FAIL' "$results" || true)
+skipped_suites=$(grep -c '^SKIP' "$results" || true)
+
+echo ""
+echo "==> SUMMARY"
+awk -F'\t' '{ printf "  %-6s %-14s %s\n", $1, $2, $3 }' "$results"
+echo ""
+echo "==> ${passed_suites:-0} passed, ${failed_suites:-0} failed, ${skipped_suites:-0} skipped (of $total_count)"
+
 if [ "$fail" -ne 0 ]; then
   echo "==> POSTGRES SUITES FAILED"
+  grep '^FAIL' "$results" | awk -F'\t' '{ print "      " $3 }'
 else
   echo "==> all postgres suites passed"
 fi
