@@ -29,8 +29,116 @@ defmodule AuthService.FcmTokensTest do
     n
   end
 
+  defp rows_for_device(user_id, device_id) do
+    %{rows: [[n]]} =
+      Repo.query!(
+        "SELECT count(*) FROM fcm_tokens WHERE user_id = $1::text::uuid AND device_id = $2",
+        [user_id, device_id]
+      )
+
+    n
+  end
+
+  defp token_of(user_id, device_id) do
+    %{rows: [[token]]} =
+      Repo.query!(
+        "SELECT token FROM fcm_tokens WHERE user_id = $1::text::uuid AND device_id = $2",
+        [user_id, device_id]
+      )
+
+    token
+  end
+
+  # --- ONE ROW PER DEVICE (121) --------------------------------------------------------------------
+
   @tag :postgres_integration
-  test "upsert is by token; re-registering MOVES the device to the new account" do
+  test "a ROTATED token for the same device UPDATES its row — never a second one" do
+    seed_users!()
+
+    {:ok, _} =
+      FcmTokens.upsert_token(%{"user_id" => @user_a, "token" => @token, "device_id" => "pixel-8"})
+
+    # FCM rotated the registration token (reinstall, data clear, SDK refresh): same handset, new
+    # token. This is exactly what produced three rows for one phone in production.
+    assert {:ok, %{saved: true}} =
+             FcmTokens.upsert_token(%{
+               "user_id" => @user_a,
+               "token" => @other_token,
+               "device_id" => "pixel-8"
+             })
+
+    assert rows_for_device(@user_a, "pixel-8") == 1,
+           "the device holds more than one row — every rotation adds a corpse that is re-sent to " <>
+             "on every message until FCM 404s it"
+
+    assert token_of(@user_a, "pixel-8") == @other_token
+    # The rotated-away token is gone, not orphaned.
+    assert count(@token) == 0
+  end
+
+  @tag :postgres_integration
+  test "a token MOVING to a new device id on the same account succeeds — token stays UNIQUE" do
+    seed_users!()
+
+    {:ok, _} =
+      FcmTokens.upsert_token(%{"user_id" => @user_a, "token" => @token, "device_id" => "old-id"})
+
+    # The app minted a fresh device id (uninstall / pm clear) but FCM handed back the same token.
+    # UNIQUE(token) would make a naive device-keyed insert blow up here.
+    assert {:ok, %{saved: true}} =
+             FcmTokens.upsert_token(%{
+               "user_id" => @user_a,
+               "token" => @token,
+               "device_id" => "new-id"
+             }),
+           "a token arriving under a new device id was refused — the handset can never re-register"
+
+    assert count(@token) == 1
+    assert rows_for_device(@user_a, "old-id") == 0
+    assert token_of(@user_a, "new-id") == @token
+  end
+
+  @tag :postgres_integration
+  test "device_id is REQUIRED — a row that names no device can never be updated or revoked" do
+    seed_users!()
+
+    assert {:error, :invalid_request} =
+             FcmTokens.upsert_token(%{"user_id" => @user_a, "token" => @token})
+
+    assert {:error, :invalid_request} =
+             FcmTokens.upsert_token(%{"user_id" => @user_a, "token" => @token, "device_id" => ""})
+
+    assert count(@token) == 0
+  end
+
+  @tag :postgres_integration
+  test "the (user_id, device_id) key is enforced by the SCHEMA, not only by the upsert" do
+    seed_users!()
+
+    Repo.query!(
+      "INSERT INTO fcm_tokens (user_id, token, device_id) VALUES ($1::text::uuid, $2, $3)",
+      [@user_a, @token, "pixel-8"]
+    )
+
+    # A second row for the same device, written around the upsert, is refused by the index.
+    assert_raise Postgrex.Error, ~r/fcm_tokens_user_device_key/, fn ->
+      Repo.query!(
+        "INSERT INTO fcm_tokens (user_id, token, device_id) VALUES ($1::text::uuid, $2, $3)",
+        [@user_a, @other_token, "pixel-8"]
+      )
+    end
+
+    # ...and a NULL device is refused outright.
+    assert_raise Postgrex.Error, ~r/not-null|null value/, fn ->
+      Repo.query!(
+        "INSERT INTO fcm_tokens (user_id, token) VALUES ($1::text::uuid, $2)",
+        [@user_a, "third-token"]
+      )
+    end
+  end
+
+  @tag :postgres_integration
+  test "upsert is by DEVICE; a re-sign-in on the same handset MOVES the row to the new account" do
     seed_users!()
 
     assert {:ok, %{saved: true}} =
@@ -68,9 +176,22 @@ defmodule AuthService.FcmTokensTest do
   test "tokens_for_user returns every device the user registered, and nothing else" do
     seed_users!()
 
-    {:ok, _} = FcmTokens.upsert_token(%{"user_id" => @user_a, "token" => @token})
-    {:ok, _} = FcmTokens.upsert_token(%{"user_id" => @user_a, "token" => @other_token})
-    {:ok, _} = FcmTokens.upsert_token(%{"user_id" => @user_b, "token" => "someone-elses-token"})
+    {:ok, _} =
+      FcmTokens.upsert_token(%{"user_id" => @user_a, "token" => @token, "device_id" => "a-1"})
+
+    {:ok, _} =
+      FcmTokens.upsert_token(%{
+        "user_id" => @user_a,
+        "token" => @other_token,
+        "device_id" => "a-2"
+      })
+
+    {:ok, _} =
+      FcmTokens.upsert_token(%{
+        "user_id" => @user_b,
+        "token" => "someone-elses-token",
+        "device_id" => "b-1"
+      })
 
     assert Enum.sort(FcmTokens.tokens_for_user(@user_a)) == Enum.sort([@token, @other_token])
     assert FcmTokens.tokens_for_user(@user_b) == ["someone-elses-token"]
@@ -80,7 +201,9 @@ defmodule AuthService.FcmTokensTest do
   @tag :postgres_integration
   test "delete is caller-scoped; pruning by token value is not" do
     seed_users!()
-    {:ok, _} = FcmTokens.upsert_token(%{"user_id" => @user_a, "token" => @token})
+
+    {:ok, _} =
+      FcmTokens.upsert_token(%{"user_id" => @user_a, "token" => @token, "device_id" => "a-1"})
 
     # Someone else cannot unregister A's device.
     assert {:ok, _} = FcmTokens.delete_token(%{"user_id" => @user_b, "token" => @token})
@@ -91,7 +214,13 @@ defmodule AuthService.FcmTokensTest do
 
     # Pruning is deliberately NOT user-scoped: a token FCM has declared dead is dead for whoever
     # happens to own it right now.
-    {:ok, _} = FcmTokens.upsert_token(%{"user_id" => @user_b, "token" => @other_token})
+    {:ok, _} =
+      FcmTokens.upsert_token(%{
+        "user_id" => @user_b,
+        "token" => @other_token,
+        "device_id" => "b-1"
+      })
+
     assert {:ok, %{deleted: 1}} = FcmTokens.delete_tokens([@other_token])
     assert count(@other_token) == 0
   end
@@ -104,6 +233,7 @@ defmodule AuthService.FcmTokensTest do
       FcmTokens.upsert_token(%{
         "user_id" => @user_a,
         "token" => @token,
+        "device_id" => "a-1",
         "platform" => "'; DROP--"
       })
 

@@ -2,14 +2,19 @@ defmodule AuthService.FcmTokens do
   @moduledoc """
   FCM device-token storage (Phase 2, Android) — the token twin of `AuthService.PushSubscriptions`.
 
-  An FCM registration token is a per-INSTALLATION device credential, so it lives with identity:
-  UPSERT by the globally-unique token (re-registering the same token updates owner/device), DELETE
-  by token scoped to the CALLER's own rows. The notification service reads this table directly to
-  deliver; nothing here sends anything.
+  An FCM registration token is a per-INSTALLATION device credential, so it lives with identity —
+  and since 121 the row is keyed on the DEVICE: one row per (user_id, device_id), UNIQUE and NOT
+  NULL. A rotated token for a device that already has a row UPDATES that row; before 121 the
+  upsert was keyed on the token, so every rotation added a second row for the same handset and
+  nothing ever removed the first (prod: three rows, three tokens, one phone). DELETE by token stays
+  scoped to the CALLER's own rows. The notification service reads this table directly to deliver;
+  nothing here sends anything.
 
-  RE-SIGN-IN: a device that logs in as a different account re-registers its SAME token, so the
-  conflict update MOVES the row to the new user. That is the point — leaving the old row would keep
-  delivering the previous account's messages to a phone that is now signed in as someone else.
+  RE-SIGN-IN: a device that logs in as a different account re-registers its SAME token. The row it
+  held under the previous account is removed first and the new (user, device) row takes the token —
+  leaving the old row would keep delivering the previous account's messages to a phone that is now
+  signed in as someone else. `token` stays UNIQUE, and that pre-delete is what keeps a token moving
+  between devices or accounts from tripping it.
 
   `delete_tokens/1` is the pruning path used by the notification service when FCM reports a token
   as dead; it is deliberately NOT user-scoped (a dead token is dead for whoever owns it).
@@ -21,15 +26,32 @@ defmodule AuthService.FcmTokens do
 
   def upsert_token(attrs) do
     with {:ok, user_id} <- required(attrs, "user_id"),
-         {:ok, token} <- required(attrs, "token") do
+         {:ok, token} <- required(attrs, "token"),
+         # NOT NULL since 121: a row that names no device can never be addressed again. The gateway
+         # supplies this from the SESSION, never from the client's body.
+         {:ok, device_id} <- required(attrs, "device_id") do
       if persistence_enabled?() do
-        Repo.query!(
-          "INSERT INTO fcm_tokens (user_id, token, device_id, platform) " <>
-            "VALUES ($1::text::uuid, $2, $3, $4) " <>
-            "ON CONFLICT (token) DO UPDATE SET user_id = EXCLUDED.user_id, " <>
-            "device_id = EXCLUDED.device_id, platform = EXCLUDED.platform, updated_at = now()",
-          [user_id, token, attrs["device_id"], platform(attrs)]
-        )
+        {:ok, _} =
+          Repo.transaction(fn ->
+            # THE TOKEN-MOVE CASE, handled before it can raise. `token` is still UNIQUE, so a token
+            # arriving for a DIFFERENT (user, device) than the one it currently sits on — a re-sign-in
+            # on the same handset, or the same handset registering a fresh device id — would make the
+            # device-keyed upsert below trip the token index. Remove the row the token occupies unless
+            # it is already exactly this (user, device), which is a plain refresh for the ON CONFLICT.
+            Repo.query!(
+              "DELETE FROM fcm_tokens WHERE token = $1 " <>
+                "AND NOT (user_id = $2::text::uuid AND device_id = $3)",
+              [token, user_id, device_id]
+            )
+
+            Repo.query!(
+              "INSERT INTO fcm_tokens (user_id, token, device_id, platform) " <>
+                "VALUES ($1::text::uuid, $2, $3, $4) " <>
+                "ON CONFLICT (user_id, device_id) DO UPDATE SET token = EXCLUDED.token, " <>
+                "platform = EXCLUDED.platform, updated_at = now()",
+              [user_id, token, device_id, platform(attrs)]
+            )
+          end)
       end
 
       {:ok, %{saved: true}}
