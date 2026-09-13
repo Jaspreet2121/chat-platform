@@ -485,12 +485,49 @@ defmodule UserService.Profiles do
     with {:ok, user_id} <- required_user_id(attrs),
          {:ok, app_id} <- required_attr(attrs, :app_id) do
       case ProfileStore.get_profile_in_app(user_id, app_id) do
-        nil -> {:error, :profile_not_found}
-        profile -> {:ok, public_profile_response(user_id, profile)}
+        nil ->
+          # NO ROW, BUT A REAL USER: an active account in this app that never saved a profile
+          # (registration wrote users_auth alone before 122). Answer a minimal card rather than
+          # the 404 that made a messaging peer look deleted. Unknown, other-app and non-active
+          # ids stay a 404 — byte-identical to before.
+          if active_user_in_app?(user_id, app_id),
+            do: {:ok, minimal_public_profile(user_id, app_id)},
+            else: {:error, :profile_not_found}
+
+        profile ->
+          {:ok, public_profile_response(user_id, profile)}
       end
     end
   rescue
     Ecto.Query.CastError -> {:error, :profile_invalid}
+    _error in Postgrex.Error -> {:error, :profile_invalid}
+  end
+
+  defp active_user_in_app?(user_id, app_id) do
+    %{rows: rows} =
+      UserService.Repo.query!(
+        "SELECT 1 FROM users_auth WHERE id = $1::text::uuid AND app_id = $2::text::uuid " <>
+          "AND status = 'active' LIMIT 1",
+        [user_id, app_id]
+      )
+
+    rows != []
+  end
+
+  # The card for a user with no profile row. Same keys a peer can act on, all empty; has_profile
+  # tells the client this is an unset profile, not a redacted one.
+  defp minimal_public_profile(user_id, app_id) do
+    %{
+      user_id: user_id,
+      display_name: nil,
+      username: nil,
+      avatar_media_id: nil,
+      avatar_object_key: nil,
+      app_id: app_id,
+      bio: nil,
+      has_profile: false,
+      profile_visibility: visibility_with_defaults(nil)
+    }
   end
 
   # (A nil profile no longer reaches here — get_public_profile_from_db returns :profile_not_found for a
@@ -498,6 +535,8 @@ defmodule UserService.Profiles do
   defp public_profile_response(user_id, profile) do
     %{
       user_id: user_id,
+      # A row exists. false only on the minimal card above.
+      has_profile: true,
       display_name: profile.display_name,
       # Visible to anyone who can see the profile at all — a handle exists to be shared (nil when unset).
       username: profile.username,

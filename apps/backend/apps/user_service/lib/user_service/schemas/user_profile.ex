@@ -84,8 +84,27 @@ defmodule UserService.Schemas.UserProfile do
       :business_hours,
       :profile_visibility
     ])
-    |> validate_required([:display_name])
+    # Required WHEN IT CHANGES — a name can never be blanked — but not on every update: a row
+    # created at registration (122) carries no name yet, and an avatar-only or bio-only PATCH from
+    # that user must not be refused for a field it did not touch. (validate_required would have,
+    # and validate_change skips nil changes, so this is explicit.)
+    |> require_name_when_changed()
     |> validate_payment_business()
+  end
+
+  defp require_name_when_changed(changeset) do
+    case Map.fetch(changeset.changes, :display_name) do
+      {:ok, value} when is_binary(value) ->
+        if String.trim(value) == "",
+          do: add_error(changeset, :display_name, "can't be blank"),
+          else: changeset
+
+      {:ok, _nil} ->
+        add_error(changeset, :display_name, "can't be blank")
+
+      :error ->
+        changeset
+    end
   end
 
   # The 100 contract's field bounds. website must be https (a payment-adjacent link must never
