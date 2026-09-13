@@ -12,6 +12,10 @@ defmodule ApiGatewayWeb.PushFcmTokenTest.AuthStub do
 
   @impl true
   def current_session(%{"authorization" => "Bearer good"}), do: {:ok, @session}
+  # A session that carries no device — a placeholder, or one minted before device ids existed.
+  def current_session(%{"authorization" => "Bearer deviceless"}),
+    do: {:ok, %{@session | device_id: nil}}
+
   def current_session(_attrs), do: {:error, :session_invalid}
 
   @impl true
@@ -46,9 +50,11 @@ end
 
 defmodule ApiGatewayWeb.PushFcmTokenTest do
   @moduledoc """
-  `POST/DELETE /api/v1/push/fcm-tokens` (Phase-2 Android registration): session-gated, upsert by
-  token, 204 with no body. The auth boundary is stubbed — this asserts the GATEWAY's contract, not
-  the auth service's storage (that is `AuthService.FcmTokensTest`).
+  `POST/DELETE /api/v1/push/fcm-tokens` (Phase-2 Android registration): session-gated, one row per
+  DEVICE, 204 with no body. The device id is the SESSION's, never the body's — the body's value used
+  to be stored verbatim, and a client-claimed id is how one handset piled up three identities. The
+  auth boundary is stubbed — this asserts the GATEWAY's contract, not the auth service's storage
+  (that is `AuthService.FcmTokensTest`).
   """
   use ExUnit.Case, async: false
 
@@ -83,23 +89,42 @@ defmodule ApiGatewayWeb.PushFcmTokenTest do
   end
 
   test "POST registers the caller's token as android and answers 204 with no body" do
-    conn = call(:post, "/api/v1/push/fcm-tokens", %{"token" => @token, "device_id" => "pixel-8"})
+    conn = call(:post, "/api/v1/push/fcm-tokens", %{"token" => @token})
 
     assert conn.status == 204
     assert conn.resp_body == ""
 
     assert_received {:save_fcm_token, attrs}
-    # The user id comes from the SESSION, never from the body — a client cannot register a token
-    # against somebody else's account.
+    # BOTH identities come from the SESSION, never from the body — a client can register a token
+    # against neither somebody else's account nor an invented device.
     assert attrs["user_id"] == "user-1"
     assert attrs["token"] == @token
-    assert attrs["device_id"] == "pixel-8"
+    assert attrs["device_id"] == "d"
     assert attrs["platform"] == "android"
   end
 
-  test "device_id is optional" do
-    assert call(:post, "/api/v1/push/fcm-tokens", %{"token" => @token}).status == 204
-    assert_received {:save_fcm_token, %{"device_id" => nil}}
+  test "a body device_id is IGNORED — the session's device wins, a spoofed one never reaches the store" do
+    conn =
+      call(:post, "/api/v1/push/fcm-tokens", %{
+        "token" => @token,
+        "device_id" => "android-invented-by-the-client"
+      })
+
+    assert conn.status == 204
+    assert_received {:save_fcm_token, attrs}
+
+    assert attrs["device_id"] == "d",
+           "the client's device_id (#{inspect(attrs["device_id"])}) was stored — a handset that " <>
+             "mints a new id per install registers as a new device every time, and the old rows " <>
+             "are never reclaimed"
+  end
+
+  test "a session with NO device id is a 422 — a deviceless row could never be updated or revoked" do
+    conn = call(:post, "/api/v1/push/fcm-tokens", %{"token" => @token}, "Bearer deviceless")
+
+    assert conn.status == 422
+    assert %{"error" => %{"code" => "push.device_required"}} = Jason.decode!(conn.resp_body)
+    refute_received {:save_fcm_token, _attrs}
   end
 
   test "DELETE unregisters the caller's own token (the logout call)" do

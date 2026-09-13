@@ -50,26 +50,46 @@ defmodule ApiGatewayWeb.PushController do
 
   # ---- Android FCM device tokens (Phase 2) ----
 
-  def create_token(conn, %{"token" => token} = params) when is_binary(token) and token != "" do
-    with_session_no_content(conn, fn user_id ->
-      SharedInfra.AuthClient.save_fcm_token(%{
-        "user_id" => user_id,
-        "token" => token,
-        "device_id" => params["device_id"],
-        "platform" => "android"
-      })
+  # THE DEVICE COMES FROM THE SESSION, NEVER THE BODY. The body's device_id used to be stored
+  # verbatim, and a client-claimed value is how one handset piled up three device identities (and
+  # three token rows) under one account. The session's device_id is the one the client registered
+  # at login — the same value a correct client would have put in the body — so nothing changes for
+  # it; a body device_id is now simply ignored. No session device (a placeholder session, or a
+  # session minted before device ids existed) is a 422: a row that names no device could never be
+  # updated or revoked again.
+  def create_token(conn, %{"token" => token} = _params) when is_binary(token) and token != "" do
+    with_session_no_content(conn, fn session ->
+      case session_device_id(session) do
+        nil ->
+          {:error, :device_required}
+
+        device_id ->
+          SharedInfra.AuthClient.save_fcm_token(%{
+            "user_id" => session.user_id,
+            "token" => token,
+            "device_id" => device_id,
+            "platform" => "android"
+          })
+      end
     end)
   end
 
   def create_token(conn, _params), do: ErrorResponse.invalid_request(conn, "push.invalid_token")
 
   def delete_token(conn, %{"token" => token}) when is_binary(token) and token != "" do
-    with_session_no_content(conn, fn user_id ->
-      SharedInfra.AuthClient.delete_fcm_token(%{"user_id" => user_id, "token" => token})
+    with_session_no_content(conn, fn session ->
+      SharedInfra.AuthClient.delete_fcm_token(%{"user_id" => session.user_id, "token" => token})
     end)
   end
 
   def delete_token(conn, _params), do: ErrorResponse.invalid_request(conn, "push.invalid_token")
+
+  defp session_device_id(session) do
+    case Map.get(session, :device_id) || Map.get(session, "device_id") do
+      device_id when is_binary(device_id) and device_id != "" -> device_id
+      _ -> nil
+    end
+  end
 
   # Same session gate and the same error mapping as `with_session/2` — only the success shape
   # differs (204, no body: registering a device token has nothing to report back).
@@ -77,7 +97,7 @@ defmodule ApiGatewayWeb.PushController do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
-         {:ok, _response} <- operation.(session.user_id) do
+         {:ok, _response} <- operation.(session) do
       send_resp(conn, :no_content, "")
     else
       {:error, :session_invalid} ->
@@ -85,6 +105,13 @@ defmodule ApiGatewayWeb.PushController do
 
       {:error, :auth_unavailable} ->
         ErrorResponse.service_unavailable(conn, "push.unavailable")
+
+      {:error, :device_required} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "push.device_required",
+          "This session carries no device id — sign in again to register for push"
+        )
 
       _ ->
         ErrorResponse.invalid_request(conn, "push.invalid_token")
