@@ -185,10 +185,20 @@ defmodule ConversationService.CallWebhooksTest do
     call_id = call!(caller, callee)
 
     assert {:ok, _} = CallStore.mark_answered(%{"call_id" => call_id})
-    # Backdate the answer so the duration is a real, non-zero number.
+
+    # Backdate the answer so the duration is a real, non-zero number — from ELIXIR's clock, which is
+    # the one CallStore stamps ended_at with (DateTime.utc_now/0 in mark_ended/1).
+    #
+    # This used to backdate with Postgres `now() - interval '42 seconds'`, and `now()` inside the
+    # Ecto sandbox is the TRANSACTION's start time, not the wall clock. So the gap it produced was
+    # 42 seconds PLUS however long this test's transaction had already been open — fine on a fast
+    # run, 66 seconds on a loaded machine, and a duration assertion that failed for reasons entirely
+    # unrelated to duration. Two clocks, one subtraction: pick one.
+    answered_at = DateTime.add(DateTime.utc_now(), -42, :second)
+
     Repo.query!(
-      "UPDATE calls SET answered_at = now() - interval '42 seconds' WHERE id = $1::text::uuid",
-      [call_id]
+      "UPDATE calls SET answered_at = $2 WHERE id = $1::text::uuid",
+      [call_id, answered_at]
     )
 
     assert {:ok, _} = CallStore.mark_ended(%{"call_id" => call_id})
@@ -199,8 +209,10 @@ defmodule ConversationService.CallWebhooksTest do
     ended = List.last(events).payload
     assert ended["reason"] == "ended"
     assert is_binary(ended["ended_at"])
-    # ~42s, allowing a second of slack for the test's own clock.
-    assert ended["duration_seconds"] >= 41 and ended["duration_seconds"] <= 44
+
+    # 42s ±1 — both ends now come from the same clock, so the only slack needed is the sub-second
+    # gap between the backdate above and mark_ended's own stamp.
+    assert ended["duration_seconds"] >= 41 and ended["duration_seconds"] <= 43
   end
 
   @tag :postgres_integration

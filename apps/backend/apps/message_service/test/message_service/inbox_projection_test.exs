@@ -295,11 +295,21 @@ defmodule MessageService.InboxProjectionTest do
 
     m1 = send!(conv, a, "before clear", seconds_ago: 120)
 
-    # b clears history AFTER m1 (cleared_before = now): m1 leaves b's window; counter resets.
+    # b clears history AFTER m1: m1 leaves b's window; counter resets.
+    #
+    # THE CLEAR STAMP COMES FROM ELIXIR, because that is the clock `send!/4` above stamps created_at
+    # with. It used to be Postgres `now()`, which inside the Ecto sandbox is the TRANSACTION's start
+    # time — so the window boundary was "when this test's transaction opened" while the messages it
+    # is compared against were stamped "now". m1 sits 120s in the past, so the two agreed right up
+    # until the transaction had been open 120 seconds, at which point m1 fell back INSIDE the window
+    # and the oracle counted 2 where the maintained column said 1. On a loaded machine during a long
+    # gate run, that is reachable — it is what made this suite fail only in full runs.
+    cleared_before = DateTime.utc_now()
+
     Repo.query!(
-      "UPDATE conversation_participants SET cleared_before = now(), unread_count = 0, oldest_unread_at = NULL " <>
+      "UPDATE conversation_participants SET cleared_before = $3, unread_count = 0, oldest_unread_at = NULL " <>
         "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid",
-      [conv, b]
+      [conv, b, cleared_before]
     )
 
     m2 = send!(conv, a, "after clear")
