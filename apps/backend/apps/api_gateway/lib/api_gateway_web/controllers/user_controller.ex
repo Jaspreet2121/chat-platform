@@ -1,6 +1,8 @@
 defmodule ApiGatewayWeb.UserController do
   use ApiGatewayWeb, :controller
 
+  require Logger
+
   alias ApiGatewayWeb.ErrorResponse
   alias ApiGatewayWeb.ProfilePresenter
 
@@ -521,6 +523,11 @@ defmodule ApiGatewayWeb.UserController do
           session.user_id,
           Map.get(response, :avatar_media_id)
         )
+      else
+        # Not an avatar change (name, bio, payment…). Said out loud, so a PATCH that reached the
+        # server without the key the emit gates on is visible as exactly that — a client sending a
+        # different key would otherwise leave no trace at all.
+        Logger.info("user_updated skipped user=#{session.user_id} reason=no_change")
       end
 
       client_response = Map.delete(response, :upi_qr_pending)

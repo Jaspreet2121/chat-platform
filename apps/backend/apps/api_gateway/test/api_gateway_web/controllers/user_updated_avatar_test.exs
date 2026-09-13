@@ -15,6 +15,7 @@ defmodule ApiGatewayWeb.UserUpdatedAvatarTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
   import Plug.Conn
   import Plug.Test
 
@@ -79,15 +80,23 @@ defmodule ApiGatewayWeb.UserUpdatedAvatarTest do
         {:peers_of_called, ApiGatewayWeb.UserUpdatedAvatarTest.UserStub.committed()}
       )
 
-      {:ok,
-       %{
-         user_ids: [
-           "22222222-2222-4222-8222-222222222222",
-           # The actor comes back in the peer set too (a self-DM, or just a sloppy query) — the
-           # emitter must drop it rather than echo the change to the device that made it.
-           "11111111-1111-4111-8111-111111111111"
-         ]
-       }}
+      # Steerable, so the three lookup outcomes — a real set, an EMPTY set, and a FAILURE — can each
+      # be produced on demand. They must log differently; that is the whole point of the split.
+      case Application.get_env(:api_gateway, :peers_of_result) do
+        nil ->
+          {:ok,
+           %{
+             user_ids: [
+               "22222222-2222-4222-8222-222222222222",
+               # The actor comes back in the peer set too (a self-DM, or just a sloppy query) — the
+               # emitter must drop it rather than echo the change to the device that made it.
+               "11111111-1111-4111-8111-111111111111"
+             ]
+           }}
+
+        result ->
+          result
+      end
     end
   end
 
@@ -113,6 +122,7 @@ defmodule ApiGatewayWeb.UserUpdatedAvatarTest do
       {:shared_infra, :conversation_client_adapter},
       {:shared_infra, :media_client_adapter},
       {:api_gateway, :user_updated_test_pid},
+      {:api_gateway, :peers_of_result},
       {:user_service, :user_profile_persistence}
     ]
 
@@ -125,6 +135,7 @@ defmodule ApiGatewayWeb.UserUpdatedAvatarTest do
     Application.put_env(:shared_infra, :conversation_client_adapter, ConvStub)
     Application.put_env(:shared_infra, :media_client_adapter, MediaStub)
     Application.put_env(:api_gateway, :user_updated_test_pid, self())
+    Application.delete_env(:api_gateway, :peers_of_result)
     Application.put_env(:user_service, :user_profile_persistence, true)
 
     on_exit(fn ->
@@ -227,5 +238,74 @@ defmodule ApiGatewayWeb.UserUpdatedAvatarTest do
     assert conn.status == 200
 
     refute_receive %Phoenix.Socket.Broadcast{event: "user_updated"}, 200
+  end
+
+  # --- every outcome names itself -------------------------------------------------------------------
+  #
+  # These four lines are the difference between "the event never reached the phone" being a grep and
+  # being an inspection. Before them, success, an empty recipient set and a FAILED lookup all logged
+  # nothing — the same silent-success class FcmSender had before 60b84d2.
+
+  describe "logging" do
+    test "EMITTED: names the actor and how many recipients got it" do
+      log = capture_log([level: :info], fn -> patch_me(%{"avatar_media_id" => @new_avatar}) end)
+
+      # The stub returns peer + actor; the actor is dropped, so exactly ONE recipient.
+      assert log =~ "user_updated emitted user=#{@actor} recipients=1",
+             "a successful emit logged nothing — 'did it fire?' goes back to watching a socket"
+    end
+
+    test "NO_PEERS: an empty set says so, at info — not silence" do
+      Application.put_env(:api_gateway, :peers_of_result, {:ok, %{user_ids: []}})
+
+      log = capture_log([level: :info], fn -> patch_me(%{"avatar_media_id" => @new_avatar}) end)
+
+      assert log =~ "user_updated skipped user=#{@actor} reason=no_peers"
+      refute log =~ "user_updated emitted"
+      refute log =~ "user_updated failed"
+    end
+
+    test "NO_PEERS also when the only 'peer' is the actor themselves" do
+      Application.put_env(
+        :api_gateway,
+        :peers_of_result,
+        {:ok, %{user_ids: ["11111111-1111-4111-8111-111111111111"]}}
+      )
+
+      log = capture_log([level: :info], fn -> patch_me(%{"avatar_media_id" => @new_avatar}) end)
+      assert log =~ "reason=no_peers"
+    end
+
+    test "FAILED: a peer-lookup error is a WARNING with the reason — never no_peers" do
+      Application.put_env(:api_gateway, :peers_of_result, {:error, :conversation_unavailable})
+
+      log = capture_log([level: :info], fn -> patch_me(%{"avatar_media_id" => @new_avatar}) end)
+
+      assert log =~ "[warning] user_updated failed user=#{@actor}: :conversation_unavailable",
+             "a conversation-service outage logged as a user with no conversations — the one " <>
+               "line that would have said 'the dependency is down' reads as 'nothing to do'"
+
+      refute log =~ "reason=no_peers"
+      refute_receive %Phoenix.Socket.Broadcast{event: "user_updated"}, 100
+    end
+
+    test "FAILED: a malformed reply (no user_ids list) is an error too, not an empty set" do
+      Application.put_env(:api_gateway, :peers_of_result, {:ok, %{something_else: 1}})
+
+      log = capture_log([level: :info], fn -> patch_me(%{"avatar_media_id" => @new_avatar}) end)
+
+      assert log =~ "user_updated failed user=#{@actor}"
+      refute log =~ "reason=no_peers"
+    end
+
+    test "NO_CHANGE: a PATCH without the avatar key says why nothing was emitted" do
+      log = capture_log([level: :info], fn -> patch_me(%{"bio" => "still me"}) end)
+
+      assert log =~ "user_updated skipped user=#{@actor} reason=no_change",
+             "a PATCH that reached the server without avatar_media_id left no trace — a client " <>
+               "sending a different key is invisible"
+
+      refute_receive {:peers_of_called, _}, 100
+    end
   end
 end
