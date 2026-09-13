@@ -409,7 +409,14 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     viewer = attr(attrs, "viewer_user_id")
 
     with {:ok, client} <- client_adapter(),
-         {:ok, rows, next_cursor} <- walk_buckets(client, conversation_id, cursor(attrs), limit) do
+         {:ok, rows, next_cursor} <-
+           walk_buckets(
+             client,
+             conversation_id,
+             cursor(attrs),
+             limit,
+             MessageService.ConversationRow.timeline_floor(conversation_id)
+           ) do
       messages =
         rows
         |> Enum.map(&response_from_row/1)
@@ -1365,17 +1372,19 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     end
   end
 
-  defp walk_buckets(client, conversation_id, cursor, limit) do
+  # `floor` is the AGE BOUND — the day before the conversation was created (ConversationRow), or
+  # nil when the row is unknown, in which case only the 730-day cap applies.
+  defp walk_buckets(client, conversation_id, cursor, limit, floor) do
     {anchor, before_id} =
       case cursor do
         {date, id} -> {date, id}
         nil -> {Date.utc_today(), nil}
       end
 
-    do_walk(client, conversation_id, anchor, before_id, limit, [], @max_lookback_days)
+    do_walk(client, conversation_id, anchor, before_id, limit, [], @max_lookback_days, floor)
   end
 
-  defp do_walk(_client, _conversation_id, _anchor, _before_id, _limit, acc, days_left)
+  defp do_walk(_client, _conversation_id, _anchor, _before_id, _limit, acc, days_left, _floor)
        when days_left <= 0 do
     # Lookback exhausted: whatever we found is the last page. See the moduledoc for what this means
     # for conversations idle longer than the cap.
@@ -1388,8 +1397,29 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   # old bucket whose token sorts first could shadow the newest messages entirely. Per-bucket queries
   # (clustering DESC gives newest-first WITHIN each partition) + merge + take is correct by
   # construction: up to #{@window_days} point-partition reads per window, each LIMIT-bounded.
-  defp do_walk(client, conversation_id, anchor, before_id, limit, acc, days_left) do
-    window = for offset <- 0..(@window_days - 1), do: Date.add(anchor, -offset)
+  # THE AGE BOUND. No message can sit in a bucket earlier than the day the conversation was created
+  # (minus one day of clock-skew slack), so the walk stops there instead of at the 730-day cap. It
+  # used to run to the cap for every page that could not fill in its first window — every
+  # conversation with fewer than `limit` messages, i.e. most DMs — at 730 sequential point reads
+  # per open (~225 ms measured). The bound applies to EVERY page, cursor or not: a cursor anchored
+  # before the floor is a page with nothing under it.
+  defp do_walk(client, conversation_id, anchor, before_id, limit, acc, days_left, floor) do
+    if below_floor?(anchor, floor) do
+      {:ok, acc, nil}
+    else
+      walk_window(client, conversation_id, anchor, before_id, limit, acc, days_left, floor)
+    end
+  end
+
+  defp below_floor?(_date, nil), do: false
+  defp below_floor?(date, floor), do: Date.compare(date, floor) == :lt
+
+  defp walk_window(client, conversation_id, anchor, before_id, limit, acc, days_left, floor) do
+    window =
+      0..(@window_days - 1)
+      |> Enum.map(&Date.add(anchor, -&1))
+      |> Enum.reject(&below_floor?(&1, floor))
+
     remaining = limit - length(acc)
 
     fetched_result =
@@ -1420,7 +1450,8 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
             before_id,
             limit,
             acc,
-            days_left - @window_days
+            days_left - @window_days,
+            floor
           )
         end
 

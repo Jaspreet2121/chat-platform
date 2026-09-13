@@ -416,16 +416,13 @@ defmodule MessageService.Messages do
     _ -> false
   end
 
+  # The same one-row read the timeline floor uses (MessageService.ConversationRow) — one query,
+  # two columns; unknown or unreadable row → not secret, exactly as before.
   defp conversation_secret?(conversation_id) do
-    case MessageService.Repo.query(
-           "SELECT secret FROM conversations WHERE id = $1::text::uuid",
-           [conversation_id]
-         ) do
-      {:ok, %{rows: [[true]]}} -> true
+    case MessageService.ConversationRow.fetch(conversation_id) do
+      {:ok, %{secret: secret}} -> secret
       _ -> false
     end
-  rescue
-    _ -> false
   end
 
   defp validate_sealed(conversation_id, attrs) do

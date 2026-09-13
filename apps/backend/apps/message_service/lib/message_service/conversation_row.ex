@@ -1,0 +1,46 @@
+defmodule MessageService.ConversationRow do
+  @moduledoc """
+  The two columns of the conversation row that message-service reads straight from the shared
+  Postgres: `secret` (sealed-vs-plaintext policy on the create path) and `created_at` (the
+  timeline's age bound on the read path). ONE query serves both — the read that used to fetch
+  `secret` alone now carries `created_at` beside it, so the timeline floor costs no extra query on
+  the path that already had one, and exactly one point read on the path that did not.
+
+  No runtime dependency on the conversation service, same as every other cross-row read here.
+  """
+
+  @doc "{:ok, %{secret, created_at}} | :not_found | {:error, reason} — never raises."
+  def fetch(conversation_id) when is_binary(conversation_id) and conversation_id != "" do
+    case MessageService.Repo.query(
+           "SELECT secret, created_at FROM conversations WHERE id = $1::text::uuid",
+           [conversation_id]
+         ) do
+      {:ok, %{rows: [[secret, created_at]]}} ->
+        {:ok, %{secret: secret == true, created_at: created_at}}
+
+      {:ok, _} ->
+        :not_found
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  rescue
+    error -> {:error, error}
+  end
+
+  def fetch(_conversation_id), do: :not_found
+
+  @doc """
+  The earliest day a message of this conversation can be bucketed in: the day BEFORE it was
+  created, the one day being clock-skew slack between Postgres `created_at` and the Scylla bucket
+  key a message minted a moment later may carry. nil when the row is unknown or unreadable — the
+  caller falls back to its hard cap rather than failing the page.
+  """
+  def timeline_floor(conversation_id) do
+    case fetch(conversation_id) do
+      {:ok, %{created_at: %DateTime{} = dt}} -> Date.add(DateTime.to_date(dt), -1)
+      {:ok, %{created_at: %NaiveDateTime{} = ndt}} -> Date.add(NaiveDateTime.to_date(ndt), -1)
+      _ -> nil
+    end
+  end
+end
