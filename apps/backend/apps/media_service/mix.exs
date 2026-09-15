@@ -33,7 +33,11 @@ defmodule MediaService.MixProject do
       # Internal HTTP API (Plug, not Phoenix). The listener is flag-gated/default-off.
       {:plug, "~> 1.14"},
       {:plug_cowboy, "~> 2.7"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      # libvips bindings for the server-side image variants (124). Precompiled NIF + libvips
+      # (sharp-libvips, self-contained: needs only glibc + libstdc++, both already in the runtime
+      # image). Downloaded at deps.compile — the Docker build stage and CI both have network.
+      {:vix, "~> 0.41.0"}
     ]
   end
 end

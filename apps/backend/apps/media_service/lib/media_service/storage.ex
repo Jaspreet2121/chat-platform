@@ -21,9 +21,16 @@ defmodule MediaService.Storage do
   @callback presign_upload_parts(attrs()) :: result()
   @callback complete_multipart_upload(attrs()) :: result()
   @callback abort_multipart_upload(attrs()) :: result()
+  # Object bytes, server-side (124 variants): read the original, write a derivative. Both go through
+  # the INTERNAL endpoint. Optional so existing test doubles keep compiling; the variant generator
+  # treats an adapter without them as "cannot generate" (fail-soft).
+  @callback get_object(attrs()) :: {:ok, binary()} | {:error, term()}
+  @callback put_object(attrs()) :: :ok | {:error, term()}
 
   # Optional so an existing test double implementing only the single-PUT surface keeps compiling.
-  @optional_callbacks create_multipart_upload: 1,
+  @optional_callbacks get_object: 1,
+                      put_object: 1,
+                      create_multipart_upload: 1,
                       presign_upload_parts: 1,
                       complete_multipart_upload: 1,
                       abort_multipart_upload: 1
@@ -52,6 +59,20 @@ defmodule MediaService.Storage do
 
   @doc "Discard an unfinished multipart upload and free its parts. Idempotent."
   def abort_multipart_upload(attrs), do: adapter().abort_multipart_upload(attrs)
+
+  @doc "Read an object's bytes through the internal endpoint → {:ok, binary}. Optional in adapters."
+  def get_object(attrs), do: adapter().get_object(attrs)
+
+  @doc "Write an object (%{object_key, body, content_type}) through the internal endpoint → :ok. Optional."
+  def put_object(attrs), do: adapter().put_object(attrs)
+
+  @doc "Whether the configured adapter implements the object read/write pair (124 variants)."
+  def objects_supported? do
+    adapter = adapter()
+
+    Code.ensure_loaded?(adapter) and function_exported?(adapter, :get_object, 1) and
+      function_exported?(adapter, :put_object, 1)
+  end
 
   @doc """
   Floor `datetime` to the start of its bucket — the primitive behind a CACHEABLE presign.
@@ -117,6 +138,12 @@ defmodule MediaService.Storage.QueryPlanAdapter do
 
   @impl true
   def abort_multipart_upload(_attrs), do: {:error, :media_storage_unavailable}
+
+  @impl true
+  def get_object(_attrs), do: {:error, :media_storage_unavailable}
+
+  @impl true
+  def put_object(_attrs), do: {:error, :media_storage_unavailable}
 end
 
 defmodule MediaService.Storage.MinioAdapter do
@@ -375,6 +402,50 @@ defmodule MediaService.Storage.MinioAdapter do
   # public host while connecting internally would make the Host header disagree with the signed host and
   # MinIO would reject it (SignatureDoesNotMatch). Dropping :public_endpoint makes presigned_url fall back
   # to :endpoint for BOTH the signature and the URL it builds, so they always agree.
+  # 124 variants: the ORIGINAL's bytes, fetched server-side over the internal endpoint (a presigned
+  # GET, same signing as head/delete). Whole body in memory — the generator caps the source at 25 MB
+  # BEFORE asking, so this never reads more than that.
+  @impl true
+  def get_object(%{"object_key" => object_key})
+      when is_binary(object_key) and object_key != "" do
+    with {:ok, config} <- config(),
+         {:ok, url} <- presigned_url("GET", object_key, internal(config)),
+         {:ok, status, _headers, body} <- SharedInfra.HttpClient.raw(:get, url) do
+      case status do
+        200 -> {:ok, body}
+        404 -> {:error, :object_not_found}
+        _other -> {:error, :media_storage_unavailable}
+      end
+    else
+      _ -> {:error, :media_storage_unavailable}
+    end
+  end
+
+  def get_object(_attrs), do: {:error, :media_storage_unavailable}
+
+  # 124 variants: write a derivative next to the original (`<object_key>.thumb.jpg`), presigned PUT
+  # over the internal endpoint. Only `host` is signed, so the content-type header rides unsigned —
+  # the same shape the browser's PUT uses.
+  @impl true
+  def put_object(%{"object_key" => object_key, "body" => body} = attrs)
+      when is_binary(object_key) and object_key != "" and is_binary(body) do
+    content_type = attrs["content_type"] || "application/octet-stream"
+
+    with {:ok, config} <- config(),
+         {:ok, url} <- presigned_url("PUT", object_key, internal(config)),
+         {:ok, status, _headers, _body} when status in 200..299 <-
+           SharedInfra.HttpClient.raw(:put, url,
+             body: body,
+             headers: [{"content-type", content_type}]
+           ) do
+      :ok
+    else
+      _ -> {:error, :media_storage_unavailable}
+    end
+  end
+
+  def put_object(_attrs), do: {:error, :media_storage_unavailable}
+
   defp internal(config), do: Keyword.put(config, :public_endpoint, nil)
 
   defp content_length(headers) do
@@ -671,4 +742,35 @@ defmodule MediaService.Storage.InMemoryAdapter do
 
   @impl true
   def delete_object(_attrs), do: :ok
+
+  # Object bytes, keyed {:object, object_key} beside the media_id-keyed uploads (no collision: upload
+  # keys are strings). Tests seed an original with put_object/1 and read a variant back with
+  # object/1.
+  @impl true
+  def get_object(%{"object_key" => object_key}) do
+    ensure_started()
+
+    case Agent.get(@name, &Map.get(&1, {:object, object_key})) do
+      %{body: body} -> {:ok, body}
+      _ -> {:error, :object_not_found}
+    end
+  end
+
+  @impl true
+  def put_object(%{"object_key" => object_key, "body" => body} = attrs) when is_binary(body) do
+    ensure_started()
+
+    Agent.update(
+      @name,
+      &Map.put(&1, {:object, object_key}, %{body: body, content_type: attrs["content_type"]})
+    )
+
+    :ok
+  end
+
+  @doc "Test helper: the stored object (%{body, content_type}) or nil."
+  def object(object_key) do
+    ensure_started()
+    Agent.get(@name, &Map.get(&1, {:object, object_key}))
+  end
 end

@@ -37,6 +37,10 @@ defmodule MediaService.Schemas.MediaAsset do
     field(:size_bytes, :integer)
     field(:checksum, :string)
     field(:status, :string)
+
+    # 124: generated derivatives of a PLAIN image — %{"thumb" => %{key,w,h,bytes}, "medium" => ...};
+    # nil until generated; %{"failed" => ...} once the backfill has given up. Never set on sealed assets.
+    field(:variants, :map)
     field(:created_at, :utc_datetime_usec)
     field(:updated_at, :utc_datetime_usec)
   end
@@ -97,5 +101,11 @@ defmodule MediaService.Schemas.MediaAsset do
     |> change(status: "ready", size_bytes: real_size_bytes, updated_at: updated_at)
     |> validate_inclusion(:status, @statuses)
     |> validate_number(:size_bytes, greater_than_or_equal_to: 0)
+  end
+
+  @doc "Record the generated variants (124). `nil` clears them (a re-generation starts clean)."
+  def variants_changeset(%__MODULE__{} = asset, variants, updated_at)
+      when is_map(variants) or is_nil(variants) do
+    change(asset, variants: variants, updated_at: updated_at)
   end
 end

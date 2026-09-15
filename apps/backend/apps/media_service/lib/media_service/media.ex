@@ -12,6 +12,7 @@ defmodule MediaService.Media do
   alias MediaService.Repo
   alias MediaService.Schemas.MediaAsset
   alias MediaService.Storage
+  alias MediaService.Variants
 
   # Status presign TTL (seconds) — deliberately shorter than the default chat-media TTL.
   @status_url_expires_seconds 300
@@ -384,7 +385,8 @@ defmodule MediaService.Media do
   # NEVER from the request. A client-supplied object_key is ignored (the frontend still sends one until
   # Phase 5). Authorization (ownership / membership) happens at the gateway BEFORE this is called.
   def get_download_url(attrs) do
-    with {:ok, media_id} <- required_attr(attrs, "media_id") do
+    with {:ok, media_id} <- required_attr(attrs, "media_id"),
+         {:ok, variant} <- variant_attr(attrs) do
       if media_persistence_enabled?() do
         with {:ok, app_id} <- required_attr(attrs, "app_id") do
           # Optional expected purpose: an avatar/message call-site refuses to presign an asset of the wrong
@@ -395,7 +397,8 @@ defmodule MediaService.Media do
             app_id,
             expected_purpose(attrs),
             requested_expires_seconds(attrs),
-            optional_attr(attrs, "url_profile")
+            optional_attr(attrs, "url_profile"),
+            variant
           )
         end
       else
@@ -420,7 +423,7 @@ defmodule MediaService.Media do
 
   @doc """
   BATCHED presign for a timeline page: `media_ids` (≤ #{@download_batch_max}, de-duplicated) +
-  `app_id` → `%{downloads: [%{media_id, download_url, expires_at, mime_type}]}`, one row per asset
+  `app_id` → `%{downloads: [%{media_id, download_url, expires_at, mime_type, thumb_url}]}`, one row per asset
   that EXISTS in this app (an unknown, foreign-app or storage-failed id is simply absent — the caller
   falls back to the per-asset download endpoint for it, it never fails the page). Same TTL policy as
   `get_download_url/1` (`presign_asset/3`), same optional `purpose` filter and shorten-only
@@ -440,8 +443,11 @@ defmodule MediaService.Media do
           |> Enum.filter(&purpose_ok?(&1, expected_purpose))
           |> Enum.flat_map(fn asset ->
             case presign_asset(asset, requested, url_profile) do
-              {:ok, download} -> [download]
-              {:error, _reason} -> []
+              {:ok, download} ->
+                [Map.put(download, :thumb_url, thumb_url(asset, requested, url_profile))]
+
+              {:error, _reason} ->
+                []
             end
           end)
 
@@ -595,7 +601,8 @@ defmodule MediaService.Media do
          app_id,
          expected_purpose,
          requested_expires_seconds,
-         url_profile
+         url_profile,
+         variant
        ) do
     case Repo.get_by(MediaAsset, id: media_id, app_id: app_id) do
       nil ->
@@ -603,7 +610,7 @@ defmodule MediaService.Media do
 
       %MediaAsset{} = asset ->
         if purpose_ok?(asset, expected_purpose) do
-          presign_asset(asset, requested_expires_seconds, url_profile)
+          presign_asset(asset, requested_expires_seconds, url_profile, variant)
         else
           # Wrong purpose (e.g. an avatar call-site pointed at a message asset) → 404, no presign.
           {:error, :not_found}
@@ -616,7 +623,14 @@ defmodule MediaService.Media do
   # ONE presign policy, shared by the single read (`get_download_url`) and the batched read
   # (`get_download_urls`): a URL minted for a timeline page obeys exactly the TTL rules a URL minted
   # for the download endpoint obeys — there is no second, looser path.
-  defp presign_asset(%MediaAsset{} = asset, requested_expires_seconds, url_profile) do
+  defp presign_asset(asset, requested_expires_seconds, url_profile, variant \\ nil)
+
+  defp presign_asset(%MediaAsset{} = asset, requested_expires_seconds, url_profile, variant) do
+    # 124: a named variant resolves to ITS key (and is always JPEG); a variant the asset does not
+    # have — never generated, sealed, not an image — falls back to the original. Same row, same
+    # authz, same TTL: the variant is a different object under the same capability.
+    {object_key, mime_type} = variant_target(asset, variant)
+
     # STATUS presigns are SHORT-lived (300s vs the 900s default): status URLs are fetched at open
     # and never long-lived, and the short TTL bounds how long an issued URL outlives the post's
     # 24h expiry (the stated presign residual).
@@ -649,16 +663,52 @@ defmodule MediaService.Media do
       |> DateTime.truncate(:second)
 
     case Storage.get_download_url(%{
-           "object_key" => asset.object_key,
+           "object_key" => object_key,
            "media_id" => asset.id,
            "expires_at" => expires_at,
            "url_expires_seconds" => override,
            "url_bucket_seconds" => bucket
          }) do
-      {:ok, media} -> {:ok, download_response(media, asset, expires_at)}
+      {:ok, media} -> {:ok, download_response(media, asset, expires_at, mime_type)}
       {:error, reason} -> {:error, reason}
     end
   end
+
+  @variant_names ["thumb", "medium"]
+
+  # `variant` is absent (original), or one of the known names; anything else is a bad request.
+  defp variant_attr(attrs) do
+    case get_attr(attrs, "variant") do
+      nil -> {:ok, nil}
+      "" -> {:ok, nil}
+      name when name in @variant_names -> {:ok, name}
+      _other -> {:error, :media_invalid}
+    end
+  end
+
+  defp variant_target(%MediaAsset{} = asset, nil), do: {asset.object_key, asset.mime_type}
+
+  defp variant_target(%MediaAsset{} = asset, name) do
+    case asset.variants do
+      %{^name => %{"key" => key}} when is_binary(key) and key != "" -> {key, "image/jpeg"}
+      _ -> {asset.object_key, asset.mime_type}
+    end
+  end
+
+  # The batch row's thumb_url: presigned like the original when a thumb exists, nil otherwise.
+  defp thumb_url(
+         %MediaAsset{variants: %{"thumb" => %{"key" => key}}} = asset,
+         requested,
+         url_profile
+       )
+       when is_binary(key) do
+    case presign_asset(asset, requested, url_profile, "thumb") do
+      {:ok, %{download_url: url}} -> url
+      _ -> nil
+    end
+  end
+
+  defp thumb_url(_asset, _requested, _url_profile), do: nil
 
   # The batch's id list: binaries only, de-duplicated, capped — a page is at most 50 rows, so a
   # list past the cap is a caller bug, not a bigger page.
@@ -909,8 +959,16 @@ defmodule MediaService.Media do
     |> MediaAsset.ready_changeset(real_size, DateTime.utc_now())
     |> Repo.update()
     |> case do
-      {:ok, updated} -> {:ok, complete_response(%{"media_id" => updated.id})}
-      {:error, _changeset} -> {:error, :media_invalid}
+      {:ok, updated} ->
+        # 124: derivatives for a PLAIN image (thumb + medium), generated here, synchronously, so the
+        # message that attaches this asset a moment later can carry thumb_url. NEVER fails the
+        # upload: every outcome is {:ok, asset} — a failure logs, the asset stays ready without
+        # variants, and the backfill retries it once.
+        {:ok, _asset} = Variants.generate_and_record(updated)
+        {:ok, complete_response(%{"media_id" => updated.id})}
+
+      {:error, _changeset} ->
+        {:error, :media_invalid}
     end
   end
 
@@ -994,12 +1052,12 @@ defmodule MediaService.Media do
 
   # The persisted download response — mime_type comes from the ROW; object_key + owner_user_id are NEVER
   # returned (they'd re-leak the capability we just stopped trusting from the client).
-  defp download_response(media, asset, expires_at) do
+  defp download_response(media, asset, expires_at, mime_type) do
     %{
       media_id: asset.id,
       download_url: media[:download_url],
       expires_at: iso8601(expires_at),
-      mime_type: asset.mime_type
+      mime_type: mime_type
     }
   end
 
