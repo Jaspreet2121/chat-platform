@@ -166,7 +166,19 @@ defmodule ConversationService.CallStore do
         |> after_cursor(get(attrs, "cursor_ts"), get(attrs, "cursor_id"))
 
       rows = Repo.all(query)
-      calls = Enum.map(rows, &response/1)
+
+      # The VIEWER's own participant row on group calls: a member who declined a group call has a
+      # `call_participants` row saying so while the call row itself carries the CALL's outcome
+      # (ongoing/ended) — without this, their history could not show the decline. nil for direct
+      # rows (the call row's status IS the viewer's outcome there) and for non-participants.
+      participant_statuses = participant_statuses(user_id, Enum.map(rows, & &1.id))
+
+      calls =
+        Enum.map(rows, fn call ->
+          call
+          |> response()
+          |> Map.put(:participant_status, Map.get(participant_statuses, call.id))
+        end)
 
       next_cursor =
         case List.last(rows) do
@@ -181,6 +193,17 @@ defmodule ConversationService.CallStore do
     end
   rescue
     _ -> {:error, :call_invalid}
+  end
+
+  defp participant_statuses(_user_id, []), do: %{}
+
+  defp participant_statuses(user_id, call_ids) do
+    from(p in CallParticipant,
+      where: p.user_id == ^user_id and p.call_id in ^call_ids,
+      select: {p.call_id, p.status}
+    )
+    |> Repo.all()
+    |> Map.new()
   end
 
   # SESSION-TENANT gating (097). Rows stamped with a DIFFERENT app never appear; NULL rows (pre-097

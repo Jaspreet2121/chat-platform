@@ -356,6 +356,13 @@ defmodule ApiGatewayWeb.CallController do
 
   defp viewer_status(status, _caller_id, _me), do: status
 
+  # A GROUP call the viewer DECLINED reads "declined" to them — their own action, nothing to mask
+  # (the caller-side masking above is about a direct callee's refusal). The call row's status is
+  # the call's outcome for everyone else; the participant row is the viewer's. duration stays 0:
+  # they never connected. Direct rows never carry a participant status.
+  defp group_decline(_status, "group", "declined"), do: "declined"
+  defp group_decline(status, _kind, _participant_status), do: status
+
   # The terminal contract vocabulary (2026-08-16 spec), applied BEFORE the viewer mask: a
   # connected-then-finished call presents as "answered" (the DB's "ended" is the transition name, not
   # the outcome; answered_at proves connection). An "ended" row that never connected (legacy
@@ -402,7 +409,8 @@ defmodule ApiGatewayWeb.CallController do
       "status" =>
         cget(call, :status)
         |> outcome(cget(call, :answered_at))
-        |> viewer_status(caller_id, me),
+        |> viewer_status(caller_id, me)
+        |> group_decline(kind, cget(call, :participant_status)),
       "created_at" => cget(call, :created_at),
       "answered_at" => cget(call, :answered_at),
       "ended_at" => cget(call, :ended_at),
@@ -413,7 +421,11 @@ defmodule ApiGatewayWeb.CallController do
       "e2ee_accepted" => cget(call, :e2ee_accepted),
       # The recorded first-party rule: 0 (not nil) for a call that never connected. The /v1 webhook keeps
       # its own recorded nil — two surfaces, two recorded contracts, one raw source (CallStore).
-      "duration_seconds" => cget(call, :duration_seconds) || 0,
+      "duration_seconds" =>
+        if(cget(call, :participant_status) == "declined" and kind == "group",
+          do: 0,
+          else: cget(call, :duration_seconds) || 0
+        ),
       "counterpart_id" => counterpart_id
     }
   end
