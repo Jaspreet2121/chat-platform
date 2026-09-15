@@ -225,7 +225,9 @@ defmodule RealtimeGateway.ConversationChannel do
         Receipts.emit(
           socket.endpoint,
           socket.assigns.conversation_id,
-          Map.put(reply, :receipt_type, "read"), from: self())
+          Map.put(reply, :receipt_type, "read"),
+          from: self()
+        )
       end
 
       notify_inbox_read(socket, unread_before)
@@ -242,7 +244,9 @@ defmodule RealtimeGateway.ConversationChannel do
       Receipts.emit(
         socket.endpoint,
         socket.assigns.conversation_id,
-        Map.put(reply, :receipt_type, "delivered"), from: self())
+        Map.put(reply, :receipt_type, "delivered"),
+        from: self()
+      )
 
       {:reply, {:ok, reply}, socket}
     end
