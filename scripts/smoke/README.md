@@ -44,6 +44,7 @@ cd scripts/smoke
 npm install ws --no-save        # user_updated_probe.mjs only; sharing_smoke.mjs needs nothing
 node sharing_smoke.mjs
 node user_updated_probe.mjs
+node media_perf.mjs             # media pipeline timing (init/PUT/complete/send/presign/GET, plain + sealed, Range 206)
 ```
 
 Node 20+. Each prints `step  METHOD path → status  body` per call and a one-line verdict at the end.
