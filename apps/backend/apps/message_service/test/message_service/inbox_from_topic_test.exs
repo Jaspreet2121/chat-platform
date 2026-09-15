@@ -47,6 +47,15 @@ defmodule MessageService.Projections.InboxFromTopicTest do
       end)
     end
 
+    def edit(conversation_id, message_id, body) do
+      Agent.update(__MODULE__, fn state ->
+        case Map.get(state, {conversation_id, message_id}) do
+          nil -> state
+          m -> Map.put(state, {conversation_id, message_id}, %{m | body: body, status: "edited"})
+        end
+      end)
+    end
+
     def get_message(attrs) do
       key = {attrs["conversation_id"], attrs["message_id"]}
 
@@ -157,6 +166,18 @@ defmodule MessageService.Projections.InboxFromTopicTest do
     }
   end
 
+  defp updated_event(conversation_id, message_id, sender) do
+    %{
+      "event_id" => uuid(),
+      "event_type" => "message.updated.v1",
+      "payload" => %{
+        "conversation_id" => conversation_id,
+        "message_id" => message_id,
+        "sender_user_id" => sender
+      }
+    }
+  end
+
   defp deleted_event(conversation_id, message_id, sender) do
     %{
       "event_id" => uuid(),
@@ -255,6 +276,48 @@ defmodule MessageService.Projections.InboxFromTopicTest do
   end
 
   @tag :postgres_integration
+  test "(c2) message.updated rewrites the preview body when the EDITED message is the preview (MUT-3 guard)" do
+    sender = user!()
+    peer = user!()
+    conversation = conversation!([sender, peer])
+    newest = store!(conversation, sender, "orignal txet")
+
+    InboxFromTopic.apply_message_created(created_event(conversation, newest, sender))
+    assert {^newest, "orignal txet"} = preview(conversation)
+
+    # The edit lands in the STORE first (the event carries ids only); then the topic delivers it.
+    StoreStub.edit(conversation, newest, "original text")
+
+    event = updated_event(conversation, newest, sender)
+    assert {:ok, :applied} = InboxFromTopic.apply_event(event)
+    assert {^newest, "original text"} = preview(conversation)
+
+    # Redelivery of the SAME event is harmless (the ledger).
+    assert {:ok, :duplicate} = InboxFromTopic.apply_event(event)
+  end
+
+  @tag :postgres_integration
+  test "(c3) editing an OLDER message leaves the preview alone" do
+    sender = user!()
+    peer = user!()
+    conversation = conversation!([sender, peer])
+
+    older =
+      store!(conversation, sender, "older", created_at: DateTime.add(DateTime.utc_now(), -60))
+
+    newest = store!(conversation, sender, "newest")
+    InboxFromTopic.apply_message_created(created_event(conversation, older, sender))
+    InboxFromTopic.apply_message_created(created_event(conversation, newest, sender))
+
+    StoreStub.edit(conversation, older, "older, edited")
+
+    assert {:ok, :applied} =
+             InboxFromTopic.apply_event(updated_event(conversation, older, sender))
+
+    assert {^newest, "newest"} = preview(conversation)
+  end
+
+  @tag :postgres_integration
   test "(d) a read-back that returns NOT-FOUND is a defined outcome, not an error or a retry" do
     sender = user!()
     peer = user!()
@@ -341,7 +404,7 @@ defmodule MessageService.Projections.InboxFromTopicTest do
     assert {:ok, :ignored} =
              InboxFromTopic.apply_event(%{
                "event_id" => uuid(),
-               "event_type" => "message.updated.v1",
+               "event_type" => "message.pinned.v1",
                "payload" => %{}
              })
   end

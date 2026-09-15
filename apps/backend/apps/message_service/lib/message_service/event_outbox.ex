@@ -79,6 +79,22 @@ defmodule MessageService.EventOutbox do
     })
   end
 
+  @doc """
+  Stage a message.updated event (a BODY edit, before the store write). THIN like the others — ids
+  only; the consumer reads the edited body back from the store. Without this event an edit never
+  reached the inbox preview once messages lived in Scylla: the chat list kept the ORIGINAL text of
+  an edited last message forever (the Postgres adapter's same-transaction `record_edit` never runs
+  there). Returns staged row ids.
+  """
+  def stage_updated(attrs) do
+    stage("message.updated.v1", attrs, %{
+      "conversation_id" => attr(attrs, "conversation_id"),
+      "message_id" => attr(attrs, "message_id"),
+      "sender_user_id" => attr(attrs, "sender_user_id"),
+      "edited_at" => attr(attrs, "edited_at") || DateTime.utc_now()
+    })
+  end
+
   defp stage(event_type, _attrs, payload) do
     if publish_enabled?() do
       envelope_attrs = %{
@@ -258,7 +274,7 @@ defmodule MessageService.EventOutbox do
 
   # created: the message existing (even tombstoned — consumers handle tombstones) proves the write
   # landed. deleted: only a TOMBSTONE proves it; a live message means the delete never happened and
-  # publishing would mint a phantom delete.
+  # publishing would mint a phantom delete. updated: see the clause.
   defp store_verdict(event_type, conversation_id, message_id) do
     case MessageStore.get_message(%{
            "conversation_id" => conversation_id,
@@ -270,6 +286,9 @@ defmodule MessageService.EventOutbox do
         case event_type do
           "message.created.v1" -> :promote
           "message.deleted.v1" -> if deleted, do: :promote, else: :abort
+          # updated: a LIVE row proves the edit landed (its body is what the consumer reads back);
+          # a tombstone means the delete won — publishing would re-surface deleted text.
+          "message.updated.v1" -> if deleted, do: :abort, else: :promote
           _ -> :abort
         end
 

@@ -521,6 +521,15 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
   @impl true
   def update_message(attrs) do
+    # A BODY edit stages message.updated.v1 (durable intent BEFORE the write, promote+publish on
+    # success, abort-with-evidence on failure — the delete path's lifecycle). The inbox preview is
+    # maintained from the topic under this store, so without the event an edited last message kept
+    # its ORIGINAL text in the chat list. A metadata patch (live-location) is not an edit: nothing.
+    event_ids =
+      if is_binary(attr(attrs, "body")),
+        do: MessageService.EventOutbox.stage_updated(enrich_with_sender(attrs)),
+        else: []
+
     mutate_resolved(attrs, fn bucket ->
       MessageTimelineWrites.mark_edited_plan(
         attrs
@@ -530,15 +539,21 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     end)
     |> case do
       {:ok, row} ->
+        MessageService.EventOutbox.promote_and_publish_async(event_ids)
         refresh_search_text(attr(attrs, "message_id"), attr(attrs, "body"))
         {:ok, Map.merge(response_from_row(row), %{status: "edited", body: attr(attrs, "body")})}
 
       {:error, reason} ->
+        MessageService.EventOutbox.abort(
+          event_ids,
+          "scylla update_message failed: #{inspect(reason)}"
+        )
+
         {:error, reason}
     end
   end
 
-  # Edits publish no Kafka event, so the search-only copy (message_search) is refreshed HERE,
+  # The search-only copy (message_search) is refreshed HERE,
   # synchronously and best-effort — without this, edited-out text stays matchable forever (the user
   # who edited a phone number out would still be findable by it). Best-effort like maintain_unread:
   # the edit is the user-visible outcome and must not fail on an index hiccup. A body-less update

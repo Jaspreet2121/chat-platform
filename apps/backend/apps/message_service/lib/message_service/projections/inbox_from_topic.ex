@@ -106,6 +106,7 @@ defmodule MessageService.Projections.InboxFromTopic do
   def apply_event(%{} = envelope) do
     case Map.get(envelope, "event_type") do
       "message.created.v1" -> apply_message_created(envelope)
+      "message.updated.v1" -> apply_message_updated(envelope)
       "message.deleted.v1" -> apply_message_deleted(envelope)
       _ -> {:ok, :ignored}
     end
@@ -253,6 +254,51 @@ defmodule MessageService.Projections.InboxFromTopic do
     end
   rescue
     error -> {:error, error}
+  end
+
+  @doc """
+  A BODY edit: if the edited message IS the preview, rewrite the preview body from the STORE's
+  read-back (never from the event — it carries ids only). Any other message → nothing to do, the
+  event is still ledgered. A read-back that finds the message gone (deleted between the edit and
+  this) leaves the preview to the delete event, which is always later on the same partition.
+  This is what makes "edit the last message" reach the chat list under the Scylla store: the
+  Postgres adapter's same-transaction `InboxProjection.record_edit/1` never runs there.
+  """
+  @spec apply_message_updated(map()) :: result()
+  def apply_message_updated(%{} = envelope) do
+    with :ok <- ensure_not_postgres_adapter(),
+         {:ok, event_id} <- fetch(envelope, "event_id"),
+         payload when is_map(payload) <- Map.get(envelope, "payload", %{}),
+         {:ok, conversation_id} <- fetch(payload, "conversation_id"),
+         {:ok, message_id} <- fetch(payload, "message_id") do
+      case read_back(conversation_id, message_id) do
+        {:ok, stored} ->
+          transact(event_id, fn ->
+            write_preview_body(conversation_id, message_id, stored.body)
+          end)
+
+        :absent ->
+          transact(event_id, fn -> :ok end, :skipped_absent)
+      end
+    else
+      {:ok, :skipped_postgres_adapter} = skip -> skip
+      {:error, _} = error -> error
+      _ -> {:error, :invalid_event}
+    end
+  rescue
+    error -> {:error, error}
+  end
+
+  # The preview body, iff this message is the preview (the WHERE is the guard — an older message's
+  # edit matches no row and changes nothing).
+  defp write_preview_body(conversation_id, message_id, body) do
+    Repo.query!(
+      "UPDATE conversations SET last_message_body = $3 " <>
+        "WHERE id = $1::text::uuid AND last_message_id = $2::text::uuid",
+      [conversation_id, message_id, body]
+    )
+
+    :ok
   end
 
   # --- the shared idempotency contract -------------------------------------------------------------

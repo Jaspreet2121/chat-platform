@@ -222,6 +222,36 @@ defmodule MessageService.EventOutboxTest do
   end
 
   @tag :postgres_integration
+  test "(a4) message.updated promotes against a LIVE store row and aborts against a tombstone" do
+    live = attrs()
+    put_in_store!(live)
+    [live_id] = EventOutbox.stage_updated(live)
+    backdate!(live_id)
+
+    gone = attrs()
+    put_in_store!(gone, true)
+    [gone_id] = EventOutbox.stage_updated(gone)
+    backdate!(gone_id)
+
+    counts = EventOutbox.relay_pass(0)
+    assert counts.promoted == 1
+    assert counts.aborted == 1
+
+    assert_receive {:produced_sync, "message.events.v1", _key, produced}
+    env = if is_binary(produced), do: Jason.decode!(produced), else: produced
+    get = fn map, key -> Map.get(map, key) || Map.get(map, String.to_atom(key)) end
+    assert get.(env, "event_type") == "message.updated.v1"
+    payload = get.(env, "payload")
+    assert get.(payload, "message_id") == live["message_id"]
+    # THIN: ids + edited_at only, never the body.
+    assert payload |> Map.keys() |> Enum.map(&to_string/1) |> Enum.sort() ==
+             ["conversation_id", "edited_at", "message_id", "sender_user_id"]
+
+    assert row(live_id) == :gone
+    assert %{status: "aborted"} = row(gone_id)
+  end
+
+  @tag :postgres_integration
   test "(a3) store UNREACHABLE -> the row is LEFT, never aborted on an outage" do
     a = attrs()
     [id] = EventOutbox.stage_created(a)
