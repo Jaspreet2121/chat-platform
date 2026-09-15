@@ -34,13 +34,20 @@ defmodule ApiGatewayWeb.AdminHealthController do
 
     services =
       Enum.map(@services, fn {name, _, _} ->
-        %{name: name, status: service_status(pinged[name])}
+        %{
+          name: name,
+          status: service_status(pinged[name]),
+          # THAT service's build, from its own /internal/health; "unknown" when it is down or its
+          # body has no git_sha (an image from before the field existed). A mixed fleet mid-deploy
+          # shows up here as differing SHAs, which is the whole point.
+          git_sha: service_git_sha(pinged[name])
+        }
       end) ++
         [
-          # realtime runs inside THIS gateway process — if we're answering, it's up.
-          %{name: "realtime", status: "up"},
+          # realtime runs inside THIS gateway process — if we're answering, it's up, at our build.
+          %{name: "realtime", status: "up", git_sha: SharedInfra.BuildInfo.git_sha()},
           # notification is a consumer with no gateway-reachable health endpoint yet.
-          %{name: "notification", status: "unknown"}
+          %{name: "notification", status: "unknown", git_sha: "unknown"}
         ]
 
     json(conn, %{
@@ -68,6 +75,16 @@ defmodule ApiGatewayWeb.AdminHealthController do
 
   defp service_status({:reachable, _}), do: "up"
   defp service_status(_), do: "down"
+
+  # Never a crash on a body without the field: an older image answers {service, status, deps} only.
+  defp service_git_sha({:reachable, map}) when is_map(map) do
+    case Map.get(map, :git_sha) || Map.get(map, "git_sha") do
+      sha when is_binary(sha) and sha != "" -> sha
+      _ -> "unknown"
+    end
+  end
+
+  defp service_git_sha(_), do: "unknown"
 
   defp base_url(cfg, env), do: Application.get_env(:shared_infra, cfg) || System.get_env(env)
 
