@@ -120,6 +120,9 @@ defmodule ApiGatewayWeb.StatusControllerTest do
 
     def delete_status(_attrs), do: {:error, :status_not_found}
 
+    # status_updated fan-out is exercised in StatusUpdatedTest; here nobody is in the audience.
+    def status_audience(_attrs), do: {:ok, %{user_ids: []}}
+
     # The authz arm's oracle: media "m-ok" visible to @friend; everything else denied.
     def status_media_allowed(%{"media_id" => "m-ok", "viewer_user_id" => @friend}),
       do: {:ok, %{allowed: true}}

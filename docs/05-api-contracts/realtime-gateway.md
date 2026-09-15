@@ -255,3 +255,12 @@ Server events will be produced from trusted service-side flows later. Clients mu
 | `realtime.forbidden` | User cannot join the requested topic |
 | `realtime.invalid_event` | Event payload is missing required fields |
 | `realtime.internal_error` | Unexpected realtime gateway failure |
+
+### `status_updated` (user topic)
+
+Emitted on `user:<id>` for every user in a status post's AUDIENCE (the same predicate as the
+feed: predating shared conversation, no block, the owner's audience mode) when the owner posts or
+deletes a status — after the commit, never to the owner's own topic. Payload
+`{"user_id": <owner>, "status_id": <id>, "action": "posted" | "deleted"}`; `"expired"` is
+reserved in the contract but not emitted (expiry is filter-at-read with no server-side moment —
+hide by `expires_at`). On receipt, refetch the status feed.

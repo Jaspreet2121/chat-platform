@@ -33,6 +33,9 @@ defmodule ApiGatewayWeb.StatusController do
              "media_id" => params["media_id"],
              "metadata" => params["metadata"]
            }) do
+      # AFTER the commit (post_status has returned the persisted row), to the post's audience —
+      # never the actor. See ApiGatewayWeb.StatusEvents.
+      ApiGatewayWeb.StatusEvents.emit(session.user_id, status_id_of(post), "posted")
       conn |> put_status(:created) |> json(post)
     else
       error -> handle_error(conn, error)
@@ -184,6 +187,8 @@ defmodule ApiGatewayWeb.StatusController do
              "owner_user_id" => session.user_id,
              "status_id" => status_id
            }) do
+      # AFTER the tombstone is committed; the audience is computed from the kept row.
+      ApiGatewayWeb.StatusEvents.emit(session.user_id, status_id, "deleted")
       json(conn, result)
     else
       error -> handle_error(conn, error)
@@ -191,6 +196,9 @@ defmodule ApiGatewayWeb.StatusController do
   end
 
   def delete(conn, _params), do: ErrorResponse.invalid_request(conn, "status.invalid_request")
+
+  # The persisted post's id, whichever key shape the adapter answered with.
+  defp status_id_of(post), do: Map.get(post, :status_id) || Map.get(post, "status_id")
 
   @doc """
   Reply to a status — an ORDINARY DM to its owner, quoting a TEXT-ONLY snapshot.
