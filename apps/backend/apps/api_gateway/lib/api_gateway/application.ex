@@ -14,6 +14,9 @@ defmodule ApiGateway.Application do
     children =
       [
         {Phoenix.PubSub, name: ApiGateway.PubSub},
+        # Persistent Redis connections for the rate limiters (was: a TCP connect per check).
+        # Sockets open lazily on first use, so a down Redis never blocks boot.
+        SharedInfra.Redis.Pool,
         # Owns the /v1 ETS tables (rate-limit + idempotency) — must start before the Endpoint.
         ApiGatewayWeb.V1Runtime
       ] ++ observability_children() ++ [ApiGatewayWeb.Endpoint]

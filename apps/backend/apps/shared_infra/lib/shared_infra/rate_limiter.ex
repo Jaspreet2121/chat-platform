@@ -170,7 +170,8 @@ defmodule SharedInfra.RateLimiter.RedisAdapter do
   @moduledoc """
   Redis-backed rate limiter adapter.
 
-  Uses a small direct Redis TCP command client for the simple counter pattern:
+  Runs on `SharedInfra.Redis.Pool` when a service has started it (the gateway does), falling back
+  to a one-shot TCP connection per call where it has not. The counter pattern is the same on both:
 
   - `INCR rate_limit:<key>`
   - `EXPIRE rate_limit:<key> <window_seconds>` when the counter is created
@@ -186,9 +187,17 @@ defmodule SharedInfra.RateLimiter.RedisAdapter do
     window_seconds = Map.fetch!(attrs, "window_seconds")
     fail_open = fail_open?(attrs)
 
-    with_connection(fail_open, fn conn ->
-      check_rate_with_connection(conn, key, limit, window_seconds, fail_open)
-    end)
+    # THE POOL, not a connection per check: every check used to connect, AUTH, SELECT, INCR,
+    # EXPIRE and close (≈0.8 ms of pure TCP setup per call, locally). On the pool the same three
+    # commands ride a persistent socket. A node that has not started the pool (a service that
+    # never listed it) still works — one-shot, as before.
+    if SharedInfra.Redis.Pool.started?() do
+      check_rate_with_connection(:pool, key, limit, window_seconds, fail_open)
+    else
+      with_connection(fail_open, fn conn ->
+        check_rate_with_connection(conn, key, limit, window_seconds, fail_open)
+      end)
+    end
   end
 
   defp check_rate_with_connection(conn, key, limit, window_seconds, fail_open) do
@@ -284,6 +293,8 @@ defmodule SharedInfra.RateLimiter.RedisAdapter do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp redis_command(:pool, command), do: SharedInfra.Redis.Pool.command(command)
 
   defp redis_command(conn, command) do
     with :ok <- :gen_tcp.send(conn, encode_command(command)),
