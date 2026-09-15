@@ -7,6 +7,7 @@ defmodule MediaService.Media do
   """
 
   require Logger
+  import Ecto.Query, only: [from: 2]
 
   alias MediaService.Repo
   alias MediaService.Schemas.MediaAsset
@@ -33,6 +34,8 @@ defmodule MediaService.Media do
   # gets today's behaviour instead.
   @cacheable_url_expires_seconds 7200
   @cacheable_url_bucket_seconds 3600
+  # Upper bound on one batched presign (a timeline page is 50 rows; the cap is a sanity limit).
+  @download_batch_max 100
 
   # Kept in sync with the frontend allowedMediaTypes set (apps/web chat page). video/quicktime (.mov)
   # is what Mac screen recordings / iPhone clips use; video/webm + video/x-matroska (.mkv) are common too.
@@ -416,6 +419,49 @@ defmodule MediaService.Media do
   end
 
   @doc """
+  BATCHED presign for a timeline page: `media_ids` (≤ #{@download_batch_max}, de-duplicated) +
+  `app_id` → `%{downloads: [%{media_id, download_url, expires_at, mime_type}]}`, one row per asset
+  that EXISTS in this app (an unknown, foreign-app or storage-failed id is simply absent — the caller
+  falls back to the per-asset download endpoint for it, it never fails the page). Same TTL policy as
+  `get_download_url/1` (`presign_asset/3`), same optional `purpose` filter and shorten-only
+  `url_expires_seconds`. ONE query + N local SigV4 signatures; no object-store round trip.
+  """
+  def get_download_urls(attrs) do
+    with {:ok, media_ids} <- media_id_list(attrs),
+         {:ok, app_id} <- required_attr(attrs, "app_id") do
+      if media_persistence_enabled?() do
+        expected_purpose = expected_purpose(attrs)
+        requested = requested_expires_seconds(attrs)
+        url_profile = optional_attr(attrs, "url_profile")
+
+        downloads =
+          media_ids
+          |> assets_by_ids(app_id)
+          |> Enum.filter(&purpose_ok?(&1, expected_purpose))
+          |> Enum.flat_map(fn asset ->
+            case presign_asset(asset, requested, url_profile) do
+              {:ok, download} -> [download]
+              {:error, _reason} -> []
+            end
+          end)
+
+        {:ok, %{downloads: downloads}}
+      else
+        expires_at = expires_at()
+
+        {:ok,
+         %{
+           downloads:
+             Enum.map(
+               media_ids,
+               &placeholder_download_response(%{"media_id" => &1, "expires_at" => expires_at})
+             )
+         }}
+      end
+    end
+  end
+
+  @doc """
   RECOVERY (client-assisted): attach a conversation to an asset that was created without one.
 
   Needed because ~33 sealed assets were minted anchorless before the create-side rule above existed, and
@@ -557,42 +603,7 @@ defmodule MediaService.Media do
 
       %MediaAsset{} = asset ->
         if purpose_ok?(asset, expected_purpose) do
-          # STATUS presigns are SHORT-lived (300s vs the 900s default): status URLs are fetched at open
-          # and never long-lived, and the short TTL bounds how long an issued URL outlives the post's
-          # 24h expiry (the stated presign residual).
-          # SHORTEN-ONLY. A caller may ask for a briefer URL than the purpose default (view-once
-          # media asks for 120s: the download deny lands the instant the recipient opens, and
-          # without a short TTL an already-issued URL would outlive it by up to the 900s default).
-          # It can never LENGTHEN one — min/2 with the purpose override, so a client cannot widen
-          # its own window by asking.
-          purpose_override =
-            cond do
-              cacheable?(asset, url_profile) -> @cacheable_url_expires_seconds
-              asset.purpose == "status" -> @status_url_expires_seconds
-              true -> nil
-            end
-
-          override = shortest(purpose_override, requested_expires_seconds)
-          bucket = if cacheable?(asset, url_profile), do: @cacheable_url_bucket_seconds
-
-          # The signature is minted from the bucket start (in the adapter, which owns the clock), so
-          # the advertised expiry is measured from there too rather than from "now".
-          expires_at =
-            DateTime.utc_now()
-            |> Storage.bucket_start(bucket)
-            |> DateTime.add(override || configured_expires_seconds(), :second)
-            |> DateTime.truncate(:second)
-
-          case Storage.get_download_url(%{
-                 "object_key" => asset.object_key,
-                 "media_id" => media_id,
-                 "expires_at" => expires_at,
-                 "url_expires_seconds" => override,
-                 "url_bucket_seconds" => bucket
-               }) do
-            {:ok, media} -> {:ok, download_response(media, asset, expires_at)}
-            {:error, reason} -> {:error, reason}
-          end
+          presign_asset(asset, requested_expires_seconds, url_profile)
         else
           # Wrong purpose (e.g. an avatar call-site pointed at a message asset) → 404, no presign.
           {:error, :not_found}
@@ -600,6 +611,89 @@ defmodule MediaService.Media do
     end
   rescue
     Ecto.Query.CastError -> {:error, :not_found}
+  end
+
+  # ONE presign policy, shared by the single read (`get_download_url`) and the batched read
+  # (`get_download_urls`): a URL minted for a timeline page obeys exactly the TTL rules a URL minted
+  # for the download endpoint obeys — there is no second, looser path.
+  defp presign_asset(%MediaAsset{} = asset, requested_expires_seconds, url_profile) do
+    # STATUS presigns are SHORT-lived (300s vs the 900s default): status URLs are fetched at open
+    # and never long-lived, and the short TTL bounds how long an issued URL outlives the post's
+    # 24h expiry (the stated presign residual).
+    # SHORTEN-ONLY. A caller may ask for a briefer URL than the purpose default (view-once
+    # media asks for 120s: the download deny lands the instant the recipient opens, and
+    # without a short TTL an already-issued URL would outlive it by up to the 900s default).
+    # It can never LENGTHEN one — min/2 with the purpose override, so a client cannot widen
+    # its own window by asking.
+    purpose_override =
+      cond do
+        cacheable?(asset, url_profile) -> @cacheable_url_expires_seconds
+        asset.purpose == "status" -> @status_url_expires_seconds
+        true -> nil
+      end
+
+    # The ceiling a request is measured against is the purpose override when there is one and the
+    # configured default (900 s) otherwise — so "shorten-only" holds for EVERY purpose. Before this,
+    # a plain message asset had no override, and a request for 86 400 s was honoured verbatim.
+    override =
+      shortest(purpose_override || configured_expires_seconds(), requested_expires_seconds)
+
+    bucket = if cacheable?(asset, url_profile), do: @cacheable_url_bucket_seconds
+
+    # The signature is minted from the bucket start (in the adapter, which owns the clock), so
+    # the advertised expiry is measured from there too rather than from "now".
+    expires_at =
+      DateTime.utc_now()
+      |> Storage.bucket_start(bucket)
+      |> DateTime.add(override || configured_expires_seconds(), :second)
+      |> DateTime.truncate(:second)
+
+    case Storage.get_download_url(%{
+           "object_key" => asset.object_key,
+           "media_id" => asset.id,
+           "expires_at" => expires_at,
+           "url_expires_seconds" => override,
+           "url_bucket_seconds" => bucket
+         }) do
+      {:ok, media} -> {:ok, download_response(media, asset, expires_at)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # The batch's id list: binaries only, de-duplicated, capped — a page is at most 50 rows, so a
+  # list past the cap is a caller bug, not a bigger page.
+  defp media_id_list(attrs) do
+    case get_attr(attrs, "media_ids") do
+      ids when is_list(ids) ->
+        ids = ids |> Enum.filter(&(is_binary(&1) and &1 != "")) |> Enum.uniq()
+        if length(ids) <= @download_batch_max, do: {:ok, ids}, else: {:error, :media_invalid}
+
+      _ ->
+        {:error, :media_invalid}
+    end
+  end
+
+  # ONE query for the whole page, tenant-scoped: an id from another app is simply absent from the
+  # answer (same as the single read's not_found), never presigned. Non-UUID ids are dropped before
+  # the query so one malformed id cannot fail the page.
+  defp assets_by_ids(media_ids, app_id) do
+    ids =
+      Enum.flat_map(media_ids, fn id ->
+        case Ecto.UUID.cast(id) do
+          {:ok, uuid} -> [uuid]
+          :error -> []
+        end
+      end)
+
+    case ids do
+      [] ->
+        []
+
+      ids ->
+        Repo.all(from(a in MediaAsset, where: a.id in ^ids and a.app_id == ^app_id))
+    end
+  rescue
+    Ecto.Query.CastError -> []
   end
 
   # The expected-purpose filter, read WITHOUT optional_attr/2 on purpose: that helper answers nil for

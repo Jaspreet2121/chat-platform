@@ -18,6 +18,9 @@ defmodule SharedInfra.MediaClient do
   @callback complete_upload(attrs()) :: result()
   @callback get_download_url(attrs()) :: result()
   @callback get_asset(attrs()) :: result()
+  # Batched presign for a timeline page (media_ids + app_id → downloads[]). Optional so an existing
+  # partial test double keeps compiling; a caller treats an adapter without it as "no links".
+  @callback get_download_urls(attrs()) :: result()
   # Purge an asset's bytes (status sweep / owner delete). Optional so existing stubs don't need it.
   @callback purge_asset(attrs()) :: result()
 
@@ -30,7 +33,8 @@ defmodule SharedInfra.MediaClient do
   @callback complete_multipart_upload(attrs()) :: result()
   @callback abort_multipart_upload(attrs()) :: result()
 
-  @optional_callbacks purge_asset: 1,
+  @optional_callbacks get_download_urls: 1,
+                      purge_asset: 1,
                       anchor_asset: 1,
                       create_multipart_upload: 1,
                       presign_upload_parts: 1,
@@ -43,6 +47,9 @@ defmodule SharedInfra.MediaClient do
 
   # Read-path authz metadata (purpose/owner/conversation) by (media_id, app_id); never returns object_key.
   def get_asset(attrs), do: adapter().get_asset(attrs)
+
+  @doc "Batched presign: %{media_ids, app_id, url_expires_seconds?} → %{downloads: [%{media_id, download_url, expires_at, mime_type}]}."
+  def get_download_urls(attrs), do: adapter().get_download_urls(attrs)
   def purge_asset(attrs), do: adapter().purge_asset(attrs)
 
   @doc "Client-assisted recovery: bind an unanchored asset to a conversation (owner-only, idempotent)."

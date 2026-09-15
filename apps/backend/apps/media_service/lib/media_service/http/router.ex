@@ -29,6 +29,10 @@ defmodule MediaService.HTTP.Router do
     send_result(conn, MediaService.Media.get_download_url(body(conn)))
   end
 
+  post "/internal/media/download_urls" do
+    send_result(conn, MediaService.Media.get_download_urls(body(conn)))
+  end
+
   post "/internal/media/multipart/create" do
     send_result(conn, MediaService.Media.create_multipart_upload(body(conn)))
   end

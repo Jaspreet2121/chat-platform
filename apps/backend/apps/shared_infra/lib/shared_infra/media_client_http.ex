@@ -27,6 +27,9 @@ defmodule SharedInfra.MediaClientHttp do
   def get_asset(attrs), do: post("/internal/media/get_asset", attrs)
 
   @impl true
+  def get_download_urls(attrs), do: post("/internal/media/download_urls", attrs)
+
+  @impl true
   def purge_asset(attrs), do: post("/internal/media/purge_asset", attrs)
 
   @impl true
