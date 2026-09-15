@@ -1,22 +1,25 @@
 defmodule MessageService.ConversationRow do
   @moduledoc """
-  The two columns of the conversation row that message-service reads straight from the shared
-  Postgres: `secret` (sealed-vs-plaintext policy on the create path) and `created_at` (the
-  timeline's age bound on the read path). ONE query serves both — the read that used to fetch
+  The three columns of the conversation row that message-service reads straight from the shared
+  Postgres: `secret` (sealed-vs-plaintext policy on the create path), `created_at` (the
+  timeline's age bound on the read path) and `app_id` (tenant scope of the media-link presign,
+  `MessageService.MediaLinks`). ONE query serves all — the read that used to fetch
   `secret` alone now carries `created_at` beside it, so the timeline floor costs no extra query on
   the path that already had one, and exactly one point read on the path that did not.
 
   No runtime dependency on the conversation service, same as every other cross-row read here.
   """
 
-  @doc "{:ok, %{secret, created_at}} | :not_found | {:error, reason} — never raises."
+  @doc "{:ok, %{secret, created_at, app_id}} | :not_found | {:error, reason} — never raises."
   def fetch(conversation_id) when is_binary(conversation_id) and conversation_id != "" do
+    # app_id rides along for the media-link presign (tenant scope of the media_assets lookup);
+    # cast to text here so the caller never sees a raw 16-byte uuid.
     case MessageService.Repo.query(
-           "SELECT secret, created_at FROM conversations WHERE id = $1::text::uuid",
+           "SELECT secret, created_at, app_id::text FROM conversations WHERE id = $1::text::uuid",
            [conversation_id]
          ) do
-      {:ok, %{rows: [[secret, created_at]]}} ->
-        {:ok, %{secret: secret == true, created_at: created_at}}
+      {:ok, %{rows: [[secret, created_at, app_id]]}} ->
+        {:ok, %{secret: secret == true, created_at: created_at, app_id: app_id}}
 
       {:ok, _} ->
         :not_found

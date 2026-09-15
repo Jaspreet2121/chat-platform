@@ -9,6 +9,7 @@ defmodule MessageService.Messages do
 
   require Logger
 
+  alias MessageService.MediaLinks
   alias MessageService.MessageStore
 
   # Bounded so the value is a SIGNAL, not a tracking number. Client display: >=1 "Forwarded",
@@ -252,7 +253,7 @@ defmodule MessageService.Messages do
         # Without one, byte-identical to the pre-107 path.
         case claim_client_msg(conversation_id, sender_user_id, client_msg_id) do
           {:existing, message} ->
-            {:ok, message_response(message)}
+            {:ok, message |> message_response() |> MediaLinks.attach()}
 
           {:new, message_id} ->
             message_attrs = %{
@@ -276,7 +277,9 @@ defmodule MessageService.Messages do
               {:ok, message} ->
                 response = message_response(message) |> with_fresh_poll(message_type, metadata)
                 publish_message_created(response)
-                {:ok, response}
+                # The inline download link is minted AFTER the publish: the ack (REST response,
+                # socket frame, inbox row) carries it, the Kafka event never does.
+                {:ok, MediaLinks.attach(response)}
 
               {:error, reason} ->
                 {:error, reason}
@@ -897,7 +900,12 @@ defmodule MessageService.Messages do
 
       case MessageStore.list_messages(attrs) do
         {:ok, timeline} ->
-          {:ok, %{timeline | messages: Enum.map(timeline.messages, &message_response/1)}}
+          {:ok,
+           %{
+             timeline
+             | messages:
+                 timeline.messages |> Enum.map(&message_response/1) |> MediaLinks.attach_all()
+           }}
 
         {:error, reason} ->
           {:error, reason}

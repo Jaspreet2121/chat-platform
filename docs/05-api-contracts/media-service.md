@@ -141,6 +141,13 @@ Response `200`:
 }
 ```
 
+### Inline link on media messages
+
+Message payloads (create ack, `message_created`, timeline page) also carry
+`metadata.media.download_url` + `download_url_expires_at` (15-minute presigned GET for the
+message's own object). Clients use it while unexpired and fall back to this endpoint otherwise;
+see `message-service.md` → "Inline download link". This endpoint is unchanged.
+
 ## Message Integration Note
 
 Message sending can attach `media_id` from this API to Message Service requests

@@ -101,13 +101,37 @@ Media response `201`:
   "status": "active",
   "metadata": {
     "media_id": "44444444-4444-4444-8444-444444444444",
-    "caption": "Launch photo"
+    "caption": "Launch photo",
+    "object_key": "media/user_123/44444444-4444-4444-8444-444444444444/photo.png",
+    "media": {
+      "download_url": "https://media.example.com/chat-media/media/user_123/.../photo.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=900&...",
+      "download_url_expires_at": "2026-06-17T10:30:00Z"
+    }
   },
   "created_at": "2026-06-17T10:15:00Z",
   "edited_at": null,
   "deleted_at": null
 }
 ```
+
+### Inline download link (`metadata.media`)
+
+A media message's payload carries its own presigned GET — on the REST create response, on the
+socket `message_created` frame and on every row of the timeline page — so a client renders an
+image without a second round trip to the presign endpoint.
+
+* `metadata.media.download_url` — presigned GET for this message's own object (15-minute TTL).
+* `metadata.media.download_url_expires_at` — ISO-8601 expiry of that URL.
+
+**Client rule:** use `download_url` while `download_url_expires_at` is in the future; otherwise
+(expired, or `metadata.media` absent) call `GET /api/v1/media/:media_id/download`, which is
+unchanged and remains the source of truth. The link is minted at read time on every read and is
+never stored, so a page loaded later carries a fresh one.
+
+`metadata.media` is ABSENT on: view-once media (the endpoint's 120 s deny-on-open rule applies;
+the endpoint is the only path), deleted messages, sealed messages (the server holds no `media_id`
+for a sealed envelope — the sealed client keeps its presign endpoint), and whenever the media
+service could not answer (the page is still served; the client falls back to the endpoint).
 
 ## GET /api/v1/conversations/:conversation_id/messages
 
