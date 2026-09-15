@@ -141,11 +141,21 @@ Response `200`:
 }
 ```
 
+### `?variant=thumb|medium` (server-side image variants)
+
+For a PLAIN image asset the server generates two JPEG derivatives at upload complete — `thumb`
+(256 px long edge, q70) and `medium` (1280 px long edge, q80), EXIF stripped, auto-rotated — stored
+as `<object_key>.thumb.jpg` / `<object_key>.medium.jpg`. `GET /api/v1/media/:media_id/download?variant=thumb`
+presigns the variant under EXACTLY the same authorization and TTL as the original (`mime_type`
+answers `image/jpeg`). An asset without that variant (not an image, sealed, generated before this,
+generation failed) answers the ORIGINAL — the client never has to know. An unknown variant name is
+`400 media.invalid_request`. Sealed (ciphertext) assets never get variants.
+
 ### Inline link on media messages
 
 Message payloads (create ack, `message_created`, timeline page) also carry
 `metadata.media.download_url` + `download_url_expires_at` (15-minute presigned GET for the
-message's own object). Clients use it while unexpired and fall back to this endpoint otherwise;
+message's own object) and, when the server-side thumbnail exists, `metadata.media.thumb_url`. Clients use it while unexpired and fall back to this endpoint otherwise;
 see `message-service.md` → "Inline download link". This endpoint is unchanged.
 
 ## Message Integration Note

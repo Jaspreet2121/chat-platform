@@ -46,7 +46,12 @@ defmodule MessageService.MediaLinksTest do
             media_id: id,
             download_url: "https://minio.test/chat-media/#{key}?X-Amz-Expires=900",
             expires_at: expires_at,
-            mime_type: "image/png"
+            mime_type: "image/png",
+            # A has a server-side thumbnail (124); B has none — nil, exactly as the batch answers it.
+            thumb_url:
+              if(id == "aaaaaaaa-0000-4000-8000-00000000000a",
+                do: "https://minio.test/chat-media/#{key}.thumb.jpg?X-Amz-Expires=900"
+              )
           }
         end
 
@@ -150,10 +155,11 @@ defmodule MessageService.MediaLinksTest do
              ack.metadata["media"]
 
     # KEY-SET on the new sub-map, and the existing media keys are untouched beside it.
-    assert Map.keys(ack.metadata["media"]) |> Enum.sort() == [
-             "download_url",
-             "download_url_expires_at"
-           ]
+    # KEY-SET: exactly the link pair plus the thumbnail A has (124).
+    assert Map.keys(ack.metadata["media"]) |> Enum.sort() ==
+             ["download_url", "download_url_expires_at", "thumb_url"]
+
+    assert ack.metadata["media"]["thumb_url"] =~ "#{@key_a}.thumb.jpg"
 
     assert Map.keys(ack.metadata) |> Enum.sort() == ["media", "media_id", "object_key"]
     # MUT-3 guard: the URL is for the object this message declared.
@@ -181,6 +187,13 @@ defmodule MessageService.MediaLinksTest do
     assert by_media[@media_a].metadata["media"]["download_url"] =~ @key_a
     assert by_media[@media_b].metadata["media"]["download_url"] =~ @key_b
     refute by_media[@media_a].metadata["media"]["download_url"] =~ @key_b
+
+    # thumb_url only where the batch answered one: A yes, B no key at all.
+    assert by_media[@media_a].metadata["media"]["thumb_url"] =~ "#{@key_a}.thumb.jpg"
+    refute Map.has_key?(by_media[@media_b].metadata["media"], "thumb_url")
+
+    assert Map.keys(by_media[@media_b].metadata["media"]) |> Enum.sort() ==
+             ["download_url", "download_url_expires_at"]
 
     text = by_media[nil]
     assert text.message_type == "text"

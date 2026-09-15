@@ -1,7 +1,8 @@
 defmodule MessageService.MediaLinks do
   @moduledoc """
   A media message carries its own download link: `metadata.media.download_url` (presigned GET) +
-  `metadata.media.download_url_expires_at` (ISO-8601, 15 minutes). Attached to the create ack —
+  `metadata.media.download_url_expires_at` (ISO-8601, 15 minutes) — and, for a plain image whose
+  server-side thumbnail exists (124), `metadata.media.thumb_url` (same TTL). Attached to the create ack —
   which is what the REST response, the socket `message_created` frame and the inbox row carry — and
   to every row of a timeline page. Nothing is ever STORED: the link is minted at read time, on every
   read, so a page loaded now carries a live URL and a page loaded tomorrow carries a fresh one.
@@ -129,7 +130,12 @@ defmodule MessageService.MediaLinks do
       expires_at = aget(download, :expires_at)
 
       if is_binary(media_id) and is_binary(url) and is_binary(expires_at),
-        do: Map.put(acc, media_id, %{download_url: url, expires_at: expires_at}),
+        do:
+          Map.put(acc, media_id, %{
+            download_url: url,
+            expires_at: expires_at,
+            thumb_url: aget(download, :thumb_url)
+          }),
         else: acc
     end)
   end
@@ -139,7 +145,7 @@ defmodule MessageService.MediaLinks do
   defp put_links(response, conversation_id, by_id) do
     with true <- eligible?(response),
          true <- aget(response, :conversation_id) == conversation_id,
-         {:ok, %{download_url: url, expires_at: expires_at}} <-
+         {:ok, %{download_url: url, expires_at: expires_at} = links} <-
            Map.fetch(by_id, aget(response, :media_id)) do
       metadata =
         case aget(response, :metadata) do
@@ -148,6 +154,14 @@ defmodule MessageService.MediaLinks do
         end
 
       media = %{"download_url" => url, "download_url_expires_at" => expires_at}
+
+      # 124: the server-generated thumbnail, when one exists (plain images only). Same TTL.
+      media =
+        case links[:thumb_url] do
+          thumb when is_binary(thumb) and thumb != "" -> Map.put(media, "thumb_url", thumb)
+          _ -> media
+        end
+
       Map.put(response, metadata_key(response), Map.put(metadata, "media", media))
     else
       _ -> response

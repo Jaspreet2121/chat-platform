@@ -122,6 +122,10 @@ image without a second round trip to the presign endpoint.
 
 * `metadata.media.download_url` — presigned GET for this message's own object (15-minute TTL).
 * `metadata.media.download_url_expires_at` — ISO-8601 expiry of that URL.
+* `metadata.media.thumb_url` — present only when the server-side thumbnail exists (plain images
+  uploaded after variants shipped, or backfilled): a 256 px JPEG, same TTL. Render it first and
+  swap in `download_url` (or `?variant=medium`) when the bubble is opened. Absent → use
+  `download_url` directly.
 
 **Client rule:** use `download_url` while `download_url_expires_at` is in the future; otherwise
 (expired, or `metadata.media` absent) call `GET /api/v1/media/:media_id/download`, which is

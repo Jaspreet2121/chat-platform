@@ -575,7 +575,7 @@ defmodule ApiGatewayWeb.MediaController do
   # `params` (which may still carry a client object_key until Phase 5) is intentionally ignored. Every
   # authorization/lookup failure collapses to 404 — no existence reveal, never 403, no distinction between
   # "doesn't exist", "wrong tenant", and "not a member".
-  defp download_with_session(conn, media_id, _params) do
+  defp download_with_session(conn, media_id, params) do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
@@ -585,12 +585,17 @@ defmodule ApiGatewayWeb.MediaController do
              "app_id" => session.app_id
            }),
          :ok <- ApiGatewayWeb.MediaAuthz.authorize_download(media_id, asset, session.user_id),
+         # 124: `?variant=thumb|medium` — checked AFTER the authz above, so a non-member learns
+         # nothing from the variant path that the original path would not tell them (404 either
+         # way), and an unknown name is a 400 only for a caller allowed to download at all.
+         {:ok, variant} <- variant_param(params),
          {:ok, response} <-
            SharedInfra.MediaClient.get_download_url(
              %{
                "media_id" => media_id,
                "app_id" => session.app_id
              }
+             |> put_variant(variant)
              # VIEW-ONCE URLS ARE SHORT-LIVED (120s). The deny lands the instant the recipient opens,
              # but MinIO honours the signature, not our authz — at the 900s default an already-issued
              # URL would outlive the deny by up to fifteen minutes. Deleting the blob at open is what
@@ -601,6 +606,7 @@ defmodule ApiGatewayWeb.MediaController do
       json(conn, response)
     else
       {:error, :session_invalid} -> unauthorized(conn)
+      {:error, :variant_invalid} -> invalid_request(conn)
       {:error, :auth_unavailable} -> service_unavailable(conn)
       {:error, :media_unavailable} -> service_unavailable(conn)
       {:error, :conversation_unavailable} -> service_unavailable(conn)
@@ -608,6 +614,22 @@ defmodule ApiGatewayWeb.MediaController do
       _ -> not_found(conn)
     end
   end
+
+  @variant_names ["thumb", "medium"]
+
+  # The variant the caller asked for: absent → the original; a known name → that derivative (media
+  # service falls back to the original when the asset has none); anything else → 400.
+  defp variant_param(params) do
+    case Map.get(params, "variant") do
+      nil -> {:ok, nil}
+      "" -> {:ok, nil}
+      name when name in @variant_names -> {:ok, name}
+      _other -> {:error, :variant_invalid}
+    end
+  end
+
+  defp put_variant(attrs, nil), do: attrs
+  defp put_variant(attrs, variant), do: Map.put(attrs, "variant", variant)
 
   defp invalid_request(conn), do: ErrorResponse.invalid_request(conn, "media.invalid_request")
 
