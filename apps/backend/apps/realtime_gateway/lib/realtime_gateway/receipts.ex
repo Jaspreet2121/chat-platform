@@ -82,4 +82,105 @@ defmodule RealtimeGateway.Receipts do
       receipt_type: receipt_type
     }
   end
+
+  @doc """
+  THE SINGLE-MESSAGE FRAME — the socket's `conversation_reply/3` + `receipt_type`, byte for byte:
+  `{event, conversation_id, user_id, payload: %{"message_id"}, status: "accepted", receipt_type}`.
+  The message_id stays NESTED under `payload` (the SDK reads payload.payload.message_id); flattening
+  it would fork the wire protocol between the socket and REST.
+  """
+  def single_frame(event, conversation_id, user_id, message_id, receipt_type) do
+    %{
+      event: event,
+      conversation_id: conversation_id,
+      user_id: user_id,
+      payload: %{"message_id" => message_id},
+      status: "accepted",
+      receipt_type: receipt_type
+    }
+  end
+
+  @doc """
+  THE ONE EMITTER of `receipt_updated`, on the conversation topic, for every surface that records a
+  receipt: the socket single events, the socket batches, and the REST read/delivered endpoints.
+  SYNCHRONOUS on purpose — the contract is "never before the receipt row is committed", and a
+  spawned task cannot promise that. `from: pid` excludes that channel process (the socket's
+  `broadcast_from`); without it every subscriber gets the frame (REST has no socket to exclude).
+  Never raises into the caller: a PubSub failure must not fail a receipt that is already stored.
+  """
+  def emit(endpoint, conversation_id, %{} = frame, opts \\ []) do
+    topic = "conversation:" <> conversation_id
+
+    case Keyword.get(opts, :from) do
+      pid when is_pid(pid) -> endpoint.broadcast_from(pid, topic, "receipt_updated", frame)
+      _ -> endpoint.broadcast(topic, "receipt_updated", frame)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  @doc """
+  THE READ-RECEIPT GATE, shared by the socket (resolved once at join) and REST (resolved per
+  request): a read tick is emitted only if the reader has read receipts on AND, in a DIRECT
+  conversation, so does the peer (reciprocity). Groups need only the reader's own setting.
+  Delivered ticks are never gated — they are about arrival, not content. Fail-open on any read
+  glitch (a privacy lookup outage must not silently hide ticks forever).
+  """
+  def emit_read_receipts?(conversation_id, user_id)
+      when is_binary(conversation_id) and conversation_id != "" and is_binary(user_id) and
+             user_id != "" do
+    if read_receipts_enabled?(user_id) do
+      case dm_peer(conversation_id, user_id) do
+        peer when is_binary(peer) -> read_receipts_enabled?(peer)
+        _ -> true
+      end
+    else
+      false
+    end
+  rescue
+    _ -> true
+  end
+
+  def emit_read_receipts?(_conversation_id, _user_id), do: false
+
+  # The OTHER active participant of a DIRECT conversation (nil for a group / unknown), via the same
+  # get_conversation the peer-contact path uses.
+  defp dm_peer(conversation_id, me) do
+    case SharedInfra.ConversationClient.get_conversation(%{
+           "conversation_id" => conversation_id,
+           "user_id" => me
+         }) do
+      {:ok, conversation} ->
+        if (Map.get(conversation, :type) || Map.get(conversation, "type")) == "direct" do
+          (Map.get(conversation, :participants) || Map.get(conversation, "participants") || [])
+          |> Enum.map(&(Map.get(&1, :user_id) || Map.get(&1, "user_id")))
+          |> Enum.find(&(is_binary(&1) and &1 != me))
+        else
+          nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  # A user's read_receipts_enabled (default TRUE for no row / persistence off / a read glitch — fail-open).
+  defp read_receipts_enabled?(user_id) when is_binary(user_id) and user_id != "" do
+    case SharedInfra.UserClient.get_privacy(%{"user_id" => user_id}) do
+      {:ok, privacy} ->
+        # Map.get with a default (NOT `||`) so `false` reads as false, not "absent". Enabled unless explicit false.
+        SharedInfra.Attrs.get(privacy, :read_receipts_enabled) != false
+
+      _ ->
+        true
+    end
+  rescue
+    _ -> true
+  end
+
+  defp read_receipts_enabled?(_user_id), do: true
 end

@@ -157,60 +157,19 @@ defmodule RealtimeGateway.ConversationChannel do
   # chat the peer must too (delivery half — a reader who disabled doesn't RECEIVE them). Group/unknown →
   # reader-only. R disabled / unresolved → false (never emit). An exception → true (fail-open; the load filter
   # still hides a disabled reader on reload).
+  # The gate lives in RealtimeGateway.Receipts (shared with the REST read endpoint); resolved once
+  # at join and cached in assigns, off the read-mark hot path.
   defp resolve_emit_read_receipts(socket) do
     with {:ok, me} <- current_user_id(socket),
          conversation_id when is_binary(conversation_id) <-
-           Map.get(socket.assigns, :conversation_id),
-         true <- read_receipts_enabled?(me) do
-      case dm_peer(conversation_id, me) do
-        peer when is_binary(peer) -> read_receipts_enabled?(peer)
-        _ -> true
-      end
+           Map.get(socket.assigns, :conversation_id) do
+      Receipts.emit_read_receipts?(conversation_id, me)
     else
       _ -> false
     end
   rescue
     _ -> true
   end
-
-  # The OTHER active participant of a DIRECT conversation (nil for a group / unknown), via the same
-  # get_conversation the peer-contact path uses. Resolved once at join, off the read-mark hot path.
-  defp dm_peer(conversation_id, me) do
-    case SharedInfra.ConversationClient.get_conversation(%{
-           "conversation_id" => conversation_id,
-           "user_id" => me
-         }) do
-      {:ok, conversation} ->
-        if (Map.get(conversation, :type) || Map.get(conversation, "type")) == "direct" do
-          (Map.get(conversation, :participants) || Map.get(conversation, "participants") || [])
-          |> Enum.map(&(Map.get(&1, :user_id) || Map.get(&1, "user_id")))
-          |> Enum.find(&(is_binary(&1) and &1 != me))
-        else
-          nil
-        end
-
-      _ ->
-        nil
-    end
-  rescue
-    _ -> nil
-  end
-
-  # A user's read_receipts_enabled (default TRUE for no row / persistence off / a read glitch — fail-open).
-  defp read_receipts_enabled?(user_id) when is_binary(user_id) and user_id != "" do
-    case SharedInfra.UserClient.get_privacy(%{"user_id" => user_id}) do
-      {:ok, privacy} ->
-        # Map.get with a default (NOT `||`) so `false` reads as false, not "absent". Enabled unless explicit false.
-        SharedInfra.Attrs.get(privacy, :read_receipts_enabled) != false
-
-      _ ->
-        true
-    end
-  rescue
-    _ -> true
-  end
-
-  defp read_receipts_enabled?(_user_id), do: true
 
   # EPHEMERAL bucket (typing, receipts, live-location): over the limit → dropped SILENTLY ({:noreply}).
   # WRITE bucket (message create/update/delete, reactions): over the limit → an error reply carrying
@@ -263,7 +222,10 @@ defmodule RealtimeGateway.ConversationChannel do
       persist_receipt(:read, payload, socket)
 
       if Map.get(socket.assigns, :emit_read_receipts, true) do
-        broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "read"))
+        Receipts.emit(
+          socket.endpoint,
+          socket.assigns.conversation_id,
+          Map.put(reply, :receipt_type, "read"), from: self())
       end
 
       notify_inbox_read(socket, unread_before)
@@ -276,7 +238,11 @@ defmodule RealtimeGateway.ConversationChannel do
     with :ok <- Limits.check_ephemeral(socket) do
       reply = conversation_reply("message_delivered", payload, socket)
       persist_receipt(:delivered, payload, socket)
-      broadcast_from(socket, "receipt_updated", Map.put(reply, :receipt_type, "delivered"))
+
+      Receipts.emit(
+        socket.endpoint,
+        socket.assigns.conversation_id,
+        Map.put(reply, :receipt_type, "delivered"), from: self())
 
       {:reply, {:ok, reply}, socket}
     end
@@ -303,10 +269,11 @@ defmodule RealtimeGateway.ConversationChannel do
 
       # The SAME join-time reciprocity gate as the single event — a batch is not a way around it.
       if Map.get(socket.assigns, :emit_read_receipts, true) do
-        broadcast_from(
-          socket,
-          "receipt_updated",
-          Receipts.frame("messages_read", conversation_id, user_id, message_ids, "read")
+        Receipts.emit(
+          socket.endpoint,
+          conversation_id,
+          Receipts.frame("messages_read", conversation_id, user_id, message_ids, "read"),
+          from: self()
         )
       end
 
@@ -328,10 +295,11 @@ defmodule RealtimeGateway.ConversationChannel do
       Receipts.persist(:delivered, conversation_id, message_ids, user_id)
 
       # Delivered is about arrival, not content — never gated by the read-receipt setting.
-      broadcast_from(
-        socket,
-        "receipt_updated",
-        Receipts.frame("messages_delivered", conversation_id, user_id, message_ids, "delivered")
+      Receipts.emit(
+        socket.endpoint,
+        conversation_id,
+        Receipts.frame("messages_delivered", conversation_id, user_id, message_ids, "delivered"),
+        from: self()
       )
 
       {:reply, {:ok, %{accepted: length(message_ids)}}, socket}

@@ -701,6 +701,24 @@ defmodule ApiGatewayWeb.MessageController do
              "message_id" => message_id,
              "user_id" => session.user_id
            }) do
+      # THE READ TICK, which this path never emitted — the socket's message_read did, so a read
+      # marked over REST moved nobody's ticks until their next reload. Same frame, same emitter,
+      # same reciprocity gate as the socket (RealtimeGateway.Receipts), AFTER the receipt row is
+      # committed (mark_read has returned). Conversation topic only, as with every receipt.
+      if RealtimeGateway.Receipts.emit_read_receipts?(conversation_id, session.user_id) do
+        RealtimeGateway.Receipts.emit(
+          ApiGatewayWeb.Endpoint,
+          conversation_id,
+          RealtimeGateway.Receipts.single_frame(
+            "message_read",
+            conversation_id,
+            session.user_id,
+            message_id,
+            "read"
+          )
+        )
+      end
+
       # Only the READER's badge changed → fan out to them alone, and only if it actually moved.
       ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
         conversation_id,
@@ -751,14 +769,17 @@ defmodule ApiGatewayWeb.MessageController do
       # conversation_reply map + receipt_type), and like there it is UNGATED — delivered ticks are
       # never suppressed by the read-receipt privacy setting; only read ticks are. Conversation topic
       # only, as with every receipt.
-      ApiGatewayWeb.RealtimeFanOut.to_conversation(conversation_id, "receipt_updated", %{
-        event: "message_delivered",
-        conversation_id: conversation_id,
-        user_id: session.user_id,
-        payload: %{"message_id" => message_id},
-        status: "accepted",
-        receipt_type: "delivered"
-      })
+      RealtimeGateway.Receipts.emit(
+        ApiGatewayWeb.Endpoint,
+        conversation_id,
+        RealtimeGateway.Receipts.single_frame(
+          "message_delivered",
+          conversation_id,
+          session.user_id,
+          message_id,
+          "delivered"
+        )
+      )
 
       json(conn, response)
     else
