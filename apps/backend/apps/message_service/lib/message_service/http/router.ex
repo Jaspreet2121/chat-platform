@@ -146,6 +146,10 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Statuses.delete_status(body(conn)))
   end
 
+  post "/internal/status/audience" do
+    send_result(conn, MessageService.Statuses.audience_of(body(conn)))
+  end
+
   post "/internal/status/media_allowed" do
     send_result(conn, MessageService.Statuses.media_allowed(body(conn)))
   end

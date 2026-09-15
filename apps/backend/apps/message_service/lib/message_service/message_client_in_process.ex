@@ -80,6 +80,9 @@ defmodule MessageService.MessageClientInProcess do
   def delete_status(attrs), do: MessageService.Statuses.delete_status(attrs)
 
   @impl true
+  def status_audience(attrs), do: MessageService.Statuses.audience_of(attrs)
+
+  @impl true
   def status_media_allowed(attrs), do: MessageService.Statuses.media_allowed(attrs)
 
   @impl true

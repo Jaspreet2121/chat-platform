@@ -78,6 +78,8 @@ defmodule SharedInfra.MessageClient do
   @callback status_feed(attrs()) :: result()
   @callback list_status_posts(attrs()) :: result()
   @callback delete_status(attrs()) :: result()
+  # The recipient set of a status_updated event: every user the audience predicate admits to this post.
+  @callback status_audience(attrs()) :: result()
   @callback status_media_allowed(attrs()) :: result()
   # Status commit 2: audience modes + view recording + the owner's viewer lists.
   @callback get_status_audience(attrs()) :: result()
@@ -115,6 +117,7 @@ defmodule SharedInfra.MessageClient do
                       status_feed: 1,
                       list_status_posts: 1,
                       delete_status: 1,
+                      status_audience: 1,
                       status_media_allowed: 1,
                       get_status_audience: 1,
                       set_status_audience: 1,
@@ -146,6 +149,9 @@ defmodule SharedInfra.MessageClient do
   def status_feed(attrs), do: normalize(adapter().status_feed(attrs))
   def list_status_posts(attrs), do: normalize(adapter().list_status_posts(attrs))
   def delete_status(attrs), do: normalize(adapter().delete_status(attrs))
+
+  @doc "Who may see this post (owner excluded) → %{user_ids: [...]}; the status_updated recipient set."
+  def status_audience(attrs), do: normalize(adapter().status_audience(attrs))
   def status_media_allowed(attrs), do: normalize(adapter().status_media_allowed(attrs))
   def get_status_audience(attrs), do: normalize(adapter().get_status_audience(attrs))
   def set_status_audience(attrs), do: normalize(adapter().set_status_audience(attrs))

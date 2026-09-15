@@ -659,6 +659,76 @@ defmodule MessageService.Statuses do
 
   defp excerpt(_body), do: nil
 
+  # --- AUDIENCE (recipients of a live status event) -----------------------------------------------
+
+  @doc """
+  WHO MAY SEE THIS POST — the audience predicate turned around: instead of "may $viewer see sp?"
+  it answers "which users may see sp?" — the recipient set of a `status_updated` event. The SAME
+  four rules, clause for clause: a shared ACTIVE conversation where BOTH participant rows PREDATE
+  the post (left_at IS NULL both sides), no block in either direction, and the owner's audience mode
+  ('except' minus the list, 'only' intersected with it). The owner is never in the set.
+
+  Answers for a TOMBSTONED post too (deleted_at set): a delete event must reach exactly the people
+  who could see the post while it lived, and the row is kept for that. Unknown / foreign post →
+  `:status_not_found`. → {:ok, %{user_ids: [...]}}
+  """
+  def audience_of(attrs) do
+    with :ok <- ensure_persistence(),
+         {:ok, owner} <- required(attrs, "owner_user_id"),
+         {:ok, status_id} <- required(attrs, "status_id"),
+         # Raw-SQL casts raise Postgrex errors, not Ecto cast errors: validate the ids up front.
+         {:ok, _} <- uuid_or_not_found(owner),
+         {:ok, _} <- uuid_or_not_found(status_id) do
+      %{rows: exists} =
+        Repo.query!(
+          "SELECT 1 FROM status_posts sp WHERE sp.id = $1::text::uuid AND sp.owner_user_id = $2::text::uuid",
+          [status_id, owner]
+        )
+
+      case exists do
+        [] ->
+          {:error, :status_not_found}
+
+        _ ->
+          %{rows: rows} =
+            Repo.query!(
+              "SELECT DISTINCT me.user_id::text " <>
+                "FROM status_posts sp " <>
+                "JOIN conversation_participants them " <>
+                "  ON them.user_id = sp.owner_user_id AND them.left_at IS NULL AND them.joined_at < sp.created_at " <>
+                "JOIN conversations c ON c.id = them.conversation_id AND c.status = 'active' " <>
+                "JOIN conversation_participants me " <>
+                "  ON me.conversation_id = them.conversation_id AND me.user_id <> sp.owner_user_id " <>
+                "  AND me.left_at IS NULL AND me.joined_at < sp.created_at " <>
+                "WHERE sp.id = $1::text::uuid AND sp.owner_user_id = $2::text::uuid " <>
+                "AND NOT EXISTS (" <>
+                "  SELECT 1 FROM user_blocks b " <>
+                "  WHERE (b.blocker_user_id = me.user_id AND b.blocked_user_id = sp.owner_user_id) " <>
+                "     OR (b.blocker_user_id = sp.owner_user_id AND b.blocked_user_id = me.user_id)) " <>
+                "AND CASE COALESCE((SELECT a.mode FROM status_audience a WHERE a.user_id = sp.owner_user_id), 'contacts') " <>
+                "  WHEN 'except' THEN NOT EXISTS (SELECT 1 FROM status_audience_members m " <>
+                "    WHERE m.user_id = sp.owner_user_id AND m.member_user_id = me.user_id) " <>
+                "  WHEN 'only' THEN EXISTS (SELECT 1 FROM status_audience_members m " <>
+                "    WHERE m.user_id = sp.owner_user_id AND m.member_user_id = me.user_id) " <>
+                "  ELSE true END " <>
+                "ORDER BY 1",
+              [status_id, owner]
+            )
+
+          {:ok, %{user_ids: Enum.map(rows, &hd/1)}}
+      end
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :status_not_found}
+  end
+
+  defp uuid_or_not_found(value) do
+    case Ecto.UUID.cast(value) do
+      {:ok, uuid} -> {:ok, uuid}
+      :error -> {:error, :status_not_found}
+    end
+  end
+
   # --- DELETE ------------------------------------------------------------------------------------
 
   @doc "Owner-delete: tombstone the row + purge the media object immediately. Foreign/unknown → :status_not_found."

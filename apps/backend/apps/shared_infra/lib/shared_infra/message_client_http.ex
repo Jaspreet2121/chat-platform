@@ -79,6 +79,9 @@ defmodule SharedInfra.MessageClientHttp do
   def delete_status(attrs), do: post("/internal/status/delete", attrs)
 
   @impl true
+  def status_audience(attrs), do: post("/internal/status/audience", attrs)
+
+  @impl true
   def status_media_allowed(attrs), do: post("/internal/status/media_allowed", attrs)
 
   @impl true
