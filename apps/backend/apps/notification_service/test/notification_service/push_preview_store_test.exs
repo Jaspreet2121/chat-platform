@@ -73,6 +73,44 @@ defmodule NotificationService.PushPreviewStoreTest do
   end
 
   @tag :postgres_integration
+  test "MUT-4 guard: a message's metadata.preview (inline thumb) NEVER reaches the push payload" do
+    {conversation, message, sender} = ids()
+    thumb = Base.encode64(:crypto.strong_rand_bytes(600))
+
+    MessageStoreFixture.insert_message!(conversation, message, sender,
+      message_type: "media",
+      body: nil,
+      metadata: %{
+        "content_type" => "image/jpeg",
+        "media_id" => Ecto.UUID.generate(),
+        "preview" => %{"inline_b64" => thumb, "w" => 48, "h" => 32}
+      }
+    )
+
+    attrs = %{conversation_id: conversation, message_id: message, sender_user_id: sender}
+    assert {:ok, context} = PushContext.message_context(attrs)
+    # The context carries the TEXT preview only — never the thumb map.
+    assert Map.keys(context) |> Enum.sort() == [:group_name, :preview, :sender]
+    assert context.preview == "📷 Photo"
+
+    data = NotificationService.FcmSender.message_data(context, attrs, 1)
+
+    assert Map.keys(data) |> Enum.sort() ==
+             [
+               "conversation_id",
+               "message_id",
+               "preview",
+               "sender_id",
+               "sender_name",
+               "type",
+               "unread_count"
+             ]
+
+    refute Jason.encode!(data) =~ thumb
+    refute Jason.encode!(context) =~ thumb
+  end
+
+  @tag :postgres_integration
   test "an ABSENT message suppresses the push and does NOT log at :error" do
     {conversation, _message, _sender} = ids()
     missing = Ecto.UUID.generate()

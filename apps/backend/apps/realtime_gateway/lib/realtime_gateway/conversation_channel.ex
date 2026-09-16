@@ -481,6 +481,15 @@ defmodule RealtimeGateway.ConversationChannel do
             message: "Forwarding is turned off for this chat"
           }}, socket}
 
+      # A plaintext preview beside ciphertext (mirror of the REST mapping).
+      {:error, :preview_not_allowed} ->
+        {:reply,
+         {:error,
+          %{
+            code: "message.preview_not_allowed",
+            message: "A sealed message cannot carry a plaintext preview"
+          }}, socket}
+
       # Malformed polls carry their SPECIFIC code to the socket sender too (mirror of the REST mapping).
       {:error, poll_error}
       when poll_error in [

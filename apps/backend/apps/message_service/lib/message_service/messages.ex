@@ -235,6 +235,9 @@ defmodule MessageService.Messages do
     with {:ok, conversation_id} <- required_attr(attrs, "conversation_id"),
          {:ok, sender_user_id} <- required_attr(attrs, "sender_user_id"),
          {:ok, message_type} <- required_attr(attrs, "message_type"),
+         # BEFORE the sealed validation: a plaintext preview beside ciphertext is refused for what it
+         # is, whatever the envelope looks like.
+         :ok <- check_preview_policy(message_type, attrs),
          :ok <- check_secret_policy(conversation_id, message_type, attrs),
          :ok <- check_forward_policy(attrs),
          {:ok, client_msg_id} <- client_msg_id(attrs),
@@ -1082,6 +1085,8 @@ defmodule MessageService.Messages do
         |> Map.put("media_id", media_id)
         |> put_optional("caption", caption)
         |> merge_optional_media_metadata(attrs)
+        |> Map.delete("preview")
+        |> Map.merge(preview_metadata(attrs))
 
       {:ok, metadata}
     end
@@ -1101,7 +1106,86 @@ defmodule MessageService.Messages do
   defp metadata(attrs, "sealed", _media_id, _caption),
     do: {:ok, %{"sealed" => get_attr(attrs, "sealed")}}
 
+  # A text message may carry the client's inline preview too (a link card thumb, say).
+  defp metadata(attrs, "text", _media_id, _caption) do
+    with {:ok, base_metadata} <- metadata(attrs) do
+      {:ok, base_metadata |> Map.delete("preview") |> Map.merge(preview_metadata(attrs))}
+    end
+  end
+
   defp metadata(attrs, _message_type, _media_id, _caption), do: metadata(attrs)
+
+  # ---- inline preview (metadata.preview) --------------------------------------------------------
+  #
+  # {inline_b64: ≤ 2048 chars (≈1.5 KB JPEG), w: 1..64, h: 1..64} — the client's own tiny thumb,
+  # shown while the real media loads. `stringify_metadata/1` drops every nested map (the
+  # whitelist — and keeps a STRING under that key, which is why "preview" is always deleted from
+  # the base first), so the preview is taken from the RAW attrs, validated, and put back as-is. Invalid
+  # or oversize → dropped and logged, NEVER a 422: a message is never refused over a preview.
+  # Ints stay ints (w/h), the b64 stays a string — the timeline and message_created carry the map
+  # through unchanged. Only text and media rows: other kinds ignore it.
+  @preview_max_b64_chars 2048
+  @preview_max_edge 64
+
+  defp preview_metadata(attrs) do
+    case raw_preview(attrs) do
+      nil ->
+        %{}
+
+      raw ->
+        case validate_preview(raw) do
+          {:ok, preview} ->
+            %{"preview" => preview}
+
+          {:error, reason} ->
+            Logger.info("metadata preview dropped reason=#{reason}")
+            %{}
+        end
+    end
+  end
+
+  defp raw_preview(attrs) do
+    case get_attr(attrs, "metadata") do
+      %{} = metadata -> Map.get(metadata, "preview") || Map.get(metadata, :preview)
+      _ -> nil
+    end
+  end
+
+  defp validate_preview(%{} = raw) do
+    b64 = Map.get(raw, "inline_b64") || Map.get(raw, :inline_b64)
+    w = Map.get(raw, "w") || Map.get(raw, :w)
+    h = Map.get(raw, "h") || Map.get(raw, :h)
+
+    cond do
+      not is_binary(b64) or b64 == "" -> {:error, :inline_b64_missing}
+      byte_size(b64) > @preview_max_b64_chars -> {:error, :inline_b64_too_large}
+      not base64?(b64) -> {:error, :inline_b64_not_base64}
+      not edge?(w) or not edge?(h) -> {:error, :bad_dimensions}
+      true -> {:ok, %{"inline_b64" => b64, "w" => w, "h" => h}}
+    end
+  end
+
+  defp validate_preview(_raw), do: {:error, :not_a_map}
+
+  defp edge?(value), do: is_integer(value) and value >= 1 and value <= @preview_max_edge
+
+  # Standard or URL-safe alphabet, padding optional (Android's Base64.NO_WRAP is standard, padded).
+  defp base64?(value) do
+    match?({:ok, _}, Base.decode64(value, ignore: :whitespace, padding: false)) or
+      match?({:ok, _}, Base.url_decode64(value, ignore: :whitespace, padding: false))
+  end
+
+  # A SEALED message must not carry a plaintext preview beside its ciphertext — that is the leak
+  # E2EE exists to prevent (the sealed thumb lives INSIDE the envelope). Refused, not stripped:
+  # the client is doing something wrong and must hear it. Checked on the raw attrs (top-level AND
+  # metadata.preview) BEFORE the sealed metadata is built, which would otherwise silently drop it.
+  defp check_preview_policy("sealed", attrs) do
+    if is_nil(get_attr(attrs, "preview")) and is_nil(raw_preview(attrs)),
+      do: :ok,
+      else: {:error, :preview_not_allowed}
+  end
+
+  defp check_preview_policy(_message_type, _attrs), do: :ok
 
   # The client-supplied poll definition (metadata.poll), validated + normalized by MessageService.Polls.
   defp poll_definition(attrs) do

@@ -116,6 +116,14 @@ defmodule ApiGatewayWeb.MessageController do
           "view_once is only valid on a media message"
         )
 
+      # A plaintext preview beside ciphertext is a leak; the sealed thumb lives inside the envelope.
+      {:error, :preview_not_allowed} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "message.preview_not_allowed",
+          "A sealed message cannot carry a plaintext preview"
+        )
+
       # ONE CODE FOR EVERY ATTACHMENT FAILURE. Unknown id, another tenant's, another user's, and
       # not-yet-ready are deliberately indistinguishable — the same no-existence-leak rule the media
       # download path follows by collapsing every denial to 404.

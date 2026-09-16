@@ -114,6 +114,17 @@ Media response `201`:
 }
 ```
 
+### Inline preview (`metadata.preview`)
+
+A text or media message may carry the client's own tiny thumbnail, shown while the real media
+loads: `metadata.preview = {"inline_b64": <base64 JPEG, ≤ 2048 chars ≈ 1.5 KB>, "w": 1..64,
+"h": 1..64}`. Valid → stored and carried through the create response, `message_created` and the
+timeline page unchanged. Invalid or oversize → silently dropped (logged server-side as
+`metadata preview dropped reason=…`); a message is never refused over its preview. Never copied
+into push payloads. A SEALED message carrying a preview (top-level or in metadata) is refused with
+`422 message.preview_not_allowed` — a plaintext preview beside ciphertext would be a leak; the
+sealed thumb lives inside the envelope.
+
 ### Inline download link (`metadata.media`)
 
 A media message's payload carries its own presigned GET — on the REST create response, on the
