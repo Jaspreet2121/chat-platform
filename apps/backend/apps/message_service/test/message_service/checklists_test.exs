@@ -165,6 +165,20 @@ defmodule MessageService.ChecklistsTest do
   end
 
   @tag :postgres_integration
+  test "MUT-2 guard: CREATE writes the title as the inbox preview — it was NULL on device" do
+    author = user!()
+    conversation = conversation!([author])
+
+    assert {:ok, _} = create!(conversation, author, items(["milk"]), "Weekend shop")
+
+    # The DENORMALISED column the list reads …
+    assert preview(conversation) == {"Weekend shop", "checklist"}
+
+    # … and the row the client actually receives, through the SAME mapper the broadcast uses.
+    assert SharedInfra.InboxPreview.preview_text("Weekend shop", "checklist") == "Weekend shop"
+  end
+
+  @tag :postgres_integration
   test "MUT-7 guard: a tick NEVER writes the inbox preview — the title stays, the count does not ride it" do
     author = user!()
     conversation = conversation!([author])

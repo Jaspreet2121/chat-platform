@@ -490,6 +490,23 @@ defmodule RealtimeGateway.ConversationChannel do
             message: "A sealed message cannot carry a plaintext preview"
           }}, socket}
 
+      # Malformed CHECKLISTS carry their own code to the socket sender too (mirror of the REST
+      # mapping). Without this they fell to realtime.invalid_event — indistinguishable from a
+      # malformed payload, so the client shows "something went wrong" instead of the real reason.
+      {:error, checklist_error}
+      when checklist_error in [
+             :checklist_not_in_sealed,
+             :checklist_too_many_items,
+             :checklist_text_too_long,
+             :checklist_no_items,
+             :checklist_invalid_item,
+             :checklist_invalid_title
+           ] ->
+        "checklist_" <> failure = Atom.to_string(checklist_error)
+
+        {:reply, {:error, %{code: "checklist." <> failure, message: "Checklist is invalid"}},
+         socket}
+
       # Malformed polls carry their SPECIFIC code to the socket sender too (mirror of the REST mapping).
       {:error, poll_error}
       when poll_error in [

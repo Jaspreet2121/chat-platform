@@ -185,6 +185,40 @@ defmodule ApiGatewayWeb.MessageController do
           "Forwarding is turned off for this chat"
         )
 
+      # Malformed CHECKLISTS carry their own codes too. Without these they fell to the catch-all
+      # below and a 31-item list read as a generic "invalid request", which tells a client nothing
+      # about what to fix. `not_in_sealed` is a 422 for the same reason the other content refusals
+      # are: the request was well-formed, the conversation just cannot hold one.
+      {:error, :checklist_not_in_sealed} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "checklist.not_in_sealed",
+          "Checklists aren't available in secret chats"
+        )
+
+      {:error, :checklist_too_many_items} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "checklist.too_many_items",
+          "That list is too long"
+        )
+
+      {:error, :checklist_text_too_long} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "checklist.text_too_long",
+          "That item is too long"
+        )
+
+      {:error, :checklist_no_items} ->
+        ErrorResponse.invalid_request(conn, "checklist.no_items")
+
+      {:error, :checklist_invalid_item} ->
+        ErrorResponse.invalid_request(conn, "checklist.invalid_item")
+
+      {:error, :checklist_invalid_title} ->
+        ErrorResponse.invalid_request(conn, "checklist.invalid_title")
+
       # Malformed polls are rejected with SPECIFIC codes — never stored broken.
       {:error, poll_error}
       when poll_error in [
