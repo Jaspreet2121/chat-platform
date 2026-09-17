@@ -38,8 +38,14 @@ defmodule ApiGatewayWeb.V1.MessageController do
       {:error, :message_unavailable} ->
         ErrorResponse.service_unavailable(conn, "v1.unavailable")
 
-      _ ->
-        ErrorResponse.invalid_request(conn, "v1.invalid_request")
+      # MESSAGE REQUESTS (128). This path gets the gate like every other, which is the whole reason
+      # the budget lives in message-service rather than in the first-party gateway controller: /v1
+      # calls MessageClient.create_message directly and has never run authorize_send, so a gate
+      # placed there would have left a documented hole for anyone holding an API key.
+      {:error, :message_request_limit} ->
+        conn
+        |> put_resp_header("retry-after", "3600")
+        |> ErrorResponse.rate_limited("v1.message_request_limit")
     end
   end
 

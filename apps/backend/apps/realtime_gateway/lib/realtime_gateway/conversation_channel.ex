@@ -472,6 +472,18 @@ defmodule RealtimeGateway.ConversationChannel do
       {:error, :message_unavailable} ->
         unavailable_reply(socket)
 
+      # MESSAGE REQUESTS (128) carries its own code on the socket too (mirror of the REST mapping).
+      # Without it the refusal fell to realtime.invalid_event, which reads as "your payload was
+      # malformed" — the client would retry the same message forever instead of telling the sender
+      # they have to wait for the recipient.
+      {:error, :message_request_limit} ->
+        {:reply,
+         {:error,
+          %{
+            code: "message.request_limit",
+            message: "You've reached the limit for messages to someone who hasn't replied yet"
+          }}, socket}
+
       # RESTRICTED SHARING (120) carries its own code on the socket too (mirror of the REST mapping).
       {:error, :forward_restricted} ->
         {:reply,

@@ -9,6 +9,12 @@ defmodule MessageService.Messages do
 
   require Logger
 
+  # MESSAGE REQUESTS (128) — the stranger's per-pair send budget. Three messages, then a named
+  # refusal, until the recipient accepts. The window makes it a rate rather than a permanent total;
+  # see check_request_budget/1 for why that trade is the right one here.
+  @request_budget 3
+  @request_budget_window_seconds 7 * 24 * 60 * 60
+
   alias MessageService.MediaLinks
   alias MessageService.Checklists
   alias MessageService.DmStreaks
@@ -241,7 +247,13 @@ defmodule MessageService.Messages do
          # BEFORE the sealed validation: a plaintext preview beside ciphertext is refused for what it
          # is, whatever the envelope looks like.
          :ok <- check_preview_policy(message_type, attrs),
-         :ok <- check_secret_policy(conversation_id, message_type, attrs),
+         # ONE conversation read serves the whole create path (MessageService.ConversationRow): the
+         # sealed-vs-plaintext policy below and the stranger budget after it both ride this row, so
+         # message requests add ZERO statements per send to a conversation that is not pending — and
+         # zero to one that is, beyond the Redis counter.
+         conversation_row = conversation_row(conversation_id, sender_user_id),
+         :ok <- check_secret_policy(conversation_row, conversation_id, message_type, attrs),
+         :ok <- check_request_budget(conversation_row),
          :ok <- check_forward_policy(attrs),
          {:ok, client_msg_id} <- client_msg_id(attrs),
          {:ok, media_id} <- media_id(attrs, message_type),
@@ -374,9 +386,7 @@ defmodule MessageService.Messages do
   # sides believe is E2EE. Sealed outside a secret conversation is equally rejected. System
   # messages in a secret chat stay plaintext BY DESIGN: they carry protocol state (encryption
   # enabled / keys changed), never user content.
-  defp check_secret_policy(conversation_id, message_type, attrs) do
-    secret? = conversation_secret?(conversation_id)
-
+  defp check_secret_policy(%{secret: secret?}, conversation_id, message_type, attrs) do
     cond do
       # A NAMED refusal, checked before the generic one: a checklist is a shared mutable list whose
       # state the server must read to tick, and there is no way to do that over ciphertext. Phase 1
@@ -437,10 +447,58 @@ defmodule MessageService.Messages do
 
   # The same one-row read the timeline floor uses (MessageService.ConversationRow) — one query,
   # two columns; unknown or unreadable row → not secret, exactly as before.
-  defp conversation_secret?(conversation_id) do
-    case MessageService.ConversationRow.fetch(conversation_id) do
-      {:ok, %{secret: secret}} -> secret
-      _ -> false
+  # The one conversation read per create. An unreadable or missing row degrades to the PERMISSIVE
+  # shape — not secret, not a request — so a Postgres hiccup can neither reject a legitimate plaintext
+  # send nor invent a stranger budget out of nothing. Every field here has a caller that already
+  # tolerated `:not_found` the same way.
+  defp conversation_row(conversation_id, sender_user_id) do
+    case MessageService.ConversationRow.fetch(conversation_id, sender_user_id) do
+      {:ok, row} -> row
+      _ -> %{secret: false, direct_key: nil, request_pending: false}
+    end
+  end
+
+  # MESSAGE REQUESTS (128) — the per-PAIR send budget.
+  #
+  # A stranger whose first message opened a request gets 3 messages before the
+  # recipient has said anything. The 4th is refused with a NAMED error rather
+  # than dropped, because unlike a block this is a limit the sender can do something about: they can
+  # wait. Nothing about the first 3 changes — same realtime frame, same delivered
+  # receipt, same everything the sender sees today.
+  #
+  # KEYED ON direct_key, the canonical "min:max" pair identity that already exists on the row (047).
+  # No new key derivation, no second query, and it is stable across a conversation being recreated.
+  #
+  # NOT CHARGED to the recipient: `request_pending` was computed excluding this sender, so a recipient
+  # who replies before accepting reads as not-pending and spends nothing.
+  #
+  # FAIL-CLOSED, unlike the general message-send limiter beside it. That one is an abuse guard sitting
+  # on top of membership and block checks, so it may fail open. This limiter IS the control — there is
+  # nothing else bounding how much an unaccepted stranger can write — and it only ever touches
+  # conversations already known to be pending, so a Redis outage delays strangers rather than stopping
+  # the product.
+  #
+  # THE WINDOW IS A DELIBERATE TRADE. The budget is a counter with a TTL, not a permanent total, so a
+  # request ignored for 7 days earns the sender 3 more. That is
+  # the honest reading of "a small budget until accepted" on a fixed-window limiter: an unanswered
+  # request is a dead one, and 3 messages a 7-day period to
+  # someone who has not replied is a rate no recipient will notice and no spammer can use.
+  defp check_request_budget(%{request_pending: false}), do: :ok
+
+  # A direct conversation that somehow has no canonical key cannot be budgeted per pair, and a
+  # per-conversation fallback key would be trivially reset by creating another. Allow rather than
+  # invent: this is unreachable for any conversation the dedup path created.
+  defp check_request_budget(%{direct_key: nil}), do: :ok
+
+  defp check_request_budget(%{direct_key: direct_key}) do
+    case SharedInfra.RateLimiter.check_rate(%{
+           "key" => "message_request:" <> direct_key,
+           "limit" => @request_budget,
+           "window_seconds" => @request_budget_window_seconds,
+           "fail_open" => false
+         }) do
+      :ok -> :ok
+      _ -> {:error, :message_request_limit}
     end
   end
 

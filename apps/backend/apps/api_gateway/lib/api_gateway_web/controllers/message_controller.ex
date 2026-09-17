@@ -175,6 +175,15 @@ defmodule ApiGatewayWeb.MessageController do
           "Sealed payload is malformed, too large, or addresses unknown devices"
         )
 
+      # MESSAGE REQUESTS (128): the stranger has spent their budget on an unaccepted request. 429 with
+      # a retry-after, not a 403 — this is a limit that lifts, either when the recipient accepts or
+      # when the window rolls, and the sender is entitled to know which kind of refusal it is. The
+      # first three messages are unaffected and look exactly as they do today.
+      {:error, :message_request_limit} ->
+        conn
+        |> put_resp_header("retry-after", "3600")
+        |> ErrorResponse.rate_limited("message.request_limit")
+
       # RESTRICTED SHARING (120): the source conversation has forwarding turned off. A DISTINCT code
       # so the client can say why — a generic invalid_request would surface as "something went
       # wrong" on a refusal the user is entitled to understand.
