@@ -11,7 +11,16 @@ defmodule SharedInfra.InternalApi do
   Result-envelope (the wire contract — see docs/09-devops/INTERNAL_API.md):
     * `{:ok, map}`        ⇄ `{"ok": <map>}`              (map keys round-trip to atoms)
     * `{:error, atom}`    ⇄ `{"error": "<atom_name>"}`   (atom preserved via to_existing_atom)
+    * `{:error, atom, detail}` ⇄ `{"error": "<atom_name>", "detail": <detail>}`
     * bare value (e.g. `persistence_enabled?` boolean) ⇄ `{"result": <value>}`
+
+  THE THREE-ELEMENT ERROR EXISTS BECAUSE A REFUSAL SOMETIMES HAS TO CARRY DATA. `checklist_stale`
+  answers with the item's CURRENT state so the client can re-render instead of retrying blind.
+  Before this clause existed such a result fell to the bare-value catch-all and was encoded as
+  `{"result": {:error, :checklist_stale, %{…}}}` — a TUPLE, which `Jason.encode!` cannot encode, so
+  the internal call 500'd and the gateway mapped that to a 503. On device the user saw
+  "service unavailable" for what is a routine 409. Any future error that needs a payload gets it
+  here for free.
 
   All internal responses are HTTP 200 (the ok/error is a DOMAIN result carried in the body, not
   a transport error). Transport-auth failures are 401 (see `TokenPlug`).
@@ -22,6 +31,12 @@ defmodule SharedInfra.InternalApi do
 
   def encode_result({:error, reason}) when is_atom(reason),
     do: %{"error" => Atom.to_string(reason)}
+
+  # An error WITH a payload. The detail is the domain's own map and is encoded as-is — it is a
+  # response body, not free-form user input, so it round-trips through decode_result/2's atomizer
+  # exactly as an {:ok, map} does.
+  def encode_result({:error, reason, detail}) when is_atom(reason),
+    do: %{"error" => Atom.to_string(reason), "detail" => detail}
 
   def encode_result({:error, reason}), do: %{"error" => inspect(reason)}
   def encode_result(value), do: %{"result" => value}
@@ -41,6 +56,11 @@ defmodule SharedInfra.InternalApi do
   def decode_result(envelope, opts \\ [])
 
   def decode_result(%{"ok" => value}, opts), do: {:ok, atomize_keys(value, skip(opts))}
+
+  # Ordered BEFORE the two-element clause: a map carrying "detail" must rebuild the three-element
+  # shape, and `%{"error" => name}` would match it first and silently drop the payload.
+  def decode_result(%{"error" => name, "detail" => detail}, opts) when is_binary(name),
+    do: {:error, safe_existing_atom(name), atomize_keys(detail, skip(opts))}
 
   def decode_result(%{"error" => name}, _opts) when is_binary(name),
     do: {:error, safe_existing_atom(name)}
