@@ -28,12 +28,20 @@ defmodule SharedInfra.Utf16Test do
       assert Utf16.length("क") == 1
       assert byte_size("क") == 3
 
-      # नमस्ते — a FOURTH measure disagrees here: six codepoints (so six UTF-16 units) render as
-      # three grapheme clusters, over eighteen bytes. Entities index units, never graphemes.
+      # नमस्ते — a FOURTH measure disagrees here: six codepoints (so six UTF-16 units) over eighteen
+      # bytes render as only a handful of grapheme clusters. Entities index units, never graphemes.
+      #
+      # The cluster COUNT is deliberately not pinned. Grapheme segmentation comes from the Unicode
+      # tables bundled with the Elixir release, and this very string moved from 4 clusters to 3 when
+      # the conjunct-cluster rule joined स ् त: CI's Elixir 1.18.4 ships Unicode 16 and answers 4,
+      # Elixir 1.20.1 ships Unicode 17 and answers 3. The old `== 3` here therefore asserted the
+      # standard library's VERSION rather than this module's behaviour, and is exactly why this test
+      # passed on a developer machine and failed on CI. The inequality is the part that is actually
+      # true everywhere, and it is the part the entity rules depend on.
       assert Utf16.length("नमस्ते") == 6
       assert length(String.to_charlist("नमस्ते")) == 6
-      assert String.length("नमस्ते") == 3
       assert byte_size("नमस्ते") == 18
+      assert String.length("नमस्ते") < Utf16.length("नमस्ते")
     end
 
     test "a mixed body: the count is the sum of per-codepoint widths" do
