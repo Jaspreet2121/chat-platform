@@ -10,6 +10,7 @@ defmodule MessageService.Messages do
   require Logger
 
   alias MessageService.MediaLinks
+  alias MessageService.DmStreaks
   alias MessageService.MessageStore
   alias MessageService.RichText
 
@@ -280,6 +281,9 @@ defmodule MessageService.Messages do
             case MessageStore.put_message(message_attrs) do
               {:ok, message} ->
                 response = message_response(message) |> with_fresh_poll(message_type, metadata)
+                # BEST FRIENDS (125): the day's both-sides bookkeeping, AFTER the store write.
+                # Direct conversations only, fail-soft — a streak must never fail a send.
+                DmStreaks.record_message(Map.put(attrs, "sender_user_id", sender_user_id))
                 publish_message_created(response)
                 # The inline download link is minted AFTER the publish: the ack (REST response,
                 # socket frame, inbox row) carries it, the Kafka event never does.
