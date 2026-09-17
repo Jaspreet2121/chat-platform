@@ -143,14 +143,18 @@ defmodule NotificationService.PushContext do
 
   Muted chats still count toward the badge (mute silences the alert, not the count) — preserved from
   the old query, matching the app-side reconciler which sums the chat-list unread without a mute
-  filter. A user with no participant rows gets 0 (COALESCE: SUM over zero rows is NULL, and NULL
+  filter. UNACCEPTED MESSAGE REQUESTS (128) do NOT count, and that filter is belt-and-braces rather
+  than load-bearing: the projection never increments a pending row, so the column reads 0 anyway.
+  It is written out because the badge is the one unread surface a user sees without opening the app,
+  and "a request never moves this number" should be true by construction here too, not only upstream. A user with no participant rows gets 0 (COALESCE: SUM over zero rows is NULL, and NULL
   must not become a missing badge field). Errors degrade to 0 WITH a warning; the app reconciles the
   true total on next focus, so a miss self-corrects.
   """
   def total_unread_count(user_id) do
     case Repo.query(
            "SELECT COALESCE(SUM(unread_count), 0)::bigint FROM conversation_participants " <>
-             "WHERE user_id = $1::text::uuid AND left_at IS NULL",
+             "WHERE user_id = $1::text::uuid AND left_at IS NULL " <>
+             "AND request_pending_at IS NULL",
            [user_id]
          ) do
       {:ok, %{rows: [[count]]}} when is_integer(count) and count >= 0 -> count

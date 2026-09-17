@@ -88,11 +88,21 @@ defmodule MessageService.InboxProjection do
     # at 0, and without this clause the increment would then add a phantom unread that nothing ever
     # removes — permanent, because the recount backstop is gated under Scylla. Consulting the same
     # read marks the decrement claims means read-then-increment and increment-then-read converge.
+    # MESSAGE REQUESTS (128): `request_pending_at IS NULL` — an UNACCEPTED request must not badge.
+    # This predicate is the whole of "a request does not badge": the inbox list hides the row and the
+    # push is gated elsewhere, but the counter is a THIRD, independent write path (this Kafka
+    # projection), and the app-icon badge sums exactly this column. Without the clause here a request
+    # would be invisible in the list and silent on the lock screen while still bumping the number on
+    # the app icon, which is the worst of the three outcomes: a notification with nothing behind it.
+    # Accept clears the flag, and from the NEXT message the counter behaves normally; the messages
+    # that arrived while pending are not retro-counted, matching the list, which shows them as
+    # already-there history rather than as unread.
     Repo.query!(
       "UPDATE conversation_participants cp SET " <>
         "unread_count = cp.unread_count + 1, oldest_unread_at = COALESCE(cp.oldest_unread_at, $3) " <>
         "WHERE cp.conversation_id = $1::text::uuid AND cp.left_at IS NULL " <>
         "AND cp.user_id <> $2::text::uuid " <>
+        "AND cp.request_pending_at IS NULL " <>
         "AND NOT EXISTS (SELECT 1 FROM inbox_read_marks m " <>
         "  WHERE m.conversation_id = cp.conversation_id AND m.message_id = $4::text::uuid " <>
         "  AND m.user_id = cp.user_id)",

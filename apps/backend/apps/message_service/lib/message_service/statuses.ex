@@ -12,6 +12,7 @@ defmodule MessageService.Statuses do
           (owner.joined_at < post.created_at AND viewer.joined_at < post.created_at,
            both left_at IS NULL — leaving is a LIVE deny)
         AND NOT either_blocked?(owner, viewer)   (live, both directions)
+        AND NEITHER side's participant row is an unaccepted MESSAGE REQUEST (128)
 
   WHY joined_at (each side's own row), not the conversation's created_at: the surprise being closed is
   "my audience grew retroactively" — someone I meet TOMORROW seeing what I posted TODAY. A late joiner
@@ -130,6 +131,10 @@ defmodule MessageService.Statuses do
       JOIN conversations c ON c.id = me.conversation_id AND c.status = 'active'
       WHERE me.user_id = $1::text::uuid AND me.left_at IS NULL AND me.joined_at < sp.created_at
         AND them.user_id = sp.owner_user_id AND them.left_at IS NULL AND them.joined_at < sp.created_at
+        -- MESSAGE REQUESTS (128): an UNACCEPTED request is not a relationship. Both sides' rows must
+        -- be accepted, exactly as both must be un-left. Without this a stranger would see the whole
+        -- back-catalogue of statuses posted before the request by sending one message.
+        AND me.request_pending_at IS NULL AND them.request_pending_at IS NULL
     )
     AND NOT EXISTS (
       SELECT 1 FROM user_blocks b
@@ -692,6 +697,9 @@ defmodule MessageService.Statuses do
         _ ->
           %{rows: rows} =
             Repo.query!(
+              # 128: the same request clause as audience_sql/0 above. This is the fan-out copy of
+              # the rule, and the two must stay in step — a stranger admitted here would receive a
+              # status frame live even while the read path correctly refused them the post.
               "SELECT DISTINCT me.user_id::text " <>
                 "FROM status_posts sp " <>
                 "JOIN conversation_participants them " <>
@@ -700,6 +708,7 @@ defmodule MessageService.Statuses do
                 "JOIN conversation_participants me " <>
                 "  ON me.conversation_id = them.conversation_id AND me.user_id <> sp.owner_user_id " <>
                 "  AND me.left_at IS NULL AND me.joined_at < sp.created_at " <>
+                "  AND me.request_pending_at IS NULL AND them.request_pending_at IS NULL " <>
                 "WHERE sp.id = $1::text::uuid AND sp.owner_user_id = $2::text::uuid " <>
                 "AND NOT EXISTS (" <>
                 "  SELECT 1 FROM user_blocks b " <>

@@ -17,10 +17,7 @@ defmodule NotificationService.Notifications do
   Returns `{:ok, :applied} | {:ok, :duplicate} | {:error, term}`.
   """
 
-  import Ecto.Query
-
   alias NotificationService.Repo
-  alias NotificationService.Schemas.ConversationParticipantReadModel
   alias NotificationService.Schemas.Notification
   alias NotificationService.Schemas.ProcessedEvent
 
@@ -122,15 +119,44 @@ defmodule NotificationService.Notifications do
     end
   end
 
+  # THE ONE recipient set. It feeds all three legs — the in-app notification rows below, the web-push
+  # sender and the FCM sender — so a recipient removed HERE is removed from every one of them, which is
+  # why the message-request gate lives here rather than three times over in the transports.
+  #
+  # MESSAGE REQUESTS (128): a participant whose `request_pending_at` is set has NOT accepted this
+  # conversation and must not be notified at all — no push on either transport and no in-app row. The
+  # SEALED path needs no separate handling: a sealed message rides this same fan-out and previews
+  # generically, so gating the recipient set covers it.
+  #
+  # WHY A JOIN AND NOT A NEW EVENT FIELD. The obvious alternative was to carry the flag on
+  # `conversation.participant_added.v1` into `conversation_participants_readmodel`. Rejected: this
+  # service's Repo already points at the SAME Postgres that owns `conversation_participants` —
+  # PushContext reads that exact table three times per push for mute and unread — so the authoritative
+  # value is one join away, with no new event version, no backfill for conversations that predate it,
+  # and no second copy of a flag to drift. The readmodel stays what it is, the membership projection;
+  # it is still the authority for WHO is in the conversation, and this join only subtracts.
+  #
+  # LEFT JOIN, deliberately: a readmodel row with no authoritative row yet (the projections are
+  # independent consumers and can be momentarily out of step) reads as NOT pending and is notified.
+  # That is the right default — the readmodel is what says the person is a participant at all, and the
+  # only rows this must suppress are ones positively known to be pending.
   defp active_recipients(conversation_id, sender_user_id) do
-    Repo.all(
-      from(r in ConversationParticipantReadModel,
-        where:
-          r.conversation_id == ^conversation_id and r.active == true and
-            r.user_id != ^sender_user_id,
-        select: r.user_id
+    %Postgrex.Result{rows: rows} =
+      Repo.query!(
+        """
+        SELECT r.user_id::text
+        FROM conversation_participants_readmodel r
+        LEFT JOIN conversation_participants cp
+          ON cp.conversation_id = r.conversation_id AND cp.user_id = r.user_id
+        WHERE r.conversation_id = $1::text::uuid
+          AND r.active = true
+          AND r.user_id <> $2::text::uuid
+          AND cp.request_pending_at IS NULL
+        """,
+        [conversation_id, sender_user_id]
       )
-    )
+
+    Enum.map(rows, fn [user_id] -> user_id end)
   end
 
   # Both event_id and the payload ids are binary_id columns. A non-UUID value is a
