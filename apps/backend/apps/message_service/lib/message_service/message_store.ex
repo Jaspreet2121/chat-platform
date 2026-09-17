@@ -32,6 +32,9 @@ defmodule MessageService.MessageStore do
   # Polls — replace-the-set vote + the uncapped voter lists (optional; Postgres + InMemory).
   @callback poll_vote(message_attrs()) :: message_result()
   @callback list_poll_votes(message_attrs()) :: message_result()
+  # Checklists (126) — tick one item (optimistic on done_at) + append one (optional; Postgres + InMemory).
+  @callback checklist_tick(message_attrs()) :: message_result()
+  @callback checklist_add_item(message_attrs()) :: message_result()
   # Owner-anchored media-download authorization (optional; Postgres only).
   @callback media_download_allowed(message_attrs()) :: message_result()
   @optional_callbacks list_media: 1,
@@ -39,6 +42,8 @@ defmodule MessageService.MessageStore do
                       message_info: 1,
                       poll_vote: 1,
                       list_poll_votes: 1,
+                      checklist_tick: 1,
+                      checklist_add_item: 1,
                       media_download_allowed: 1
 
   def put_message(attrs), do: adapter().put_message(attrs)
@@ -113,6 +118,27 @@ defmodule MessageService.MessageStore do
 
     if function_exported?(store, :list_poll_votes, 1) do
       store.list_poll_votes(attrs)
+    else
+      {:error, :message_unavailable}
+    end
+  end
+
+  # Checklists (optional callbacks; Postgres + InMemory) — same dispatch shape as polls.
+  def checklist_tick(attrs) do
+    store = ensure_loaded_adapter()
+
+    if function_exported?(store, :checklist_tick, 1) do
+      store.checklist_tick(attrs)
+    else
+      {:error, :message_unavailable}
+    end
+  end
+
+  def checklist_add_item(attrs) do
+    store = ensure_loaded_adapter()
+
+    if function_exported?(store, :checklist_add_item, 1) do
+      store.checklist_add_item(attrs)
     else
       {:error, :message_unavailable}
     end
@@ -421,6 +447,7 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
         rows
         |> Enum.map(&response_from_row/1)
         |> with_receipt_counts(client, conversation_id, viewer)
+        |> with_checklists()
 
       {:ok,
        %{
@@ -429,6 +456,28 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
          next_cursor: next_cursor
        }}
     end
+  end
+
+  # CHECKLIST AGGREGATES FOR THE WHOLE PAGE — ONE query, never one per message, and the SAME builder
+  # the Postgres page uses. Polls were never hydrated on this path (a known gap, not touched here);
+  # a checklist that only rendered on the Postgres timeline would be dead on arrival, since
+  # production runs this adapter.
+  defp with_checklists([]), do: []
+
+  defp with_checklists(messages) do
+    summaries = MessageService.MessageStore.PostgresAdapter.checklist_summaries(messages)
+
+    Enum.map(messages, fn message ->
+      case Map.get(summaries, to_string(message.message_id)) do
+        nil -> message
+        aggregate -> Map.put(message, :checklist, aggregate)
+      end
+    end)
+  rescue
+    error ->
+      # A page that renders without its checkboxes beats a timeline that 500s.
+      Logger.warning("checklist hydration skipped: #{inspect(error)}")
+      messages
   end
 
   # TICK COUNTS FOR THE WHOLE PAGE — ONE query, never one per message.
@@ -1008,6 +1057,57 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
   # The same gates as PostgresAdapter.fetch_poll, against the Scylla point-read: live poll message in
   # THIS conversation with a definition — anything else :message_not_found (a voter learns nothing
   # about other conversations' messages).
+  @doc """
+  TICK one checklist item under the SCYLLA store (126).
+
+  The message is resolved with the SCYLLA point read — never `fetch/1`, which reads the Postgres
+  `messages` table that is FROZEN under this adapter and would answer "no such message" for every
+  live checklist. The ITEM STATE is Postgres either way: `checklist_items` is a relational satellite,
+  exactly as `poll_votes` and `starred_messages` are.
+
+  Every rule (permission, known item, the done_at token) is the Postgres adapter's, applied to the
+  Scylla-resolved message, so the two cannot drift.
+  """
+  @impl true
+  def checklist_tick(attrs) do
+    conversation_id = attr(attrs, "conversation_id")
+
+    with {:ok, message, definition} <- fetch_scylla_checklist(attrs, conversation_id) do
+      MessageService.MessageStore.PostgresAdapter.checklist_tick_resolved(
+        message,
+        definition,
+        attrs
+      )
+    end
+  end
+
+  @impl true
+  def checklist_add_item(attrs) do
+    conversation_id = attr(attrs, "conversation_id")
+
+    with {:ok, message, definition} <- fetch_scylla_checklist(attrs, conversation_id) do
+      MessageService.MessageStore.PostgresAdapter.checklist_add_item_resolved(
+        message,
+        definition,
+        attrs
+      )
+    end
+  end
+
+  defp fetch_scylla_checklist(attrs, conversation_id) do
+    case get_message(attrs) do
+      {:ok,
+       %{message_type: "checklist", deleted_at: nil, conversation_id: ^conversation_id} = message} ->
+        case message.metadata do
+          %{"checklist" => %{} = definition} -> {:ok, message, definition}
+          _ -> {:error, :message_not_found}
+        end
+
+      _ ->
+        {:error, :message_not_found}
+    end
+  end
+
   defp fetch_scylla_poll(attrs, conversation_id) do
     case get_message(attrs) do
       {:ok, %{message_type: "poll", deleted_at: nil, conversation_id: ^conversation_id} = message} ->
@@ -2654,6 +2754,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   import MessageService.ReadReceipts
 
   alias MessageService.Repo
+  alias MessageService.Schemas.ChecklistItem
   alias MessageService.Schemas.Message
   alias MessageService.Schemas.MessageReaction
   alias MessageService.Schemas.MessageReceipt
@@ -2770,6 +2871,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     reactions = reaction_summaries(message_ids, viewer)
     starred = starred_set(message_ids, viewer)
     polls = poll_summaries(rows)
+    checklists = checklist_summaries(rows)
 
     # The viewer half (reciprocity): a viewer who disabled read receipts sees NO read_by_count at all. ONE
     # lookup for the whole page (not per message), applied below.
@@ -2785,6 +2887,7 @@ defmodule MessageService.MessageStore.PostgresAdapter do
         |> Map.merge(Map.get(reactions, message.message_id, %{reactions: [], my_reaction: nil}))
         |> Map.put(:is_starred, MapSet.member?(starred, message.message_id))
         |> merge_poll(Map.get(polls, message.message_id))
+        |> merge_checklist(Map.get(checklists, to_string(message.message_id)))
         |> hide_read_count(show_read)
       end)
 
@@ -3208,6 +3311,287 @@ defmodule MessageService.MessageStore.PostgresAdapter do
 
   # A live poll message in THIS conversation, with its definition. Everything else → :message_not_found
   # (a voter learns nothing about other conversations' messages).
+  @doc """
+  TICK one item (126). Optimistic on `done_at`: the caller states the value it believes is stored
+  and the UPDATE matches on it, so two people tapping the same item cannot flip-flop — the loser is
+  told, with the CURRENT state, and re-renders.
+
+  `{:error, :checklist_stale, item}` carries that current state; `{:error, :checklist_not_allowed}`
+  is the permission refusal (author-only unless `others_can_check`). Membership is the gateway's
+  check and has already run.
+  """
+  @impl true
+  def checklist_tick(attrs) do
+    with {:ok, message, definition} <- fetch_checklist(attrs, attr(attrs, "conversation_id")) do
+      checklist_tick_resolved(message, definition, attrs)
+    end
+  end
+
+  @doc """
+  The tick itself, on an ALREADY-RESOLVED message — so the Scylla adapter, which must resolve
+  through its own point read, applies these exact rules rather than a second copy of them.
+  `message` may be an Ecto struct (this adapter) or a plain response map (Scylla).
+  """
+  def checklist_tick_resolved(message, definition, attrs) do
+    message_id = to_string(cfield(message, :message_id))
+    item_id = attr(attrs, "item_id")
+    user_id = attr(attrs, "user_id")
+    done = attrs["done"] == true
+
+    with :ok <- ensure_may_tick(definition, message, user_id),
+         :ok <- ensure_known_item(definition, message_id, item_id),
+         :ok <- ensure_token_given(attrs),
+         {:ok, current} <- current_item(message_id, item_id),
+         :ok <- ensure_unchanged(current, attrs) do
+      now = DateTime.utc_now()
+
+      Repo.query!(
+        "INSERT INTO checklist_items " <>
+          "(message_id, item_id, conversation_id, done, done_by, done_at, created_at, updated_at) " <>
+          "VALUES ($1::text::uuid, $2, $3::text::uuid, $4, $5::text::uuid, $6, $7, $7) " <>
+          "ON CONFLICT (message_id, item_id) DO UPDATE SET " <>
+          "  done = EXCLUDED.done, done_by = EXCLUDED.done_by, done_at = EXCLUDED.done_at, " <>
+          "  updated_at = EXCLUDED.updated_at",
+        [
+          message_id,
+          item_id,
+          to_string(cfield(message, :conversation_id)),
+          done,
+          if(done, do: user_id),
+          if(done, do: now),
+          now
+        ]
+      )
+
+      {:ok, checklist_reply(message, definition)}
+    end
+  end
+
+  @doc """
+  APPEND one item (126). Author, or anyone when `others_can_add`. The cap counts the definition's
+  items PLUS the already-added ones, which is the only place both numbers are known.
+  """
+  @impl true
+  def checklist_add_item(attrs) do
+    with {:ok, message, definition} <- fetch_checklist(attrs, attr(attrs, "conversation_id")) do
+      checklist_add_item_resolved(message, definition, attrs)
+    end
+  end
+
+  @doc "The append itself, on an already-resolved message. See `checklist_tick_resolved/3`."
+  def checklist_add_item_resolved(message, definition, attrs) do
+    message_id = to_string(cfield(message, :message_id))
+    user_id = attr(attrs, "user_id")
+    text = attr(attrs, "text")
+
+    with :ok <- ensure_may_add(definition, message, user_id),
+         {:ok, position} <- next_position(definition, message_id) do
+      now = DateTime.utc_now()
+
+      Repo.query!(
+        "INSERT INTO checklist_items " <>
+          "(message_id, item_id, conversation_id, text, position, done, created_at, updated_at) " <>
+          "VALUES ($1::text::uuid, $2, $3::text::uuid, $4, $5, false, $6, $6)",
+        [
+          message_id,
+          "a#{position}",
+          to_string(cfield(message, :conversation_id)),
+          text,
+          position,
+          now
+        ]
+      )
+
+      {:ok, checklist_reply(message, definition)}
+    end
+  end
+
+  # A resolved message is an Ecto struct here and a plain map from Scylla; both answer these.
+  defp cfield(message, key) when is_map(message),
+    do: Map.get(message, key) || Map.get(message, Atom.to_string(key))
+
+  defp checklist_reply(message, definition) do
+    message_id = to_string(cfield(message, :message_id))
+
+    %{
+      message_id: message_id,
+      conversation_id: to_string(cfield(message, :conversation_id)),
+      checklist:
+        MessageService.Checklists.build_aggregate(definition, checklist_rows_of(message_id))
+    }
+  end
+
+  # A live checklist message in THIS conversation, with a definition — anything else is
+  # :message_not_found (a caller learns nothing about other conversations' messages, the same rule
+  # fetch_poll follows).
+  defp fetch_checklist(attrs, conversation_id) do
+    case fetch(attrs) do
+      %Message{message_type: "checklist", deleted_at: nil, conversation_id: ^conversation_id} =
+          message ->
+        case message.metadata do
+          %{"checklist" => %{} = definition} -> {:ok, message, definition}
+          _ -> {:error, :message_not_found}
+        end
+
+      _ ->
+        {:error, :message_not_found}
+    end
+  end
+
+  defp ensure_may_tick(definition, message, user_id) do
+    if MessageService.Checklists.may_tick?(
+         definition,
+         to_string(cfield(message, :sender_user_id)),
+         user_id
+       ),
+       do: :ok,
+       else: {:error, :checklist_not_allowed}
+  end
+
+  defp ensure_may_add(definition, message, user_id) do
+    if MessageService.Checklists.may_add?(
+         definition,
+         to_string(cfield(message, :sender_user_id)),
+         user_id
+       ),
+       do: :ok,
+       else: {:error, :checklist_not_allowed}
+  end
+
+  # The item must exist — in the definition, or as an already-added row. Ticking an id that is
+  # neither is a client bug, not a new item.
+  defp ensure_known_item(definition, message_id, item_id) do
+    defined? = Enum.any?(Map.get(definition, "items", []), &(Map.get(&1, "id") == item_id))
+
+    added? =
+      match?(
+        %{rows: [[_]]},
+        Repo.query!(
+          "SELECT 1 FROM checklist_items WHERE message_id = $1::text::uuid AND item_id = $2 " <>
+            "AND text IS NOT NULL",
+          [message_id, item_id]
+        )
+      )
+
+    if defined? or added?, do: :ok, else: {:error, :checklist_item_not_found}
+  end
+
+  # The token is REQUIRED, not optional: a tick that did not read the item first is exactly the
+  # blind overwrite this contract exists to prevent. Absent (not merely null) is refused.
+  defp ensure_token_given(attrs) do
+    if attrs["if_unchanged_since_given"] == true,
+      do: :ok,
+      else: {:error, :checklist_stale_token_missing}
+  end
+
+  defp current_item(message_id, item_id) do
+    case Repo.query!(
+           "SELECT done, done_by::text, done_at FROM checklist_items " <>
+             "WHERE message_id = $1::text::uuid AND item_id = $2",
+           [message_id, item_id]
+         ) do
+      %{rows: [[done, done_by, done_at]]} ->
+        {:ok, %{id: item_id, done: done, done_by: done_by, done_at: done_at}}
+
+      _ ->
+        {:ok, %{id: item_id, done: false, done_by: nil, done_at: nil}}
+    end
+  end
+
+  # The heart of the concurrency contract: the stored done_at must equal the one the caller believed.
+  # Compared as ISO strings so a client round-trips exactly what it was given.
+  defp ensure_unchanged(current, attrs) do
+    stored = MessageService.Checklists.iso8601(current.done_at)
+    claimed = normalize_token(attrs["if_unchanged_since"])
+
+    if stored == claimed do
+      :ok
+    else
+      {:error, :checklist_stale,
+       %{
+         id: current.id,
+         done: current.done == true,
+         done_by: current.done_by,
+         done_at: stored
+       }}
+    end
+  end
+
+  defp normalize_token(nil), do: nil
+  defp normalize_token(""), do: nil
+  defp normalize_token(value) when is_binary(value), do: value
+  defp normalize_token(value), do: MessageService.Checklists.iso8601(value)
+
+  defp next_position(definition, message_id) do
+    defined = length(Map.get(definition, "items", []))
+
+    %{rows: [[added, highest]]} =
+      Repo.query!(
+        "SELECT count(*)::int, COALESCE(max(position), 0)::int FROM checklist_items " <>
+          "WHERE message_id = $1::text::uuid AND text IS NOT NULL",
+        [message_id]
+      )
+
+    if defined + added >= MessageService.Checklists.max_items() do
+      {:error, :checklist_too_many_items}
+    else
+      {:ok, highest + 1}
+    end
+  end
+
+  defp checklist_rows_of(message_id) do
+    ChecklistItem
+    |> where([i], i.message_id == ^message_id)
+    |> Repo.all()
+  end
+
+  # Batched checklist aggregates for a history page — the poll_summaries twin: ONE query for every
+  # checklist message on the page, built against each message's own stored definition.
+  @doc "Batched checklist aggregates for a page — public so the Scylla list path reuses this exact one."
+  def checklist_summaries(rows) do
+    checklist_rows =
+      Enum.filter(rows, fn m ->
+        checklist_definition(m) != nil
+      end)
+
+    if checklist_rows == [] do
+      %{}
+    else
+      ids = Enum.map(checklist_rows, &message_id_of/1)
+
+      items =
+        ChecklistItem
+        |> where([i], i.message_id in ^ids)
+        |> Repo.all()
+        |> Enum.group_by(&to_string(&1.message_id))
+
+      Map.new(checklist_rows, fn m ->
+        id = message_id_of(m)
+
+        {id,
+         MessageService.Checklists.build_aggregate(
+           checklist_definition(m),
+           Map.get(items, to_string(id), [])
+         )}
+      end)
+    end
+  end
+
+  # Works for an Ecto Message struct (Postgres page) and for a plain response map (Scylla page).
+  defp checklist_definition(m) do
+    metadata = Map.get(m, :metadata) || Map.get(m, "metadata")
+
+    case metadata do
+      %{"checklist" => %{} = definition} -> definition
+      _ -> nil
+    end
+  end
+
+  defp message_id_of(m), do: to_string(Map.get(m, :message_id) || Map.get(m, "message_id"))
+
+  defp merge_checklist(response, nil), do: response
+  defp merge_checklist(response, aggregate), do: Map.put(response, :checklist, aggregate)
+
   defp fetch_poll(attrs, conversation_id) do
     case fetch(attrs) do
       %Message{message_type: "poll", deleted_at: nil, conversation_id: ^conversation_id} = message ->

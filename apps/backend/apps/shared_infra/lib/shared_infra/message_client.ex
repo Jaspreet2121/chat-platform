@@ -73,6 +73,9 @@ defmodule SharedInfra.MessageClient do
   # Polls: replace-the-set vote + the uncapped voter lists.
   @callback vote_poll(attrs()) :: result()
   @callback list_poll_votes(attrs()) :: result()
+  # Checklists (126) — tick one item, append one. Optional so an existing partial double compiles.
+  @callback tick_checklist_item(attrs()) :: result()
+  @callback add_checklist_item(attrs()) :: result()
   # Status (082): posts, the one-query feed, per-owner list, owner delete, media-authz support.
   @callback post_status(attrs()) :: result()
   @callback status_feed(attrs()) :: result()
@@ -113,6 +116,8 @@ defmodule SharedInfra.MessageClient do
                       expired_view_once_media: 1,
                       vote_poll: 1,
                       list_poll_votes: 1,
+                      tick_checklist_item: 1,
+                      add_checklist_item: 1,
                       post_status: 1,
                       status_feed: 1,
                       list_status_posts: 1,
@@ -144,6 +149,12 @@ defmodule SharedInfra.MessageClient do
   def event_outbox_get(attrs), do: normalize(adapter().event_outbox_get(attrs))
   def event_outbox_acknowledge(attrs), do: normalize(adapter().event_outbox_acknowledge(attrs))
   def vote_poll(attrs), do: normalize(adapter().vote_poll(attrs))
+
+  @doc "Tick/untick one checklist item → %{message_id, conversation_id, checklist}."
+  def tick_checklist_item(attrs), do: normalize(adapter().tick_checklist_item(attrs))
+
+  @doc "Append one checklist item → the same shape."
+  def add_checklist_item(attrs), do: normalize(adapter().add_checklist_item(attrs))
   def list_poll_votes(attrs), do: normalize(adapter().list_poll_votes(attrs))
   def post_status(attrs), do: normalize(adapter().post_status(attrs))
   def status_feed(attrs), do: normalize(adapter().status_feed(attrs))

@@ -64,6 +64,12 @@ defmodule SharedInfra.MessageClientHttp do
   def vote_poll(attrs), do: post("/internal/polls/vote", attrs)
 
   @impl true
+  def tick_checklist_item(attrs), do: post("/internal/checklists/tick", attrs)
+
+  @impl true
+  def add_checklist_item(attrs), do: post("/internal/checklists/add_item", attrs)
+
+  @impl true
   def list_poll_votes(attrs), do: post("/internal/polls/votes", attrs)
 
   @impl true

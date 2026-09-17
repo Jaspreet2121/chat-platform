@@ -121,6 +121,14 @@ defmodule MessageService.HTTP.Router do
   end
 
   # Polls — vote (replace-the-set) + the uncapped voter lists (membership gated in the gateway).
+  post "/internal/checklists/tick" do
+    send_result(conn, MessageService.Checklists.tick(body(conn)))
+  end
+
+  post "/internal/checklists/add_item" do
+    send_result(conn, MessageService.Checklists.add_item(body(conn)))
+  end
+
   post "/internal/polls/vote" do
     send_result(conn, MessageService.Polls.vote(body(conn)))
   end

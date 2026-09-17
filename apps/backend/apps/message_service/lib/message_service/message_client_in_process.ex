@@ -65,6 +65,12 @@ defmodule MessageService.MessageClientInProcess do
   def vote_poll(attrs), do: MessageService.Polls.vote(attrs)
 
   @impl true
+  def tick_checklist_item(attrs), do: MessageService.Checklists.tick(attrs)
+
+  @impl true
+  def add_checklist_item(attrs), do: MessageService.Checklists.add_item(attrs)
+
+  @impl true
   def list_poll_votes(attrs), do: MessageService.Polls.list_votes(attrs)
 
   @impl true

@@ -10,6 +10,7 @@ defmodule MessageService.Messages do
   require Logger
 
   alias MessageService.MediaLinks
+  alias MessageService.Checklists
   alias MessageService.DmStreaks
   alias MessageService.MessageStore
   alias MessageService.RichText
@@ -377,6 +378,13 @@ defmodule MessageService.Messages do
     secret? = conversation_secret?(conversation_id)
 
     cond do
+      # A NAMED refusal, checked before the generic one: a checklist is a shared mutable list whose
+      # state the server must read to tick, and there is no way to do that over ciphertext. Phase 1
+      # says so explicitly rather than letting it read as "plaintext rejected", which would send a
+      # client looking for the wrong fix.
+      secret? and message_type == "checklist" ->
+        {:error, :checklist_not_in_sealed}
+
       secret? and message_type not in @sealed_types ->
         {:error, :secret_plaintext_rejected}
 
@@ -988,7 +996,10 @@ defmodule MessageService.Messages do
       is_starred: Map.get(message, :is_starred, false),
       # Poll aggregate (question/options with counts + capped voter_ids/total_voters) — merged by the
       # list path for poll messages, nil otherwise. Computed from poll_votes at fetch time, ALWAYS.
-      poll: Map.get(message, :poll)
+      poll: Map.get(message, :poll),
+      # Checklist aggregate (items + done_count/total) — merged by the list path for checklist
+      # messages, nil otherwise. Computed from the definition + checklist_items at fetch time, ALWAYS.
+      checklist: Map.get(message, :checklist)
     }
   end
 
@@ -996,6 +1007,9 @@ defmodule MessageService.Messages do
   # outbox row renders the poll immediately.
   defp with_fresh_poll(response, "poll", %{"poll" => definition}),
     do: Map.put(response, :poll, MessageService.Polls.zero_aggregate(definition))
+
+  defp with_fresh_poll(response, "checklist", %{"checklist" => definition}),
+    do: Map.put(response, :checklist, Checklists.zero_aggregate(definition))
 
   defp with_fresh_poll(response, _message_type, _metadata), do: response
 
@@ -1037,6 +1051,17 @@ defmodule MessageService.Messages do
 
   # A poll's body IS the question (validated) — any client that doesn't understand message_type "poll"
   # (older builds, /v1 SDK consumers) degrades to showing the question as plain text.
+  # A checklist's body IS its title — plain text, so search, the inbox preview and push treat it as
+  # an ordinary text message and need no checklist-awareness at all.
+  defp message_body(attrs, "checklist", _caption) do
+    case get_attr(attrs, "body") do
+      title ->
+        if Checklists.valid_title?(title),
+          do: {:ok, String.trim(title)},
+          else: {:error, :checklist_invalid_title}
+    end
+  end
+
   defp message_body(attrs, "poll", _caption) do
     with {:ok, definition} <- poll_definition(attrs) do
       {:ok, definition["question"]}
@@ -1104,6 +1129,15 @@ defmodule MessageService.Messages do
   defp metadata(attrs, "poll", _media_id, _caption) do
     with {:ok, definition} <- poll_definition(attrs) do
       {:ok, %{"poll" => definition}}
+    end
+  end
+
+  # Checklist metadata is SERVER-REBUILT, exactly like a poll's: items with server-generated stable
+  # ids and the two permission booleans, client extras discarded. Mutable state (ticks, added items)
+  # lives in `checklist_items`, never here.
+  defp metadata(attrs, "checklist", _media_id, _caption) do
+    with {:ok, definition} <- checklist_definition(attrs) do
+      {:ok, %{"checklist" => definition}}
     end
   end
 
@@ -1211,6 +1245,20 @@ defmodule MessageService.Messages do
   end
 
   defp check_preview_policy(_message_type, _attrs), do: :ok
+
+  # The client-supplied checklist definition (metadata.checklist), validated + normalized by
+  # MessageService.Checklists.
+  defp checklist_definition(attrs) do
+    case get_attr(attrs, "metadata") do
+      %{} = metadata ->
+        Checklists.normalize_definition(
+          Map.get(metadata, "checklist") || Map.get(metadata, :checklist) || %{}
+        )
+
+      _ ->
+        {:error, :checklist_no_items}
+    end
+  end
 
   # The client-supplied poll definition (metadata.poll), validated + normalized by MessageService.Polls.
   defp poll_definition(attrs) do

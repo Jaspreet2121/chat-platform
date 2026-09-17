@@ -685,7 +685,7 @@ defmodule MessageService.MessageStoreBoundaryTest do
 
     # The FULL public shape, enrichment keys included — this is what a client actually decodes.
     expected_keys =
-      ~w(body caption conversation_id created_at deleted_at delivered_by_count edited_at is_starred
+      ~w(body caption checklist conversation_id created_at deleted_at delivered_by_count edited_at is_starred
          media_id message_id message_type metadata my_reaction poll reactions read_by_count
          reply_to_message_id sender_user_id status view_once)a
 
