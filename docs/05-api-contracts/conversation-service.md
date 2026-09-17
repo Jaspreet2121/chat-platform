@@ -84,6 +84,82 @@ Response `200`:
 }
 ```
 
+## Best Friends (125) — DM streaks and the mutual pin
+
+### Streaks are SERVER-computed; stop computing them on the device
+
+A streak is the number of consecutive local-calendar days on which **both sides** of a direct chat
+sent at least one message. A gap resets it to 1 at the next such day.
+
+Android computed this locally and every device counted from its own history, so the same DM read 4
+on one handset and 6 on another. **The server is now the source of truth.** Read `streak_days` off
+the conversation row and display it; do not recompute, and do not reconcile it against local
+history.
+
+`GET /api/v1/conversations` rows carry:
+
+| field | type | meaning |
+|---|---|---|
+| `streak_days` | int | Consecutive both-sides days. **Always present.** `0` on a group, and `0` on a direct chat with no counted day yet. |
+| `best_friend` | bool | Whether **you** have pinned this chat. Never says whether the other side has. |
+
+### The day boundary is the SENDER's
+
+A message counts toward the day it was sent in, **where it was sent**. Send
+`tz_offset_minutes` on message create — minutes EAST of UTC, the sign
+`-Date.getTimezoneOffset()` produces in JavaScript and `ZoneOffset.getTotalSeconds() / 60` in Java.
+When the field is absent the server uses **UTC**.
+
+```json
+POST /api/v1/conversations/:id/messages
+{ "message_type": "text", "body": "hey", "tz_offset_minutes": 330 }
+```
+
+This matters at the edges of the day: 23:30 UTC is already tomorrow at +05:30, and a message sent
+then should extend *that* day's streak, not the previous one. Offsets outside ±14 hours are ignored
+(UTC is used) so a client cannot choose which day its message lands in. Values may be sent as a
+number or a numeric string.
+
+The choice is deliberately one-sided: attributing a send to the recipient's zone, or to the
+server's, would make the same message count for different days depending on who asked.
+
+### PUT /api/v1/me/best-friend
+
+Pin one direct chat as your best friend, or clear it. **At most one per user** — pinning a second
+replaces the first, with no separate unpin call needed.
+
+```json
+PUT /api/v1/me/best-friend
+{ "conversation_id": "550e8400-e29b-41d4-a716-446655440000" }   // pin
+{ "conversation_id": null }                                      // clear
+```
+
+Response `200`:
+
+```json
+{ "conversation_id": "550e8400-…", "best_friend": true, "mutual": false }
+```
+
+Errors: `403 conversations.forbidden` (not a member), `422 conversations.best_friend_direct_only`
+(a group — there is no pair to be mutual with), `404 conversations.not_found`.
+
+### `best_friend_mutual` (user topic)
+
+**A pin is private until it is returned.** One side pinning tells the other nothing; the inbox row
+carries only your own `best_friend` flag. The moment **both** members have pinned each other, both
+are told at once — because that is now a fact about the pair, not about one person.
+
+Emitted on `user:<id>` for **both members and nobody else**, after the write:
+
+```json
+{ "conversation_id": "550e8400-…", "mutual": true }
+```
+
+`mutual: false` is emitted to the same two people when a mutual pin is cleared, so a client that lit
+up does not stay lit. Do not infer mutuality from anything else — the conversation list will never
+tell you what the other person chose.
+
+## GET /api/v1/conversations/:conversation_id
 ## GET /api/v1/conversations/:conversation_id
 
 Returns conversation details.

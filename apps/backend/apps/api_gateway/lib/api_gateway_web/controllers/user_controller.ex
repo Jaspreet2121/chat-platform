@@ -27,6 +27,70 @@ defmodule ApiGatewayWeb.UserController do
   ]
   @ignored_update_fields ["avatar_object_key"]
 
+  @doc """
+  PUT /api/v1/me/best-friend — `{"conversation_id": "<uuid>"}` to pin, `{"conversation_id": null}`
+  to clear. At most one per user; pinning a second replaces the first.
+
+  A mutual pin (both members of the DM have pinned each other) emits `best_friend_mutual` on BOTH
+  members' user topics AFTER the write, and an unpin emits `mutual: false` to the same two. See
+  ApiGatewayWeb.BestFriendEvents.
+  """
+  def set_best_friend(conn, params) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, response} <-
+           SharedInfra.ConversationClient.set_best_friend(%{
+             "user_id" => session.user_id,
+             "conversation_id" => Map.get(params, "conversation_id")
+           }) do
+      conversation_id = cget(response, :conversation_id)
+      mutual = cget(response, :mutual) == true
+
+      # Emitted when the pair BECOMES mutual, and when a pin that was mutual is cleared. A one-sided
+      # pin says nothing to anyone — that is the privacy rule, not an optimisation.
+      if is_binary(conversation_id) do
+        ApiGatewayWeb.BestFriendEvents.emit(
+          conversation_id,
+          cget(response, :member_ids) || [],
+          mutual
+        )
+      end
+
+      json(conn, %{
+        conversation_id: conversation_id,
+        best_friend: cget(response, :best_friend) == true,
+        mutual: mutual
+      })
+    else
+      {:error, :session_invalid} ->
+        ErrorResponse.unauthorized(conn, "auth.unauthorized", "Invalid or missing session")
+
+      {:error, :auth_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "auth.unavailable")
+
+      {:error, :conversation_unavailable} ->
+        ErrorResponse.service_unavailable(conn, "conversations.unavailable")
+
+      {:error, :best_friend_direct_only} ->
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "conversations.best_friend_direct_only",
+          "Only a direct chat can be a best friend"
+        )
+
+      {:error, :conversation_membership_forbidden} ->
+        ErrorResponse.forbidden(
+          conn,
+          "conversations.forbidden",
+          "Not a member of this conversation"
+        )
+
+      _ ->
+        ErrorResponse.not_found(conn, "conversations.not_found", "Conversation not found")
+    end
+  end
+
   def me(conn, params) do
     if user_profile_persistence_enabled?() do
       current_profile_from_db(conn, params)
@@ -702,4 +766,9 @@ defmodule ApiGatewayWeb.UserController do
 
   defp session_invalid(conn),
     do: ErrorResponse.unauthorized(conn, "auth.session_invalid", "Session token is invalid")
+
+  # Atom-or-string read: the in-process client answers atom keys, the HTTP one rehydrates them, and a
+  # test double may use either.
+  defp cget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp cget(_map, _key), do: nil
 end

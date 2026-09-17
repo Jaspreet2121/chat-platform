@@ -222,6 +222,9 @@ defmodule ApiGatewayWeb.Router do
 
     get "/me", UserController, :me
     patch "/me", UserController, :update_me
+    # BEST FRIENDS (125): at most one pinned DM per user; null clears it. A mutual pin emits
+    # best_friend_mutual on both members' user topics.
+    put "/me/best-friend", UserController, :set_best_friend
 
     # Phone → profile lookup for direct chat (session-gated in the controller). A literal one-segment
     # path, so it never collides with the two-segment "/:user_id/profile" below.
@@ -292,6 +295,7 @@ defmodule ApiGatewayWeb.Router do
     pipe_through :api
 
     post "/discover", NearbyController, :discover
+
     # 114: publish-only (the background worker). Same path as the DELETE below — POST publishes a
     # fix, DELETE removes it — so the client has one presence resource, not two.
     post "/presence", NearbyController, :publish
