@@ -104,6 +104,9 @@ services:
       SMS_TEMPLATE_LOGIN_ID: ${SMS_TEMPLATE_LOGIN_ID:-}
       # OTP message body ({code} → the OTP). Leave unset to use the built-in DLT-approved default.
       SMS_OTP_TEMPLATE: ${SMS_OTP_TEMPLATE:-}
+      # Android SMS Retriever app hashes, comma-separated and ordered (one per signing cert:
+      # sideload, upload, and Play App Signing). Unset → the plain OTP body, unchanged.
+      SMS_RETRIEVER_APP_HASHES: ${SMS_RETRIEVER_APP_HASHES:-}
       # Send the bare 10-digit number (drop 91) when true. Default false.
       SMS_STRIP_COUNTRY_CODE: ${SMS_STRIP_COUNTRY_CODE:-false}
     expose: ["4101"]

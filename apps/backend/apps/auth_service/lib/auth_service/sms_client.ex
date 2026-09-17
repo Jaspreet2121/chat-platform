@@ -41,6 +41,14 @@ defmodule AuthService.SmsClient do
       templateid: cfg[:template_login_id]
     ]
 
+    # ONE line per send, and it names only SHAPE: how many retriever hashes rode along and how long
+    # the body was. NEVER the code and NEVER the number — an OTP in a log is an OTP in a log
+    # aggregator, and a phone number there is a different disclosure again.
+    Logger.info(
+      "otp sms built hashes=#{length(AuthService.SmsRetriever.hashes())} " <>
+        "len=#{byte_size(Keyword.fetch!(params, :text))}"
+    )
+
     req = [
       method: http_method(cfg),
       url: url,
@@ -72,12 +80,24 @@ defmodule AuthService.SmsClient do
   end
 
   @doc """
-  The OTP message body: the configured template (`SMS_OTP_TEMPLATE`, default = the DLT-approved LOGIN
-  template) with every `{code}` placeholder replaced by `code`. Must resolve to the DLT-approved wording
-  verbatim, or the provider rejects it (ErrorCode 024).
+  The OTP message body AS SENT: the configured template (`SMS_OTP_TEMPLATE`, default = the
+  DLT-approved LOGIN template) with every `{code}` placeholder replaced by `code`, then decorated
+  for the Android SMS Retriever (`AuthService.SmsRetriever`) when app hashes are configured.
+
+  The template must resolve to the DLT-approved wording verbatim, or the provider rejects it
+  (ErrorCode 024). The retriever decoration adds a `<#>` prefix and trailing hash lines AROUND that
+  wording — the approved text itself is untouched.
   """
   @spec otp_text(String.t()) :: String.t()
-  def otp_text(code) do
+  def otp_text(code), do: AuthService.SmsRetriever.decorate(otp_body(code))
+
+  @doc """
+  The UNDECORATED body — the configured template with `{code}` substituted, and nothing else. Public
+  because the boot-time length check measures a representative body through it, and because the
+  retriever decoration is asserted against it in the tests.
+  """
+  @spec otp_body(String.t()) :: String.t()
+  def otp_body(code) do
     template = config()[:otp_template] || @default_otp_template
     String.replace(to_string(template), "{code}", to_string(code))
   end

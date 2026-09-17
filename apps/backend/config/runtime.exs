@@ -79,6 +79,12 @@ config :auth_service, :sms,
   strip_country_code: System.get_env("SMS_STRIP_COUNTRY_CODE") in ["true", "1", "yes"],
   # Message body template; `{code}` is replaced with the OTP. Must match the DLT-approved wording.
   otp_template: System.get_env("SMS_OTP_TEMPLATE"),
+  # ANDROID SMS RETRIEVER (2026-09-19): comma-separated 11-character app hashes, in order. Each is
+  # derived from a SIGNING CERTIFICATE, so one source APK signed two ways has two hashes — the
+  # sideloaded build and the Play build — and every configured hash is appended on its own line so
+  # ONE message serves both during a rollout. Play App Signing adds a third, from Google's cert,
+  # which is exactly why this is configuration. Unset → today's plain body, unchanged.
+  retriever_app_hashes: System.get_env("SMS_RETRIEVER_APP_HASHES"),
   country_prefix: System.get_env("SMS_COUNTRY_PREFIX") || "91"
 
 # Runtime config — evaluated at BOOT (in a release) / after compile (in mix). Only the :prod

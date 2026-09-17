@@ -7,6 +7,11 @@ defmodule AuthService.Application do
   def start(_type, _args) do
     # Runtime env read at boot (never config.exs-baked — the release trap). Count logged, values never.
     AuthService.ReviewerLogins.load()
+
+    # ONE boot-time check: would the configured SMS Retriever hashes push the OTP body over the
+    # 140-byte limit? A split message costs double AND never matches, and no per-send log line
+    # would make that obvious. Never raises; returns a size nobody needs here.
+    _ = AuthService.SmsRetriever.warn_if_oversized(&AuthService.SmsClient.otp_body/1)
     Supervisor.start_link(children(), strategy: :one_for_one, name: AuthService.Supervisor)
   end
 
