@@ -574,6 +574,151 @@ defmodule ConversationService.Participants do
     end
   end
 
+  @doc """
+  BEST FRIEND (125) — the per-user pin, at most ONE. `conversation_id` nil clears it.
+
+  Stored as `conversation_participants.best_friend_at`, mirroring pinned_at/archived_at (076). On
+  the participant row on purpose: a user cannot pin a conversation they are not in — there is no row
+  to set, so the authz is the schema rather than a check that could be forgotten — and "has the
+  other member pinned me back?" is the same table, one join.
+
+  → `{:ok, %{conversation_id, best_friend: bool, mutual: bool, member_ids: [...]}}`. `member_ids` is
+  the DM's two members, which is exactly who may be told about a mutual pin; the caller broadcasts
+  to those and no one else. A group is refused (:best_friend_direct_only): there is no pair to be
+  mutual with.
+  """
+  def set_best_friend(attrs) do
+    with {:ok, user_id} <- required_attr(attrs, "user_id") do
+      case Map.get(attrs, "conversation_id") || Map.get(attrs, :conversation_id) do
+        nil -> clear_best_friend(user_id)
+        "" -> clear_best_friend(user_id)
+        conversation_id -> set_best_friend(conversation_id, user_id)
+      end
+    end
+  end
+
+  defp set_best_friend(conversation_id, user_id) do
+    if not conversation_persistence_enabled?() do
+      {:ok, %{conversation_id: conversation_id, best_friend: true, mutual: false, member_ids: []}}
+    else
+      with :ok <- ensure_direct(conversation_id),
+           :ok <- ensure_member(conversation_id, user_id) do
+        # ONE per user: the old pin is cleared in the same transaction as the new one, so a crash
+        # between them cannot leave two.
+        {:ok, _} =
+          ConversationService.Repo.transaction(fn ->
+            ConversationService.Repo.query!(
+              "UPDATE conversation_participants SET best_friend_at = NULL " <>
+                "WHERE user_id = $1::text::uuid AND best_friend_at IS NOT NULL " <>
+                "AND conversation_id <> $2::text::uuid",
+              [user_id, conversation_id]
+            )
+
+            ConversationService.Repo.query!(
+              "UPDATE conversation_participants SET best_friend_at = now() " <>
+                "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid " <>
+                "AND left_at IS NULL AND best_friend_at IS NULL",
+              [conversation_id, user_id]
+            )
+          end)
+
+        {:ok,
+         %{
+           conversation_id: conversation_id,
+           best_friend: true,
+           mutual: mutual?(conversation_id),
+           member_ids: member_ids(conversation_id)
+         }}
+      end
+    end
+  end
+
+  # Clearing needs no conversation id — a user has at most one. The response still names the
+  # conversation that WAS pinned, because that is the topic the mutual:false frame belongs to.
+  defp clear_best_friend(user_id) do
+    if not conversation_persistence_enabled?() do
+      {:ok, %{conversation_id: nil, best_friend: false, mutual: false, member_ids: []}}
+    else
+      previous = current_best_friend(user_id)
+
+      ConversationService.Repo.query!(
+        "UPDATE conversation_participants SET best_friend_at = NULL " <>
+          "WHERE user_id = $1::text::uuid AND best_friend_at IS NOT NULL",
+        [user_id]
+      )
+
+      {:ok,
+       %{
+         conversation_id: previous,
+         best_friend: false,
+         mutual: false,
+         member_ids: if(previous, do: member_ids(previous), else: [])
+       }}
+    end
+  end
+
+  defp current_best_friend(user_id) do
+    case ConversationService.Repo.query!(
+           "SELECT conversation_id::text FROM conversation_participants " <>
+             "WHERE user_id = $1::text::uuid AND best_friend_at IS NOT NULL LIMIT 1",
+           [user_id]
+         ) do
+      %{rows: [[conversation_id]]} -> conversation_id
+      _ -> nil
+    end
+  end
+
+  # Mutual = every active member of the DM has pinned it. For a direct conversation that is both
+  # sides; written as a count so a malformed row cannot read as mutual.
+  defp mutual?(conversation_id) do
+    case ConversationService.Repo.query!(
+           "SELECT count(*)::int, count(*) FILTER (WHERE best_friend_at IS NOT NULL)::int " <>
+             "FROM conversation_participants " <>
+             "WHERE conversation_id = $1::text::uuid AND left_at IS NULL",
+           [conversation_id]
+         ) do
+      %{rows: [[2, 2]]} -> true
+      _ -> false
+    end
+  end
+
+  defp member_ids(conversation_id) do
+    %{rows: rows} =
+      ConversationService.Repo.query!(
+        "SELECT user_id::text FROM conversation_participants " <>
+          "WHERE conversation_id = $1::text::uuid AND left_at IS NULL ORDER BY 1",
+        [conversation_id]
+      )
+
+    Enum.map(rows, &hd/1)
+  end
+
+  defp ensure_direct(conversation_id) do
+    case ConversationService.Repo.query!(
+           "SELECT type FROM conversations WHERE id = $1::text::uuid",
+           [conversation_id]
+         ) do
+      %{rows: [["direct"]]} -> :ok
+      %{rows: [[_other]]} -> {:error, :best_friend_direct_only}
+      _ -> {:error, :conversation_not_found}
+    end
+  rescue
+    _ -> {:error, :conversation_not_found}
+  end
+
+  defp ensure_member(conversation_id, user_id) do
+    case ConversationService.Repo.query!(
+           "SELECT 1 FROM conversation_participants " <>
+             "WHERE conversation_id = $1::text::uuid AND user_id = $2::text::uuid AND left_at IS NULL",
+           [conversation_id, user_id]
+         ) do
+      %{rows: [[1]]} -> :ok
+      _ -> {:error, :conversation_membership_forbidden}
+    end
+  rescue
+    _ -> {:error, :conversation_membership_forbidden}
+  end
+
   # The user's pin count EXCLUDING this conversation — so re-pinning an already-pinned chat is idempotent, and
   # pinning a 3rd still succeeds. `left_at IS NULL`: a chat the user left doesn't consume a pin slot. Fail-OPEN
   # on a count glitch (don't wrongly block a legitimate pin).

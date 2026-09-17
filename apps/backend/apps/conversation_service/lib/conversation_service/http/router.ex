@@ -114,6 +114,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.Participants.set_pin(body(conn)))
   end
 
+  post "/internal/participants/set_best_friend" do
+    send_result(conn, ConversationService.Participants.set_best_friend(body(conn)))
+  end
+
   post "/internal/conversations/set_group_profile" do
     send_result(conn, ConversationService.Conversations.set_group_profile(body(conn)))
   end

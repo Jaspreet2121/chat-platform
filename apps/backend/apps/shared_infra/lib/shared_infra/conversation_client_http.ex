@@ -22,6 +22,9 @@ defmodule SharedInfra.ConversationClientHttp do
   def list_conversations(attrs), do: post("/internal/conversations/list", attrs)
 
   @impl true
+  def set_best_friend(attrs), do: post("/internal/participants/set_best_friend", attrs)
+
+  @impl true
   def inbox_rows(attrs), do: post("/internal/conversations/inbox_rows", attrs)
 
   @impl true

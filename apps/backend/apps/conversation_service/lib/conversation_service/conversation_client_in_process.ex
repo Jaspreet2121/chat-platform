@@ -74,6 +74,9 @@ defmodule ConversationService.ConversationClientInProcess do
   def set_pin(attrs), do: Participants.set_pin(attrs)
 
   @impl true
+  def set_best_friend(attrs), do: Participants.set_best_friend(attrs)
+
+  @impl true
   def create_tag(attrs), do: ConversationTags.create_tag(attrs)
 
   @impl true

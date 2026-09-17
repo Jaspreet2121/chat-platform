@@ -18,6 +18,8 @@ defmodule SharedInfra.ConversationClient do
 
   @callback create_conversation(attrs()) :: result()
   @callback list_conversations(attrs()) :: result()
+  # BEST FRIENDS (125): the per-user pin. Optional so an existing partial double keeps compiling.
+  @callback set_best_friend(attrs()) :: result()
   @callback inbox_rows(attrs()) :: result()
   @callback shares_conversation?(attrs()) :: result()
   @callback get_conversation(attrs()) :: result()
@@ -107,7 +109,8 @@ defmodule SharedInfra.ConversationClient do
   @callback direct_peer_blocked?(attrs()) :: result()
 
   # Optional so existing test stubs of this behaviour don't all need it; the real adapters implement it.
-  @optional_callbacks get_conversation_app: 1,
+  @optional_callbacks set_best_friend: 1,
+                      get_conversation_app: 1,
                       set_encryption: 1,
                       secret_conversations_of: 1,
                       get_call_conversation: 1,
@@ -158,6 +161,9 @@ defmodule SharedInfra.ConversationClient do
 
   def create_conversation(attrs), do: adapter().create_conversation(attrs)
   def list_conversations(attrs), do: adapter().list_conversations(attrs)
+
+  @doc "Pin (or clear) the caller's best friend → %{conversation_id, best_friend, mutual, member_ids}."
+  def set_best_friend(attrs), do: adapter().set_best_friend(attrs)
 
   @doc """
   The inbox row for ONE conversation as seen by EACH of `user_ids` — one round-trip for a whole fan-out.

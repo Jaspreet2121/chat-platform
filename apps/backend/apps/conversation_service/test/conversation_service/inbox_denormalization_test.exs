@@ -192,11 +192,15 @@ defmodule ConversationService.InboxDenormalizationTest do
     assert Map.keys(row) |> Enum.sort() ==
              [
                :archived,
+               # BEST FRIENDS (125): the caller's OWN pin, and the pair's streak. Both always
+               # present — a client reads one shape whatever the conversation type is.
+               :best_friend,
                :conversation_id,
                :group_avatar_media_id,
                :last_message_kind,
                :last_message_preview,
                :pinned,
+               :streak_days,
                :tag_ids,
                :title,
                :type,

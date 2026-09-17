@@ -601,11 +601,16 @@ defmodule ConversationService.Conversations do
          gp.avatar_media_id::text,
          (cp.pinned_at IS NOT NULL),
          (cp.archived_at IS NOT NULL),
-         COALESCE(tg.tag_ids, ARRAY[]::text[])
+         COALESCE(tg.tag_ids, ARRAY[]::text[]),
+         -- BEST FRIENDS (125). Always present so the row's key set does not vary by type; 0 for a
+         -- group (there is no "both sides") and 0 for a direct chat with no counted day yet.
+         CASE WHEN c.type = 'direct' THEN COALESCE(ds.streak_days, 0) ELSE 0 END,
+         (cp.best_friend_at IS NOT NULL)
   FROM conversations c
   JOIN conversation_participants cp
     ON cp.conversation_id = c.id AND cp.user_id = ANY($1::uuid[]) AND cp.left_at IS NULL
   LEFT JOIN group_profiles gp ON gp.conversation_id = c.id
+  LEFT JOIN dm_streaks ds ON ds.conversation_id = c.id
   -- DENORMALISED (086): preview + unread come from MAINTAINED columns; this query no longer reads
   -- `messages` on any happy path. The preview is conversation-GLOBAL and per-user variation is this
   -- MASK: the newest message is always the LAST to leave any window, so "is the newest visible to
@@ -685,7 +690,9 @@ defmodule ConversationService.Conversations do
                         avatar_media_id,
                         pinned,
                         archived,
-                        tag_ids
+                        tag_ids,
+                        streak_days,
+                        best_friend
                       ] ->
       %{
         user_id: user_id,
@@ -709,7 +716,14 @@ defmodule ConversationService.Conversations do
         # that change rarely). Carrying the ids here is what lets a tag change reach the user's other
         # devices through the EXISTING :pref broadcast: pref_mutation recomputes this row, so the frame
         # already carries the new state and no new event or refetch is needed. Filtering is CLIENT-side.
-        tag_ids: tag_ids
+        tag_ids: tag_ids,
+        # Consecutive days both sides messaged (125). 0 on groups and on a DM with no counted day —
+        # never absent, so a client reads one shape.
+        streak_days: streak_days,
+        # Whether the CALLER has pinned this chat as their best friend. Per-user, like pinned above;
+        # whether the other side pinned back is told by the best_friend_mutual event, never by this
+        # row (which would leak the other member's private choice into every list fetch).
+        best_friend: best_friend
       }
     end)
   end
