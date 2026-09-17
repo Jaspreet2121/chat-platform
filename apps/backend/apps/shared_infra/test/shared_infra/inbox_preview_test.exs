@@ -51,6 +51,13 @@ defmodule SharedInfra.InboxPreviewTest do
         assert InboxPreview.preview_text("secret content", type) == nil
       end
     end
+
+    # CHECKLIST is the ONE addition to the text kinds (2026-09-18): its body is the title the author
+    # typed. A poll stays in the list above on purpose — see preview_text/2's comment.
+    test "a checklist's TITLE is a preview, and it is the only kind that changed" do
+      assert InboxPreview.preview_text("Weekend shop", "checklist") == "Weekend shop"
+      assert InboxPreview.preview_text("Pizza or curry?", "poll") == nil
+    end
   end
 
   describe "message_kind/2" do

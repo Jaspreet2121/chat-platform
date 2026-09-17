@@ -18,8 +18,11 @@ defmodule SharedInfra.InboxPreviewChecklistTest do
     assert InboxPreview.message_kind("checklist", nil) == "checklist"
   end
 
-  test "a POLL's question is its preview — the same gap, fixed with it" do
-    assert InboxPreview.preview_text("Pizza or curry?", "poll") == "Pizza or curry?"
+  # A poll was given the same clause on 2026-09-18 and it was REVERTED on 2026-09-20: `preview_text/2`
+  # names "poll" in its never-leak guard as a known non-text kind, and that guard predates the
+  # change. The kind label is what a client renders a poll row from.
+  test "a POLL still yields nil — its subtitle comes from the kind, not the body" do
+    assert InboxPreview.preview_text("Pizza or curry?", "poll") == nil
     assert InboxPreview.message_kind("poll", nil) == "poll"
   end
 

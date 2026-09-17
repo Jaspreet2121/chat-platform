@@ -36,12 +36,16 @@ defmodule SharedInfra.InboxPreview do
   def preview_text(body, nil) when is_binary(body) and body != "", do: body
   def preview_text(body, "call") when is_binary(body) and body != "", do: body
 
-  # A CHECKLIST's body is its title and a POLL's body is its question — both plain text the author
-  # typed, and both are what the row should read. Without these clauses they fell to the catch-all
-  # and the list showed no subtitle at all, so a client had to fill the title from its own copy of
-  # the message (found on device for checklists; polls have had the same gap since they shipped).
+  # A CHECKLIST's body is its TITLE — plain text the author typed, and what the row should read.
+  # Without this clause it fell to the catch-all and the list showed no subtitle at all, so the
+  # client filled the title in from its own copy of the message (found on device, 2026-09-18).
+  #
+  # A POLL IS DELIBERATELY NOT HERE. Its body is the question, and adding it looks like the same
+  # fix — but `preview_text/2`'s contract is that every type NOT named here yields nil, and "poll"
+  # is named in the never-leak guard as a known non-text kind whose subtitle the client renders from
+  # `last_message_kind`. A clause for it was added and reverted on 2026-09-20 for exactly that
+  # reason; changing it is a product decision, not a bug fix.
   def preview_text(body, "checklist") when is_binary(body) and body != "", do: body
-  def preview_text(body, "poll") when is_binary(body) and body != "", do: body
 
   def preview_text(_body, _type), do: nil
 
