@@ -210,6 +210,7 @@ defmodule MessageService.DmStreaksTest do
   end
 
   describe "the day boundary" do
+    @tag :postgres_integration
     test "no client offset → UTC, logged once per path" do
       log = capture_log([level: :info], fn -> DmStreaks.local_today(%{}, "conv-1") end)
       assert log =~ "dm streak day=utc conversation=conv-1 reason=no_client_offset"
@@ -220,6 +221,7 @@ defmodule MessageService.DmStreaksTest do
       refute log =~ "dm streak day=utc"
     end
 
+    @tag :postgres_integration
     test "a client offset moves the day, and is logged with its value" do
       log =
         capture_log([level: :info], fn ->
@@ -235,6 +237,7 @@ defmodule MessageService.DmStreaksTest do
       assert DateTime.to_date(DateTime.add(late, 330 * 60, :second)) == ~D[2026-09-18]
     end
 
+    @tag :postgres_integration
     test "an absurd offset is ignored rather than honoured — a caller must not pick their own day" do
       today = DateTime.to_date(DateTime.utc_now())
       assert DmStreaks.local_today(%{"tz_offset_minutes" => 99_999}) == today

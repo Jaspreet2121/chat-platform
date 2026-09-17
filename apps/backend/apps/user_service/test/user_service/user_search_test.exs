@@ -176,6 +176,7 @@ defmodule UserService.UserSearchTest do
     refute card.bio == "DATING-ONLY BIO"
   end
 
+  @tag :postgres_integration
   test "persistence off → empty result, never an error (unit-tier default)" do
     Application.put_env(:user_service, :user_profile_persistence, false)
 

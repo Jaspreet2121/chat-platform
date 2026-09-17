@@ -289,6 +289,7 @@ defmodule RealtimeGateway.ChannelsTest do
     assert reply.code == "realtime.forbidden"
   end
 
+  @tag :postgres_integration
   test "creates a message event through the in-memory message adapter" do
     Application.put_env(:message_service, :message_persistence, true)
     Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
@@ -310,6 +311,7 @@ defmodule RealtimeGateway.ChannelsTest do
     assert reply.status == "active"
   end
 
+  @tag :postgres_integration
   test "creates a media message event through the in-memory message adapter" do
     Application.put_env(:message_service, :message_persistence, true)
     Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
@@ -342,6 +344,7 @@ defmodule RealtimeGateway.ChannelsTest do
            }
   end
 
+  @tag :postgres_integration
   test "media message event carries object_key metadata so other clients can open media" do
     Application.put_env(:message_service, :message_persistence, true)
     Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
@@ -384,6 +387,7 @@ defmodule RealtimeGateway.ChannelsTest do
              "media/user_123/44444444-4444-4444-8444-444444444444/photo.png"
   end
 
+  @tag :postgres_integration
   test "message:update broadcasts message_updated to other clients" do
     Application.put_env(:message_service, :message_persistence, true)
     Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
@@ -416,6 +420,7 @@ defmodule RealtimeGateway.ChannelsTest do
     assert broadcast.status == "edited"
   end
 
+  @tag :postgres_integration
   test "message:delete broadcasts message_deleted to other clients" do
     Application.put_env(:message_service, :message_persistence, true)
     Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
@@ -442,6 +447,7 @@ defmodule RealtimeGateway.ChannelsTest do
     assert broadcast.status == "deleted"
   end
 
+  @tag :postgres_integration
   test "reaction:set persists and broadcasts reaction_updated to other clients" do
     Application.put_env(:message_service, :message_persistence, true)
     Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
@@ -468,6 +474,7 @@ defmodule RealtimeGateway.ChannelsTest do
     assert broadcast.reactions == [%{emoji: "👍", count: 1}]
   end
 
+  @tag :postgres_integration
   test "reaction:remove broadcasts the cleared aggregate" do
     Application.put_env(:message_service, :message_persistence, true)
     Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)

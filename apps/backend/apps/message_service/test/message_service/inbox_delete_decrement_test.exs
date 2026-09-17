@@ -352,6 +352,7 @@ defmodule MessageService.InboxDeleteDecrementTest do
     n
   end
 
+  @tag :postgres_integration
   test "policy: the 3x invariant holds and nil is never fresh" do
     alias MessageService.InboxSettlementPolicy, as: Policy
 

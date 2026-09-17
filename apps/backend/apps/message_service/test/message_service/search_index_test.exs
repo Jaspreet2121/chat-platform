@@ -259,6 +259,7 @@ defmodule MessageService.SearchIndexTest do
   end
 
   describe "commit_decision" do
+    @tag :postgres_integration
     test "a MISSING message_search table RETRIES — code-before-migration must stall, not drop" do
       # The inbox consumer classifies every Postgrex.Error as poison; applied here, a deploy that
       # beats the 094 migration would permanently drop every message's searchability. undefined_table
@@ -270,6 +271,7 @@ defmodule MessageService.SearchIndexTest do
       end)
     end
 
+    @tag :postgres_integration
     test "other deterministic errors are still poison (commit), transient still retries" do
       capture_log(fn ->
         # A constraint violation is in the event's data: retrying forever wedges the partition.

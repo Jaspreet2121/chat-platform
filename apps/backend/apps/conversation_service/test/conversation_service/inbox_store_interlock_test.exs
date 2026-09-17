@@ -139,6 +139,7 @@ defmodule ConversationService.InboxStoreInterlockTest do
     assert {"stale postgres body", _} = row(conversation)
   end
 
+  @tag :postgres_integration
   test "an UNKNOWN backend is treated as NOT Postgres — unset must never mean 'go ahead'" do
     Application.delete_env(:shared_infra, :message_store_backend)
     refute InboxCounters.postgres_authoritative?()
@@ -157,6 +158,7 @@ defmodule ConversationService.InboxStoreInterlockTest do
     end
   end
 
+  @tag :postgres_integration
   test "reconcile_recent reports 0 reconciled rather than claiming work it refused" do
     Application.put_env(:shared_infra, :message_store_backend, "scylla")
 

@@ -90,6 +90,7 @@ defmodule AuthService.ReviewerLoginTest do
     })
   end
 
+  @tag :postgres_integration
   test "load/0 parses the env — count logged, values never; malformed entries dropped" do
     System.put_env(
       "REVIEWER_TEST_LOGINS",
@@ -115,6 +116,7 @@ defmodule AuthService.ReviewerLoginTest do
     refute ReviewerLogins.allowlisted?("+15550100001")
   end
 
+  @tag :postgres_integration
   test "an allowlisted number NEVER reaches the SMS provider; a normal number does" do
     arm_provider_tripwire()
 

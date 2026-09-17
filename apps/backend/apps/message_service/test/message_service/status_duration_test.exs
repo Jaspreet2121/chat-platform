@@ -251,6 +251,7 @@ defmodule MessageService.StatusDurationTest do
   end
 
   describe "the shared enum" do
+    @tag :postgres_integration
     test "is the single Elixir source, and agrees with what the API serves" do
       assert SharedInfra.StatusDuration.allowed() == [6, 12, 24, 48]
       assert SharedInfra.StatusDuration.default() == 24
