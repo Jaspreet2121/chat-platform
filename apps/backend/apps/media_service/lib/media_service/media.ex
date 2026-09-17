@@ -965,6 +965,13 @@ defmodule MediaService.Media do
         # upload: every outcome is {:ok, asset} — a failure logs, the asset stays ready without
         # variants, and the backfill retries it once.
         {:ok, _asset} = Variants.generate_and_record(updated)
+
+        # MAINTENANCE HOP (127): the view-once expiry sweep rides this path because it is frequent
+        # and UNRELATED to view-once opens — the sweep collects what nobody opened, so triggering it
+        # from the open endpoint meant it never ran when it was most needed. Capped at one per
+        # minute per node, unlinked, and swallowing every outcome: an upload is never affected.
+        MediaService.ViewOnceSweepTrigger.maybe_sweep()
+
         {:ok, complete_response(%{"media_id" => updated.id})}
 
       {:error, _changeset} ->

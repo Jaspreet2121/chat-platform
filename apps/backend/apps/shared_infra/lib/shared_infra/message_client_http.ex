@@ -127,6 +127,9 @@ defmodule SharedInfra.MessageClientHttp do
   def expired_view_once_media(attrs), do: post("/internal/view_once/expired", attrs)
 
   @impl true
+  def sweep_view_once_expiry(attrs), do: post("/internal/view_once/sweep", attrs)
+
+  @impl true
   def mark_delivered(attrs), do: post("/internal/receipts/mark_delivered", attrs)
 
   @impl true

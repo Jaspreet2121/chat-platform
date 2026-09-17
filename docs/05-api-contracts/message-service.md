@@ -114,6 +114,43 @@ Media response `201`:
 }
 ```
 
+## View-once expiry (127)
+
+A view-once media message stops being readable 14 days after it is sent, whether or not anyone
+opened it, and its blob is deleted.
+
+### What clients need to know
+
+Nothing changes on the wire. `view_once: true` on a media send behaves exactly as before; the open
+endpoint, the download gate and the `403`/`404` responses are unchanged. This is server-side
+collection only.
+
+### How it works, and why it did not before
+
+The sweep reads a Postgres ledger (`view_once_expiry`), written at send time and deleted when the
+message is first opened. It previously selected from the `messages` table, which is **empty** in
+production under `MESSAGE_STORE_ADAPTER=scylla` — so it had never found a single candidate since
+the feature shipped, while `view_once_opens` shows the feature in daily use. Every unopened
+view-once blob sent before this migration is still in object storage.
+
+### NO BACKFILL — a stated, permanent gap
+
+**View-once messages sent before migration 127 have no ledger row and will never be swept.** Their
+blobs remain in object storage indefinitely.
+
+This is deliberate, not an oversight. Reconstructing those rows would mean scanning every
+conversation partition in Scylla for a boolean flag, and the affected media is already long past
+its 14-day window with no reader — the access gate denies it, so nothing is exposed; only the bytes
+remain. If those bytes ever need reclaiming, it is a one-off storage exercise against object
+storage, not a server feature. Collection is correct **from 127 forward**.
+
+### Scheduling
+
+There is no scheduler in this system. The sweep rides `complete_upload` in the media service, at
+most once per 60 seconds per node. It deliberately does **not** ride the view-once open endpoint,
+which is where it used to live: the sweep exists to collect messages *nobody opened*, so its
+trigger was the one event guaranteed to be absent when it was most needed.
+
 ## Checklists (126)
 
 A checklist is a MESSAGE. `message_type: "checklist"`, `body` is the TITLE in plain text, and the

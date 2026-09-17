@@ -95,16 +95,25 @@ defmodule MessageService.ViewOnce do
         {:error, :sender_cannot_open}
 
       %{conversation_id: resolved_conversation_id, media_id: media_id, sender_user_id: sender} ->
-        %{rows: rows} =
-          Repo.query!(
-            """
-            INSERT INTO view_once_opens (message_id, user_id, conversation_id, opened_at)
-            VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, now())
-            ON CONFLICT (message_id, user_id) DO NOTHING
-            RETURNING opened_at
-            """,
-            [message_id, viewer_id, resolved_conversation_id]
-          )
+        # ONE TRANSACTION for the open AND the ledger delete (127). They cannot disagree: if the
+        # open is recorded, the expiry row is gone, so an opened message can never be swept — and if
+        # anything here rolls back, neither happened.
+        {:ok, rows} =
+          Repo.transaction(fn ->
+            %{rows: rows} =
+              Repo.query!(
+                """
+                INSERT INTO view_once_opens (message_id, user_id, conversation_id, opened_at)
+                VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, now())
+                ON CONFLICT (message_id, user_id) DO NOTHING
+                RETURNING opened_at
+                """,
+                [message_id, viewer_id, resolved_conversation_id]
+              )
+
+            MessageService.ViewOnceLedger.forget(message_id)
+            rows
+          end)
 
         case rows do
           # Inserted: this request is the first open.
@@ -132,42 +141,96 @@ defmodule MessageService.ViewOnce do
   end
 
   @doc """
-  Opportunistic maintenance, run from paths that already touch these rows — there is no cron here.
+  THE EXPIRY SWEEP: purge the blobs of view-once messages whose window passed with nobody opening
+  them.
 
-  Two jobs, both bounded and both best-effort: purge blobs whose view-once window has passed with
-  nobody opening them, and retry blobs a previous open failed to delete (the open never fails on a
-  storage blip, so those retries have to happen somewhere).
+  Reads the LEDGER (`view_once_expiry`, migration 127) — never `messages`, which is empty under the
+  Scylla store and is why this sweep had never seen a candidate in production despite the feature
+  being in daily use (10 real opens, 0 candidates, ever). Batched at #{@sweep_batch}.
+
+  Each purge is OWNER-SCOPED with the row's own `sender_user_id`: `purge_asset` refuses a purge
+  whose expected owner does not match, and the old payload carried bare media ids, so even a
+  working query could not have deleted anything.
+
+  `purged_at` is stamped ONLY after the media service confirms the blob is gone. A failed purge
+  leaves the row unstamped and it is retried on the next sweep — the discipline the status sweep had
+  to learn after stamping-before-purging leaked 22 blobs.
+
+  `dry_run: true` reports exactly what it WOULD purge and touches nothing: no delete, no stamp.
+  That is how this runs the first time in production.
+
+  → `%{candidates: k, purged: n, failed: m, dry_run: bool}`, and ALWAYS logs — including a zero-row
+  run, because "the sweep ran and found nothing" and "the sweep never ran" are the two states this
+  whole slice exists to tell apart.
   """
-  def sweep(purge_fun) when is_function(purge_fun, 1) do
-    expired_unopened_media()
-    |> Enum.each(fn media_id -> purge_fun.(media_id) end)
+  def sweep(opts \\ []) do
+    dry_run? = Keyword.get(opts, :dry_run, false)
+    candidates = MessageService.ViewOnceLedger.due()
 
-    :ok
+    {purged, failed} =
+      if dry_run? do
+        {0, 0}
+      else
+        Enum.reduce(candidates, {0, 0}, fn row, {ok, bad} ->
+          case purge(row) do
+            :ok ->
+              MessageService.ViewOnceLedger.mark_purged(row.message_id)
+              {ok + 1, bad}
+
+            :error ->
+              {ok, bad + 1}
+          end
+        end)
+      end
+
+    Logger.info(
+      "view_once sweep purged=#{purged} failed=#{failed} candidates=#{length(candidates)}" <>
+        if(dry_run?, do: " dry_run=true", else: "")
+    )
+
+    %{candidates: length(candidates), purged: purged, failed: failed, dry_run: dry_run?}
   rescue
     error ->
-      Logger.warning("view_once sweep failed (non-fatal): " <> Exception.format(:error, error, []))
-      :ok
-  end
-
-  @doc "Media ids of view-once messages past the window that nobody opened."
-  def expired_unopened_media do
-    cutoff = DateTime.add(DateTime.utc_now(), -@expiry_days * 86_400, :second)
-
-    %{rows: rows} =
-      Repo.query!(
-        """
-        SELECT m.media_id::text
-        FROM messages m
-        WHERE m.view_once
-          AND m.media_id IS NOT NULL
-          AND m.created_at < $1
-          AND NOT EXISTS (SELECT 1 FROM view_once_opens o WHERE o.message_id = m.message_id)
-        LIMIT #{@sweep_batch}
-        """,
-        [cutoff]
+      Logger.warning(
+        "view_once sweep failed (non-fatal): " <> Exception.format(:error, error, [])
       )
 
-    Enum.map(rows, fn [media_id] -> media_id end)
+      %{candidates: 0, purged: 0, failed: 0, dry_run: Keyword.get(opts, :dry_run, false)}
+  end
+
+  # The owner-scoped delete. A MISSING asset answers {:ok, purged: false}, which IS success here: a
+  # crash between the ledger write and the Scylla put leaves a row whose blob never existed, and
+  # that row must stamp rather than be retried forever.
+  defp purge(row) do
+    case SharedInfra.MediaClient.purge_asset(%{
+           "media_id" => row.media_id,
+           "app_id" => row.app_id,
+           "expected_owner_user_id" => row.sender_user_id
+         }) do
+      {:ok, _} ->
+        :ok
+
+      other ->
+        Logger.warning(
+          "view_once purge failed message=#{row.message_id} media=#{row.media_id}: " <>
+            "#{inspect(other)}"
+        )
+
+        :error
+    end
+  rescue
+    error ->
+      Logger.warning("view_once purge raised message=#{row.message_id}: #{inspect(error)}")
+      :error
+  end
+
+  @doc """
+  Media ids the sweep would act on. Kept for the internal-API contract and now reading the LEDGER,
+  so a caller that still asks this question gets a store-correct answer rather than the empty list
+  the `messages` query always returned.
+  """
+  def expired_unopened_media do
+    MessageService.ViewOnceLedger.due() |> Enum.map(& &1.media_id)
   end
 
   # THROUGH THE CONFIGURED ADAPTER, never a hardcoded Postgres SELECT.
@@ -256,5 +319,4 @@ defmodule MessageService.ViewOnce do
   end
 
   defp expired?(_), do: false
-
 end

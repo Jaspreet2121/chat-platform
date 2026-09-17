@@ -101,6 +101,9 @@ defmodule SharedInfra.MessageClient do
   @callback view_once_state(attrs()) :: result()
   @callback open_view_once(attrs()) :: result()
   @callback expired_view_once_media(attrs()) :: result()
+  # The view-once expiry sweep (127), triggered from the media service's complete_upload. Optional so
+  # an existing partial double keeps compiling.
+  @callback sweep_view_once_expiry(attrs()) :: result()
   # 118: drop a conversation's search-only copy when it turns secret (best-effort at the caller).
   @callback purge_search_index(attrs()) :: result()
   @optional_callbacks message_info: 1,
@@ -114,6 +117,7 @@ defmodule SharedInfra.MessageClient do
                       view_once_state: 1,
                       open_view_once: 1,
                       expired_view_once_media: 1,
+                      sweep_view_once_expiry: 1,
                       vote_poll: 1,
                       list_poll_votes: 1,
                       tick_checklist_item: 1,
@@ -182,6 +186,9 @@ defmodule SharedInfra.MessageClient do
 
   @doc "Media ids of unopened view-once sends past the window → %{media_ids: [...]}. Bounded."
   def expired_view_once_media(attrs), do: normalize(adapter().expired_view_once_media(attrs))
+
+  @doc "Run the view-once expiry sweep → %{candidates, purged, failed, dry_run}."
+  def sweep_view_once_expiry(attrs), do: normalize(adapter().sweep_view_once_expiry(attrs))
   def mark_delivered(attrs), do: normalize(adapter().mark_delivered(attrs))
   def analytics_overview(attrs), do: normalize(adapter().analytics_overview(attrs))
   def analytics_timeseries(attrs), do: normalize(adapter().analytics_timeseries(attrs))

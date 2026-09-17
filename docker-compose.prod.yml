@@ -245,6 +245,12 @@ services:
       MEDIA_MAX_SIZE_BYTES: ${MEDIA_MAX_SIZE_BYTES:-104857600}
       # Object storage via MinIO: the adapter generates presigned URLs against this endpoint/bucket.
       MEDIA_STORAGE_ADAPTER: minio
+      # 127: complete_upload triggers the view-once expiry sweep in the message service. WITHOUT
+      # these two the client boundary falls back to its in-process default — a module that does not
+      # exist in THIS release — so the hop is refused and logged once rather than raising. Uploads
+      # are unaffected either way; the sweep simply does not run.
+      MESSAGE_CLIENT_ADAPTER: http
+      MESSAGE_SERVICE_URL: http://message:4104
       # Internal endpoint for server-side ops; the browser cannot resolve "minio".
       MINIO_ENDPOINT: http://minio:9000
       # Browser-reachable endpoint used ONLY to sign presigned PUT/GET URLs, so the SigV4 host matches

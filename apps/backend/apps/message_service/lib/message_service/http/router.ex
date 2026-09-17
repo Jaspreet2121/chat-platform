@@ -195,6 +195,15 @@ defmodule MessageService.HTTP.Router do
   end
 
   # Owner-anchored message-media download authorization (the gateway's "message" purpose arm).
+  # THE EXPIRY SWEEP (127). `dry_run` reports what it WOULD purge and touches nothing — how this
+  # runs the first time in production.
+  post "/internal/view_once/sweep" do
+    send_result(
+      conn,
+      {:ok, MessageService.ViewOnce.sweep(dry_run: body(conn)["dry_run"] == true)}
+    )
+  end
+
   post "/internal/view_once/state" do
     body = body(conn)
 

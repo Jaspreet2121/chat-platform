@@ -70,6 +70,21 @@ defmodule MessageService.ViewOnceTest do
       [id, conversation_id, @app, sender, media_id, view_once, Integer.to_string(age_days)]
     )
 
+    # THE LEDGER ROW a real send writes (127). This fixture inserts straight into `messages`, which
+    # is the Postgres-adapter shape; the sweep now reads `view_once_expiry` instead, precisely
+    # because `messages` is empty under the store production runs. Writing both here keeps this
+    # suite testing the GATE (its subject) while the sweep's own suite tests the sweep under Scylla.
+    if view_once do
+      Repo.query!(
+        "INSERT INTO view_once_expiry " <>
+          "(message_id, conversation_id, media_id, sender_user_id, app_id, expires_at) " <>
+          "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5::text::uuid, " <>
+          "        now() - ($6::text || ' days')::interval + interval '14 days') " <>
+          "ON CONFLICT (message_id) DO NOTHING",
+        [id, conversation_id, media_id, sender, @app, Integer.to_string(age_days)]
+      )
+    end
+
     %{message_id: id, media_id: media_id, conversation_id: conversation_id}
   end
 

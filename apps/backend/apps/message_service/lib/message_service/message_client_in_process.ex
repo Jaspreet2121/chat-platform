@@ -146,6 +146,10 @@ defmodule MessageService.MessageClientInProcess do
     do: {:ok, %{media_ids: MessageService.ViewOnce.expired_unopened_media()}}
 
   @impl true
+  def sweep_view_once_expiry(attrs),
+    do: {:ok, MessageService.ViewOnce.sweep(dry_run: attrs["dry_run"] == true)}
+
+  @impl true
   def mark_delivered(attrs), do: Receipts.mark_delivered(attrs)
 
   @impl true

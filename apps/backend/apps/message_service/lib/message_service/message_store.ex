@@ -336,6 +336,17 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
       Repo.transaction(fn ->
         {:ok, staged_ids} = stage_webhooks(app_id, attrs)
         event_ids = MessageService.EventOutbox.stage_created(attrs)
+
+        # THE VIEW-ONCE EXPIRY LEDGER (127), in this same transaction and therefore BEFORE the
+        # Scylla put below. The ordering is the safety property: a crash between here and the put
+        # leaves a ROW WITH NO BLOB — a purge that finds nothing, stamps, and moves on — whereas
+        # writing it after the put would leave a BLOB WITH NO ROW, which nothing could ever reclaim.
+        # Non-view-once messages write nothing.
+        MessageService.ViewOnceLedger.record(
+          Map.put(attrs, "app_id", app_id),
+          MessageService.ViewOnce.expiry_days()
+        )
+
         {staged_ids, event_ids}
       end)
 
