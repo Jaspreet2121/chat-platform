@@ -309,14 +309,21 @@ defmodule ApiGatewayWeb.MediaControllerAuthzTest do
 
     test "multipart init also refuses user_asset" do
       conn =
-        MediaController.create_multipart(upload_conn(@member), create_params(%{"purpose" => "user_asset"}))
+        MediaController.create_multipart(
+          upload_conn(@member),
+          create_params(%{"purpose" => "user_asset"})
+        )
 
       assert conn.status == 422
       assert body(conn)["error"]["code"] == "media.purpose_invalid"
     end
 
     test "an UNKNOWN purpose → 422 media.purpose_invalid, a DIFFERENT code from missing" do
-      conn = MediaController.create_upload(upload_conn(@member), create_params(%{"purpose" => "banana"}))
+      conn =
+        MediaController.create_upload(
+          upload_conn(@member),
+          create_params(%{"purpose" => "banana"})
+        )
 
       assert conn.status == 422
       assert body(conn)["error"]["code"] == "media.purpose_invalid"

@@ -38,8 +38,7 @@ defmodule ApiGatewayWeb.ProfilePaymentPresenterTest do
     # after is "user_asset", and the payment card has to keep rendering either.
     def get_download_url(%{"media_id" => id, "purpose" => purpose}),
       do:
-        {:ok,
-         %{download_url: "https://cdn.example/#{Enum.join(List.wrap(purpose), "+")}/#{id}"}}
+        {:ok, %{download_url: "https://cdn.example/#{Enum.join(List.wrap(purpose), "+")}/#{id}"}}
   end
 
   setup do

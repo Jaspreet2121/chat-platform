@@ -134,7 +134,10 @@ defmodule ApiGatewayWeb.EncryptionControllerTest do
     assert message["metadata"] == %{"kind" => "encryption", "state" => state, "by" => @me}
 
     # ...and its message_created rides the conversation topic (SecretChatEvents' own broadcast).
-    assert_receive %Phoenix.Socket.Broadcast{topic: "conversation:" <> @conv, event: "message_created"}
+    assert_receive %Phoenix.Socket.Broadcast{
+      topic: "conversation:" <> @conv,
+      event: "message_created"
+    }
   end
 
   # ONE frame per member, on the USER topics, identical, key-set pinned.
@@ -153,7 +156,12 @@ defmodule ApiGatewayWeb.EncryptionControllerTest do
 
     assert Map.keys(mine) |> Enum.sort() == @frame_keys
     assert mine == theirs
-    assert mine == Map.merge(%{"type" => "conversation_encryption_changed", "conversation_id" => @conv}, expected)
+
+    assert mine ==
+             Map.merge(
+               %{"type" => "conversation_encryption_changed", "conversation_id" => @conv},
+               expected
+             )
   end
 
   defp refute_effects do
@@ -288,6 +296,7 @@ defmodule ApiGatewayWeb.EncryptionControllerTest do
 
     conn = toggle(%{"enabled" => false, "cancel" => true})
     assert conn.status == 200
+
     assert body(conn) == %{
              "enabled" => true,
              "e2ee_disabled" => false,

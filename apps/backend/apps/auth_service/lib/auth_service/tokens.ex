@@ -231,8 +231,11 @@ defmodule AuthService.Tokens do
   # it would put a working session identifier in the log stream.
   defp token_hash_prefix(attrs) do
     case submitted_refresh_token(attrs) do
-      {:ok, refresh_token} -> refresh_token |> hash_token() |> hash_digits() |> String.slice(0, 12)
-      _ -> "none"
+      {:ok, refresh_token} ->
+        refresh_token |> hash_token() |> hash_digits() |> String.slice(0, 12)
+
+      _ ->
+        "none"
     end
   rescue
     _ -> "none"
@@ -244,7 +247,6 @@ defmodule AuthService.Tokens do
       [digits] -> digits
     end
   end
-
 
   defp revoke_persisted_token(attrs) do
     now = DateTime.utc_now()

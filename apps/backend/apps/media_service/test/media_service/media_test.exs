@@ -125,7 +125,14 @@ defmodule MediaService.MediaTest do
   # "user_asset" (113) is INTERNAL — the public whitelists deliberately exclude it, but the STORE must
   # accept it or the server cannot mint a UPI QR at all. That is exactly the shape of the status gap
   # this test exists to catch, so it belongs here.
-  @valid_purposes ["message", "user_avatar", "group_avatar", "status", "sealed_media", "user_asset"]
+  @valid_purposes [
+    "message",
+    "user_avatar",
+    "group_avatar",
+    "status",
+    "sealed_media",
+    "user_asset"
+  ]
 
   test "EVERY valid purpose uploads through the real create path; an unknown one is rejected" do
     for purpose <- @valid_purposes do

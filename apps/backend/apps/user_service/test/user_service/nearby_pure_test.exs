@@ -30,6 +30,7 @@ defmodule UserService.NearbyPureTest do
 
     test "the retention edge and anything past it read as '8h'" do
       assert Nearby.staleness_bucket(28_800) == "8h"
+
       # A row older than the TTL should have been deleted; if one is ever seen it must not read fresh.
       assert Nearby.staleness_bucket(999_999) == "8h"
     end
@@ -102,6 +103,7 @@ defmodule UserService.NearbyPureTest do
       br = bearing_deg * :math.pi() / 180.0
       dlat = distance_m * :math.cos(br) / @earth * 180.0 / :math.pi()
       cos_lat = :math.cos(lat * :math.pi() / 180.0)
+
       dlng =
         if abs(cos_lat) < 1.0e-9,
           do: 0.0,
