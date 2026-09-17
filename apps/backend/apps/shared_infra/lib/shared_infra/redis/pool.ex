@@ -6,8 +6,12 @@ defmodule SharedInfra.Redis.Pool do
 
   THE GAP THIS CLOSES: every rate-limit check used to open a fresh TCP connection (connect, AUTH,
   SELECT, INCR, EXPIRE, close) — `SharedInfra.RateLimiter.RedisAdapter.with_connection/2` — and
-  `SharedInfra.RedisKV` does the same; there was no pool anywhere (`SharedInfra.Redis.Client` is an
-  interface only). The limiter now runs on this pool; RedisKV is the obvious next tenant.
+  `SharedInfra.RedisKV` did the same; there was no pool anywhere (`SharedInfra.Redis.Client` is an
+  interface only). BOTH now run on this pool — the limiter since f420539, RedisKV since 2026-09-18.
+
+  RedisKV is why the worker speaks FULL RESP rather than the limiter's integers and simple strings:
+  its GET returns a BULK string, whose payload may legally contain \r\n. The socket is therefore
+  `packet: :raw` and the reader counts bytes; line framing would cut such a value in half.
 
   Lifecycle: started by a service's application (`{SharedInfra.Redis.Pool, size: 4}`); a second
   start under the same node (two apps of one release both listing it) is `:ignore`d rather than
@@ -49,8 +53,10 @@ defmodule SharedInfra.Redis.Pool do
   end
 
   @doc """
-  Run ONE command on a pooled connection → `{:ok, reply} | {:error, reason}`. Simple replies only
-  (integers, +OK, -ERR) — exactly what the limiter needs (INCR/EXPIRE/TTL).
+  Run ONE command on a pooled connection → `{:ok, reply} | {:error, reason}`. The full RESP value
+  set the two callers need: integers (the limiter's INCR/EXPIRE/TTL), simple strings (+OK), errors,
+  and BULK strings including the `$-1` miss, which answers `{:ok, :null}` rather than an error —
+  RedisKV's GET reports "not found" that way.
   """
   def command(command, timeout \\ nil) when is_list(command) do
     case size() do
@@ -136,7 +142,9 @@ defmodule SharedInfra.Redis.Pool do
              :gen_tcp.connect(
                String.to_charlist(host),
                port,
-               [:binary, active: false, packet: :line],
+               # :raw, NOT :line — a BULK STRING's payload may contain \r\n, and line framing would cut
+               # a value in half. The reader below counts bytes instead.
+               [:binary, active: false, packet: :raw],
                timeout()
              ),
            :ok <- maybe_auth(socket, uri.userinfo),
@@ -177,9 +185,30 @@ defmodule SharedInfra.Redis.Pool do
     end
 
     defp send_command(socket, command) do
-      with :ok <- :gen_tcp.send(socket, encode(command)),
-           {:ok, response} <- :gen_tcp.recv(socket, 0, timeout()) do
-        parse(response)
+      with :ok <- :gen_tcp.send(socket, encode(command)) do
+        read_reply(socket, "")
+      end
+    end
+
+    # Accumulate until a COMPLETE RESP value parses. The one-shot clients do the same; the pool has
+    # to, because it now carries bulk strings (RedisKV's GET) as well as the limiter's integers, and
+    # a bulk reply can arrive across several packets.
+    defp read_reply(socket, buffer) do
+      case parse(buffer) do
+        {:ok, value, _rest} ->
+          {:ok, value}
+
+        {:redis_error, message, _rest} ->
+          {:error, message}
+
+        :incomplete ->
+          case :gen_tcp.recv(socket, 0, timeout()) do
+            {:ok, data} -> read_reply(socket, buffer <> data)
+            {:error, reason} -> {:error, reason}
+          end
+
+        :unexpected ->
+          {:error, :unexpected_redis_response}
       end
     end
 
@@ -195,16 +224,56 @@ defmodule SharedInfra.Redis.Pool do
       ]
     end
 
-    defp parse(":" <> value) do
-      case Integer.parse(String.trim(value)) do
-        {integer, ""} -> {:ok, integer}
-        _ -> {:error, :unexpected_redis_response}
+    defp parse(<<"+", rest::binary>>), do: with_line(rest, fn line, tail -> {:ok, line, tail} end)
+
+    defp parse(<<"-", rest::binary>>),
+      do: with_line(rest, fn line, tail -> {:redis_error, line, tail} end)
+
+    defp parse(<<":", rest::binary>>) do
+      with_line(rest, fn line, tail ->
+        case Integer.parse(line) do
+          {integer, ""} -> {:ok, integer, tail}
+          _ -> :unexpected
+        end
+      end)
+    end
+
+    defp parse(<<"$", rest::binary>>), do: parse_bulk(rest)
+    defp parse(<<>>), do: :incomplete
+    defp parse(_other), do: :unexpected
+
+    defp with_line(bin, fun) do
+      case :binary.split(bin, "\r\n") do
+        [line, tail] -> fun.(line, tail)
+        [_incomplete] -> :incomplete
       end
     end
 
-    defp parse("+" <> value), do: {:ok, String.trim(value)}
-    defp parse("-" <> value), do: {:error, String.trim(value)}
-    defp parse(_response), do: {:error, :unexpected_redis_response}
+    # $-1 is a MISS and must reach the caller as :null, not as an error — RedisKV's GET returns
+    # "not found" that way, and an error would read as "Redis is broken".
+    defp parse_bulk(bin) do
+      case :binary.split(bin, "\r\n") do
+        [len_str, tail] ->
+          case Integer.parse(len_str) do
+            {-1, ""} ->
+              {:ok, :null, tail}
+
+            {len, ""} when len >= 0 ->
+              case tail do
+                # `len` is bound OUTSIDE this match, so it must be PINNED — unpinned it reads as a
+                # new binding and Elixir 1.18 rejects it under --warnings-as-errors.
+                <<data::binary-size(^len), "\r\n", rest::binary>> -> {:ok, data, rest}
+                _ -> :incomplete
+              end
+
+            _ ->
+              :unexpected
+          end
+
+        [_incomplete] ->
+          :incomplete
+      end
+    end
 
     defp redis_url do
       :shared_infra |> SharedInfra.Config.Redis.from_app() |> Keyword.fetch!(:url)

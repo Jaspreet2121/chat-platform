@@ -5,7 +5,14 @@ defmodule SharedInfra.RedisKV do
   `SharedInfra.RateLimiter` is a COUNTER only (INCR/EXPIRE/TTL — integer/simple-string RESP), so it can't
   STORE and return a value. Idempotency needs exactly that, so this adds bulk-string GET on the SAME
   raw-TCP pattern (no new dependency; mirrors the RateLimiter's connect/AUTH/SELECT/encode). One
-  short-lived connection per call, same as the RateLimiter — a pool is a later perf optimization.
+  ON THE POOL since 2026-09-18 (`SharedInfra.Redis.Pool`), which is where the RateLimiter moved in
+  f420539 — this module's own comment had said "a pool is a later perf optimization" ever since.
+  Each call now rides a PERSISTENT socket instead of paying connect + AUTH + SELECT + close, and the
+  pool learned bulk-string replies for this (the limiter only ever needed integers).
+
+  FALLS BACK to the one-shot connection when the pool is not running on this node — the same rule
+  the limiter follows. A service that never starts the pool keeps working exactly as before, which
+  matters because only the gateway starts one.
 
   Best-effort by contract: callers treat any error as a cache miss / no-op (fail-open). Reuses the
   RateLimiter's Redis URL config (`:shared_infra, :redis` ← `RATE_LIMITER_REDIS_URL`/`REDIS_URL`).
@@ -125,15 +132,22 @@ defmodule SharedInfra.RedisKV do
 
   # --- connection ------------------------------------------------------------------------------
 
+  # THE POOL when this node runs one, a one-shot connection when it does not. `fun` is handed a
+  # connection HANDLE — `:pool` or a real socket — and `command/2` dispatches on it, so every caller
+  # above is unchanged and neither path can drift from the other.
   defp with_connection(fun) do
-    case connect(redis_url()) do
-      {:ok, conn} ->
-        result = fun.(conn)
-        :gen_tcp.close(conn)
-        result
+    if SharedInfra.Redis.Pool.started?() do
+      fun.(:pool)
+    else
+      case connect(redis_url()) do
+        {:ok, conn} ->
+          result = fun.(conn)
+          :gen_tcp.close(conn)
+          result
 
-      {:error, reason} ->
-        {:error, reason}
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -185,6 +199,8 @@ defmodule SharedInfra.RedisKV do
   end
 
   # --- RESP ------------------------------------------------------------------------------------
+
+  defp command(:pool, args), do: SharedInfra.Redis.Pool.command(args)
 
   defp command(conn, args) do
     case :gen_tcp.send(conn, encode(args)) do
