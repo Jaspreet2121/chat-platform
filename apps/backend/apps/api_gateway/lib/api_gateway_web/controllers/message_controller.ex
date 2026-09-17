@@ -1,6 +1,8 @@
 defmodule ApiGatewayWeb.MessageController do
   use ApiGatewayWeb, :controller
 
+  require Logger
+
   alias ApiGatewayWeb.ErrorResponse
 
   # SEND RATE LIMIT — 60/minute per USER. Matches RT_WRITE_LIMIT, the realtime socket's write bucket,
@@ -452,6 +454,150 @@ defmodule ApiGatewayWeb.MessageController do
         ErrorResponse.invalid_request(conn, "polls.single_choice")
 
       _ ->
+        invalid_request(conn)
+    end
+  end
+
+  @doc """
+  PATCH /conversations/:id/messages/:message_id/checklist/items/:item_id — tick or untick one item.
+
+  Body: `{"done": bool, "if_unchanged_since": <the item's current done_at, or null>}`. The token is
+  REQUIRED: a tick that did not read the item first is exactly the blind overwrite this contract
+  exists to prevent. A mismatch is `409 checklist.stale` carrying the item's CURRENT state, so the
+  client re-renders instead of retrying into a flip-flop.
+  """
+  def tick_checklist_item(
+        conn,
+        %{
+          "conversation_id" => conversation_id,
+          "message_id" => message_id,
+          "item_id" => item_id
+        } = params
+      ) do
+    checklist_mutation(conn, conversation_id, message_id, item_id, fn user_id ->
+      SharedInfra.MessageClient.tick_checklist_item(%{
+        "conversation_id" => conversation_id,
+        "message_id" => message_id,
+        "item_id" => item_id,
+        "user_id" => user_id,
+        "done" => params["done"],
+        # Map.has_key? — an ABSENT token and a null one mean different things, and `params["x"]`
+        # cannot tell them apart.
+        "if_unchanged_since" => Map.get(params, "if_unchanged_since"),
+        "if_unchanged_since_given" => Map.has_key?(params, "if_unchanged_since")
+      })
+    end)
+  end
+
+  # POST /conversations/:id/messages/:message_id/checklist/items — append one item.
+  # Body: {"text": "..."}. Author, or anyone when others_can_add.
+  def add_checklist_item(
+        conn,
+        %{"conversation_id" => conversation_id, "message_id" => message_id} = params
+      ) do
+    checklist_mutation(conn, conversation_id, message_id, "-", fn user_id ->
+      SharedInfra.MessageClient.add_checklist_item(%{
+        "conversation_id" => conversation_id,
+        "message_id" => message_id,
+        "user_id" => user_id,
+        "text" => params["text"]
+      })
+    end)
+  end
+
+  # ONE path for both checklist mutations: membership, the operation, then the frame — so a tick and
+  # an append cannot drift in authz, broadcast or error mapping.
+  defp checklist_mutation(conn, conversation_id, message_id, item_id, operation) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- authorize_membership(conversation_id, session.user_id),
+         {:ok, response} <- operation.(session.user_id) do
+      checklist = cget(response, :checklist)
+
+      # AFTER the commit, on the CONVERSATION topic (invariant 10 — a mutation of a message goes
+      # where the message lives). The WHOLE items array rides along: clients apply it wholesale,
+      # exactly as they do a poll aggregate, so a missed frame is repaired by any refetch.
+      ApiGatewayWeb.Endpoint.broadcast("conversation:" <> conversation_id, "checklist_updated", %{
+        conversation_id: conversation_id,
+        message_id: message_id,
+        items: cget(checklist, :items) || [],
+        done_count: cget(checklist, :done_count) || 0,
+        total: cget(checklist, :total) || 0
+      })
+
+      Logger.info(
+        "checklist ticked message=#{message_id} item=#{item_id} " <>
+          "done=#{cget(checklist, :done_count)}/#{cget(checklist, :total)} by=#{session.user_id}"
+      )
+
+      json(conn, %{message_id: message_id, checklist: checklist})
+    else
+      {:error, :session_invalid} ->
+        unauthorized(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :message_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_unavailable} ->
+        service_unavailable(conn)
+
+      {:error, :conversation_membership_forbidden} ->
+        Logger.info("checklist skipped message=#{message_id} reason=not_a_member")
+        forbidden(conn)
+
+      {:error, :checklist_not_allowed} ->
+        Logger.info("checklist skipped message=#{message_id} reason=not_allowed")
+
+        ErrorResponse.forbidden(
+          conn,
+          "checklist.not_allowed",
+          "You can't change this checklist"
+        )
+
+      # 409 WITH THE CURRENT STATE — the client re-renders from this rather than refetching blind.
+      {:error, :checklist_stale, item} ->
+        Logger.info("checklist skipped message=#{message_id} reason=stale")
+
+        conn
+        |> put_status(:conflict)
+        |> json(%{
+          error: %{code: "checklist.stale", message: "This item changed — try again"},
+          item: item
+        })
+
+      {:error, :checklist_stale_token_missing} ->
+        Logger.info("checklist skipped message=#{message_id} reason=stale")
+
+        ErrorResponse.invalid_request(conn, "checklist.stale")
+
+      {:error, :checklist_too_many_items} ->
+        Logger.info("checklist skipped message=#{message_id} reason=caps")
+        ErrorResponse.unprocessable_entity(conn, "checklist.too_many_items", "This list is full")
+
+      {:error, :checklist_text_too_long} ->
+        Logger.info("checklist skipped message=#{message_id} reason=caps")
+
+        ErrorResponse.unprocessable_entity(
+          conn,
+          "checklist.text_too_long",
+          "That item is too long"
+        )
+
+      {:error, :checklist_invalid_item} ->
+        ErrorResponse.invalid_request(conn, "checklist.invalid_item")
+
+      {:error, :checklist_item_not_found} ->
+        not_found(conn)
+
+      {:error, :message_not_found} ->
+        not_found(conn)
+
+      other ->
+        Logger.warning("checklist failed message=#{message_id}: #{inspect(other)}")
         invalid_request(conn)
     end
   end

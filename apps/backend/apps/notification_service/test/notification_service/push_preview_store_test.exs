@@ -73,6 +73,60 @@ defmodule NotificationService.PushPreviewStoreTest do
   end
 
   @tag :postgres_integration
+  test "MUT-8 guard (126): a CHECKLIST pushes its TITLE only — no item text, no done_by, no counts" do
+    {conversation, message, sender} = ids()
+
+    MessageStoreFixture.insert_message!(conversation, message, sender,
+      message_type: "checklist",
+      body: "Weekend shop",
+      metadata: %{
+        "checklist" => %{
+          "items" => [
+            %{"id" => "i1", "text" => "divorce lawyer"},
+            %{"id" => "i2", "text" => "eggs"}
+          ],
+          "others_can_check" => true,
+          "others_can_add" => false
+        }
+      }
+    )
+
+    attrs = %{conversation_id: conversation, message_id: message, sender_user_id: sender}
+    assert {:ok, context} = PushContext.message_context(attrs)
+
+    # A checklist is a TEXT message to push — its body is the title, and that is all it sends.
+    assert context.preview == "Weekend shop"
+    assert Map.keys(context) |> Enum.sort() == [:group_name, :preview, :sender]
+
+    data = NotificationService.FcmSender.message_data(context, attrs, 1)
+
+    assert Map.keys(data) |> Enum.sort() ==
+             [
+               "conversation_id",
+               "message_id",
+               "preview",
+               "sender_id",
+               "sender_name",
+               "type",
+               "unread_count"
+             ]
+
+    encoded = Jason.encode!(data)
+    refute encoded =~ "divorce lawyer"
+    refute encoded =~ "eggs"
+    refute encoded =~ "checklist"
+    refute encoded =~ "done_by"
+    refute encoded =~ sender_but_as_done_by(sender)
+    # No count of any kind: "1/2", "done", "total" are all absent.
+    refute encoded =~ "done_count"
+    refute encoded =~ "total"
+  end
+
+  # The sender id legitimately appears as sender_id; this guards against it ALSO appearing as a
+  # done_by value, which is what a leak of item state would look like.
+  defp sender_but_as_done_by(sender), do: "\"done_by\":\"#{sender}\""
+
+  @tag :postgres_integration
   test "MUT-3 guard: SPOILER text is masked out of the preview before it can reach a lock screen" do
     {conversation, message, sender} = ids()
 

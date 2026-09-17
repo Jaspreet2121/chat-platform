@@ -567,6 +567,11 @@ defmodule ApiGatewayWeb.Router do
     # Polls: replace-the-set vote (broadcasts poll_updated) + the uncapped voter lists.
     post "/:message_id/vote", MessageController, :vote
     get "/:message_id/poll-votes", MessageController, :poll_votes
+
+    # Checklists (126): tick one item (optimistic on done_at → 409 checklist.stale) and append one.
+    # Both broadcast checklist_updated on the CONVERSATION topic; neither writes a message event.
+    patch "/:message_id/checklist/items/:item_id", MessageController, :tick_checklist_item
+    post "/:message_id/checklist/items", MessageController, :add_checklist_item
     post "/:message_id/reactions", MessageController, :react
     delete "/:message_id/reactions", MessageController, :unreact
 

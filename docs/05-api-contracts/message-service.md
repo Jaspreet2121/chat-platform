@@ -114,6 +114,130 @@ Media response `201`:
 }
 ```
 
+## Checklists (126)
+
+A checklist is a MESSAGE. `message_type: "checklist"`, `body` is the TITLE in plain text, and the
+items live in `metadata.checklist`. Because the body is the title, search, the inbox preview and
+push notifications treat a checklist as an ordinary text message and need no checklist-awareness.
+
+### Create
+
+```json
+POST /api/v1/conversations/:conversation_id/messages
+{
+  "message_type": "checklist",
+  "body": "Weekend shop",
+  "metadata": {
+    "checklist": {
+      "items": [{ "text": "milk" }, { "text": "eggs" }],
+      "others_can_check": true,
+      "others_can_add": false
+    }
+  }
+}
+```
+
+The server REBUILDS the definition, assigning stable ids (`i1`…`iN`, creation order) and discarding
+client extras — the same treatment a poll definition gets. Both permission flags default to
+**false**: a list the author made is the author's until they say otherwise.
+
+Caps: **30 items** per checklist, **200 characters** per item. Errors:
+`422 checklist.too_many_items`, `422 checklist.text_too_long`, `400 checklist.invalid_item`,
+`400 checklist.no_items`, `400 checklist.invalid_title`.
+
+**Sealed conversations refuse a checklist**: `422 checklist.not_in_sealed`. Ticking requires the
+server to read and write item state, and there is no way to do that over ciphertext. This is a
+phase-1 limit with its own name so a client is not sent looking for the wrong fix.
+
+### The payload
+
+Every message payload for a checklist — the create response, the timeline page — carries the
+aggregate, recomputed from stored state on every read:
+
+```json
+{
+  "message_id": "…",
+  "message_type": "checklist",
+  "body": "Weekend shop",
+  "checklist": {
+    "items": [
+      { "id": "i1", "text": "milk", "done": true,
+        "done_by": "22222222-…", "done_at": "2026-09-18T10:00:00.000000Z" },
+      { "id": "i2", "text": "eggs", "done": false, "done_by": null, "done_at": null }
+    ],
+    "done_count": 1,
+    "total": 2
+  }
+}
+```
+
+**`done_by` is PUBLIC** — visible to every member, exactly as poll voters are. It is a shared list
+and "who did this" is the point of one. **It is NOT a read receipt**: the read-receipt privacy
+setting governs whether you were seen READING, which is a different question from what you chose to
+DO, and no privacy setting composes with `done_by`.
+
+The **inbox preview is the title alone** and **push carries the title alone** — no item text, no
+`done_by`, no counts. The count rides the message payload and the socket frame, and nothing writes
+to the conversation row when an item is ticked.
+
+### Tick an item
+
+```json
+PATCH /api/v1/conversations/:conversation_id/messages/:message_id/checklist/items/:item_id
+{ "done": true, "if_unchanged_since": null }
+```
+
+`if_unchanged_since` is the `done_at` you last saw for that item (`null` when it was not done). It
+is **REQUIRED** — a tick that did not read the item first is exactly the blind overwrite this
+contract prevents. Absent and `null` mean different things; sending no key at all is
+`400 checklist.stale`.
+
+If the stored `done_at` differs, nothing is written and the response is:
+
+```json
+409 {
+  "error": { "code": "checklist.stale", "message": "This item changed — try again" },
+  "item": { "id": "i1", "done": true,
+            "done_by": "22222222-…", "done_at": "2026-09-18T10:00:00.000000Z" }
+}
+```
+
+**Android must handle this by re-rendering from `item`**, not by retrying: two people tapping the
+same row would otherwise flip-flop it. Retry only if the user taps again, with the `done_at` from
+this response as the new token.
+
+Permission: any conversation member when `others_can_check`, otherwise the author only
+(`403 checklist.not_allowed`). A non-member gets `403` from the membership gate before any of this.
+
+### Add an item
+
+```json
+POST /api/v1/conversations/:conversation_id/messages/:message_id/checklist/items
+{ "text": "bread" }
+```
+
+Author, or anyone when `others_can_add`. Added items get ids `a1`, `a2`, … and append after the
+created ones. The 30-item cap counts created plus added.
+
+### `checklist_updated` (conversation topic)
+
+Emitted on `conversation:<id>` after every tick and every add — a mutation of a message goes where
+the message lives. There is **no `message.updated` event**: polls emit none either, and a tick does
+not change the title.
+
+```json
+{
+  "conversation_id": "…",
+  "message_id": "…",
+  "items": [ /* the FULL array, same shape as the payload above */ ],
+  "done_count": 1,
+  "total": 2
+}
+```
+
+Apply the array **wholesale**, exactly as you do a poll aggregate. The frame is an optimisation,
+never the source of truth: a client that misses it and refetches the timeline sees identical state.
+
 ### Rich text (`metadata.font`, `metadata.entities`)
 
 A TEXT body or a MEDIA caption may carry formatting. Both are validated on create and then carried
