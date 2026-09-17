@@ -447,7 +447,7 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
         rows
         |> Enum.map(&response_from_row/1)
         |> with_receipt_counts(client, conversation_id, viewer)
-        |> with_checklists()
+        |> with_aggregates()
 
       {:ok,
        %{
@@ -458,27 +458,33 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
     end
   end
 
-  # CHECKLIST AGGREGATES FOR THE WHOLE PAGE — ONE query, never one per message, and the SAME builder
-  # the Postgres page uses. Polls were never hydrated on this path (a known gap, not touched here);
-  # a checklist that only rendered on the Postgres timeline would be dead on arrival, since
-  # production runs this adapter.
-  defp with_checklists([]), do: []
+  # POLL + CHECKLIST AGGREGATES FOR THE WHOLE PAGE — TWO queries for the page, never one per
+  # message, and the SAME builders the Postgres page uses so the adapters cannot answer differently
+  # for the same rows.
+  #
+  # POLLS WERE NEVER HYDRATED HERE, and production runs this adapter: every poll on a real timeline
+  # rendered with no options and no counts, while the Postgres page (which nothing in production
+  # serves) was correct. Found after prod showed 5 real votes against polls nobody could see.
+  defp with_aggregates([]), do: []
 
-  defp with_checklists(messages) do
-    summaries = MessageService.MessageStore.PostgresAdapter.checklist_summaries(messages)
+  defp with_aggregates(messages) do
+    polls = MessageService.MessageStore.PostgresAdapter.poll_summaries(messages)
+    checklists = MessageService.MessageStore.PostgresAdapter.checklist_summaries(messages)
 
     Enum.map(messages, fn message ->
-      case Map.get(summaries, to_string(message.message_id)) do
-        nil -> message
-        aggregate -> Map.put(message, :checklist, aggregate)
-      end
+      message
+      |> put_aggregate(:poll, Map.get(polls, message.message_id))
+      |> put_aggregate(:checklist, Map.get(checklists, to_string(message.message_id)))
     end)
   rescue
     error ->
-      # A page that renders without its checkboxes beats a timeline that 500s.
-      Logger.warning("checklist hydration skipped: #{inspect(error)}")
+      # A page that renders without its options or checkboxes beats a timeline that 500s.
+      Logger.warning("timeline aggregate hydration skipped: #{inspect(error)}")
       messages
   end
+
+  defp put_aggregate(message, _key, nil), do: message
+  defp put_aggregate(message, key, aggregate), do: Map.put(message, key, aggregate)
 
   # TICK COUNTS FOR THE WHOLE PAGE — ONE query, never one per message.
   #
@@ -3341,17 +3347,44 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     with :ok <- ensure_may_tick(definition, message, user_id),
          :ok <- ensure_known_item(definition, message_id, item_id),
          :ok <- ensure_token_given(attrs),
-         {:ok, current} <- current_item(message_id, item_id),
-         :ok <- ensure_unchanged(current, attrs) do
-      now = DateTime.utc_now()
+         {:ok, token} <- parse_token(attrs),
+         :ok <- write_tick(message, message_id, item_id, user_id, done, token) do
+      {:ok, checklist_reply(message, definition)}
+    end
+  end
 
+  # ONE STATEMENT — the stale check IS the write.
+  #
+  # This used to be a SELECT, an in-Elixir comparison, then an upsert. Two people tapping the same
+  # row could both pass the SELECT before either wrote, and both "succeeded": the second silently
+  # overwrote the first, which is exactly what the token exists to prevent. The check now lives in
+  # the WHERE clause, under the row lock, so the loser writes nothing and is told.
+  #
+  # The SELECT's WHERE is what lets ONE statement serve both arms. Without it an INSERT filtered out
+  # for a non-null token never reaches its own ON CONFLICT clause (no insert, no conflict), so a
+  # legitimate untick wrote nothing. It now proceeds when the caller claims "not done" (token NULL,
+  # so a fresh row is correct) OR when a row matching the claimed token already exists (the conflict
+  # arm then re-checks under the row lock, which is where concurrency is actually decided). A
+  # non-null token with no such row inserts nothing — that claim is false and must not create a row.
+  # `IS NOT DISTINCT FROM` is the null-safe equality both places need (plain `=` is NULL, i.e. never
+  # true, for the common "it was not done" case).
+  defp write_tick(message, message_id, item_id, user_id, done, token) do
+    now = DateTime.utc_now()
+
+    %{num_rows: rows} =
       Repo.query!(
         "INSERT INTO checklist_items " <>
           "(message_id, item_id, conversation_id, done, done_by, done_at, created_at, updated_at) " <>
-          "VALUES ($1::text::uuid, $2, $3::text::uuid, $4, $5::text::uuid, $6, $7, $7) " <>
+          "SELECT $1::text::uuid, $2, $3::text::uuid, $4, $5::text::uuid, $6, $7, $7 " <>
+          "WHERE $8::timestamptz IS NULL OR EXISTS (" <>
+          "  SELECT 1 FROM checklist_items e " <>
+          "  WHERE e.message_id = $1::text::uuid AND e.item_id = $2 " <>
+          "    AND e.done_at IS NOT DISTINCT FROM $8::timestamptz) " <>
           "ON CONFLICT (message_id, item_id) DO UPDATE SET " <>
           "  done = EXCLUDED.done, done_by = EXCLUDED.done_by, done_at = EXCLUDED.done_at, " <>
-          "  updated_at = EXCLUDED.updated_at",
+          "  updated_at = EXCLUDED.updated_at " <>
+          "WHERE checklist_items.done_at IS NOT DISTINCT FROM $8::timestamptz " <>
+          "RETURNING 1",
         [
           message_id,
           item_id,
@@ -3359,11 +3392,53 @@ defmodule MessageService.MessageStore.PostgresAdapter do
           done,
           if(done, do: user_id),
           if(done, do: now),
-          now
+          now,
+          # :unparseable can match no stored value; ~U[1970-01-01] is a timestamp this server never
+          # issues, so it fails the WHERE exactly as an unparseable token should.
+          if(token == :unparseable, do: ~U[1970-01-01 00:00:00.000000Z], else: token)
         ]
       )
 
-      {:ok, checklist_reply(message, definition)}
+    if rows == 1 do
+      :ok
+    else
+      # Nothing was written: somebody else got there first (or the caller's token was never right).
+      # Read the truth and hand it back, so the client re-renders rather than retrying blind.
+      {:ok, current} = current_item(message_id, item_id)
+
+      {:error, :checklist_stale,
+       %{
+         id: current.id,
+         done: current.done == true,
+         done_by: current.done_by,
+         done_at: MessageService.Checklists.iso8601(current.done_at)
+       }}
+    end
+  end
+
+  # The client's token is the ISO string it was given; the column is a timestamptz. Parsing here
+  # means the COMPARISON is on values, not on formatting — a client that re-serialises the timestamp
+  # slightly differently still matches. An unparseable token can match nothing, which is correct: it
+  # is not a value this server ever issued.
+  defp parse_token(attrs) do
+    case attrs["if_unchanged_since"] do
+      nil ->
+        {:ok, nil}
+
+      "" ->
+        {:ok, nil}
+
+      %DateTime{} = value ->
+        {:ok, value}
+
+      value when is_binary(value) ->
+        case DateTime.from_iso8601(value) do
+          {:ok, parsed, _offset} -> {:ok, parsed}
+          _ -> {:ok, :unparseable}
+        end
+
+      _ ->
+        {:ok, :unparseable}
     end
   end
 
@@ -3498,30 +3573,6 @@ defmodule MessageService.MessageStore.PostgresAdapter do
     end
   end
 
-  # The heart of the concurrency contract: the stored done_at must equal the one the caller believed.
-  # Compared as ISO strings so a client round-trips exactly what it was given.
-  defp ensure_unchanged(current, attrs) do
-    stored = MessageService.Checklists.iso8601(current.done_at)
-    claimed = normalize_token(attrs["if_unchanged_since"])
-
-    if stored == claimed do
-      :ok
-    else
-      {:error, :checklist_stale,
-       %{
-         id: current.id,
-         done: current.done == true,
-         done_by: current.done_by,
-         done_at: stored
-       }}
-    end
-  end
-
-  defp normalize_token(nil), do: nil
-  defp normalize_token(""), do: nil
-  defp normalize_token(value) when is_binary(value), do: value
-  defp normalize_token(value), do: MessageService.Checklists.iso8601(value)
-
   defp next_position(definition, message_id) do
     defined = length(Map.get(definition, "items", []))
 
@@ -3634,7 +3685,12 @@ defmodule MessageService.MessageStore.PostgresAdapter do
   # Batched poll aggregates for a history page (the reaction_summaries twin): ONE votes query for all
   # the page's poll messages, built against each message's own stored definition. Cold loads are
   # correct by construction — this reads the same rows a vote write just committed.
-  defp poll_summaries(rows) do
+  @doc """
+  Batched poll aggregates for a page — public for the SAME reason `checklist_summaries/1` is: the
+  Scylla list path reuses this exact builder, so the two adapters cannot answer differently for the
+  same rows.
+  """
+  def poll_summaries(rows) do
     poll_rows =
       Enum.filter(rows, fn m ->
         m.message_type == "poll" and is_map(m.metadata) and is_map(m.metadata["poll"])
