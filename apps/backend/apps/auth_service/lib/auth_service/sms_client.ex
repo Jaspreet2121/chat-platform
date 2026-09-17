@@ -21,10 +21,42 @@ defmodule AuthService.SmsClient do
   # Default = the DLT-approved LOGIN template, verbatim, with `{code}` where the OTP is substituted.
   @default_otp_template "Dear user, your login OTP is {code} 1500BC"
 
-  @doc "Send the OTP `code` to `number`. `:ok` on ErrorCode 000, else `{:error, reason}` (logged)."
+  @doc """
+  Send the OTP `code` to `number`. `:ok` on ErrorCode 000, else `{:error, reason}` (logged).
+
+  024 FALLBACK: the retriever decoration (`<#>` + hash lines) changes the text, and the provider matches
+  the DLT template EXACTLY. If a DECORATED body comes back 024, the same code is resent ONCE as the plain
+  approved body (`otp_body/1`) — until the DLT template covers the decorated shape, a user still gets
+  their OTP, just without Android auto-reading it. An undecorated body that is rejected is returned as
+  is: there is nothing plainer to fall back to, and never more than two attempts.
+  """
   @spec send_otp(String.t(), String.t()) :: :ok | {:error, term()}
   def send_otp(number, code) do
     cfg = config()
+    text = otp_text(code)
+    plain = otp_body(code)
+
+    case deliver(
+           cfg,
+           number,
+           text,
+           if(text == plain, do: 0, else: length(AuthService.SmsRetriever.hashes()))
+         ) do
+      {:error, {"024", _message}} when text != plain ->
+        Logger.warning(
+          "otp sms decorated body rejected as a template mismatch (024) — resending the plain approved body"
+        )
+
+        deliver(cfg, number, plain, 0)
+
+      result ->
+        result
+    end
+  end
+
+  # One provider round-trip for an already-built `text`. `hashes` is how many retriever hash lines this
+  # particular body carries (0 for the plain resend) — it only feeds the shape log line.
+  defp deliver(cfg, number, text, hashes) do
     url = to_string(cfg[:base_url]) <> to_string(cfg[:send_path])
 
     params = [
@@ -35,7 +67,7 @@ defmodule AuthService.SmsClient do
       flashsms: cfg[:flashsms],
       number:
         format_number(number, cfg[:country_prefix] || "91", cfg[:strip_country_code] == true),
-      text: otp_text(code),
+      text: text,
       route: cfg[:route],
       EntityId: cfg[:entity_id],
       templateid: cfg[:template_login_id]
@@ -44,10 +76,7 @@ defmodule AuthService.SmsClient do
     # ONE line per send, and it names only SHAPE: how many retriever hashes rode along and how long
     # the body was. NEVER the code and NEVER the number — an OTP in a log is an OTP in a log
     # aggregator, and a phone number there is a different disclosure again.
-    Logger.info(
-      "otp sms built hashes=#{length(AuthService.SmsRetriever.hashes())} " <>
-        "len=#{byte_size(Keyword.fetch!(params, :text))}"
-    )
+    Logger.info("otp sms built hashes=#{hashes} len=#{byte_size(Keyword.fetch!(params, :text))}")
 
     req = [
       method: http_method(cfg),
