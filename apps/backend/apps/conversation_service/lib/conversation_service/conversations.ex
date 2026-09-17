@@ -484,16 +484,31 @@ defmodule ConversationService.Conversations do
 
   defp list_conversations_from_db(attrs) do
     with {:ok, user_id} <- required_attr(attrs, "user_id") do
-      # ?archived=true → the archived list; otherwise the default list EXCLUDES archived chats entirely.
-      scope = if archived_filter?(attrs), do: "archived", else: "active"
-      {:ok, %{conversations: list_rows_with_activity(user_id, scope)}}
+      {:ok, %{conversations: list_rows_with_activity(user_id, list_scope(attrs))}}
     end
   rescue
     Ecto.Query.CastError -> {:error, :conversation_invalid}
   end
 
+  # THE THREE READ LISTS, resolved from the caller's params to one scope value. `?scope=requests` wins
+  # over `?archived=true` if both are somehow sent — a request is not an archived chat, and resolving
+  # the ambiguity here rather than in the SQL keeps the predicate total. Anything unrecognised falls to
+  # 'active', so a typo shows the normal inbox rather than an empty or a leaking one.
+  defp list_scope(attrs) do
+    cond do
+      requests_filter?(attrs) -> "requests"
+      archived_filter?(attrs) -> "archived"
+      true -> "active"
+    end
+  end
+
   defp archived_filter?(attrs) do
     get_attr(attrs, "archived") in [true, "true", "1", "yes"]
+  end
+
+  defp requests_filter?(attrs) do
+    get_attr(attrs, "scope") == "requests" or
+      get_attr(attrs, "requests") in [true, "true", "1", "yes"]
   end
 
   @doc """
@@ -535,6 +550,19 @@ defmodule ConversationService.Conversations do
   Do two users SHARE any active conversation? — the "contacts" relation for presence (WhatsApp semantics: you
   can see the presence of people you're in a conversation with). Both must be ACTIVE participants (left_at
   NULL) of the SAME conversation. Read-only self-join; returns `%{shares: boolean}`.
+
+  AN UNACCEPTED MESSAGE REQUEST IS NOT A SHARED CONVERSATION (128). Both sides' rows must have a NULL
+  `request_pending_at`. This one predicate is the "contacts" tier for THREE surfaces — last-seen
+  presence (`SharedInfra.PresenceAuthz`), the profile photo and the payment details
+  (`ApiGatewayWeb.ProfilePresenter`) — so without the clause a stranger would buy all three by sending
+  a single message the recipient never agreed to receive. The status audience enforces the same rule
+  in its own SQL (`MessageService.Statuses`), which is the fourth surface and the only one that does
+  not come through here.
+
+  NOT changed here, and worth knowing: this predicate still does not filter `conversations.status`, so
+  an archived or soft-deleted conversation continues to count as shared. That is pre-existing and
+  orthogonal; narrowing it would silently remove presence and photo visibility from real relationships,
+  which is a separate decision from this one.
   """
   def shares_conversation?(attrs) do
     with {:ok, user_a} <- required_attr(attrs, "user_a"),
@@ -557,8 +585,8 @@ defmodule ConversationService.Conversations do
                   SELECT 1
                   FROM conversation_participants pa
                   JOIN conversation_participants pb ON pb.conversation_id = pa.conversation_id
-                  WHERE pa.user_id = $1 AND pa.left_at IS NULL
-                    AND pb.user_id = $2 AND pb.left_at IS NULL
+                  WHERE pa.user_id = $1 AND pa.left_at IS NULL AND pa.request_pending_at IS NULL
+                    AND pb.user_id = $2 AND pb.left_at IS NULL AND pb.request_pending_at IS NULL
                 )
                 """,
                 [a, b]
@@ -605,7 +633,11 @@ defmodule ConversationService.Conversations do
          -- BEST FRIENDS (125). Always present so the row's key set does not vary by type; 0 for a
          -- group (there is no "both sides") and 0 for a direct chat with no counted day yet.
          CASE WHEN c.type = 'direct' THEN COALESCE(ds.streak_days, 0) ELSE 0 END,
-         (cp.best_friend_at IS NOT NULL)
+         (cp.best_friend_at IS NOT NULL),
+         -- MESSAGE REQUESTS (128). ALWAYS selected, like the best-friend flag above, so a pending row
+         -- and an accepted row have the IDENTICAL key set — a client that reads one shape cannot be
+         -- surprised by the other, and the accept transition changes a value, never a schema.
+         (cp.request_pending_at IS NOT NULL)
   FROM conversations c
   JOIN conversation_participants cp
     ON cp.conversation_id = c.id AND cp.user_id = ANY($1::uuid[]) AND cp.left_at IS NULL
@@ -643,12 +675,18 @@ defmodule ConversationService.Conversations do
   ) tg ON true
   WHERE c.status = 'active'
     AND ($2::uuid IS NULL OR c.id = $2::uuid)
-    -- ARCHIVE SCOPE ($3): 'active' hides archived (the default list), 'archived' shows only archived (the
-    -- ?archived=true list), 'any' ignores it (the single-conversation broadcast / unread_before, so an
-    -- archived row still flows to update the client's flags). ARCHIVED rows are EXCLUDED, not sorted last.
+    -- SCOPE ($3) — one parameter, four TOTAL values, every row landing in exactly one list:
+    --   'active'   the default list. Hides archived AND hides UNACCEPTED REQUESTS (128).
+    --   'archived' the ?archived=true list. Still hides requests: a request is not archivable, and a
+    --              request leaking into the archive list is the same leak as into the main one.
+    --   'requests' the ?scope=requests list. ONLY unaccepted requests, whatever their archive flag.
+    --   'any'      ignores both (the single-conversation broadcast), so a client's flags update live
+    --              for archived AND pending rows alike. ARCHIVED and PENDING rows are EXCLUDED from
+    --              the lists above, not sorted last.
     AND ($3 = 'any'
-         OR ($3 = 'active' AND cp.archived_at IS NULL)
-         OR ($3 = 'archived' AND cp.archived_at IS NOT NULL))
+         OR ($3 = 'active' AND cp.archived_at IS NULL AND cp.request_pending_at IS NULL)
+         OR ($3 = 'archived' AND cp.archived_at IS NOT NULL AND cp.request_pending_at IS NULL)
+         OR ($3 = 'requests' AND cp.request_pending_at IS NOT NULL))
   -- PINNED first (newest-activity within each group), then everyone else by activity — the MASKED
   -- activity time, matching what the row displays. One ORDER BY for both the list and the
   -- conversation_updated frame, so pin order can never drift between them.
@@ -692,7 +730,8 @@ defmodule ConversationService.Conversations do
                         archived,
                         tag_ids,
                         streak_days,
-                        best_friend
+                        best_friend,
+                        request_pending
                       ] ->
       %{
         user_id: user_id,
@@ -723,7 +762,11 @@ defmodule ConversationService.Conversations do
         # Whether the CALLER has pinned this chat as their best friend. Per-user, like pinned above;
         # whether the other side pinned back is told by the best_friend_mutual event, never by this
         # row (which would leak the other member's private choice into every list fetch).
-        best_friend: best_friend
+        best_friend: best_friend,
+        # Whether THIS row is an unaccepted message request for the caller (128). Always present, on
+        # every row, in every scope — a false here is the positive statement "this is a normal chat",
+        # which is what lets a client render the requests bucket from the same row shape it already has.
+        request_pending: request_pending
       }
     end)
   end
@@ -938,6 +981,16 @@ defmodule ConversationService.Conversations do
       with {:ok, conversation} <- ConversationStore.create_conversation(base_attrs),
            :ok <-
              add_initial_participants(conversation.id, created_by, participant_user_ids, now),
+           # MESSAGE REQUESTS (128): a brand-new DIRECT conversation between two people with no prior
+           # connection stamps the RECIPIENT's row pending. INSIDE this transaction, so the row is
+           # never briefly visible as an accepted chat, and AFTER the participants exist, so there is
+           # a row to stamp. Creation only — the send path never re-evaluates this.
+           :ok <-
+             ConversationService.MessageRequests.maybe_stamp_recipient(
+               conversation,
+               created_by,
+               participant_user_ids
+             ),
            :ok <- maybe_create_group_profile(conversation) do
         # TRANSACTIONAL OUTBOX: emit conversation.created in the SAME transaction (same Repo) as the
         # conversation + participant inserts, scoped to the conversation's app_id. Atomic with the write.

@@ -106,6 +106,18 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.ConversationTags.unassign(body(conn)))
   end
 
+  post "/internal/message_requests/accept" do
+    send_result(conn, ConversationService.MessageRequests.accept(body(conn)))
+  end
+
+  post "/internal/message_requests/decline" do
+    send_result(conn, ConversationService.MessageRequests.decline(body(conn)))
+  end
+
+  post "/internal/message_requests/state" do
+    send_result(conn, ConversationService.MessageRequests.request_state(body(conn)))
+  end
+
   post "/internal/participants/set_archive" do
     send_result(conn, ConversationService.Participants.set_archive(body(conn)))
   end

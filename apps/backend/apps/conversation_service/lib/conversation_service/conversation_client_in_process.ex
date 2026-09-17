@@ -71,6 +71,15 @@ defmodule ConversationService.ConversationClientInProcess do
   def set_archive(attrs), do: Participants.set_archive(attrs)
 
   @impl true
+  def accept_message_request(attrs), do: ConversationService.MessageRequests.accept(attrs)
+
+  @impl true
+  def decline_message_request(attrs), do: ConversationService.MessageRequests.decline(attrs)
+
+  @impl true
+  def message_request_state(attrs), do: ConversationService.MessageRequests.request_state(attrs)
+
+  @impl true
   def set_pin(attrs), do: Participants.set_pin(attrs)
 
   @impl true

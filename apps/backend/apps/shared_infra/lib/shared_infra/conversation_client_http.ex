@@ -177,6 +177,15 @@ defmodule SharedInfra.ConversationClientHttp do
   def set_archive(attrs), do: post("/internal/participants/set_archive", attrs)
 
   @impl true
+  def accept_message_request(attrs), do: post("/internal/message_requests/accept", attrs)
+
+  @impl true
+  def decline_message_request(attrs), do: post("/internal/message_requests/decline", attrs)
+
+  @impl true
+  def message_request_state(attrs), do: post("/internal/message_requests/state", attrs)
+
+  @impl true
   def set_pin(attrs), do: post("/internal/participants/set_pin", attrs)
 
   @impl true

@@ -37,6 +37,11 @@ defmodule SharedInfra.ConversationClient do
   # Per-user inbox prefs (archive/pin) — same shape as set_mute; set_pin may return {:error, :pin_limit}.
   @callback set_archive(attrs()) :: result()
   @callback set_pin(attrs()) :: result()
+  # MESSAGE REQUESTS (128) — the recipient's two answers to an unaccepted first message, plus the
+  # per-conversation read the send path uses to decide whether the stranger budget applies.
+  @callback accept_message_request(attrs()) :: result()
+  @callback decline_message_request(attrs()) :: result()
+  @callback message_request_state(attrs()) :: result()
   # CONVERSATION TAGS (085) — user-defined lists over the caller's own conversations. Owner-scoped
   # everywhere: a tag is private and never reachable from another user's session.
   @callback create_tag(attrs()) :: result()
@@ -152,6 +157,9 @@ defmodule SharedInfra.ConversationClient do
                       direct_peer_blocked?: 1,
                       set_archive: 1,
                       set_pin: 1,
+                      accept_message_request: 1,
+                      decline_message_request: 1,
+                      message_request_state: 1,
                       leave_conversation: 1,
                       create_broadcast_list: 1,
                       list_broadcast_lists: 1,
@@ -188,6 +196,9 @@ defmodule SharedInfra.ConversationClient do
   def set_auto_delete(attrs), do: adapter().set_auto_delete(attrs)
   def set_mute(attrs), do: adapter().set_mute(attrs)
   def set_archive(attrs), do: adapter().set_archive(attrs)
+  def accept_message_request(attrs), do: adapter().accept_message_request(attrs)
+  def decline_message_request(attrs), do: adapter().decline_message_request(attrs)
+  def message_request_state(attrs), do: adapter().message_request_state(attrs)
   def set_pin(attrs), do: adapter().set_pin(attrs)
   def create_tag(attrs), do: adapter().create_tag(attrs)
   def list_tags(attrs), do: adapter().list_tags(attrs)

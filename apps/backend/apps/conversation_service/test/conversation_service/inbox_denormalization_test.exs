@@ -200,6 +200,9 @@ defmodule ConversationService.InboxDenormalizationTest do
                :last_message_kind,
                :last_message_preview,
                :pinned,
+               # MESSAGE REQUESTS (128): always present, like best_friend above. A pending row and an
+               # accepted row have the same key set, so accepting changes a value and never a shape.
+               :request_pending,
                :streak_days,
                :tag_ids,
                :title,
