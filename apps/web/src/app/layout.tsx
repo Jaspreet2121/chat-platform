@@ -1,6 +1,14 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
-import { DM_Sans, Space_Grotesk } from "next/font/google";
+import {
+  Baloo_2,
+  DM_Sans,
+  Kalam,
+  Martel,
+  Rozha_One,
+  Space_Grotesk,
+  Tiro_Devanagari_Hindi
+} from "next/font/google";
 import { ThemeProvider } from "@/components/ThemeProvider";
 import "./globals.css";
 
@@ -19,6 +27,52 @@ const spaceGrotesk = Space_Grotesk({
   variable: "--font-space-grotesk",
   display: "swap",
   weight: ["400", "500", "600", "700"]
+});
+
+// ---- MESSAGE FACES (metadata.font) -----------------------------------------------------------
+//
+// The five faces a sender can pick per message. EVERY ONE carries a Devanagari subset alongside
+// Latin: this app's users write Hindi and English in the same thread, often in the same message, and
+// a face that covers only Latin would silently fall back mid-sentence — the Hindi half rendering in
+// the default face while the English half honoured the choice. That is worse than not offering the
+// font at all, so "Latin + Devanagari in ONE family" was the selection rule.
+//
+// Loaded once here (self-hosted by next/font — no CDN request, no layout flash) and exposed as CSS
+// variables; RichText only ever sets a class. Weights are kept minimal: a message face needs a
+// regular and a bold, and each extra weight is another file every visitor downloads.
+const msgSerif = Tiro_Devanagari_Hindi({
+  subsets: ["latin", "devanagari"],
+  variable: "--font-msg-serif",
+  display: "swap",
+  weight: ["400"]
+});
+
+const msgRounded = Baloo_2({
+  subsets: ["latin", "devanagari"],
+  variable: "--font-msg-rounded",
+  display: "swap",
+  weight: ["400", "600"]
+});
+
+const msgHandwritten = Kalam({
+  subsets: ["latin", "devanagari"],
+  variable: "--font-msg-handwritten",
+  display: "swap",
+  weight: ["400", "700"]
+});
+
+const msgDisplay = Rozha_One({
+  subsets: ["latin", "devanagari"],
+  variable: "--font-msg-display",
+  display: "swap",
+  weight: ["400"]
+});
+
+const msgElegant = Martel({
+  subsets: ["latin", "devanagari"],
+  variable: "--font-msg-elegant",
+  display: "swap",
+  weight: ["400", "700"]
 });
 
 export const metadata: Metadata = {
@@ -73,7 +127,7 @@ export default function RootLayout({
     // legitimately differs between the server-rendered and client markup.
     <html
       lang="en"
-      className={`${dmSans.variable} ${spaceGrotesk.variable}`}
+      className={`${dmSans.variable} ${spaceGrotesk.variable} ${msgSerif.variable} ${msgRounded.variable} ${msgHandwritten.variable} ${msgDisplay.variable} ${msgElegant.variable}`}
       suppressHydrationWarning
     >
       <body className="min-h-screen bg-bg font-sans text-fg antialiased">

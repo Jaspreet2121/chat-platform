@@ -23,9 +23,10 @@ import type { Message } from "@/lib/api";
 import { getMediaDownloadUrl } from "@/lib/api";
 import { Avatar } from "@/components";
 import { cn } from "@/lib/cn";
+import { RichText } from "@/components/chat/RichText";
+import { readRichText } from "@/lib/richText";
 import { formatTime, metadataString, senderDisplayName } from "./format";
 import { VoiceMessagePlayer } from "./VoiceMessagePlayer";
-import { LinkifiedText } from "./LinkifiedText";
 import { SealedMediaBubble } from "./SealedMediaBubble";
 import type { DecryptFailure, DecryptOutcome } from "@/lib/e2ee/secretChat";
 
@@ -306,6 +307,10 @@ export function MessageBubble({
         {isOwn ? <ReadTicks message={message} inline /> : null}
       </span>
     ) : null;
+  // Rich text off the PLAIN message's metadata, re-gated here — the same one gate a sealed body
+  // goes through on decrypt, so there is a single rule for "what is safe to render".
+  const rich = readRichText(message.metadata, message.body ?? "");
+
   const stamp = stampFor(false);
 
   // Missed-call entry (Slice-5b): a minimal, non-interactive system pill — NO bubble chrome, reactions,
@@ -350,7 +355,11 @@ export function MessageBubble({
               <SealedMediaBubble media={decrypted.media} isOwn={isOwn} footer={footer} />
             ) : decrypted?.ok && decrypted.kind === "text" ? (
               <p className="whitespace-pre-wrap break-words">
-                <LinkifiedText text={decrypted.body} />
+                <RichText
+                  text={decrypted.body}
+                  entities={decrypted.entities}
+                  font={decrypted.font}
+                />
                 {stampFor(true)}
               </p>
             ) : failed && decrypted && !decrypted.ok ? (
@@ -493,7 +502,11 @@ export function MessageBubble({
               )}
               onClick={hasActions ? () => setMenuOpen((open) => !open) : undefined}
             >
-              {message.body ? <LinkifiedText text={message.body} /> : message.message_type}
+              {message.body ? (
+                <RichText text={message.body} entities={rich.entities} font={rich.font} />
+              ) : (
+                message.message_type
+              )}
               {stamp}
             </p>
           )}
@@ -876,6 +889,9 @@ function MediaMessageContent({ message, isOwn }: { message: Message; isOwn: bool
   const retriedRef = useRef(false);
 
   const caption = message.body || message.caption;
+  // A media caption carries the same formatting a text body does (the server validates the spans
+  // against the CAPTION, not the body).
+  const captionRich = readRichText(message.metadata, caption ?? "");
   const filename = metadataString(message.metadata, "filename") || "Attachment";
 
   // Resolve the signed GET URL once for inline-previewable media (image/video/audio) so it can be the
@@ -990,7 +1006,11 @@ function MediaMessageContent({ message, isOwn }: { message: Message; isOwn: bool
         </button>
       ) : null}
 
-      {caption ? <p className="text-sm text-muted">{caption}</p> : null}
+      {caption ? (
+        <p className="whitespace-pre-wrap break-words text-sm text-muted">
+          <RichText text={caption} entities={captionRich.entities} font={captionRich.font} />
+        </p>
+      ) : null}
 
       {openError ? <p className="text-xs text-danger">{openError}</p> : null}
 

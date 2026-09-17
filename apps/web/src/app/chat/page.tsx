@@ -1,6 +1,12 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  parseComposerMarkup,
+  richTextMetadata,
+  type MessageEntity,
+  type MessageFont
+} from "@/lib/richText";
 import { useRouter } from "next/navigation";
 import {
   ConversationDetail,
@@ -169,6 +175,9 @@ export default function ChatPage() {
     hideHandler: () => void;
   } | null>(null);
   const [draft, setDraft] = useState("");
+  // The per-message face. Sticky across sends (a user picking "handwritten" usually means it for
+  // more than one message) and reset only by the picker itself.
+  const [messageFont, setMessageFont] = useState<MessageFont | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   // 102: Automated replies settings screen + a nonce bumped by the realtime auto_replies_changed
   // event (payload is empty, so a refetch is the only correct response).
@@ -772,7 +781,9 @@ export default function ChatPage() {
 
   async function handleSend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const body = draft.trim();
+    // The typed draft becomes the body a recipient reads plus the spans that mark it: markers like
+    // *bold* and ||spoiler|| are STRIPPED from the body, so the offsets index the shipped text.
+    const { body, entities } = parseComposerMarkup(draft.trim());
 
     if (!selectedConversationId || (!body && !selectedFile)) {
       return;
@@ -812,15 +823,22 @@ export default function ChatPage() {
                 conversationId: selectedConversationId,
                 memberIds: secretMemberIds(),
                 senderUserId: session?.user_id ?? "",
-                body
+                body,
+                // Sealed: these ride INSIDE the signed cleartext, never in metadata (§11).
+                font: messageFont,
+                entities
               })
           : selectedFile
-            ? await uploadAndSendMediaMessage(selectedFile, body, replyToId)
+            ? await uploadAndSendMediaMessage(selectedFile, body, replyToId, {
+                font: messageFont,
+                entities
+              })
             : await sendCreate({
                 conversationId: selectedConversationId,
                 messageType: "text",
                 body,
-                replyToMessageId: replyToId
+                replyToMessageId: replyToId,
+                metadata: richTextMetadata(messageFont, entities)
               });
 
       setMessages((current) => mergeMessage(current, message));
@@ -1299,7 +1317,12 @@ export default function ChatPage() {
     return createMessage(input);
   }
 
-  async function uploadAndSendMediaMessage(file: File, caption: string, replyToMessageId?: string) {
+  async function uploadAndSendMediaMessage(
+    file: File,
+    caption: string,
+    replyToMessageId?: string,
+    rich?: { font: MessageFont | null; entities: MessageEntity[] }
+  ) {
     if (!allowedMediaTypes.has(file.type)) {
       throw new Error(`${file.type || "This file type"} is not supported yet.`);
     }
@@ -1343,7 +1366,7 @@ export default function ChatPage() {
       messageType: "media",
       mediaId,
       caption,
-      metadata: mediaMetadata,
+      metadata: { ...mediaMetadata, ...richTextMetadata(rich?.font ?? null, rich?.entities ?? []) },
       replyToMessageId
     });
 
@@ -1979,6 +2002,8 @@ export default function ChatPage() {
           onCancelReply={() => setReplyingTo(null)}
           onSendVoice={handleSendVoice}
           onShareLocation={() => setLocationSheetOpen(true)}
+          font={messageFont}
+          onFontChange={setMessageFont}
           slashPicker={
             slashFragmentValue !== null && !slashDismissed ? (
               <SlashPicker

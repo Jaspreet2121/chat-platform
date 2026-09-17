@@ -60,8 +60,8 @@ const MESSAGES: Message[] = [
 ];
 
 const SEALED = new Map<string, DecryptOutcome>([
-  ["sealed-own", { ok: true, kind: "text", body: "hufrtfygu", senderDeviceId: "web-a" }],
-  ["sealed-peer", { ok: true, kind: "text", body: "one sealed reply", senderDeviceId: "web-b" }]
+  ["sealed-own", { ok: true, kind: "text", font: null, entities: [], body: "hufrtfygu", senderDeviceId: "web-a" }],
+  ["sealed-peer", { ok: true, kind: "text", font: null, entities: [], body: "one sealed reply", senderDeviceId: "web-b" }]
 ]);
 
 let container: HTMLDivElement;

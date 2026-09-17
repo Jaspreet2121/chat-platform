@@ -46,6 +46,53 @@ describe("canonical bytes", () => {
     expect(canonicalString(full)).toBe(expected);
     expect(Array.from(canonicalBytes(full))).toEqual(Array.from(canonicalBytes(frame())));
   });
+
+  // E2EE_FRAME.md §11.4 — the documented rich-text fixture, byte for byte. Any client that
+  // re-derives these bytes must get this exact string or the signature will not verify.
+  it("§11: font then entities after body, each entity in type/offset/length/url/lang order", () => {
+    const rich = frame({
+      body: "hello 😀 secret",
+      font: "handwritten",
+      entities: [
+        { type: "bold", offset: 0, length: 5 },
+        { type: "spoiler", offset: 9, length: 6 }
+      ]
+    });
+
+    const expected =
+      '{"v":1,"sender_user_id":"11111111-1111-1111-1111-111111111111",' +
+      '"sender_device_id":"web-aaaa","conversation_id":"33333333-3333-3333-3333-333333333333",' +
+      '"client_msg_id":"44444444-4444-4444-4444-444444444444","composed_at":"2026-08-26T09:00:00.000Z",' +
+      '"message_type":"text","body":"hello 😀 secret","font":"handwritten",' +
+      '"entities":[{"type":"bold","offset":0,"length":5},{"type":"spoiler","offset":9,"length":6}]}';
+
+    expect(canonicalString(rich)).toBe(expected);
+
+    // The emoji is TWO units, which is why the spoiler starts at 9 and not 8.
+    expect("hello 😀 secret".slice(9, 15)).toBe("secret");
+  });
+
+  it("§11: an ENTITY's own key order is rebuilt, so insertion order cannot change the bytes", () => {
+    const a = frame({
+      entities: [{ length: 5, type: "link", url: "https://x.test", offset: 0 } as never]
+    });
+    const b = frame({
+      entities: [{ type: "link", offset: 0, length: 5, url: "https://x.test" }]
+    });
+
+    expect(canonicalString(a)).toBe(canonicalString(b));
+    expect(canonicalString(b)).toContain('"entities":[{"type":"link","offset":0,"length":5,"url":"https://x.test"}]');
+  });
+
+  it("§11: absent formatting is OMITTED — an unformatted frame stays byte-identical to a pre-§11 one", () => {
+    const bare = canonicalString(frame());
+
+    expect(canonicalString(frame({ font: undefined, entities: undefined }))).toBe(bare);
+    // An EMPTY list must not appear either: "entities":[] would change the bytes and so the signature.
+    expect(canonicalString(frame({ entities: [] }))).toBe(bare);
+    expect(bare).not.toContain("entities");
+    expect(bare).not.toContain("font");
+  });
 });
 
 describe("seal / open round-trip", () => {

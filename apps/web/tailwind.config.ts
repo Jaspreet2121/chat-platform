@@ -45,7 +45,14 @@ const config: Config = {
           "ui-sans-serif",
           "system-ui",
           "sans-serif"
-        ]
+        ],
+        // The five per-message faces (metadata.font). Each falls back to the body face, so a
+        // message still renders if its webfont has not arrived yet.
+        "msg-serif": ["var(--font-msg-serif)", "var(--font-dm-sans)", "ui-serif", "serif"],
+        "msg-rounded": ["var(--font-msg-rounded)", "var(--font-dm-sans)", "ui-rounded", "sans-serif"],
+        "msg-handwritten": ["var(--font-msg-handwritten)", "var(--font-dm-sans)", "cursive"],
+        "msg-display": ["var(--font-msg-display)", "var(--font-dm-sans)", "ui-serif", "serif"],
+        "msg-elegant": ["var(--font-msg-elegant)", "var(--font-dm-sans)", "ui-serif", "serif"]
       },
       transitionTimingFunction: {
         // Shared motion rhythm (mirrors src/lib/motion.ts EASE): standard = Linear-crisp, out = decelerate.

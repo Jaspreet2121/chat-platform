@@ -4,6 +4,7 @@ import { Button, IconButton } from "@/components";
 import { cn } from "@/lib/cn";
 import { formatFileSize } from "./format";
 import { useVoiceRecorder } from "./useVoiceRecorder";
+import { MESSAGE_FONTS, type MessageFont } from "@/lib/richText";
 
 export type ComposerProps = {
   draft: string;
@@ -32,6 +33,9 @@ export type ComposerProps = {
   attachmentsDisabled?: boolean;
   /** 100: the "/" palette, rendered above the input. Absent = the feature is simply not offered. */
   slashPicker?: ReactNode;
+  /** The per-message face (metadata.font). null = the app's default. */
+  font: MessageFont | null;
+  onFontChange: (font: MessageFont | null) => void;
 };
 
 export function Composer({
@@ -53,7 +57,9 @@ export function Composer({
   onCancelReply,
   onSendVoice,
   onShareLocation,
-  slashPicker
+  slashPicker,
+  font,
+  onFontChange
 }: ComposerProps) {
   const canSend = hasConversation && (Boolean(draft.trim()) || Boolean(selectedFile)) && !isSending;
 
@@ -331,6 +337,8 @@ export function Composer({
             onChange={(event) => onDraftChange(event.target.value)}
           />
 
+          <FontPicker font={font} onChange={onFontChange} disabled={!hasConversation} />
+
           {recorder.isSupported && canRecord ? (
             <IconButton
               label="Record a voice message"
@@ -391,4 +399,136 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+// The per-message face. A small popover rather than a row of five buttons: the composer row is
+// already at its width budget on a 360px screen, and the face is a per-message choice that most
+// messages never make. Each option previews in its OWN face, which is the only honest way to pick
+// one — and the sample is "Aa नम" so the Devanagari coverage every face carries is visible at the
+// moment of choosing, not discovered later mid-sentence.
+const FONT_LABELS: Record<MessageFont, string> = {
+  serif: "Serif",
+  rounded: "Rounded",
+  handwritten: "Handwritten",
+  display: "Display",
+  elegant: "Elegant"
+};
+
+const FONT_CLASSES: Record<MessageFont, string> = {
+  serif: "font-msg-serif",
+  rounded: "font-msg-rounded",
+  handwritten: "font-msg-handwritten",
+  display: "font-msg-display",
+  elegant: "font-msg-elegant"
+};
+
+function FontPicker({
+  font,
+  onChange,
+  disabled
+}: {
+  font: MessageFont | null;
+  onChange: (font: MessageFont | null) => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDocClick(event: MouseEvent) {
+      if (!wrapRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={wrapRef} className="relative shrink-0">
+      <IconButton
+        label={font ? `Message font: ${FONT_LABELS[font]}` : "Message font"}
+        variant="ghost"
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span
+          aria-hidden
+          className={cn("text-[15px] leading-none", font ? FONT_CLASSES[font] : undefined)}
+        >
+          Aa
+        </span>
+      </IconButton>
+
+      {open ? (
+        <div
+          role="listbox"
+          aria-label="Message font"
+          className="absolute bottom-full right-0 z-30 mb-2 w-52 overflow-hidden rounded-2xl border border-border bg-surface shadow-lg"
+        >
+          <FontOption
+            label="Default"
+            sample="Aa नम"
+            active={font === null}
+            onSelect={() => {
+              onChange(null);
+              setOpen(false);
+            }}
+          />
+          {MESSAGE_FONTS.map((value) => (
+            <FontOption
+              key={value}
+              label={FONT_LABELS[value]}
+              sample="Aa नम"
+              sampleClass={FONT_CLASSES[value]}
+              active={font === value}
+              onSelect={() => {
+                onChange(value);
+                setOpen(false);
+              }}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function FontOption({
+  label,
+  sample,
+  sampleClass,
+  active,
+  onSelect
+}: {
+  label: string;
+  sample: string;
+  sampleClass?: string;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={active}
+      onClick={onSelect}
+      className={cn(
+        "flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm transition-colors hover:bg-elevated",
+        active && "bg-elevated font-medium"
+      )}
+    >
+      <span>{label}</span>
+      <span aria-hidden className={cn("text-base text-muted", sampleClass)}>
+        {sample}
+      </span>
+    </button>
+  );
 }

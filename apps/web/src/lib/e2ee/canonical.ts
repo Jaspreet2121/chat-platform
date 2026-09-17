@@ -10,6 +10,8 @@
 // text: `body` is the plaintext, no `media`. media: `body` is "" and `media` carries the file
 // descriptor (keys/hash/thumb — the ciphertext blob itself rides the media store, not the frame).
 
+import type { MessageEntity, MessageFont } from "@/lib/richText";
+
 export type MediaDescriptor = {
   media_id: string;
   mime: string;
@@ -28,6 +30,12 @@ export type FrameCleartext = {
   conversation_id: string;
   client_msg_id: string;
   composed_at: string;
+  // §11 RICH TEXT — both OPTIONAL and both SIGNED. Formatting that rode outside the envelope could
+  // be rewritten in flight (a `link` retargeted, a `spoiler` stripped), so it rides inside it. An
+  // absent field is OMITTED, never null: a frame with no formatting stays byte-identical to a
+  // pre-§11 frame, which is what keeps old signatures verifying.
+  font?: MessageFont;
+  entities?: MessageEntity[];
 } & ({ message_type: "text"; body: string } | { message_type: "media"; body: ""; media: MediaDescriptor });
 
 const BASE_ORDER = [
@@ -46,6 +54,24 @@ function ordered(frame: FrameCleartext): Record<string, unknown> {
   for (const key of BASE_ORDER) out[key] = (frame as Record<string, unknown>)[key];
   // media is the NINTH field, ONLY for a media frame (§8.1).
   if (frame.message_type === "media") out.media = frame.media;
+  // §11: font then entities, each omitted when absent (never null, never [] — an empty list would
+  // change the bytes and so the signature).
+  if (frame.font) out.font = frame.font;
+  if (frame.entities && frame.entities.length > 0) out.entities = frame.entities.map(orderedEntity);
+  return out;
+}
+
+// Each entity's OWN key order is fixed too (§11.2): type, offset, length, url, lang — with the
+// optional two omitted when absent. Rebuilt rather than passed through, because an object literal
+// built elsewhere carries ITS insertion order into JSON.stringify and would change the bytes.
+function orderedEntity(entity: MessageEntity): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    type: entity.type,
+    offset: entity.offset,
+    length: entity.length
+  };
+  if (entity.url !== undefined) out.url = entity.url;
+  if (entity.lang !== undefined) out.lang = entity.lang;
   return out;
 }
 

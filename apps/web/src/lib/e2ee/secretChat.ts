@@ -15,6 +15,7 @@ import {
 } from "@/lib/api";
 import { uploadMediaBlob } from "@/lib/upload";
 import { canonicalString, type FrameCleartext, type MediaDescriptor } from "@/lib/e2ee/canonical";
+import { readRichText, type MessageEntity, type MessageFont } from "@/lib/richText";
 import { loadOrCreateIdentity, publicKeysBase64 } from "@/lib/e2ee/identity";
 import { openFrame, sealFrame, type SealedPayload } from "@/lib/e2ee/frame";
 import { openFile, sealFile } from "@/lib/e2ee/mediaCrypto";
@@ -49,7 +50,17 @@ export type DecryptFailure =
   | "no_frame";
 
 export type DecryptOutcome =
-  | { ok: true; kind: "text"; body: string; senderDeviceId: string }
+  | {
+      ok: true;
+      kind: "text";
+      body: string;
+      // §11, re-validated on the way OUT of the envelope: the signature proves the SENDER wrote
+      // these, not that they are safe to render (a `link` url is a live target). readRichText
+      // applies the same gate a plaintext message goes through on the server.
+      font: MessageFont | null;
+      entities: MessageEntity[];
+      senderDeviceId: string;
+    }
   | { ok: true; kind: "media"; media: MediaDescriptor; senderDeviceId: string }
   | { ok: false; reason: DecryptFailure };
 
@@ -145,6 +156,8 @@ export async function sendSecretText(input: {
   memberIds: string[];
   senderUserId: string;
   body: string;
+  font?: MessageFont | null;
+  entities?: MessageEntity[];
 }): Promise<Message> {
   const identity = await loadOrCreateIdentity();
   const keys = await memberDeviceKeys(input.memberIds);
@@ -160,7 +173,11 @@ export async function sendSecretText(input: {
     client_msg_id: clientMsgId,
     composed_at: composedAt,
     message_type: "text",
-    body: input.body
+    body: input.body,
+    // §11: inside the signature, never in metadata — the server must not see a sealed message's
+    // formatting any more than it sees its text.
+    ...(input.font ? { font: input.font } : {}),
+    ...(input.entities && input.entities.length > 0 ? { entities: input.entities } : {})
   };
 
   const recipients = Array.from(keys.values()).map((device) => ({
@@ -182,6 +199,8 @@ export async function sendSecretText(input: {
     ok: true,
     kind: "text",
     body: input.body,
+    font: input.font ?? null,
+    entities: input.entities ?? [],
     senderDeviceId: identity.deviceId
   });
   return message;
@@ -370,7 +389,17 @@ function toOutcome(
   if (frame.message_type === "media") {
     return { ok: true, kind: "media", media: frame.media, senderDeviceId };
   }
-  return { ok: true, kind: "text", body: frame.body, senderDeviceId };
+  // The verified frame's own formatting, gated exactly as a plaintext message's is (see the
+  // DecryptOutcome comment): an unknown font or a non-https link url is dropped, not rendered.
+  const rich = readRichText(frame, frame.body);
+  return {
+    ok: true,
+    kind: "text",
+    body: frame.body,
+    font: rich.font,
+    entities: rich.entities,
+    senderDeviceId
+  };
 }
 
 function extractSealed(message: Message): SealedPayload | null {
