@@ -11,6 +11,7 @@ defmodule MessageService.Messages do
 
   alias MessageService.MediaLinks
   alias MessageService.MessageStore
+  alias MessageService.RichText
 
   # Bounded so the value is a SIGNAL, not a tracking number. Client display: >=1 "Forwarded",
   # >=5 "Forwarded many times".
@@ -1087,6 +1088,7 @@ defmodule MessageService.Messages do
         |> merge_optional_media_metadata(attrs)
         |> Map.delete("preview")
         |> Map.merge(preview_metadata(attrs))
+        |> merge_rich_text(attrs, caption)
 
       {:ok, metadata}
     end
@@ -1106,14 +1108,33 @@ defmodule MessageService.Messages do
   defp metadata(attrs, "sealed", _media_id, _caption),
     do: {:ok, %{"sealed" => get_attr(attrs, "sealed")}}
 
-  # A text message may carry the client's inline preview too (a link card thumb, say).
+  # A text message may carry the client's inline preview too (a link card thumb, say), plus the
+  # rich-text pair (font + entities) spanning its body.
   defp metadata(attrs, "text", _media_id, _caption) do
     with {:ok, base_metadata} <- metadata(attrs) do
-      {:ok, base_metadata |> Map.delete("preview") |> Map.merge(preview_metadata(attrs))}
+      metadata =
+        base_metadata
+        |> Map.delete("preview")
+        |> Map.merge(preview_metadata(attrs))
+        |> merge_rich_text(attrs, get_attr(attrs, "body"))
+
+      {:ok, metadata}
     end
   end
 
   defp metadata(attrs, _message_type, _media_id, _caption), do: metadata(attrs)
+
+  # The rich-text pair, validated in MessageService.RichText: `font` (an enum — a STRING, so it
+  # survives stringify_metadata unvalidated and must be deleted before the checked one is merged
+  # back) and `entities` (a list — stringify_metadata drops it outright, so it only ever arrives
+  # through here). Spans are measured against `body`: the text body, or the media CAPTION.
+  # Neither can refuse a message; see that moduledoc.
+  defp merge_rich_text(metadata, attrs, body) do
+    metadata
+    |> Map.drop(["font", "entities"])
+    |> Map.merge(RichText.font_metadata(attrs))
+    |> Map.merge(RichText.entities_metadata(attrs, body))
+  end
 
   # ---- inline preview (metadata.preview) --------------------------------------------------------
   #

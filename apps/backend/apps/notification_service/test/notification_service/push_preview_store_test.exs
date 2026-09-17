@@ -73,6 +73,126 @@ defmodule NotificationService.PushPreviewStoreTest do
   end
 
   @tag :postgres_integration
+  test "MUT-3 guard: SPOILER text is masked out of the preview before it can reach a lock screen" do
+    {conversation, message, sender} = ids()
+
+    MessageStoreFixture.insert_message!(conversation, message, sender,
+      body: "the answer is 42",
+      metadata: %{
+        "entities" => [%{"type" => "spoiler", "offset" => 14, "length" => 2}]
+      }
+    )
+
+    assert {:ok, context} =
+             PushContext.message_context(%{
+               conversation_id: conversation,
+               message_id: message,
+               sender_user_id: sender
+             })
+
+    assert context.preview == "the answer is ▒▒"
+    refute context.preview =~ "42"
+  end
+
+  @tag :postgres_integration
+  test "spoiler offsets are UTF-16: an emoji before the span shifts it by two, and the mask lands right" do
+    {conversation, message, sender} = ids()
+
+    MessageStoreFixture.insert_message!(conversation, message, sender,
+      body: "😀secret",
+      metadata: %{"entities" => [%{"type" => "spoiler", "offset" => 2, "length" => 6}]}
+    )
+
+    assert {:ok, context} =
+             PushContext.message_context(%{
+               conversation_id: conversation,
+               message_id: message,
+               sender_user_id: sender
+             })
+
+    assert context.preview == "😀▒▒▒▒▒▒"
+    refute context.preview =~ "secret"
+  end
+
+  @tag :postgres_integration
+  test "a NON-spoiler entity masks nothing, and a media label is never masked by offsets that do not index it" do
+    {conversation, message, sender} = ids()
+
+    MessageStoreFixture.insert_message!(conversation, message, sender,
+      body: "the answer is 42",
+      metadata: %{"entities" => [%{"type" => "bold", "offset" => 14, "length" => 2}]}
+    )
+
+    assert {:ok, plain} =
+             PushContext.message_context(%{
+               conversation_id: conversation,
+               message_id: message,
+               sender_user_id: sender
+             })
+
+    assert plain.preview == "the answer is 42"
+
+    {conv2, msg2, sender2} = ids()
+
+    MessageStoreFixture.insert_message!(conv2, msg2, sender2,
+      message_type: "media",
+      body: nil,
+      metadata: %{
+        "content_type" => "image/jpeg",
+        "entities" => [%{"type" => "spoiler", "offset" => 0, "length" => 5}]
+      }
+    )
+
+    assert {:ok, media} =
+             PushContext.message_context(%{
+               conversation_id: conv2,
+               message_id: msg2,
+               sender_user_id: sender2
+             })
+
+    # The label is not the body, so its characters are never replaced.
+    assert media.preview == "📷 Photo"
+  end
+
+  @tag :postgres_integration
+  test "MUT-4 guard: ENTITIES never reach the push payload — the data key-set is exactly what it was" do
+    {conversation, message, sender} = ids()
+
+    MessageStoreFixture.insert_message!(conversation, message, sender,
+      body: "hello world",
+      metadata: %{
+        "font" => "handwritten",
+        "entities" => [
+          %{"type" => "bold", "offset" => 0, "length" => 5},
+          %{"type" => "link", "offset" => 6, "length" => 5, "url" => "https://example.com"}
+        ]
+      }
+    )
+
+    attrs = %{conversation_id: conversation, message_id: message, sender_user_id: sender}
+    assert {:ok, context} = PushContext.message_context(attrs)
+    assert Map.keys(context) |> Enum.sort() == [:group_name, :preview, :sender]
+
+    data = NotificationService.FcmSender.message_data(context, attrs, 1)
+
+    assert Map.keys(data) |> Enum.sort() ==
+             [
+               "conversation_id",
+               "message_id",
+               "preview",
+               "sender_id",
+               "sender_name",
+               "type",
+               "unread_count"
+             ]
+
+    encoded = Jason.encode!(data)
+    refute encoded =~ "entities"
+    refute encoded =~ "handwritten"
+    refute encoded =~ "example.com"
+  end
+
+  @tag :postgres_integration
   test "MUT-4 guard: a message's metadata.preview (inline thumb) NEVER reaches the push payload" do
     {conversation, message, sender} = ids()
     thumb = Base.encode64(:crypto.strong_rand_bytes(600))

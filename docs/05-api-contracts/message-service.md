@@ -114,6 +114,44 @@ Media response `201`:
 }
 ```
 
+### Rich text (`metadata.font`, `metadata.entities`)
+
+A TEXT body or a MEDIA caption may carry formatting. Both are validated on create and then carried
+through the create response, `message_created`, the timeline page and the inbox row unchanged.
+
+`metadata.font` — one of `serif` | `rounded` | `handwritten` | `display` | `elegant`. Anything else
+is dropped (logged as `metadata font dropped reason=…`).
+
+`metadata.entities` — a list of at most **100** spans over the body (the caption, for media):
+
+```json
+{"type": "bold", "offset": 0, "length": 5}
+{"type": "link", "offset": 6, "length": 11, "url": "https://example.com"}
+{"type": "pre",  "offset": 0, "length": 24, "lang": "elixir"}
+```
+
+* `type` — one of `bold` `italic` `underline` `strikethrough` `spoiler` `code` `pre` `link`
+  `quote` `h1` `h2` `bullet` `numbered`.
+* `offset`, `length` — non-negative integers, **in UTF-16 code units** (what `String.length` answers
+  in JavaScript/Kotlin/Java, and `utf16.count` in Swift — NOT bytes and NOT codepoints; an emoji is
+  **2** units, an accented Latin or Devanagari character is 1). `offset + length` must not exceed the
+  body's length in those units.
+* `url` — only on `link`; must be `https://…` and at most 2048 characters.
+* `lang` — only on `pre`; at most 16 characters.
+
+**Invalid entries are dropped individually** — the rest of the list still applies — and logged as
+`metadata entities dropped n=<count> reason=<reason>`. Entries past the 100 cap are dropped the same
+way (`reason=too_many`). **A message is never refused over its formatting**: losing a bold span is
+cosmetic, losing the message is data loss.
+
+**Sealed messages**: `font` and `entities` sent alongside a sealed message (top-level or in
+metadata) are stripped **silently** — no error. A sealed message's metadata is the envelope and
+nothing else; its formatting travels inside the encrypted cleartext (see
+`docs/07-clients/E2EE_FRAME.md` §11).
+
+**Push**: spoiler spans are masked out of the notification preview with `▒` before it leaves the
+server, and entities are never copied into a push payload.
+
 ### Inline preview (`metadata.preview`)
 
 A text or media message may carry the client's own tiny thumbnail, shown while the real media

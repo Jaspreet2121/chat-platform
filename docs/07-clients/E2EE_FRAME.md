@@ -373,3 +373,80 @@ after the fact: the key died with the call, and a stored envelope is only a targ
 - **Re-offer on device-set change while ringing.** If the callee links a new device between the
   offer and the accept, that device has no envelope and MUST answer non-E2EE (or answer on a device
   that has one). Re-offering mid-ring is a follow-up.
+
+## 11. Rich text (`font` + `entities`) — NORMATIVE
+
+**PROVENANCE.** This section was written from the agreed field list, NOT copied from Android's
+`docs/e2ee-frame-amendment-entities.md` — that file is not present in this repository or any sibling
+checkout on the machine this was built on. The key order, compact-JSON rule and UTF-8 encoding below
+are exactly the ones §2 already fixes, so a byte-for-byte match is expected; **verify this section
+against the Android amendment before shipping a cross-platform sealed frame that carries
+formatting**, and correct it here if the two disagree.
+
+A sealed message may carry the same formatting a plaintext one does. Both fields are OPTIONAL and
+both are part of the SIGNED cleartext — formatting that rode outside the envelope could be rewritten
+in flight (a `link` entity retargeted, a `spoiler` removed), so it rides inside it.
+
+### 11.1 Canonical field order
+
+`font` and `entities` are appended AFTER `body` (and after `media`, when present), in this order:
+
+    v, sender_user_id, sender_device_id, conversation_id, client_msg_id, composed_at,
+    message_type, body [, media] [, font] [, entities]
+
+An ABSENT field is **omitted entirely** — never written as `null`, never written as `""` or `[]`.
+A frame with no formatting is therefore byte-identical to a pre-formatting frame, which is what lets
+an old client's signature still verify and a new client's frame still open on an old one.
+
+### 11.2 The fields
+
+`font` — a string, one of:
+
+    serif | rounded | handwritten | display | elegant
+
+`entities` — an array of at most 100 objects. Each object's keys are in THIS FIXED ORDER, with the
+optional two omitted when absent:
+
+    type    (string — bold | italic | underline | strikethrough | spoiler | code | pre | link
+                      | quote | h1 | h2 | bullet | numbered)
+    offset  (integer ≥ 0, in UTF-16 code units)
+    length  (integer ≥ 0, in UTF-16 code units)
+    url     (string, OPTIONAL — only on type "link"; https:// only, ≤ 2048 characters)
+    lang    (string, OPTIONAL — only on type "pre"; ≤ 16 characters)
+
+`offset + length` must not exceed the body's length in UTF-16 code units.
+
+### 11.3 UTF-16 code units — the one thing platforms get wrong
+
+Offsets count **UTF-16 code units**: what `String.prototype.length` answers in JavaScript, what
+`String.length` answers in Java/Kotlin, and what `.utf16.count` answers in Swift. A BMP character is
+one unit; anything at U+10000 or above (emoji, most symbols) is **two** — a surrogate pair.
+
+    "a"    → 1 byte,  1 codepoint,  1 unit
+    "é"    → 2 bytes, 1 codepoint,  1 unit
+    "क"    → 3 bytes, 1 codepoint,  1 unit
+    "😀"   → 4 bytes, 1 codepoint,  2 units      ← the one that breaks naive code
+
+Counting bytes (Elixir `byte_size`, Go `len`) or codepoints (Elixir `String.to_charlist |> length`,
+Python `len`) produces spans that overrun or fall short on any body containing an emoji. Servers and
+non-UTF-16 clients MUST convert (the server's helper is `SharedInfra.Utf16`).
+
+### 11.4 Canonicalization and the fixture
+
+The §2 rule is unchanged: build the object with the keys in the fixed order above, serialize with
+the platform's DEFAULT compact JSON (no inserted whitespace), UTF-8 encode. Nested objects appear
+only inside `entities` (and `media`), and their key order is fixed above, so no canonical-JSON
+library is required.
+
+Fixture — the bytes are the UTF-8 encoding of this exact string (note `font` before `entities`, the
+per-entity key order, and the emoji costing two units so the `spoiler` span starts at 9, not 8):
+
+    {"v":1,"sender_user_id":"11111111-1111-1111-1111-111111111111","sender_device_id":"web-aaaa","conversation_id":"33333333-3333-3333-3333-333333333333","client_msg_id":"44444444-4444-4444-4444-444444444444","composed_at":"2026-08-26T09:00:00.000Z","message_type":"text","body":"hello 😀 secret","font":"handwritten","entities":[{"type":"bold","offset":0,"length":5},{"type":"spoiler","offset":9,"length":6}]}
+
+### 11.5 Receiving
+
+Render `font` and `entities` over the decrypted `body`. An UNKNOWN `font` or an UNKNOWN entity
+`type` is ignored (render the text plainly) rather than treated as a bad frame — the signature
+already proved the sender wrote it, and refusing would make any future formatting type a hard
+compatibility break. A span whose `offset + length` exceeds the decrypted body IS dropped: it cannot
+be rendered, and clamping it would move formatting onto text the sender did not mark.

@@ -69,11 +69,18 @@ defmodule NotificationService.PushContext do
       :no_preview ->
         :no_preview
 
-      {:ok, %{body: body, message_type: message_type, content_type: content_type}} ->
+      {:ok, %{body: body, message_type: message_type, content_type: content_type} = fields} ->
         {:ok,
          %{
            sender: sender_name(attrs.sender_user_id),
-           preview: preview(body, message_type, content_type),
+           # MASKED BEFORE IT LEAVES: a spoiler is text the sender chose to hide behind a tap, and a
+           # push notification is the one surface that shows it with no tap at all — on a lock
+           # screen, to whoever is holding the phone. The mask is applied to the preview STRING; the
+           # spans themselves never ride a payload (the push key-set carries no entities).
+           preview:
+             body
+             |> preview(message_type, content_type)
+             |> mask_spoilers(body, Map.get(fields, :spoilers, [])),
            group_name: group_name(attrs.conversation_id)
          }}
     end
@@ -274,7 +281,10 @@ defmodule NotificationService.PushContext do
      %{
        body: Map.get(message, :body),
        message_type: Map.get(message, :message_type),
-       content_type: content_type(Map.get(message, :metadata))
+       content_type: content_type(Map.get(message, :metadata)),
+       # SPOILER spans, so the preview can mask them (see spoiler_ranges/1). Plain messages only —
+       # a sealed message has no body here at all and previews as the generic "New message".
+       spoilers: spoiler_ranges(Map.get(message, :metadata))
      }}
   end
 
@@ -348,6 +358,35 @@ defmodule NotificationService.PushContext do
 
   def preview(body, _type, _content_type) when is_binary(body) and body != "", do: body
   def preview(_body, _type, _content_type), do: "New message"
+
+  # U+2592 MEDIUM SHADE — renders as a solid-ish block in every notification font, unlike the
+  # "spoiler" glyphs some clients draw with (▮, █) which read as a redaction bar rather than text.
+  @spoiler_mask "▒"
+
+  @doc """
+  Replace every spoiler span with `▒`, one block per character. Applied ONLY when the preview IS the
+  body — a media/location/sealed label ("📷 Photo") carries no user text and its offsets would not
+  line up with it. Offsets are UTF-16 code units (`SharedInfra.Utf16`), the unit the sending client
+  counted.
+  """
+  def mask_spoilers(preview, _body, []), do: preview
+  def mask_spoilers(preview, body, _spoilers) when preview != body, do: preview
+
+  def mask_spoilers(preview, _body, spoilers) when is_binary(preview),
+    do: SharedInfra.Utf16.mask_ranges(preview, spoilers, @spoiler_mask)
+
+  def mask_spoilers(preview, _body, _spoilers), do: preview
+
+  # `{offset, length}` for every spoiler entity on the message. Anything malformed is ignored here
+  # rather than defended against: message-service validated this list on the way in, and a push must
+  # never fail over formatting.
+  defp spoiler_ranges(%{"entities" => entities}) when is_list(entities) do
+    for %{"type" => "spoiler", "offset" => offset, "length" => length} <- entities,
+        is_integer(offset) and is_integer(length),
+        do: {offset, length}
+  end
+
+  defp spoiler_ranges(_metadata), do: []
 
   @doc "Text uuid → binary for a bytea-typed parameter; passes the value through when not a uuid."
   def dump_uuid(value) do
