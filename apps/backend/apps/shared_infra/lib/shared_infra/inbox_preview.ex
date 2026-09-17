@@ -17,7 +17,7 @@ defmodule SharedInfra.InboxPreview do
   preview live and a different one after a refetch. There is exactly one implementation, here;
   conversation_service delegates.
 
-  SEALED CONTENT NEVER PASSES THROUGH (108). `preview_text/2` matches only "text", nil and "call" — a
+  SEALED CONTENT NEVER PASSES THROUGH (108). `preview_text/2` matches only the plain-text kinds — a
   "sealed" message_type falls to the catch-all and yields nil NO MATTER WHAT THE BODY IS, so neither a
   stored marker nor a body that somehow got attached to a sealed row can reach a client. That is a
   structural property of the clause order, not a filter someone has to remember to apply: the only way to
@@ -35,6 +35,14 @@ defmodule SharedInfra.InboxPreview do
   def preview_text(body, "text") when is_binary(body) and body != "", do: body
   def preview_text(body, nil) when is_binary(body) and body != "", do: body
   def preview_text(body, "call") when is_binary(body) and body != "", do: body
+
+  # A CHECKLIST's body is its title and a POLL's body is its question — both plain text the author
+  # typed, and both are what the row should read. Without these clauses they fell to the catch-all
+  # and the list showed no subtitle at all, so a client had to fill the title from its own copy of
+  # the message (found on device for checklists; polls have had the same gap since they shipped).
+  def preview_text(body, "checklist") when is_binary(body) and body != "", do: body
+  def preview_text(body, "poll") when is_binary(body) and body != "", do: body
+
   def preview_text(_body, _type), do: nil
 
   @doc """
