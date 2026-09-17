@@ -107,6 +107,11 @@ defmodule SharedInfra.RedisKVPoolTest do
       if hit, do: ":1\r\n", else: ":0\r\n"
     end
 
+    # The sorted-set trio is integer-replying, like the limiter's counters.
+    defp reply("ZADD", _args, _agent), do: ":1\r\n"
+    defp reply("ZREMRANGEBYSCORE", _args, _agent), do: ":0\r\n"
+    defp reply("ZCARD", _args, _agent), do: ":7\r\n"
+    defp reply("ZREM", _args, _agent), do: ":1\r\n"
     defp reply(_cmd, _args, _agent), do: "+OK\r\n"
 
     defp bulk(nil), do: "$-1\r\n"
@@ -202,6 +207,26 @@ defmodule SharedInfra.RedisKVPoolTest do
       big = String.duplicate("payload-", 5_000)
       assert :ok = RedisKV.put("kv:big", big, 60)
       assert {:ok, ^big} = RedisKV.get("kv:big")
+    end
+
+    test "the sorted-set trio rides the pool too — realtime_gateway's connection counter uses it",
+         %{agent: agent} do
+      size = with_pool!()
+
+      assert :ok = RedisKV.zset_touch("presence:conns:u1", "sock-1", 1_700_000_000, 45)
+      assert {:ok, 7} = RedisKV.zset_count("presence:conns:u1", 1_699_999_955)
+      assert :ok = RedisKV.zset_remove("presence:conns:u1", "sock-1")
+
+      # Key shapes, scores and the TTL go over the wire exactly as before the move.
+      assert FakeRedis.commands(agent) == [
+               ["ZADD", "presence:conns:u1", "1700000000", "sock-1"],
+               ["EXPIRE", "presence:conns:u1", "45"],
+               ["ZREMRANGEBYSCORE", "presence:conns:u1", "-inf", "(1699999955"],
+               ["ZCARD", "presence:conns:u1"],
+               ["ZREM", "presence:conns:u1", "sock-1"]
+             ]
+
+      assert FakeRedis.connections(agent) <= size
     end
 
     test "put_get still distinguishes absent from present on the pooled socket", %{agent: agent} do
