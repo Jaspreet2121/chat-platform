@@ -21,15 +21,37 @@ defmodule AuthService.SmsClient do
   # Default = the DLT-approved LOGIN template, verbatim, with `{code}` where the OTP is substituted.
   @default_otp_template "Dear user, your login OTP is {code} 1500BC"
 
+  # Provider codes that mean "the TEXT was refused", both observed in production:
+  #   "024" Invalid Template      — 2026-09-17, on the first decorated send
+  #   "006" Invalid template text — 2026-09-17 14:45:36 and 14:46:24, TWICE, and because the
+  #         fallback was keyed on "024" alone both OTPs were simply never delivered. That is the
+  #         bug this list exists to stop recurring: a second spelling of the same refusal.
+  # Add a code here only after seeing it reject a body; everything absent stays non-retryable.
+  @template_rejection_codes ~w(006 024)
+
+  @doc "Provider error codes that mean the message TEXT was refused, so a plain resend is worth one try."
+  def template_rejection_codes, do: @template_rejection_codes
+
   @doc """
   Send the OTP `code` to `number`. `:ok` on ErrorCode 000, else `{:error, reason}` (logged).
 
-  024 FALLBACK: the retriever decoration (`<#>` + hash lines) changes the text, and the provider matches
-  the DLT template EXACTLY. If a DECORATED body comes back 024, the same code is resent ONCE as the plain
-  approved body (`otp_body/1`) — until the DLT template covers the decorated shape, a user still gets
-  their OTP, just without Android auto-reading it. An undecorated body that is rejected is returned as
-  is: there is nothing plainer to fall back to, and never more than two attempts.
+  TEMPLATE-REJECTION FALLBACK: the retriever decoration (`<#>` + hash lines) changes the text, and the
+  provider matches the DLT template EXACTLY. If a DECORATED body is rejected as a template/content
+  mismatch, the same code is resent ONCE as the plain approved body (`otp_body/1`) — until the DLT
+  template covers the decorated shape, a user still gets their OTP, just without Android auto-reading
+  it.
+
+  THE CODE SET IS OBSERVATION-DRIVEN, and it has to be: `interpret/1` classifies exactly ONE code —
+  "000" is success and every other value is returned as an opaque `{:error, {code, message}}`. There
+  is no provider code table in this repo to consult. So the set below lists the codes seen REJECTING
+  A BODY in production, and nothing else is treated as retryable: a bad key, an invalid number, an
+  empty balance or a transport failure must surface as itself, because resending the same request
+  would fail identically and cost a second credit.
+
+  An UNDECORATED body that is rejected is returned as is: there is nothing plainer to fall back to,
+  and never more than two attempts.
   """
+
   @spec send_otp(String.t(), String.t()) :: :ok | {:error, term()}
   def send_otp(number, code) do
     cfg = config()
@@ -42,12 +64,22 @@ defmodule AuthService.SmsClient do
            text,
            if(text == plain, do: 0, else: length(AuthService.SmsRetriever.hashes()))
          ) do
-      {:error, {"024", _message}} when text != plain ->
-        Logger.warning(
-          "otp sms decorated body rejected as a template mismatch (024) — resending the plain approved body"
-        )
+      # A rejection of a DECORATED body, and only of a decorated body: `text != plain` is what makes
+      # a second attempt meaningful at all.
+      {:error, {code, _message}} = rejection when text != plain ->
+        if code in @template_rejection_codes do
+          # NAMED, so one grep answers "did the fallback fire, and on what?" next time.
+          Logger.warning(
+            "otp sms fallback used code=#{code} — the decorated body was refused; resending the " <>
+              "plain approved body"
+          )
 
-        deliver(cfg, number, plain, 0)
+          # The SECOND and LAST attempt. `plain` carries no `<#>` and no hash lines, and its result
+          # is returned verbatim — there is no third try and nothing plainer to try it with.
+          deliver(cfg, number, plain, 0)
+        else
+          rejection
+        end
 
       result ->
         result

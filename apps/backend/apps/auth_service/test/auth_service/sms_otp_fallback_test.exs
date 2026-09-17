@@ -117,7 +117,10 @@ defmodule AuthService.SmsOtpFallbackTest do
         SmsClient.send_otp(@number, @code)
       end)
 
-    assert log =~ "(024)"
+    # The fallback line is NAMED and carries the provider's rejection code, so one grep answers
+    # "did the fallback fire, and on what?" — it was renamed from the old parenthesised "(024)"
+    # when the 006 spelling of the same refusal reached production.
+    assert log =~ "otp sms fallback used code=024"
     assert log =~ "otp sms built hashes=1"
     assert log =~ "otp sms built hashes=0"
     refute log =~ @code
