@@ -5,10 +5,15 @@ defmodule ApiGatewayWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # TWO buckets, both fail-closed (128). The narrow one bounds pressure on ONE number; the wide one
+  # bounds how MANY numbers a single client can burn, which was previously unbounded — a fresh phone
+  # was a fresh key, and possession of a phone number is the only real cost of a new account.
   pipeline :otp_request_rate_limited do
     plug ApiGatewayWeb.Plugs.RateLimit,
       limit: 3,
       window_seconds: 60,
+      ip_limit: 30,
+      ip_window_seconds: 3600,
       key_prefix: "auth:otp_request",
       fail_open: false
   end
@@ -520,6 +525,13 @@ defmodule ApiGatewayWeb.Router do
     # them) + pin (sorts above; server-capped at 3 → 400 conversations.pin_limit). Broadcast :pref to the caller.
     put "/:conversation_id/archive", ConversationController, :archive
     put "/:conversation_id/pin", ConversationController, :pin
+
+    # MESSAGE REQUESTS (128) — the RECIPIENT's two answers to a stranger's first message. Both are
+    # per-user like the prefs above and broadcast :pref to the caller's own devices only, so the
+    # SENDER learns nothing from either outcome. Accept lets the chat join the normal inbox; decline
+    # blocks the sender and archives the chat, silently.
+    post "/:conversation_id/request/accept", ConversationController, :accept_request
+    post "/:conversation_id/request/decline", ConversationController, :decline_request
 
     # Assign / unassign one of the caller's tags to one of their conversations. Both broadcast :pref to
     # the caller's own devices — the recomputed inbox row carries tag_ids, so no new event is needed.

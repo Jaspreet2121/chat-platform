@@ -37,7 +37,8 @@ event is pure noise.
 
 | Endpoint / surface | Limit | Window | Key | Fail | Why this number |
 |---|---|---|---|---|---|
-| `POST /auth/otp/request` | 3 | 60s | (client IP, phone) | **CLOSED** | Every request costs an SMS. Bounds spend and victim bombing, and makes fresh `otp_request_id`s expensive — which is what stops the verify cap being bypassed. |
+| `POST /auth/otp/request` | 3 | 60s | (client address, phone) | **CLOSED** | Every request costs an SMS. Bounds spend and victim bombing, and makes fresh `otp_request_id`s expensive — which is what stops the verify cap being bypassed. |
+| `POST /auth/otp/request` | **30** | **3600s** | **client address alone** (128) | **CLOSED** | The narrow key above bounds pressure on ONE number and bounds nothing about how MANY numbers a caller burns — a fresh phone was a fresh key, so account creation was effectively free at volume. Sized for a shared address, not one person: a single legitimate sign-in costs about three requests, so 30/hour is roughly ten people an hour behind one NAT — comfortable for a home, an office or a café, and a hard ceiling of 30 numbers an hour for anyone farming accounts. Both buckets are charged on every call and either can refuse. |
 | `POST /auth/otp/verify` | 20 | 300s | (client IP, phone) | **CLOSED** | Outer bound on OTP brute force. ~4 codes' worth of fumbling; unreachable by a human. |
 | OTP verify attempts | 5 | per code | `otp_request_id` | **CLOSED** | The primary brute-force defence. On exhaustion the code is **burned** (`consumed_at`), so only a fresh request produces a working code. |
 | `POST /conversations/:id/messages` | 60 | 60s | user | OPEN | Fan-out ×N + Scylla + Postgres + webhook + push per send. Matches the socket's write bucket so the limit is not bypassable by transport. |
@@ -51,6 +52,8 @@ event is pure noise.
 | `POST /contacts/sync` | 10 | 3600s | user | **CLOSED** | The enumeration oracle. 10 × 2000 numbers = 20k/hour/account. The limiter *is* the control. |
 | `POST /broadcasts/:id/send` | 20 | 3600s | user | **CLOSED** | The spam amplifier — 20 sends × 256 recipients = 5,120 messages/hour. A limiter outage must not open that gate. |
 | `POST /reports` | 5 | 3600s | user | OPEN | A legitimate safety report must not be lost to a Redis blip. |
+| `POST /conversations` | **20** | **3600s** | user | OPEN | Shipped in 128, the number this table had carried as backlog. Creating the conversation is the first half of DM-spamming strangers; message requests are the second half, and this is the tap. Open, not closed: this is an abuse and cost guard sitting on top of membership checks, and a Redis blip must not stop every user from starting a chat. A stranger who slips through during an outage still lands in the recipient's requests bucket with a three-message budget. |
+| Message to an unaccepted **request** | **3** | **7 days** | **pair** (`conversations.direct_key`) | **CLOSED** | The stranger budget (128). Closed because this limiter IS the control — nothing else bounds how much an unaccepted stranger can write — and it only ever touches conversations already known to be pending, so an outage delays strangers rather than stopping the product. The window makes it a rate rather than a permanent total: a request ignored for seven days earns three more messages, which is the honest reading of "a small budget until accepted" on a fixed-window counter. Charged to the sender only; a recipient replying before accepting spends nothing. |
 | `GET /usernames/:u/availability` | 30 | 3600s | user | OPEN | Namespace prober. Availability is advisory UX, not a gate. |
 | `POST/PATCH/DELETE/PUT /quick-replies*` | 30 | 60s | user | OPEN | Quick-reply writes (100) — user data, not an oracle; a Redis blip must not block saving a reply. Reads unlimited. |
 | `GET /users/search` | 30 | 60s | user | **CLOSED** | The name-substring directory search (098) — a wider enumeration oracle than by-phone (one query returns up to 50 accounts). 30/min is generous for a human typing a name; the limiter *is* the control, so an outage rejects (contacts-sync precedent). |
@@ -75,12 +78,12 @@ request limiter, which is the defect that made this audit worth doing.
 ## Backlog — endpoints that still have no limit
 
 Ranked by risk. These are **documented, not built**: that is what makes them a backlog rather than an
-oversight. Numbers are the audit's recommendation, not settled fact.
+oversight. Numbers are the audit's recommendation, not settled fact. `POST /conversations` has left
+this list — it shipped in 128 at the number recommended here and now appears in the table above.
 
 | Endpoint | Abuse | Suggested | Fail |
 |---|---|---|---|
 | `POST /status` | Media storage + fan-out to every contact | 10/hour per user | open |
-| `POST /conversations` | Unbounded rows; DM-spamming strangers | 20/hour per user | open |
 | `POST /auth/refresh` | Token grinding; a DB hit per call | 60/hour per token family | open |
 | `vote` / `reactions` / `read` / `delivered` | Cheap each, real in a tight loop; reactions broadcast | one shared 300/min "cheap writes" bucket | open |
 | `PATCH /users/me`, `/privacy`, email PATCH | Churn; the email PATCH writes across services | 30/hour per user | open |

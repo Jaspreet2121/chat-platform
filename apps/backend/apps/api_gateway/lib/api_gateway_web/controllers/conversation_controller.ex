@@ -13,6 +13,30 @@ defmodule ApiGatewayWeb.ConversationController do
     end
   end
 
+  # CONVERSATION CREATION LIMIT — the number RATE_LIMIT_POLICY.md has carried as backlog with the
+  # abuse vector named verbatim: "Unbounded rows; DM-spamming strangers". Creating the conversation is
+  # the FIRST half of the stranger story message requests address; the requests bucket is the second
+  # half, and this is the tap. Per user, 20/hour, exactly the number the policy specified.
+  #
+  # FAIL-OPEN, like the message-send limiter beside it and unlike the OTP buckets: this is an abuse
+  # and cost guard, not the security control on this endpoint. A Redis outage must not stop every user
+  # in the system from starting a chat, and a stranger who slips through during one still lands in the
+  # recipient's requests bucket with a three-message budget.
+  @create_rate_limit 20
+  @create_rate_window_seconds 3600
+
+  defp create_rate_limit(user_id) do
+    case SharedInfra.RateLimiter.check_rate(%{
+           "key" => "conversation_create:" <> user_id,
+           "limit" => @create_rate_limit,
+           "window_seconds" => @create_rate_window_seconds
+         }) do
+      :ok -> :ok
+      {:error, :rate_limited, _retry} = limited -> limited
+      _ -> :ok
+    end
+  end
+
   defp placeholder_create_conversation(conn, params) do
     with :ok <- require_fields(params, ["type", "participant_user_ids"]),
          {:ok, response} <- SharedInfra.ConversationClient.create_conversation(params) do
@@ -65,6 +89,7 @@ defmodule ApiGatewayWeb.ConversationController do
          {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         :ok <- create_rate_limit(session.user_id),
          {:ok, response} <-
            params
            |> Map.put("created_by", session.user_id)
@@ -88,6 +113,11 @@ defmodule ApiGatewayWeb.ConversationController do
 
       {:error, :conversation_unavailable} ->
         service_unavailable(conn)
+
+      {:error, :rate_limited, retry_after} ->
+        conn
+        |> put_resp_header("retry-after", Integer.to_string(retry_after))
+        |> ErrorResponse.rate_limited("conversations.rate_limited")
 
       # SECRET CHATS (108): "secret": true at create — same preconditions as the toggle.
       {:error, :secret_not_supported} ->
@@ -275,6 +305,32 @@ defmodule ApiGatewayWeb.ConversationController do
     end)
   end
 
+  # ACCEPT a message request. The chat leaves the requests bucket and joins the caller's normal inbox;
+  # from here on it pushes, badges and counts as a shared conversation everywhere. Only the RECIPIENT
+  # can accept, and that is enforced in the UPDATE's WHERE clause rather than by a separate ownership
+  # read, so a non-recipient gets the same `conversations.request_not_found` a bogus id would.
+  def accept_request(conn, %{"conversation_id" => conversation_id}) do
+    pref_mutation(conn, conversation_id, fn user_id ->
+      SharedInfra.ConversationClient.accept_message_request(%{
+        "conversation_id" => conversation_id,
+        "user_id" => user_id
+      })
+    end)
+  end
+
+  # DECLINE a message request: block the sender and archive the chat, in one transaction. SILENT — the
+  # :pref broadcast goes to the caller's own devices only, exactly as it does for archive and pin, so
+  # the sender sees no frame, no push and no error. Their later messages take the existing block-drop
+  # path, where they still see a single tick and learn nothing.
+  def decline_request(conn, %{"conversation_id" => conversation_id}) do
+    pref_mutation(conn, conversation_id, fn user_id ->
+      SharedInfra.ConversationClient.decline_message_request(%{
+        "conversation_id" => conversation_id,
+        "user_id" => user_id
+      })
+    end)
+  end
+
   # PIN for the caller — sorts the chat above the rest. Over the server cap → 400 conversations.pin_limit
   # {limit}. {"pinned": false} unpins.
   def pin(conn, %{"conversation_id" => conversation_id} = params) do
@@ -310,8 +366,20 @@ defmodule ApiGatewayWeb.ConversationController do
       {:error, :conversation_unavailable} -> service_unavailable(conn)
       {:error, :not_participant} -> forbidden_membership(conn)
       {:error, :pin_limit} -> pin_limit(conn)
+      # MESSAGE REQUESTS (128). 404, and deliberately the SAME answer for "no such conversation",
+      # "already answered" and "you are not the recipient" — a distinct code would let anyone probe
+      # whether a given conversation is sitting unanswered in someone else's requests bucket.
+      {:error, :request_not_found} -> request_not_found(conn)
       _ -> invalid_request(conn)
     end
+  end
+
+  defp request_not_found(conn) do
+    ApiGatewayWeb.ErrorResponse.not_found(
+      conn,
+      "conversations.request_not_found",
+      "No pending message request for this conversation"
+    )
   end
 
   # WhatsApp caps pins at 3 — keep in sync with ConversationService.Participants.pin_limit/0.
