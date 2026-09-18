@@ -13,7 +13,28 @@ defmodule SharedInfra.RateLimiter do
           | {:error, atom()}
           | {:error, atom(), term()}
 
+  @typedoc """
+  The same decision as `t:result/0`, but carrying the COUNT and keeping "the limiter could not be
+  reached" distinct from "this key is over its limit".
+
+  `check_rate/1` collapses those two into one `{:error, …}`, which is correct for a caller that only
+  wants allow-or-deny — and was actively harmful for one that has to LOG which happened. A stranger's
+  first message was refused in production for weeks because an unreachable Redis and a spent budget
+  were the same value, the same HTTP status and the same absent log line.
+  """
+  @type detailed ::
+          {:allow, non_neg_integer() | nil}
+          | {:refuse, non_neg_integer() | nil, non_neg_integer()}
+          | {:unavailable, term()}
+
   @callback check_rate(attrs()) :: result()
+
+  @doc """
+  OPTIONAL. An adapter that can report the counter implements this; one that cannot is projected from
+  `check_rate/1` with a nil count, so every existing adapter and test stub keeps working untouched.
+  """
+  @callback check_rate_detailed(attrs()) :: detailed()
+  @optional_callbacks check_rate_detailed: 1
 
   def check_rate(attrs) when is_map(attrs) do
     with {:ok, key} <- required_attr(attrs, "key"),
@@ -33,6 +54,49 @@ defmodule SharedInfra.RateLimiter do
   end
 
   def check_rate(_attrs), do: {:error, :rate_limit_invalid}
+
+  @doc """
+  `{:allow, used}` | `{:refuse, used, retry_after}` | `{:unavailable, reason}`.
+
+  NOTE THE MISSING PARAMETER: this never applies fail-open or fail-closed. It reports what happened
+  and the CALLER decides, which is the whole point — a policy applied inside here is a policy the
+  caller cannot log, and an unloggable policy is how the stranger-budget outage stayed invisible.
+  """
+  def check_rate_detailed(attrs) when is_map(attrs) do
+    with {:ok, key} <- required_attr(attrs, "key"),
+         {:ok, limit} <- positive_integer(attrs, "limit"),
+         {:ok, window_seconds} <- positive_integer(attrs, "window_seconds") do
+      normalised = %{
+        "key" => key,
+        "limit" => limit,
+        "window_seconds" => window_seconds,
+        "now_seconds" => now_seconds(attrs),
+        # Deliberately fail-CLOSED on the way in, whatever the caller's policy is: this function must
+        # be TOLD the limiter was unreachable so it can say so. The caller then chooses.
+        "fail_open" => false
+      }
+
+      detailed(adapter(), normalised)
+    else
+      other -> {:unavailable, other}
+    end
+  end
+
+  def check_rate_detailed(_attrs), do: {:unavailable, {:error, :rate_limit_invalid}}
+
+  defp detailed(adapter, attrs) do
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :check_rate_detailed, 1) do
+      adapter.check_rate_detailed(attrs)
+    else
+      # Projection for an adapter that cannot count — a test stub, or a future adapter. The decision
+      # is identical; only `used` is unknown, and nil says so rather than guessing zero.
+      case adapter.check_rate(attrs) do
+        :ok -> {:allow, nil}
+        {:error, :rate_limited, retry} -> {:refuse, nil, retry}
+        other -> {:unavailable, other}
+      end
+    end
+  end
 
   defp adapter do
     Application.get_env(
@@ -106,6 +170,13 @@ defmodule SharedInfra.RateLimiter.InMemoryAdapter do
 
   @impl true
   def check_rate(attrs) do
+    case measure(attrs) do
+      {:allow, _used} -> :ok
+      {:refuse, _used, retry} -> {:error, :rate_limited, retry}
+    end
+  end
+
+  defp measure_body(attrs) do
     ensure_started()
 
     key = Map.fetch!(attrs, "key")
@@ -121,14 +192,22 @@ defmodule SharedInfra.RateLimiter.InMemoryAdapter do
 
       result =
         if updated_bucket.count <= limit do
-          :ok
+          {:allow, updated_bucket.count}
         else
-          {:error, :rate_limited, retry_after_seconds}
+          {:refuse, updated_bucket.count, retry_after_seconds}
         end
 
       {result, updated_state}
     end)
   end
+
+  # Same counter, same decision, reported in the richer shape. Implemented here and not only on the
+  # Redis adapter so a test proving a "used=N of 3" log line is proving the real number rather than
+  # the nil a projection would hand it.
+  @impl true
+  def check_rate_detailed(attrs), do: measure(attrs)
+
+  defp measure(attrs), do: measure_body(attrs)
 
   defp current_bucket(nil, now_seconds, _window_seconds) do
     %{window_start: now_seconds, count: 0}
@@ -182,31 +261,50 @@ defmodule SharedInfra.RateLimiter.RedisAdapter do
 
   @impl true
   def check_rate(attrs) do
+    attrs
+    |> check_rate_detailed()
+    |> project(fail_open?(attrs))
+  end
+
+  # ONE PLACE decides fail-open, and it is here, at the very edge — not scattered through the
+  # connect path and the command path as it was. The detailed result below never applies a policy;
+  # it reports.
+  defp project({:allow, _used}, _fail_open), do: :ok
+  defp project({:refuse, _used, retry}, _fail_open), do: {:error, :rate_limited, retry}
+  defp project({:unavailable, _reason}, true), do: :ok
+  defp project({:unavailable, reason}, false), do: {:error, :rate_limiter_unavailable, reason}
+
+  @impl true
+  def check_rate_detailed(attrs) do
     key = redis_key(attrs)
     limit = Map.fetch!(attrs, "limit")
     window_seconds = Map.fetch!(attrs, "window_seconds")
-    fail_open = fail_open?(attrs)
 
     # THE POOL, not a connection per check: every check used to connect, AUTH, SELECT, INCR,
     # EXPIRE and close (≈0.8 ms of pure TCP setup per call, locally). On the pool the same three
     # commands ride a persistent socket. A node that has not started the pool (a service that
     # never listed it) still works — one-shot, as before.
     if SharedInfra.Redis.Pool.started?() do
-      check_rate_with_connection(:pool, key, limit, window_seconds, fail_open)
+      measure(:pool, key, limit, window_seconds)
     else
-      with_connection(fail_open, fn conn ->
-        check_rate_with_connection(conn, key, limit, window_seconds, fail_open)
-      end)
+      case connect(redis_url()) do
+        {:ok, conn} ->
+          result = measure(conn, key, limit, window_seconds)
+          :gen_tcp.close(conn)
+          result
+
+        {:error, reason} ->
+          {:unavailable, reason}
+      end
     end
   end
 
-  defp check_rate_with_connection(conn, key, limit, window_seconds, fail_open) do
+  defp measure(conn, key, limit, window_seconds) do
     with {:ok, count} <- redis_command(conn, ["INCR", key]),
          :ok <- maybe_expire(conn, key, count, window_seconds) do
       rate_result(conn, key, count, limit, window_seconds)
     else
-      {:error, reason} ->
-        handle_unavailable(reason, fail_open)
+      {:error, reason} -> {:unavailable, reason}
     end
   end
 
@@ -219,30 +317,21 @@ defmodule SharedInfra.RateLimiter.RedisAdapter do
 
   defp maybe_expire(_conn, _key, _count, _window_seconds), do: :ok
 
-  defp rate_result(_conn, _key, count, limit, _window_seconds) when count <= limit, do: :ok
+  # THE COUNT IS THE VALUE INCR JUST RETURNED, so `used` is exactly how many this key has spent
+  # INCLUDING this call — the number a "used=N of 3" log line has to show. `count <= limit` is the
+  # allow test, so the first call on a fresh key is count=1 against limit=3 and is allowed. There is
+  # no off-by-one here and never was; the production refusal came from the connect path above.
+  defp rate_result(_conn, _key, count, limit, _window_seconds) when count <= limit,
+    do: {:allow, count}
 
-  defp rate_result(conn, key, _count, _limit, window_seconds) do
+  defp rate_result(conn, key, count, _limit, window_seconds) do
     retry_after_seconds =
       case redis_command(conn, ["TTL", key]) do
         {:ok, ttl} when is_integer(ttl) and ttl > 0 -> ttl
         _ -> window_seconds
       end
 
-    {:error, :rate_limited, retry_after_seconds}
-  end
-
-  defp with_connection(fail_open, fun) do
-    redis_url()
-    |> connect()
-    |> case do
-      {:ok, conn} ->
-        result = fun.(conn)
-        :gen_tcp.close(conn)
-        result
-
-      {:error, reason} ->
-        handle_unavailable(reason, fail_open)
-    end
+    {:refuse, count, retry_after_seconds}
   end
 
   defp connect(url) do
@@ -324,14 +413,6 @@ defmodule SharedInfra.RateLimiter.RedisAdapter do
     case Integer.parse(String.trim(value)) do
       {integer, ""} -> {:ok, integer}
       _ -> {:error, :unexpected_redis_response}
-    end
-  end
-
-  defp handle_unavailable(reason, fail_open) do
-    if fail_open do
-      :ok
-    else
-      {:error, :rate_limiter_unavailable, reason}
     end
   end
 

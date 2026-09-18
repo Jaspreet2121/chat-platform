@@ -18,6 +18,8 @@ defmodule MessageService.MessageRequestBudgetTest do
   """
   use MessageService.DataCase, async: false
 
+  import ExUnit.CaptureLog
+
   alias MessageService.Messages
 
   # Statements per send on the create path today. See the assertion in the MUT-5 guard for why this is
@@ -37,7 +39,17 @@ defmodule MessageService.MessageRequestBudgetTest do
     def counts(pid), do: Agent.get(pid, & &1)
 
     @impl true
-    def check_rate(%{"key" => key, "limit" => limit}) do
+    def check_rate(attrs) do
+      case check_rate_detailed(attrs) do
+        {:allow, _used} -> :ok
+        {:refuse, _used, retry} -> {:error, :rate_limited, retry}
+      end
+    end
+
+    # Implemented, not projected, so the "used=N of 3" assertions below check a REAL count rather
+    # than the nil a projection would hand them.
+    @impl true
+    def check_rate_detailed(%{"key" => key, "limit" => limit}) do
       pid = Application.get_env(:message_service, :test_limiter_agent)
 
       n =
@@ -45,8 +57,21 @@ defmodule MessageService.MessageRequestBudgetTest do
           {Map.get(s, key, 0) + 1, Map.update(s, key, 1, &(&1 + 1))}
         end)
 
-      if n <= limit, do: :ok, else: {:error, :rate_limited, 60}
+      if n <= limit, do: {:allow, n}, else: {:refuse, n, 60}
     end
+  end
+
+  # THE PRODUCTION FAILURE, exactly: message-service had no REDIS_URL, so every check came back
+  # unavailable. Nothing here is "over the limit" — the limiter simply cannot be reached.
+  defmodule UnreachableLimiter do
+    @moduledoc false
+    @behaviour SharedInfra.RateLimiter
+
+    @impl true
+    def check_rate(_attrs), do: {:error, :rate_limiter_unavailable, :econnrefused}
+
+    @impl true
+    def check_rate_detailed(_attrs), do: {:unavailable, :econnrefused}
   end
 
   setup do
@@ -138,7 +163,7 @@ defmodule MessageService.MessageRequestBudgetTest do
   end
 
   @tag :postgres_integration
-  test "MUT-4 guard: three messages land, the fourth is refused with a named error",
+  test "three messages land, the fourth is refused with a named error",
        %{agent: agent} do
     sender = user!()
     recipient = user!()
@@ -209,6 +234,97 @@ defmodule MessageService.MessageRequestBudgetTest do
              "(#{@queries_per_send} per send). The request state must ride the conversation row the " <>
              "create path already fetches (MessageService.ConversationRow), not a read of its own. " <>
              "If a send legitimately gained a statement, change the constant and say why."
+  end
+
+  describe "the production regression: a stranger's FIRST message was refused" do
+    setup do
+      previous = Application.get_env(:shared_infra, :rate_limiter_adapter)
+      on_exit(fn -> Application.put_env(:shared_infra, :rate_limiter_adapter, previous) end)
+      :ok
+    end
+
+    @tag :postgres_integration
+    test "MUT-1 guard: an UNREACHABLE limiter allows the first message and stores it" do
+      # This is the prod condition verbatim: message-service had no REDIS_URL, so redis_url/0 fell
+      # back to redis://localhost:6379/0 — nothing, inside that container — and every check returned
+      # unavailable. Fail-closed turned that into a refusal at 0 of 3 with nothing stored, on every
+      # pair including brand-new ones, which is what blocked the Play submission.
+      Application.put_env(:shared_infra, :rate_limiter_adapter, UnreachableLimiter)
+
+      sender = user!()
+      recipient = user!()
+      {conversation, _direct_key} = direct!(sender, recipient, true)
+
+      assert {:ok, message} = send!(conversation, sender)
+      assert Map.get(message, :message_id) || Map.get(message, "message_id")
+
+      # And it keeps working — a budget that cannot be counted must not become a budget of zero.
+      for _ <- 1..5, do: assert({:ok, _} = send!(conversation, sender))
+    end
+
+    @tag :postgres_integration
+    test "MUT-1 guard: on a REACHABLE limiter the first message on a fresh pair is allowed at 1 of 3" do
+      sender = user!()
+      recipient = user!()
+      {conversation, direct_key} = direct!(sender, recipient, true)
+
+      log = capture_log(fn -> assert({:ok, _} = send!(conversation, sender)) end)
+
+      assert log =~ "request budget key=#{direct_key} used=1 of 3 decision=allow reason=budget"
+    end
+
+    @tag :postgres_integration
+    test "MUT-3 guard: a spent budget and an unreachable limiter differ in BOTH the answer and the log" do
+      sender = user!()
+      recipient = user!()
+      {conversation, direct_key} = direct!(sender, recipient, true)
+
+      for _ <- 1..3, do: send!(conversation, sender)
+
+      spent_log =
+        capture_log(fn ->
+          assert {:error, :message_request_limit} = send!(conversation, sender)
+        end)
+
+      assert spent_log =~ "used=4 of 3 decision=refuse reason=budget"
+      refute spent_log =~ "limiter_unavailable"
+
+      # Same conversation, same key, limiter gone. The ANSWER flips from refuse to allow and the
+      # REASON names which rule produced it. Before the fix these were one value, one status code and
+      # no log line at all, which is why an outage looked exactly like a spent budget.
+      Application.put_env(:shared_infra, :rate_limiter_adapter, UnreachableLimiter)
+
+      down_log = capture_log(fn -> assert({:ok, _} = send!(conversation, sender)) end)
+
+      assert down_log =~ "decision=allow"
+      assert down_log =~ "reason=limiter_unavailable"
+      refute down_log =~ "reason=budget"
+      assert down_log =~ "[warning]"
+      assert down_log =~ direct_key
+    end
+
+    @tag :postgres_integration
+    test "MUT-4 guard: two pairs do NOT share a counter — spending one leaves the other untouched" do
+      sender = user!()
+      first = user!()
+      second = user!()
+
+      {conversation_a, key_a} = direct!(sender, first, true)
+      {conversation_b, key_b} = direct!(sender, second, true)
+
+      refute key_a == key_b
+
+      for _ <- 1..3, do: assert({:ok, _} = send!(conversation_a, sender))
+      assert {:error, :message_request_limit} = send!(conversation_a, sender)
+
+      # The second pair has spent nothing. A shared prefix, a missing app_id or a key built from the
+      # conversation rather than the PAIR would have burned its budget here.
+      log = capture_log(fn -> assert({:ok, _} = send!(conversation_b, sender)) end)
+      assert log =~ "key=#{key_b} used=1 of 3 decision=allow"
+
+      for _ <- 1..2, do: assert({:ok, _} = send!(conversation_b, sender))
+      assert {:error, :message_request_limit} = send!(conversation_b, sender)
+    end
   end
 
   defp count_queries(fun) do

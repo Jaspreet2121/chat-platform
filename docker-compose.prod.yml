@@ -209,6 +209,14 @@ services:
       # Set false in .env to run WITHOUT Kafka (fanout off — see runbook).
       KAFKA_PUBLISH_ENABLED: ${KAFKA_PUBLISH_ENABLED:-true}
       KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      # REDIS. This service had none until the message-request budget (128) became the first thing
+      # here to call the rate limiter, and its absence is what broke a stranger's FIRST message in
+      # production: runtime.exs falls back to redis://localhost:6379/0, which inside THIS container is
+      # nothing, so every budget check returned unavailable and the then-fail-closed policy refused at
+      # 0 of 3. The budget now fails OPEN, so a missing or unreachable Redis degrades to "not
+      # enforced" instead of "nobody can send" — but it has to be reachable for the budget to work at
+      # all, and that is what this line is for.
+      REDIS_URL: redis://redis:6379/0
       # The inbox projection consumer (group `message-service-inbox-projection`, begin_offset
       # :earliest). REQUIRED under MESSAGE_STORE_ADAPTER=scylla: it is the ONLY writer that maintains
       # conversations.last_message_* and conversation_participants.unread_count once the store is no

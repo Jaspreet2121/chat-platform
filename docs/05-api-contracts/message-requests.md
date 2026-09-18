@@ -79,6 +79,13 @@ All three carry a `retry-after`. The budget is three messages per pair per seven
 applying the moment the recipient accepts. A recipient who replies before accepting spends nothing:
 the budget belongs to the stranger.
 
+The budget FAILS OPEN. If the server cannot reach its counter, the message is sent rather than
+refused, and the server logs that it could not count. A client will therefore never see this refusal
+because of a server-side outage — only because three messages really have been sent. Between
+2026-09-18 and the fix this was not true: the counter was unreachable in production and the refusal
+fired on the first message of every pair. If you are testing against a deployment older than that,
+that is what you are seeing.
+
 Treat this as a wait, not a wall. Show the sender that the other person has not replied yet rather
 than an error.
 

@@ -12,6 +12,12 @@ had never been switched on in production, and an unlimited endpoint that was an 
 > **Fail CLOSED when the limiter IS the security control. Fail OPEN when losing the request hurts
 > more than skipping the limit.**
 
+"The limiter IS the control" is the half that gets misapplied. Ask who is protected and from what.
+A limiter that stands between one person and someone targeting them fails closed. A limiter that
+merely caps volume fails open, however load-bearing it feels while you are writing it — the stranger
+budget was argued into fail-closed on exactly that confusion and took first-contact messaging down
+for every new user.
+
 Applied honestly, that means contacts sync (an enumeration oracle) and OTP verify (brute force) reject
 on a limiter outage, while message send and reports let the request through. It is not a preference
 for safety in the abstract — failing closed on message send would take the product down every time
@@ -53,7 +59,7 @@ event is pure noise.
 | `POST /broadcasts/:id/send` | 20 | 3600s | user | **CLOSED** | The spam amplifier — 20 sends × 256 recipients = 5,120 messages/hour. A limiter outage must not open that gate. |
 | `POST /reports` | 5 | 3600s | user | OPEN | A legitimate safety report must not be lost to a Redis blip. |
 | `POST /conversations` | **20** | **3600s** | user | OPEN | Shipped in 128, the number this table had carried as backlog. Creating the conversation is the first half of DM-spamming strangers; message requests are the second half, and this is the tap. Open, not closed: this is an abuse and cost guard sitting on top of membership checks, and a Redis blip must not stop every user from starting a chat. A stranger who slips through during an outage still lands in the recipient's requests bucket with a three-message budget. |
-| Message to an unaccepted **request** | **3** | **7 days** | **pair** (`conversations.direct_key`) | **CLOSED** | The stranger budget (128). Closed because this limiter IS the control — nothing else bounds how much an unaccepted stranger can write — and it only ever touches conversations already known to be pending, so an outage delays strangers rather than stopping the product. The window makes it a rate rather than a permanent total: a request ignored for seven days earns three more messages, which is the honest reading of "a small budget until accepted" on a fixed-window counter. Charged to the sender only; a recipient replying before accepting spends nothing. |
+| Message to an unaccepted **request** | **3** | **7 days** | **pair** (`conversations.direct_key`) | OPEN | The stranger budget (128). **Shipped CLOSED and that was wrong — it refused every stranger's FIRST message in production.** message-service had no `REDIS_URL`, so the limiter was unreachable, fail-closed turned that into a refusal at 0 of 3, and no new user could message anyone. The old reasoning confused two kinds of control: the BLOCK check protects a specific person from a specific sender and stays closed; this budget protects nobody from harm, it caps nuisance volume from someone the recipient has not answered yet. Worst case open is a stranger writing more than three messages into a bucket that does not notify, badge or appear in the inbox. Worst case closed is what happened. The window makes it a rate rather than a permanent total: a request ignored for seven days earns three more. Charged to the sender only; a recipient replying before accepting spends nothing. |
 | `GET /usernames/:u/availability` | 30 | 3600s | user | OPEN | Namespace prober. Availability is advisory UX, not a gate. |
 | `POST/PATCH/DELETE/PUT /quick-replies*` | 30 | 60s | user | OPEN | Quick-reply writes (100) — user data, not an oracle; a Redis blip must not block saving a reply. Reads unlimited. |
 | `GET /users/search` | 30 | 60s | user | **CLOSED** | The name-substring directory search (098) — a wider enumeration oracle than by-phone (one query returns up to 50 accounts). 30/min is generous for a human typing a name; the limiter *is* the control, so an outage rejects (contacts-sync precedent). |

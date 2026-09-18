@@ -472,11 +472,23 @@ defmodule MessageService.Messages do
   # NOT CHARGED to the recipient: `request_pending` was computed excluding this sender, so a recipient
   # who replies before accepting reads as not-pending and spends nothing.
   #
-  # FAIL-CLOSED, unlike the general message-send limiter beside it. That one is an abuse guard sitting
-  # on top of membership and block checks, so it may fail open. This limiter IS the control — there is
-  # nothing else bounding how much an unaccepted stranger can write — and it only ever touches
-  # conversations already known to be pending, so a Redis outage delays strangers rather than stopping
-  # the product.
+  # FAIL-OPEN, and the previous comment here argued the opposite. It was wrong, and it took production
+  # down for every new user: message-service has no REDIS_URL in its container, so `redis_url()` fell
+  # back to `redis://localhost:6379/0`, which inside that container is nothing. Every check returned
+  # unavailable, fail-closed turned that into a refusal, and a stranger's FIRST message was refused at
+  # 0 of 3 with nothing stored. On two separate pairs, including a completely fresh one, against a
+  # release build. It blocked the Play submission.
+  #
+  # The old reasoning — "this limiter IS the control, so it must fail closed" — confused two kinds of
+  # control. The BLOCK check protects a specific person from a specific sender and stays fail-closed.
+  # This budget protects nobody from harm; it caps nuisance volume from someone the recipient has not
+  # answered yet. The worst case of failing open is a stranger sending more than three messages into a
+  # bucket that does not notify, does not badge and does not appear in the inbox. The worst case of
+  # failing closed is the one that happened: nobody can send anyone a first message.
+  #
+  # The env var is fixed too (docker-compose.prod.yml), because failing open on a limiter that never
+  # works is just a disabled feature. Both halves are needed: the var makes the budget real, this
+  # makes a hiccup survivable.
   #
   # THE WINDOW IS A DELIBERATE TRADE. The budget is a counter with a TTL, not a permanent total, so a
   # request ignored for 7 days earns the sender 3 more. That is
@@ -491,15 +503,47 @@ defmodule MessageService.Messages do
   defp check_request_budget(%{direct_key: nil}), do: :ok
 
   defp check_request_budget(%{direct_key: direct_key}) do
-    case SharedInfra.RateLimiter.check_rate(%{
-           "key" => "message_request:" <> direct_key,
+    key = "message_request:" <> direct_key
+
+    # check_rate_DETAILED, not check_rate. The plain call collapses "over the limit" and "could not
+    # reach the limiter" into one `{:error, …}`, which is exactly why this outage was invisible: the
+    # caller could not tell them apart, so it could not log which had happened, so nothing in the logs
+    # ever said Redis was unreachable. Two outcomes must never look the same to the caller OR in the
+    # log, and that is now structural rather than a matter of care.
+    case SharedInfra.RateLimiter.check_rate_detailed(%{
+           "key" => key,
            "limit" => @request_budget,
-           "window_seconds" => @request_budget_window_seconds,
-           "fail_open" => false
+           "window_seconds" => @request_budget_window_seconds
          }) do
-      :ok -> :ok
-      _ -> {:error, :message_request_limit}
+      {:allow, used} ->
+        log_budget(direct_key, used, "allow", "budget")
+        :ok
+
+      {:refuse, used, _retry_after} ->
+        log_budget(direct_key, used, "refuse", "budget")
+        {:error, :message_request_limit}
+
+      {:unavailable, reason} ->
+        # ALLOW. See the fail-open reasoning above. At WARNING, not info: the budget is not being
+        # enforced while this is happening, and that is an operational fact somebody must be able to
+        # find — it is the line whose absence made this bug take weeks.
+        Logger.warning(
+          "request budget key=#{direct_key} used=? of #{@request_budget} decision=allow " <>
+            "reason=limiter_unavailable detail=#{inspect(reason)}"
+        )
+
+        :ok
     end
+  end
+
+  # ONE line, both decisions, the count included. `reason` says WHICH rule produced the decision, so
+  # "refused because the budget is spent" and "allowed because the limiter is down" are one grep apart
+  # rather than indistinguishable.
+  defp log_budget(direct_key, used, decision, reason) do
+    Logger.info(
+      "request budget key=#{direct_key} used=#{used || "?"} of #{@request_budget} " <>
+        "decision=#{decision} reason=#{reason}"
+    )
   end
 
   defp validate_sealed(conversation_id, attrs) do
