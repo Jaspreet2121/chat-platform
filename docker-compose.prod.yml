@@ -671,6 +671,12 @@ services:
       - ./infra/caddy/assetlinks.json:/srv/.well-known/assetlinks.json:ro
       - caddy_data:/data
       - caddy_config:/config
+      # ACCESS LOGS. A named volume rather than a bind mount so the files survive a container
+      # replacement without depending on a host path existing with the right ownership. Rotation is
+      # configured in the Caddyfile (10 MiB × 5, 14 days), which bounds this volume on both axes —
+      # an unrotated access log under a scanner sweep fills the disk and takes Postgres with it.
+      #   docker compose -f docker-compose.prod.yml exec caddy tail -f /var/log/caddy/access.log
+      - caddy_logs:/var/log/caddy
     depends_on:
       - gateway
       - web
@@ -687,3 +693,4 @@ volumes:
   redis_data:
   caddy_data:
   caddy_config:
+  caddy_logs:

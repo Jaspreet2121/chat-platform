@@ -10,6 +10,12 @@
 #     -v caddy_data:/data caddy:2
 #
 # Reaches the API + realtime websocket via the gateway. (Caddy proxies websockets automatically.)
+#
+# NO SCANNER RULE AND NO ACCESS LOG HERE, deliberately. Both live in the production `Caddyfile`, which
+# is what docker-compose.prod.yml actually mounts. This file is a bring-up fallback for an IP-only box
+# with no domain, and duplicating those two snippets would give two copies to keep in step for a
+# config that is not what the server runs. If this ever becomes the long-lived edge, copy them across
+# — do not assume a box fronted by THIS file is filtering probes or recording anything.
 
 :80 {
 	reverse_proxy gateway:4000
