@@ -123,13 +123,17 @@ number or a numeric string.
 The choice is deliberately one-sided: attributing a send to the recipient's zone, or to the
 server's, would make the same message count for different days depending on who asked.
 
-### PUT /api/v1/me/best-friend
+### PUT /api/v1/users/me/best-friend
 
 Pin one direct chat as your best friend, or clear it. **At most one per user** — pinning a second
 replaces the first, with no separate unpin call needed.
 
+The action is mounted inside the `/api/v1/users` scope, so the path carries `users`. This document
+said `/api/v1/me/best-friend` until 2026-09-18; that path 404s and cost an Android debugging session
+on a real device.
+
 ```json
-PUT /api/v1/me/best-friend
+PUT /api/v1/users/me/best-friend
 { "conversation_id": "550e8400-e29b-41d4-a716-446655440000" }   // pin
 { "conversation_id": null }                                      // clear
 ```
