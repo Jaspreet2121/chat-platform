@@ -287,6 +287,10 @@ defmodule MessageService.HTTP.Router do
          service: "message",
          status: "ok",
          deps: deps,
+         # CONSUMER LAG — the answer to "is anything behind?" without shelling into the box to run
+         # the describe command. Carries its own checked_at and a stale flag, so a monitor that has
+         # died reports as stale rather than serving its last green numbers forever.
+         consumer_lag: MessageService.Kafka.LagMonitor.snapshot(),
          git_sha: SharedInfra.BuildInfo.git_sha()
        }}
     )

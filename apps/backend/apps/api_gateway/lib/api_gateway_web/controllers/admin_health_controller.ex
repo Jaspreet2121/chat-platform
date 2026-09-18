@@ -2,7 +2,8 @@ defmodule ApiGatewayWeb.AdminHealthController do
   @moduledoc """
   Aggregated system health (admin-only). Pings each reachable service's `/internal/health` over the
   internal API and assembles: the three platform dependencies (Postgres + Kafka from message-service,
-  MinIO from media-service), per-service up/down, and an overall healthy/degraded/down. Always returns
+  MinIO from media-service), per-service up/down, CONSUMER LAG for every Kafka group on the platform,
+  and an overall healthy/degraded/down. Always returns
   200 with the health payload — a down dependency is data, not an error (so the dashboard renders it).
   Detailed internals stay behind RequireAdmin; the public /health is a separate lightweight liveness.
   """
@@ -50,8 +51,14 @@ defmodule ApiGatewayWeb.AdminHealthController do
           %{name: "notification", status: "unknown", git_sha: "unknown"}
         ]
 
+    # CONSUMER LAG, straight from message-service's own health body. It monitors every registered
+    # group including notification-service's, because lag is read from the cluster rather than from
+    # the consuming process — so one curl here answers "is anything behind?" for the whole platform.
+    consumer_lag = consumer_lag(message)
+
     json(conn, %{
       status: overall(dependencies, services),
+      consumer_lag: consumer_lag,
       checked_at: DateTime.utc_now() |> DateTime.to_iso8601(),
       # THIS GATEWAY's build. Each service reports its own on its /internal/health; a mixed fleet
       # mid-deploy is exactly what this is for.
@@ -89,6 +96,21 @@ defmodule ApiGatewayWeb.AdminHealthController do
   defp base_url(cfg, env), do: Application.get_env(:shared_infra, cfg) || System.get_env(env)
 
   # Read a nested value with atom keys; default to an "unknown" status map when absent/unreachable.
+  # READ BOTH KEY SHAPES, deliberately. `SharedInfra.InternalApi.decode_result/2` rehydrates map keys
+  # with `String.to_existing_atom` and falls back to the STRING when the atom does not exist in THIS
+  # release — and the lag snapshot is built in message-service, whose module is not in the gateway's.
+  # So these keys arrive as strings on the HTTP path and as atoms in-process, and reading only atoms
+  # would have produced an empty panel on the real deployment while every test passed.
+  #
+  # It also removes a deploy-order constraint rather than adding one: this works whichever of the two
+  # containers is restarted first.
+  defp consumer_lag(message) do
+    case Map.get(message, :consumer_lag) || Map.get(message, "consumer_lag") do
+      %{} = snapshot -> snapshot
+      _ -> %{status: "unknown", stale: true, groups: []}
+    end
+  end
+
   defp dig(map, path) do
     case get_in(map, path) do
       %{} = found -> found

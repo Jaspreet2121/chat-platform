@@ -98,9 +98,11 @@ defmodule ApiGatewayWeb.AdminHealthGitShaTest do
     assert conn.status == 200
     body = Jason.decode!(conn.resp_body)
 
-    # KEY-SET: top level unchanged.
+    # KEY-SET: top level. `consumer_lag` joined it with the lag alarm — one curl on this endpoint is
+    # meant to answer "is anything behind?", which it cannot do if the numbers are not in the body.
     assert Map.keys(body) |> Enum.sort() == [
              "checked_at",
+             "consumer_lag",
              "dependencies",
              "git_sha",
              "services",

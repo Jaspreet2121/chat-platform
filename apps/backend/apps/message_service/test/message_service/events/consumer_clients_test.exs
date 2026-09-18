@@ -143,8 +143,11 @@ defmodule MessageService.Events.ConsumerClientsTest do
       assert client == ConsumerClients.client_for(group_id)
     end
 
-    # One client child per group, no more: 4 clients + 4 subscribers.
-    assert length(children) == 2 * length(ConsumerClients.group_ids())
+    # One client child per group, no more: 4 clients + 4 subscribers — plus the lag monitor, which is
+    # not a group and has no client of its own (it reads lag from the cluster, not through a
+    # subscriber). Subtracting it here rather than loosening the equality keeps this an exact count.
+    assert length(children) == 2 * length(ConsumerClients.group_ids()) + 1
+    assert List.last(children).id == MessageService.Kafka.LagMonitor
   end
 
   test "a DISABLED group contributes neither a subscriber nor a client" do
@@ -157,9 +160,12 @@ defmodule MessageService.Events.ConsumerClientsTest do
     Application.put_env(:message_service, :kafka_inbox_consumer_enabled, true)
     children = App.kafka_children()
 
+    # The lag monitor rides along whenever Kafka is wired at all — it reports on every registered
+    # group including the ones this container does not run, so it is not paired with any of them.
     assert Enum.map(children, & &1.id) == [
              :message_service_inbox_projection_client,
-             MessageService.Events.InboxProjectionConsumer
+             MessageService.Events.InboxProjectionConsumer,
+             MessageService.Kafka.LagMonitor
            ]
   end
 
@@ -167,7 +173,11 @@ defmodule MessageService.Events.ConsumerClientsTest do
     for flag <- @flags, do: Application.put_env(:message_service, flag, false)
     Application.put_env(:shared_infra, :kafka_producer_adapter, SharedInfra.Kafka.BrodProducer)
 
-    assert [%{id: producer, start: {:brod, :start_link_client, args}}] = App.kafka_children()
+    assert [
+             %{id: producer, start: {:brod, :start_link_client, args}},
+             %{id: MessageService.Kafka.LagMonitor}
+           ] = App.kafka_children()
+
     assert producer == SharedInfra.Kafka.BrodProducer.client_name()
 
     # It keeps auto_start_producers: true — the split must not disturb the produce path.

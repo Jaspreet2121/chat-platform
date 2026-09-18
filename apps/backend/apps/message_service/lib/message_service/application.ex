@@ -99,7 +99,23 @@ defmodule MessageService.Application do
         "consumer groups: [#{Enum.join(pairs, ", ")}]"
     )
 
-    producer_client ++ consumers
+    # THE CONSUMER-LAG MONITOR. Started whenever this deployment uses Kafka at all — it reads lag
+    # from the CLUSTER, so it reports on every registered group including notification-service's,
+    # not only the ones this container runs. Skipped entirely when there is no Kafka wiring (dev and
+    # test run the Noop producer with no consumers), so it never dials a broker that isn't there.
+    monitor =
+      if producer_client == [] and consumers == [] do
+        []
+      else
+        [
+          %{
+            id: MessageService.Kafka.LagMonitor,
+            start: {MessageService.Kafka.LagMonitor, :start_link, [[endpoints: endpoints]]}
+          }
+        ]
+      end
+
+    producer_client ++ consumers ++ monitor
   end
 
   # [that group's client, that group's subscriber] — in that order, with the client name derived
