@@ -60,6 +60,25 @@ someone else's bucket.
 Both broadcast `conversation_updated` to the caller's **own** devices only, exactly as archive and
 pin do.
 
+### Replying accepts (implicit accept)
+
+A recipient who **sends a message** into a conversation their own participant row has pending has
+accepted it. There is no reading of "I answered them" that leaves the chat in a requests bucket, and
+until this existed a web recipient — `apps/web` ships no Accept button — could reply and stay pending
+forever, invisible in presence and absent from their own main list.
+
+The reply runs the **same function** the accept endpoint runs, in the same transaction, with the same
+side effects, and the send path emits the same `conversation_updated` `:pref` frame to the replier's
+own devices. It is not a second implementation of accept and cannot drift from the button.
+
+**Messages from the original sender never clear it.** The clear is keyed to the caller's own row
+(`user_id = $2 AND request_pending_at IS NOT NULL`) and only the recipient's row is ever stamped, so
+a sender's message matches zero rows. The three-message request budget is untouched.
+
+Applies to the REST and realtime send paths, which both run `authorize_send`. A **blocked** send is
+refused before this point and never accepts. `POST /v1/messages` does not run `authorize_send` and so
+does not implicitly accept — that path's actor is a partner application, not the human recipient.
+
 ## What the sender sees
 
 Nothing changes for the first three messages. The realtime frame still reaches the recipient's

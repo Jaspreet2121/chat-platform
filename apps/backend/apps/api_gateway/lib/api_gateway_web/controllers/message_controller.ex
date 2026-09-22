@@ -96,6 +96,18 @@ defmodule ApiGatewayWeb.MessageController do
         )
       end
 
+      # IMPLICIT ACCEPT (130): the send just cleared this caller's own pending request, so mirror the
+      # EXACT frame POST /request/accept sends — :pref, `only: [me]`, because a per-user inbox pref is
+      # invisible to everyone else. Same event, same audience, from the same state change.
+      if request_accepted?(disposition) do
+        ApiGatewayWeb.ConversationBroadcast.broadcast_updated(
+          conversation_id,
+          session.user_id,
+          :pref,
+          only: [session.user_id]
+        )
+      end
+
       conn
       |> put_status(:created)
       |> json(response)
@@ -1008,6 +1020,17 @@ defmodule ApiGatewayWeb.MessageController do
     do: Map.get(disposition, :delivery) == "drop" or Map.get(disposition, "delivery") == "drop"
 
   defp dropped?(_disposition), do: false
+
+  # Set by ConversationService.Participants.authorize_send when a recipient's reply accepted their own
+  # pending request. String OR atom key: InternalApi.decode_result rehydrates via String.to_existing_atom
+  # and falls back to a STRING when the atom is unknown, which is exactly what an older gateway paired with
+  # a newer conversation-service would see — nil either way, so it degrades to "no frame", never a crash.
+  defp request_accepted?(disposition) when is_map(disposition),
+    do:
+      Map.get(disposition, :request_accepted) == true or
+        Map.get(disposition, "request_accepted") == true
+
+  defp request_accepted?(_disposition), do: false
 
   # SERVER-controlled flag: set on a drop, STRIP any client-injected value otherwise (a client must never be
   # able to force the synthesize path).

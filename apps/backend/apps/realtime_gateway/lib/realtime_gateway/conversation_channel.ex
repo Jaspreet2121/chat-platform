@@ -450,6 +450,17 @@ defmodule RealtimeGateway.ConversationChannel do
         )
       end
 
+      # IMPLICIT ACCEPT (130): same frame the accept endpoint sends — :pref, own devices only.
+      if request_accepted?(disposition) do
+        SharedInfra.ConversationBroadcast.broadcast_updated(
+          socket.endpoint,
+          socket.assigns.conversation_id,
+          sender_user_id,
+          :pref,
+          only: [sender_user_id]
+        )
+      end
+
       {:reply, {:ok, response}, socket}
     else
       {:error, :missing_user} ->
@@ -575,6 +586,14 @@ defmodule RealtimeGateway.ConversationChannel do
     do: Map.get(disposition, :delivery) == "drop" or Map.get(disposition, "delivery") == "drop"
 
   defp dropped?(_disposition), do: false
+
+  # A recipient's reply accepted their own pending request — see the REST twin for the string/atom note.
+  defp request_accepted?(disposition) when is_map(disposition),
+    do:
+      Map.get(disposition, :request_accepted) == true or
+        Map.get(disposition, "request_accepted") == true
+
+  defp request_accepted?(_disposition), do: false
 
   # SERVER-controlled flag: set it on a drop, and STRIP any client-injected value on the allow path (a client
   # must never be able to force a synthesize).

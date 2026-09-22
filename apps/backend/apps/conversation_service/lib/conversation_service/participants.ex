@@ -3,6 +3,8 @@ defmodule ConversationService.Participants do
   Conversation participant boundary.
   """
 
+  require Logger
+
   alias ConversationService.ConversationSettingsStore
   alias ConversationService.ConversationStore
   alias ConversationService.ParticipantEvents
@@ -299,7 +301,7 @@ defmodule ConversationService.Participants do
             # user can still post to a shared GROUP — the block is not over-applied.
             if direct_peer_blocked?(conversation_id, user_id),
               do: {:ok, %{authorized: true, delivery: "drop"}},
-              else: {:ok, %{authorized: true}}
+              else: accepted_on_reply(conversation_id, user_id)
         end
       else
         {:ok, %{authorized: true}}
@@ -309,6 +311,39 @@ defmodule ConversationService.Participants do
     # Fail OPEN on a malformed id / transient error — never block a legitimate send on a check glitch (a block
     # check that raises therefore delivers the message rather than dropping it; acceptable per the design).
     _ -> {:ok, %{authorized: true}}
+  end
+
+  # IMPLICIT ACCEPT of a message request (130). A recipient who REPLIES has accepted: there is no reading
+  # of "I answered them" that leaves the chat sitting in a requests bucket the sender can never escape.
+  # Until this existed, the only way out was the Accept button — which Android and iOS ship, but apps/web
+  # does not, so a web recipient could reply and stay pending forever, invisible in presence and in the
+  # main list.
+  #
+  # It calls THE SAME FUNCTION the accept endpoint calls, MessageRequests.accept/1, not a second clear of
+  # its own: one transaction, one set of side effects, nothing that can drift from the button.
+  #
+  # The ORIGINAL SENDER is excluded by that function's own WHERE clause, not by a predicate here. It
+  # clears only a row that is BOTH the caller's own AND pending, and the sender's row is never stamped —
+  # only the recipient's is. So a sender's message matches zero rows, rolls back :request_not_found, and
+  # leaves the pending flag and the request budget exactly as they were.
+  #
+  # pending?/2 guards it so the ordinary send (no request in flight) pays ONE primary-key EXISTS probe
+  # instead of a BEGIN/UPDATE/COMMIT. The guard only decides whether to call; accept/1 re-checks under its
+  # own UPDATE, so a flag cleared by the button in between is still handled correctly rather than raced.
+  #
+  # Unreachable on the BLOCKED branch above, which returns first — a dropped message never accepts.
+  defp accepted_on_reply(conversation_id, user_id) do
+    with true <- ConversationService.MessageRequests.pending?(conversation_id, user_id),
+         {:ok, _result} <-
+           ConversationService.MessageRequests.accept(%{
+             "conversation_id" => conversation_id,
+             "user_id" => user_id
+           }) do
+      Logger.info("message request accepted by reply conversation=#{conversation_id}")
+      {:ok, %{authorized: true, request_accepted: true}}
+    else
+      _ -> {:ok, %{authorized: true}}
+    end
   end
 
   # LOCAL block check (same service, same shared Postgres) — no cross-service call on the message hot path.
