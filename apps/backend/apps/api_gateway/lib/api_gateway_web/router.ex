@@ -227,6 +227,11 @@ defmodule ApiGatewayWeb.Router do
 
     get "/me", UserController, :me
     patch "/me", UserController, :update_me
+
+    # SELF-SERVE ACCOUNT DELETION (130) — App Store 5.1.1(v) and Play Data safety both require the
+    # account to be deletable from inside the app. POST rather than DELETE: it carries a body (the
+    # re-auth phone number), and a DELETE with a body is the kind of thing proxies drop.
+    post "/me/delete", UserController, :delete_me
     # BEST FRIENDS (125): at most one pinned DM per user; null clears it. A mutual pin emits
     # best_friend_mutual on both members' user topics.
     put "/me/best-friend", UserController, :set_best_friend

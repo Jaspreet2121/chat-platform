@@ -99,6 +99,58 @@ defmodule ApiGatewayWeb.UserController do
     end
   end
 
+  @doc """
+  DELETE THIS ACCOUNT. `POST /api/v1/users/me/delete`, body `{"phone_number": "+15550199001"}`.
+
+  The user id comes from the SESSION and never from the body — a body-supplied one would turn a
+  valid token for any account into a delete button for every account. The phone number IS from the
+  body: it is the re-auth guard, and the threat it answers is a handset somebody else is already
+  holding, where the session is precisely what the attacker has.
+
+  204 on success. The session is dead by the time the response is written, so there is nothing
+  meaningful left to return and no follow-up call the client could make with it.
+  """
+  def delete_me(conn, params) do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, _result} <-
+           SharedInfra.AuthClient.delete_own_account(%{
+             "user_id" => session.user_id,
+             "phone_number" => params["phone_number"]
+           }) do
+      send_resp(conn, :no_content, "")
+    else
+      {:error, :session_invalid} ->
+        session_invalid(conn)
+
+      {:error, :auth_unavailable} ->
+        service_unavailable(conn)
+
+      # 403, and deliberately NOT 401: the session is fine, the confirmation is not. A 401 would send
+      # a client into its re-login flow for what is a correctable typo.
+      {:error, :reauth_failed} ->
+        ErrorResponse.forbidden(
+          conn,
+          "account.reauth_failed",
+          "That phone number does not match this account"
+        )
+
+      {:error, :account_undeletable} ->
+        ErrorResponse.forbidden(
+          conn,
+          "account.undeletable",
+          "Admin accounts cannot be deleted from the app"
+        )
+
+      {:error, :account_not_found} ->
+        ErrorResponse.not_found(conn, "account.not_found", "Account not found")
+
+      _ ->
+        ErrorResponse.invalid_request(conn, "account.invalid_request")
+    end
+  end
+
   def update_me(conn, params) do
     if user_profile_persistence_enabled?() do
       update_current_profile_from_db(conn, params)

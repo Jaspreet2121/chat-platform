@@ -59,6 +59,9 @@ defmodule SharedInfra.AuthClient do
   # Phase-2 Android: the FCM device-token twin of the two above.
   @callback save_fcm_token(attrs()) :: result()
   @callback delete_fcm_token(attrs()) :: result()
+  # SELF-SERVE ACCOUNT DELETION (130). Distinct from the admin `delete_user`: no actor to
+  # reassign to, a re-auth guard instead of a role guard, and a tombstone instead of a hole.
+  @callback delete_own_account(attrs()) :: result()
 
   @callback create_api_key(attrs()) :: result()
   @callback list_api_keys(attrs()) :: result()
@@ -196,6 +199,7 @@ defmodule SharedInfra.AuthClient do
   def delete_push_subscription(attrs), do: adapter().delete_push_subscription(attrs)
   def save_fcm_token(attrs), do: adapter().save_fcm_token(attrs)
   def delete_fcm_token(attrs), do: adapter().delete_fcm_token(attrs)
+  def delete_own_account(attrs), do: adapter().delete_own_account(attrs)
 
   @doc "The configured Auth client adapter (default `AuthService.AuthClientInProcess`)."
   def adapter do

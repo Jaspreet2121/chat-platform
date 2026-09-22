@@ -182,6 +182,9 @@ defmodule AuthService.AuthClientInProcess do
   @impl true
   def delete_fcm_token(attrs), do: AuthService.FcmTokens.delete_token(attrs)
 
+  @impl true
+  def delete_own_account(attrs), do: AuthService.AccountDeletion.delete_own_account(attrs)
+
   # Minimal identity read for the DIRECT-PEER contact card. The GATEWAY enforces the privacy scope
   # (caller must share a direct conversation with this user) before calling; this just resolves the
   # number for an active account.

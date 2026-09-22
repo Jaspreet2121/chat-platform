@@ -272,6 +272,12 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.FcmTokens.delete_token(body(conn)))
   end
 
+  # SELF-SERVE ACCOUNT DELETION (130). The gateway resolves the session and passes the session's OWN
+  # user_id — a body-supplied one would let any caller delete any account with a valid token.
+  post "/internal/account/delete" do
+    send_result(conn, AuthService.AccountDeletion.delete_own_account(body(conn)))
+  end
+
   post "/internal/users/phone" do
     send_result(conn, AuthService.AuthClientInProcess.get_user_phone(body(conn)))
   end
