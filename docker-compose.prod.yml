@@ -673,10 +673,20 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      # Android app-link verification: served by the file_server handler in the web.growblic.com
-      # block. Mounted at the request path Caddy serves from `root * /srv`, read-only.
-      - ./infra/caddy/assetlinks.json:/srv/.well-known/assetlinks.json:ro
+      # DIRECTORIES, not single files. A single-file bind mount pins the file's INODE at container
+      # start; `git pull` replaces a file by writing a new one and renaming over it, which changes the
+      # inode, so the container goes on reading the OLD content. That bit us on 2026-09-23: after a
+      # pull, `caddy reload` reported success and silently reloaded the PREVIOUS Caddyfile. Mounting
+      # the directory makes every read go through a fresh directory lookup, so a pulled file is the
+      # file Caddy sees — and `validate` + `reload` becomes trustworthy again.
+      #
+      # `srv` is its OWN directory, deliberately not the config directory: everything under it is
+      # PUBLICLY SERVED by the file_server handler, so the Caddyfile must not be reachable from it.
+      - ./infra/caddy:/etc/caddy:ro
+      # Android app-link verification (/.well-known/assetlinks.json), served from `root * /srv`. Same
+      # inode trap as the Caddyfile: before this it was a single-file mount, so a fingerprint change
+      # would have silently served the old one with no error anywhere.
+      - ./infra/caddy/srv:/srv:ro
       - caddy_data:/data
       - caddy_config:/config
       # ACCESS LOGS. A named volume rather than a bind mount so the files survive a container
