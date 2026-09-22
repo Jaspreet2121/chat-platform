@@ -82,6 +82,8 @@ defmodule NotificationService.Events.CallIncomingConsumer do
     PushSender.push_incoming_call(event)
     # Android leg, side by side — same suppression, its own token set.
     FcmSender.push_incoming_call(event)
+    # Apple's leg is a VoIP push (129) — the only push type iOS lets ring through CallKit.
+    NotificationService.ApnsSender.push_incoming_call(event)
   end
 
   # Android-only for now: vc8 parses {"type":"call_cancelled"} and stops idempotently. A web-push
@@ -89,6 +91,7 @@ defmodule NotificationService.Events.CallIncomingConsumer do
   defp dispatch_cancel(event) do
     SharedInfra.Correlation.put(event["correlation_id"])
     FcmSender.push_call_cancelled(event)
+    NotificationService.ApnsSender.push_call_cancelled(event)
   end
 
   # An unrecognised event on this topic must NEVER be invisible again (still committed by the caller —

@@ -75,6 +75,12 @@ defmodule NotificationService.Notifications do
           # handsets, or both. Each leg owns its own device table and its own suppression, so this
           # changes nothing about fan-out or dedupe.
           NotificationService.FcmSender.push_message_created(attrs, recipients)
+
+          # Apple leg (129), fired side by side with the other two: one account may have an iPhone,
+          # an Android and a browser. Each leg owns its own token table lookup and its own
+          # suppression, so this changes nothing about fan-out, dedupe or the recipient set — which
+          # is still the one place the message-request gate removes people from.
+          NotificationService.ApnsSender.push_message_created(attrs, recipients)
           {:ok, :applied}
 
         other ->

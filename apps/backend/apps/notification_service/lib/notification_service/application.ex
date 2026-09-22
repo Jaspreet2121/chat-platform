@@ -40,7 +40,10 @@ defmodule NotificationService.Application do
         _ -> [brod_client_child_spec()] ++ consumers
       end
 
-    repo ++ kafka
+    # THE APNs CONNECTION POOL (129), or nothing at all when no Apple key is configured. APNs speaks
+    # HTTP/2 only and Finch's default pool does not ask for it, so this leg needs a named pool that
+    # does — and a deployment with no Apple key must not hold idle TLS connections to Apple.
+    repo ++ kafka ++ NotificationService.ApnsHttp.child_spec()
   end
 
   defp maybe(true, build_spec), do: [build_spec.()]
