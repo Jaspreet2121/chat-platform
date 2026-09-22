@@ -112,7 +112,7 @@ defmodule AuthService.FcmTokensTest do
   end
 
   @tag :postgres_integration
-  test "the (user_id, device_id) key is enforced by the SCHEMA, not only by the upsert" do
+  test "the (user_id, device_id, kind) key is enforced by the SCHEMA, not only by the upsert" do
     seed_users!()
 
     Repo.query!(
@@ -120,8 +120,11 @@ defmodule AuthService.FcmTokensTest do
       [@user_a, @token, "pixel-8"]
     )
 
-    # A second row for the same device, written around the upsert, is refused by the index.
-    assert_raise Postgrex.Error, ~r/fcm_tokens_user_device_key/, fn ->
+    # A second row for the same device AND CHANNEL, written around the upsert, is refused by the
+    # index. 129 widened the key from (user, device) to (user, device, COALESCE(kind, '')) because an
+    # iPhone registers two credentials for one device; both rows here have kind NULL, so they still
+    # collide exactly as they did before.
+    assert_raise Postgrex.Error, ~r/fcm_tokens_user_device_kind_key/, fn ->
       Repo.query!(
         "INSERT INTO fcm_tokens (user_id, token, device_id) VALUES ($1::text::uuid, $2, $3)",
         [@user_a, @other_token, "pixel-8"]

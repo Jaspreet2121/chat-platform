@@ -57,7 +57,7 @@ defmodule ApiGatewayWeb.PushController do
   # it; a body device_id is now simply ignored. No session device (a placeholder session, or a
   # session minted before device ids existed) is a 422: a row that names no device could never be
   # updated or revoked again.
-  def create_token(conn, %{"token" => token} = _params) when is_binary(token) and token != "" do
+  def create_token(conn, %{"token" => token} = params) when is_binary(token) and token != "" do
     with_session_no_content(conn, fn session ->
       case session_device_id(session) do
         nil ->
@@ -68,7 +68,18 @@ defmodule ApiGatewayWeb.PushController do
             "user_id" => session.user_id,
             "token" => token,
             "device_id" => device_id,
-            "platform" => "android"
+            # PLATFORM FROM THE BODY since iOS (129). It was hard-coded "android" here, which was
+            # honest while Android was the only handset and silently wrong the moment it was not:
+            # an iPhone's token would have been stored as an Android registration and handed to FCM,
+            # which would reject it forever.
+            #
+            # `kind` and `environment` are iOS-only and the STORE decides what to do with them — a
+            # value on an Android registration is dropped there rather than here, so there is one
+            # place that knows which platform has which columns. Unknown values fall back in the
+            # store too; this route's job is to pass through what the client said, not to police it.
+            "platform" => params["platform"],
+            "kind" => params["kind"],
+            "environment" => params["environment"]
           })
       end
     end)

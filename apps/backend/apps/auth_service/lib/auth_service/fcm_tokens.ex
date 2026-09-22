@@ -44,12 +44,17 @@ defmodule AuthService.FcmTokens do
               [token, user_id, device_id]
             )
 
+            # ON CONFLICT ON THE SAME EXPRESSION THE UNIQUE INDEX USES (129). An iPhone registers
+            # TWO credentials for one device — an alert token and a VoIP token — so the key is
+            # (user, device, kind), and COALESCE is what keeps every Android row (kind NULL)
+            # collapsing to a single key instead of inserting a new row per re-registration.
             Repo.query!(
-              "INSERT INTO fcm_tokens (user_id, token, device_id, platform) " <>
-                "VALUES ($1::text::uuid, $2, $3, $4) " <>
-                "ON CONFLICT (user_id, device_id) DO UPDATE SET token = EXCLUDED.token, " <>
-                "platform = EXCLUDED.platform, updated_at = now()",
-              [user_id, token, device_id, platform(attrs)]
+              "INSERT INTO fcm_tokens (user_id, token, device_id, platform, kind, environment) " <>
+                "VALUES ($1::text::uuid, $2, $3, $4, $5, $6) " <>
+                "ON CONFLICT (user_id, device_id, COALESCE(kind, '')) DO UPDATE SET " <>
+                "token = EXCLUDED.token, platform = EXCLUDED.platform, " <>
+                "environment = EXCLUDED.environment, updated_at = now()",
+              [user_id, token, device_id, platform(attrs), kind(attrs), environment(attrs)]
             )
           end)
       end
@@ -118,6 +123,31 @@ defmodule AuthService.FcmTokens do
     case attrs["platform"] do
       value when value in ["android", "ios", "web"] -> value
       _ -> @default_platform
+    end
+  end
+
+  # APNs CHANNEL (129). NULL for anything that is not iOS: Android and web have one push channel and
+  # a value there would only invent a distinction the senders do not have. An iOS registration with
+  # no kind defaults to `alert` rather than being rejected — the alert channel is the one an app
+  # registers first and the one a client that predates VoIP support would send.
+  defp kind(attrs) do
+    case {platform(attrs), attrs["kind"]} do
+      {"ios", value} when value in ["alert", "voip"] -> value
+      {"ios", _} -> "alert"
+      _ -> nil
+    end
+  end
+
+  # SANDBOX OR PRODUCTION, and the client is the only thing that knows. The same device token is
+  # valid at exactly one APNs host, decided by how the APP was signed — a TestFlight build and an App
+  # Store build of one binary differ here — not by how the server was deployed. An iOS registration
+  # that does not say defaults to `production`: a missing value on a shipped build is far more likely
+  # to be a release than a debug build, and sandbox is the one a reviewer would set explicitly.
+  defp environment(attrs) do
+    case {platform(attrs), attrs["environment"]} do
+      {"ios", value} when value in ["sandbox", "production"] -> value
+      {"ios", _} -> "production"
+      _ -> nil
     end
   end
 

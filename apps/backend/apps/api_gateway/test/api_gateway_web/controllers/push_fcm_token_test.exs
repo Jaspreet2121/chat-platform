@@ -88,7 +88,7 @@ defmodule ApiGatewayWeb.PushFcmTokenTest do
     |> ApiGatewayWeb.Endpoint.call([])
   end
 
-  test "POST registers the caller's token as android and answers 204 with no body" do
+  test "POST registers the caller's token and answers 204 with no body" do
     conn = call(:post, "/api/v1/push/fcm-tokens", %{"token" => @token})
 
     assert conn.status == 204
@@ -100,7 +100,34 @@ defmodule ApiGatewayWeb.PushFcmTokenTest do
     assert attrs["user_id"] == "user-1"
     assert attrs["token"] == @token
     assert attrs["device_id"] == "d"
-    assert attrs["platform"] == "android"
+
+    # PLATFORM IS PASSED THROUGH, not decided here. It was hard-coded "android" until 129, which was
+    # honest while Android was the only handset and silently wrong the moment it was not. A client
+    # that says nothing sends nothing, and AuthService.FcmTokens applies the android default — one
+    # place decides, and it is the place that owns the column.
+    assert attrs["platform"] == nil
+    assert attrs["kind"] == nil
+    assert attrs["environment"] == nil
+  end
+
+  test "an iOS registration carries its channel and environment through to the store" do
+    conn =
+      call(:post, "/api/v1/push/fcm-tokens", %{
+        "token" => @token,
+        "platform" => "ios",
+        "kind" => "voip",
+        "environment" => "sandbox"
+      })
+
+    assert conn.status == 204
+    assert_received {:save_fcm_token, attrs}
+
+    # An iPhone registers TWO credentials for one device — an alert token and a VoIP token — and
+    # they address different APNs topics. Losing `kind` here means calls never ring.
+    assert attrs["platform"] == "ios"
+    assert attrs["kind"] == "voip"
+    assert attrs["environment"] == "sandbox"
+    assert attrs["device_id"] == "d"
   end
 
   test "a body device_id is IGNORED — the session's device wins, a spoofed one never reaches the store" do

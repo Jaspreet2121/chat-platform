@@ -22,7 +22,11 @@ defmodule AuthService.FcmTokensMigration121Test do
       [@user, "+916444444444"]
     )
 
-    # Undo 121 so the pre-migration shape can be seeded.
+    # Undo 121 so the pre-migration shape can be seeded. BOTH keys have to go: 129 SUPERSEDED 121's
+    # index with (user_id, device_id, COALESCE(kind, '')) when iOS arrived — an iPhone needs two
+    # credentials per device — so dropping only 121's leaves 129's in place and the seed collides on
+    # it instead. 121 recreates its own index below; the sandbox rolls the whole thing back.
+    Repo.query!("DROP INDEX IF EXISTS fcm_tokens_user_device_kind_key")
     Repo.query!("DROP INDEX IF EXISTS fcm_tokens_user_device_key")
     Repo.query!("ALTER TABLE fcm_tokens ALTER COLUMN device_id DROP NOT NULL")
 
