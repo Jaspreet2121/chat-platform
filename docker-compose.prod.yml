@@ -677,6 +677,9 @@ services:
       # Android app-link verification: served by the file_server handler in the web.growblic.com
       # block. Mounted at the request path Caddy serves from `root * /srv`, read-only.
       - ./infra/caddy/assetlinks.json:/srv/.well-known/assetlinks.json:ro
+      # iOS universal-link verification: same file_server handler, same /srv root. NO file extension —
+      # Apple fetches this exact path — so the Caddyfile supplies Content-Type: application/json.
+      - ./infra/caddy/apple-app-site-association:/srv/.well-known/apple-app-site-association:ro
       - caddy_data:/data
       - caddy_config:/config
       # ACCESS LOGS. A named volume rather than a bind mount so the files survive a container

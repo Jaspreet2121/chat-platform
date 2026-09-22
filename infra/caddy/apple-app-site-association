@@ -1,0 +1,19 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["FXGBWKT8FB.com.growblic.exway"],
+        "components": [
+          {
+            "/": "/call/*",
+            "comment": "Call links open the call directly in the app"
+          },
+          {
+            "/": "/join/*",
+            "comment": "Join links open the invite directly in the app"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -190,6 +190,25 @@ web.growblic.com {
 		file_server
 	}
 
+	# iOS UNIVERSAL LINKS (/.well-known/apple-app-site-association). Same three rules as the Android
+	# file above, and they matter more here because iOS is stricter about all of them:
+	#   * the file has NO .json extension (Apple fetches this exact path) but MUST be served as
+	#     application/json — `header Content-Type` supplies it, because file_server cannot guess a
+	#     type from a name with no extension and would otherwise send application/octet-stream;
+	#   * it must be served over HTTPS with NO redirect. That is why it lives on web.growblic.com and
+	#     not on the apex: `growblic.com` is a `redir` block, and iOS does not follow redirects here;
+	#   * it must be inside THIS block. A second `web.growblic.com { }` block is an ambiguous site
+	#     definition that restart-loops Caddy and takes api and media down with it (twice already).
+	#
+	# THE TEAM ID PREFIX IS PART OF THE IDENTITY. `FXGBWKT8FB.com.growblic.exway` must match the app's
+	# Associated Domains entitlement (`applinks:web.growblic.com`) exactly; a wrong prefix fails
+	# silently and every link falls back to Safari with no server-side error to notice.
+	handle /.well-known/apple-app-site-association {
+		root * /srv
+		header Content-Type application/json
+		file_server
+	}
+
 	handle {
 		reverse_proxy web:3000
 	}
