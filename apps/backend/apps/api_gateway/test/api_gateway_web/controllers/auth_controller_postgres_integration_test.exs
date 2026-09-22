@@ -278,32 +278,64 @@ defmodule ApiGatewayWeb.AuthControllerPostgresIntegrationTest do
     assert device_session.last_seen_at != nil
   end
 
+  # THE LOST-RESPONSE CASE. A rotation reached the database and its response did not reach the
+  # client; the client retries the only token it has. Inside the grace window that is answered with a
+  # working pair instead of `refresh_reused` — which Android treats as a compromised chain and
+  # responds to by wiping its E2EE keys. A dropped HTTP response should not cost someone their
+  # message history.
   @tag :postgres_integration
-  test "POST /api/v1/auth/refresh rejects reuse of rotated refresh token" do
+  test "POST /api/v1/auth/refresh ACCEPTS a just-rotated token inside the grace window" do
     fixture = create_refresh_fixture!("single-use-refresh-token")
 
-    first_conn =
-      json_request(
-        :post,
-        "/api/v1/auth/refresh",
-        %{
-          "refresh_token" => "single-use-refresh-token",
-          "device_id" => fixture.device_id
-        }
-      )
+    body = %{"refresh_token" => "single-use-refresh-token", "device_id" => fixture.device_id}
 
+    first_conn = json_request(:post, "/api/v1/auth/refresh", body)
     assert first_conn.status == 200
+    first = Jason.decode!(first_conn.resp_body)
 
-    second_conn =
-      json_request(
-        :post,
-        "/api/v1/auth/refresh",
-        %{
-          "refresh_token" => "single-use-refresh-token",
-          "device_id" => fixture.device_id
-        }
-      )
+    second_conn = json_request(:post, "/api/v1/auth/refresh", body)
+    assert second_conn.status == 200
+    second = Jason.decode!(second_conn.resp_body)
 
+    # A DIFFERENT pair — the first response's token cannot be reproduced, only its hash is stored —
+    # but for the SAME session, which is the thing the client needs.
+    assert is_binary(second["access_token"])
+    refute second["refresh_token"] == first["refresh_token"]
+
+    device_session = Repo.get!(DeviceSession, fixture.session_id)
+    assert device_session.revoked_at == nil
+
+    # THE CHAIN IS NOT REWRITTEN. The predecessor keeps pointing at the successor from the rotation
+    # whose response was lost; a grace retry that re-stamped it would both hide that event from an
+    # investigator and slide the window forward on every retry, making the token replayable for as
+    # long as somebody kept replaying it.
+    old_token = Repo.get!(RefreshToken, fixture.refresh_token_id)
+    assert old_token.revoked_at != nil
+    assert old_token.replaced_by_token_id != nil
+
+    successor = Repo.get!(RefreshToken, old_token.replaced_by_token_id)
+    assert successor.token_hash == Tokens.hash_token(first["refresh_token"])
+  end
+
+  @tag :postgres_integration
+  test "POST /api/v1/auth/refresh rejects reuse of a rotated refresh token OUTSIDE the window" do
+    previous = System.get_env("AUTH_REFRESH_GRACE_SECONDS")
+    System.put_env("AUTH_REFRESH_GRACE_SECONDS", "0")
+
+    on_exit(fn ->
+      if previous,
+        do: System.put_env("AUTH_REFRESH_GRACE_SECONDS", previous),
+        else: System.delete_env("AUTH_REFRESH_GRACE_SECONDS")
+    end)
+
+    fixture = create_refresh_fixture!("single-use-refresh-token")
+    body = %{"refresh_token" => "single-use-refresh-token", "device_id" => fixture.device_id}
+
+    assert json_request(:post, "/api/v1/auth/refresh", body).status == 200
+
+    # Window at zero = the behaviour this endpoint had before the grace window existed. Reuse
+    # detection is untouched; only the few seconds after a rotation changed.
+    second_conn = json_request(:post, "/api/v1/auth/refresh", body)
     assert second_conn.status == 401
     assert_refresh_reused(second_conn)
   end
