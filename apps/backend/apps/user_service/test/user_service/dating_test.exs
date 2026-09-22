@@ -36,14 +36,17 @@ defmodule UserService.DatingTest do
     id
   end
 
-  defp media!(owner_id) do
+  # A PROFILE-PHOTO asset. The purpose was 'message' here until 2026-09-22, which is exactly the bug
+  # this fixture was quietly documenting: a chat image was accepted as a dating photo, stored, and
+  # then failed at presign time — a 200 that left the profile broken with nothing naming the cause.
+  defp media!(owner_id, purpose \\ "user_avatar") do
     id = Ecto.UUID.generate()
 
     Repo.query!(
       "INSERT INTO media_assets (id, owner_user_id, app_id, purpose, storage_provider, bucket, " <>
         "object_key, mime_type, size_bytes, status) VALUES ($1::text::uuid, $2::text::uuid, " <>
-        "$3::text::uuid, 'message', 'minio', 'chat-media', $4, 'image/jpeg', 100, 'ready')",
-      [id, owner_id, @app_id, "dating/#{id}.jpg"]
+        "$3::text::uuid, $5, 'minio', 'chat-media', $4, 'image/jpeg', 100, 'ready')",
+      [id, owner_id, @app_id, "dating/#{id}.jpg", purpose]
     )
 
     id
@@ -129,6 +132,20 @@ defmodule UserService.DatingTest do
 
     assert {:error, :dating_photo_not_owned} =
              Dating.update_profile(valid_attrs(me, %{"photos" => [media!(me), media!(stranger)]}))
+
+    # MY OWN photo, WRONG PURPOSE — a chat image, which is what a client reaches for first. Accepted
+    # until 2026-09-22 and then broken at presign, so the answer has to be a distinct refusal rather
+    # than the ownership one: this is the case the user can actually fix.
+    assert {:error, :dating_photo_wrong_purpose} =
+             Dating.update_profile(
+               valid_attrs(me, %{"photos" => [media!(me), media!(me, "message")]})
+             )
+
+    # And a sealed-media asset is no more a profile photo than a chat image is.
+    assert {:error, :dating_photo_wrong_purpose} =
+             Dating.update_profile(
+               valid_attrs(me, %{"photos" => [media!(me), media!(me, "sealed_media")]})
+             )
 
     # UNDER-18, hard: 17 refused; 18th birthday TODAY is exactly 18 → allowed; tomorrow-18 refused.
     assert {:error, :dating_underage} =

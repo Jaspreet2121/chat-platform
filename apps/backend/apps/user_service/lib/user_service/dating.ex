@@ -666,15 +666,34 @@ defmodule UserService.Dating do
   defp check_photos_owned(_user_id, _app_id, nil), do: :ok
   defp check_photos_owned(_user_id, _app_id, []), do: :ok
 
+  # OWNERSHIP AND PURPOSE, in one query and with DIFFERENT answers.
+  #
+  # The purpose half was missing: any asset the caller owned was accepted, including a `message`
+  # photo they had sent in a chat. It was stored, and then failed later at presign time — the worst
+  # shape for a bug, because the PATCH said 200 and the profile was broken afterwards with nothing
+  # pointing at the cause.
+  #
+  # The two refusals are deliberately distinct. "Not yours" already covers "does not exist", so it
+  # reveals nothing to separate it from "yours, but it is not a profile photo" — and the client can
+  # only fix the second one if it is told which it is.
   defp check_photos_owned(user_id, app_id, photos) do
-    %{rows: [[owned]]} =
+    unique = Enum.uniq(photos)
+    expected = length(unique)
+
+    %{rows: [[owned, right_purpose]]} =
       Repo.query!(
-        "SELECT count(*)::int FROM media_assets " <>
+        "SELECT count(*)::int, " <>
+          "count(*) FILTER (WHERE purpose = 'user_avatar')::int " <>
+          "FROM media_assets " <>
           "WHERE id = ANY(($3::text[])::uuid[]) AND owner_user_id = $1::text::uuid AND app_id = $2::text::uuid",
-        [user_id, app_id, photos]
+        [user_id, app_id, unique]
       )
 
-    if owned == length(Enum.uniq(photos)), do: :ok, else: {:error, :dating_photo_not_owned}
+    cond do
+      owned != expected -> {:error, :dating_photo_not_owned}
+      right_purpose != expected -> {:error, :dating_photo_wrong_purpose}
+      true -> :ok
+    end
   end
 
   # The state the profile WOULD have after this PATCH — what the enable gate judges.

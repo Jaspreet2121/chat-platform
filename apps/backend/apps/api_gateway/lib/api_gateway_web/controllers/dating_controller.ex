@@ -463,6 +463,17 @@ defmodule ApiGatewayWeb.DatingController do
         "Photos must be your own uploads"
       )
 
+  # A photo the caller DOES own, but which is not a profile-photo asset — typically a `message`
+  # image they sent in a chat. Distinct from photo_not_owned because it is the one of the two the
+  # client can actually act on: re-upload it as an avatar asset.
+  defp handle_error(conn, {:error, :dating_photo_wrong_purpose}),
+    do:
+      ErrorResponse.unprocessable_entity(
+        conn,
+        "dating.photo_wrong_purpose",
+        "Profile photos must be uploaded as profile photos, not reused from a chat"
+      )
+
   defp handle_error(conn, {:error, :dating_invalid_tag}),
     do:
       ErrorResponse.unprocessable_entity(
