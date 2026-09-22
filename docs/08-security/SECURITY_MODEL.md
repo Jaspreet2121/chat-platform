@@ -552,20 +552,81 @@ For web apps and API responses:
 
 ---
 
+# End-to-End Encryption
+
+**Shipped.** Secret chats (migration 108), encrypted media (§8 of the frame spec), and end-to-end
+encrypted calls (111). This section is the security-model summary; the normative wire contract —
+the one a client implements against — is [`docs/07-clients/E2EE_FRAME.md`](../07-clients/E2EE_FRAME.md),
+and where the two disagree, that document wins.
+
+## What the server can and cannot read
+
+For a conversation with `secret = true`, the server stores an opaque envelope and nothing else. It
+validates the envelope's SHAPE, caps it at 64 KB, and checks that every `recipients[].device_id` is
+a live device of one of the two members. It never parses `envelope_b64`, never verifies the
+signature, and holds no key that could open one.
+
+That boundary is enforced at the send path, not by convention: a plaintext message into a secret
+chat is refused `secret.plaintext_rejected`, and a sealed message into a normal chat is refused
+`secret.sealed_rejected`. Both are 422s decided before anything is stored.
+
+The consequences are deliberate and worth stating plainly, because each is a feature that does NOT
+work in a secret chat: no server-side search, no push preview, no checklist (the server would have
+to read the list to tick it, and it cannot), and no server-side moderation of content. A report
+filed against a sealed message reaches a moderator as an id and nothing more.
+
+## The scheme
+
+`xsalsa20poly1305-sealedbox+ed25519`. An anonymous sealed box per recipient device gives
+confidentiality; a detached Ed25519 signature over the canonical cleartext gives the sender
+authenticity the anonymous box deliberately omits. Sign once over the canonical bytes, seal those
+same bytes once per device.
+
+The recipient list is the union of BOTH members' active devices, the sender's own other devices
+included — which is what lets every device the user owns render their own message.
+
+## Keys
+
+Per-device identity keys, registered at `device_keys` (107): an Ed25519 signing key and an X25519
+box key per `(user_id, device_id)`, public halves only. Private keys never leave the device and the
+server has no backup of them. Losing every device means losing that history; that is the trade a
+scheme with no server-held key makes, and it is not recoverable by support.
+
+Deleting an account deletes its device keys (130), so a tombstoned account's old envelopes become
+permanently unopenable — which is the intended outcome, not a gap.
+
+## Verifying there is no man in the middle
+
+A 60-digit safety number, computed identically on both sides from the two members' key
+fingerprints, sorted so the inputs cannot differ by which side computes them. Display-only in v1,
+also rendered as a QR payload. v1 shows the primary device pair; multi-device safety numbers are a
+recorded follow-up.
+
+## Turning it off takes both people
+
+Enabling is one member's decision; DISABLING is two (118). One member requests, and the other
+member's own request is the acceptance — a pending request expires after seven days and is treated
+as absent. The asymmetry is the point: nobody should be able to unilaterally downgrade a
+conversation the other person believes is encrypted.
+
+## Calls
+
+Voice and video calls are separately end-to-end encrypted (111). The call key is exchanged through
+sealed envelopes the server relays and cannot open, and the envelopes are scrubbed at every terminal
+call state. They never ride a push: a push carries an `e2ee` display hint so the ring UI can show
+the lock, and the woken client fetches `GET /api/v1/calls/:id` for the envelope itself.
+
+## Recorded gaps
+
+- No forward secrecy in v1. A compromised device key opens that device's past envelopes. A ratchet
+  is the known upgrade path and is not implemented.
+- Group chats are not sealed. Secret chats are 1:1 only (`secret.not_supported` on a group).
+- No key backup, by design — see Keys above.
+- The safety number is display-only: nothing blocks a conversation whose number changed.
+
+---
+
 # Future Security Features
-
-## End-to-End Encryption
-
-Future feature for private chats.
-
-Will require:
-
-- Per-device identity keys
-- Session keys
-- Message encryption on client
-- Server stores encrypted payload only
-- Key backup strategy
-- Multi-device support design
 
 ## Enterprise Security
 
