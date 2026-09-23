@@ -50,8 +50,8 @@ session, normal TTLs, normal rate limits).
 
 ## The allowlist today
 
-Five entries. The codes for the test numbers are deliberately unguessable-free — these accounts hold
-no real data and exist only to be signed into — while the **seeded Play-reviewer** code is a real
+**Six entries in prod.** The codes for the test numbers are deliberately not secret — these accounts
+hold no real data and exist only to be signed into — while the **seeded Play-reviewer** code is a real
 secret and is not written down here.
 
 | Number | Code | Purpose |
@@ -61,6 +61,7 @@ secret and is not written down here.
 | `+15550199002` | `900002` | Test account **B** — the other end |
 | `+15550199003` | `900003` | **App Review only** (Apple). Reserved for App Store review; do not use it for day-to-day testing, so its state stays predictable when a reviewer signs in |
 | `+15550199004` | `900004` | **Account-deletion testing.** Reusable — see below |
+| `+15550100003` | `111111` | **"Nearby Tester"** — test-only, used for nearby/presence checks. Was live in prod but undocumented until 2026-09-23. **Its code is weak — see below.** |
 
 ### Adding the two new entries
 
@@ -86,10 +87,11 @@ sed -i 's/^REVIEWER_TEST_LOGINS=\(.*\)$/REVIEWER_TEST_LOGINS=\1,+15550199003:900
 grep '^REVIEWER_TEST_LOGINS=' .env
 ```
 
-The result must read as one line, five entries, no spaces:
+The result must read as one line, six entries, no spaces. The exact order depends on what was already
+in `.env`; this is the shape, not a line to paste:
 
 ```
-REVIEWER_TEST_LOGINS=+15550100001:<existing secret>,+15550199001:900001,+15550199002:900002,+15550199003:900003,+15550199004:900004
+REVIEWER_TEST_LOGINS=+15550100001:<existing secret>,+15550100003:111111,+15550199001:900001,+15550199002:900002,+15550199003:900003,+15550199004:900004
 ```
 
 ### Applying it — one command, `auth` only
@@ -113,8 +115,9 @@ there is nothing for the gateway to fail to recognise.
 docker compose -f docker-compose.prod.yml logs --tail=50 auth | grep -i "reviewer test logins"
 ```
 
-Expect `reviewer test logins: 5 configured`. A **lower number means entries were dropped as
-malformed** — check for a space after a comma, a missing `+`, or a code that is not exactly six
+Expect `reviewer test logins: 6 configured` (five before this change, plus the appended pair, minus
+nothing — see the table above; `+15550100003` was already there). A **lower number means entries were
+dropped as malformed** — check for a space after a comma, a missing `+`, or a code that is not exactly six
 digits. A `… N malformed entries DROPPED` warning on the same line names how many.
 
 Then prove one end to end, on a new number only:
@@ -130,6 +133,29 @@ curl -sS -X POST $API/api/v1/auth/otp/verify -H 'content-type: application/json'
 ```
 
 Expect an `access_token`. `auth.otp_invalid` means that entry did not parse.
+
+## `+15550100003` ("Nearby Tester") — documented, and its code is weak
+
+This entry was live in prod and in no document until 2026-09-23. It is **test-only**: a scratch account
+for nearby and presence checks, with no real data and no special role. It is recorded here so the
+allowlist in `.env` and the allowlist in this file finally agree — an undocumented entry is one nobody
+audits, and the count check above is the only thing that would ever have noticed it.
+
+**Its code is `111111`, which is weak**, and weak here means something specific rather than alarming:
+
+* The allowlist is **not an enumeration oracle** — `request-otp` for an allowlisted number is
+  byte-identical to a normal request, so nobody can discover *which* numbers are allowlisted by probing.
+  An attacker would have to already know the number.
+* `verify-otp` still **charges attempts** and still expires, so this is not an unlimited guessing
+  surface.
+* But the number is a documented-looking `+1555…` test number, and `111111` is the first code anyone
+  would try. Someone who guessed both would get a **real session on tenant zero** — a normal user
+  account that can link devices, place calls and open chats. That is the actual exposure: not data (the
+  account has none) but a foothold as a legitimate user.
+
+**Not changed here — that is your call.** When you do change it, treat it as a rotation: pick a random
+six-digit code, edit `.env`, `up -d auth`, and confirm the count is still 6. Nothing else references
+the value. If the account is no longer needed, removing the entry entirely is better than rotating it.
 
 ## Why `+15550199004` is reusable for deletion testing
 
