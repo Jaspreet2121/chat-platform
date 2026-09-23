@@ -77,7 +77,9 @@ defmodule ApiGatewayWeb.CallE2eeSurfaceTest do
     contents =
       quote do
         def get_call(%{"call_id" => _}), do: {:ok, unquote(Macro.escape(row))}
-        def call_participant?(_), do: {:ok, %{participant: false}}
+        # The REAL CallStore.call_participant? shape — `%{authorized: boolean}` — never
+        # `%{participant: _}`, which the controller used to expect and the store never sent.
+        def call_participant?(_), do: {:ok, %{authorized: false}}
 
         def list_calls_for_user(%{"user_id" => _}),
           do: {:ok, %{calls: [unquote(Macro.escape(row))]}}
@@ -195,6 +197,65 @@ defmodule ApiGatewayWeb.CallE2eeSurfaceTest do
       assert b["e2ee"] == false
       assert is_nil(b["e2ee_accepted"])
       assert is_nil(b["e2ee_offer"])
+    end
+  end
+
+  describe "GET /api/v1/calls/:id — a GROUP invitee (participation, not caller/callee)" do
+    @initiator "55555555-5555-5555-5555-555555555555"
+    @invitee "66666666-6666-6666-6666-666666666666"
+
+    # A group call: caller_id is the initiator, there is NO callee_id, and everyone else is a
+    # group_call_participants row. Authorization for group/link/adhoc rides that row, exactly as
+    # the token endpoint checks it — the store answers `%{authorized: boolean}`.
+    defp group_stub(row, participants) do
+      module = String.to_atom("Elixir.CallE2eeGroupStub#{System.unique_integer([:positive])}")
+
+      contents =
+        quote do
+          def get_call(%{"call_id" => _}), do: {:ok, unquote(Macro.escape(row))}
+
+          def call_participant?(%{"user_id" => user_id}),
+            do: {:ok, %{authorized: user_id in unquote(participants)}}
+
+          def list_calls_for_user(_), do: {:ok, %{calls: []}}
+        end
+
+      Module.create(module, contents, Macro.Env.location(__ENV__))
+      Application.put_env(:shared_infra, :conversation_client_adapter, module)
+    end
+
+    defp get_group_state(user_id) do
+      group_stub(
+        call_row(%{
+          kind: "group",
+          caller_id: @initiator,
+          callee_id: nil,
+          conversation_id: "conv-1"
+        }),
+        [@initiator, @invitee]
+      )
+
+      :get
+      |> conn("/api/v1/calls/" <> @call_id)
+      |> put_req_header("authorization", "Bearer " <> user_id)
+      |> CallController.show(%{"id" => @call_id})
+    end
+
+    test "an INVITEE gets 200 with the sealed offer — the push-woken member's route to its envelope" do
+      conn = get_group_state(@invitee)
+      assert conn.status == 200
+
+      b = body(conn)
+      assert b["kind"] == "group"
+      assert is_nil(b["callee_id"])
+      assert b["e2ee_offer"]["v"] == 1
+      assert length(b["e2ee_offer"]["envelopes"]) == 2
+    end
+
+    test "a NON-participant still gets 404 — same answer as a call that does not exist" do
+      conn = get_group_state(@stranger)
+      assert conn.status == 404
+      assert body(conn)["error"]["code"] == "calls.not_found"
     end
   end
 

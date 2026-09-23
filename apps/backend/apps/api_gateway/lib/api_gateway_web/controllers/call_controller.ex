@@ -206,32 +206,17 @@ defmodule ApiGatewayWeb.CallController do
 
   def show(conn, _params), do: ErrorResponse.invalid_request(conn, "calls.invalid_request")
 
-  # Caller or callee of a direct call; a participant of a group/link call.
-  defp ensure_party(call, user_id) do
-    cond do
-      not is_binary(user_id) ->
-        {:error, :forbidden}
-
-      user_id == cget(call, :caller_id) or user_id == cget(call, :callee_id) ->
-        :ok
-
-      call_participant?(cget(call, :id), user_id) ->
-        :ok
-
-      true ->
-        {:error, :forbidden}
-    end
+  # Caller or callee of a direct call; a participant of a group/link/adhoc call. ONE predicate, shared
+  # with the token path (authorized_for_call?/3) — this used to be a second helper that matched
+  # `%{participant: true}`, a shape CallStore.call_participant? never returns (it answers
+  # `%{authorized: boolean}`), so every group, link and adhoc invitee got 404 here while the SAME
+  # user could mint a LiveKit token two routes over. The push-woken invitee could join the room and
+  # still not read the sealed e2ee_offer this endpoint exists to serve.
+  defp ensure_party(call, user_id) when is_binary(user_id) do
+    if authorized_for_call?(call, cget(call, :id), user_id), do: :ok, else: {:error, :forbidden}
   end
 
-  defp call_participant?(call_id, user_id) do
-    match?(
-      {:ok, %{participant: true}},
-      SharedInfra.ConversationClient.call_participant?(%{
-        "call_id" => call_id,
-        "user_id" => user_id
-      })
-    )
-  end
+  defp ensure_party(_call, _user_id), do: {:error, :forbidden}
 
   # The live-state view. Deliberately NOT the history presenter: history masks the status per viewer
   # (declined reads as missed to the caller) and drops fields — a ringing callee needs the raw truth,
