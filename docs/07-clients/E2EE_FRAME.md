@@ -153,13 +153,55 @@ canonicalization, appended as the ninth field in this fixed order:
       "thumb": {                      // OPTIONAL — omit the whole object if none
         "inline_b64": "<base64 ciphertext of a small thumbnail, ≤8192 bytes, encrypted with the SAME key>",
         "w": <int>, "h": <int>
-      }
+      },
+      "thumbhash": "<base64 of a ThumbHash of the plaintext, ~25 bytes>"   // OPTIONAL — see below
     }
 
 When `media` is present, the canonical field order is: v, sender_user_id, sender_device_id,
 conversation_id, client_msg_id, composed_at, message_type, body, media. The signature covers these
 bytes exactly (so the media_id, key, and ciphertext hash are all authenticated — a tampered
 media_id is a bad signature).
+
+#### 8.1.1 `media.thumbhash` — SHIPPED FORMAT (Android 1.5.0 / vc28)
+
+**Provenance.** Merged on 2026-09-23 from Android's `docs/e2ee-frame-amendment-thumbhash.md`
+(repo `Jaspreet2121/exway-android`), which drafted the change and shipped it in vc28. This is the
+normative copy; the Android file is the record of where it came from.
+
+One OPTIONAL string field on the `media` object, **last**, after `thumb` when both are present:
+
+- The value is the **reference ThumbHash bit layout** (evanw/thumbhash) of the *plaintext* media —
+  an image's pixels, a video's first frame — computed from an input downscaled to ≤100×100, then
+  standard padded base64 like every other `_b64`-style field in this frame.
+- When present it participates in the canonical bytes as the last field of `media`. Like every
+  media field it is therefore **signed**: a tampered thumbhash is a bad signature.
+- Purpose: the receiver paints the decoded ThumbHash as an instant placeholder **before any network
+  round-trip** — earlier than `thumb`, which needs the envelope and then decodes 1–8 KB of JPEG.
+  The three compose: thumbhash immediately, `thumb` when decoded, the full media when fetched.
+
+**Why absent = old behaviour, and why old receivers are safe.** The receive order (§5) makes this
+a compatible addition on both existing clients, verified in source:
+
+1. **The signature covers the received bytes, not a re-canonicalization.** Web
+   `frame.ts openFrame` calls `crypto_sign_verify_detached(sig, plaintext, …)` on the decrypted
+   envelope bytes; Android `SealedFrameCodec.open` does the same (`verifyDetached`). Neither
+   re-derives canonical bytes on receive, so a frame carrying a field the receiver does not know
+   still verifies.
+2. **Both parsers ignore unknown fields.** Web reads named keys (`frame.ts` validates only
+   `media_id`, `key_b64` and `enc`); Android decodes with `ExWayJson` (`ignoreUnknownKeys = true`),
+   pinned by `SealedFrameTest`'s unknown-field-tolerance test.
+3. **Senders that never write the field produce byte-identical frames to before** — the canonical
+   encoding only appends `thumbhash` when non-null. Web's `canonical.ts` passes the `media` object
+   through as-is, so it neither adds nor strips the key.
+
+**Who sends and who renders, today.** Android sends and renders it. **Web does not send it and does
+not render it** (its `MediaDescriptor` has no `thumbhash`; the reference JS `thumbhash` module would
+be needed to decode) — web receivers still get an instant blurred preview from `thumb`, which
+Android also populates, so thumbhash on web would only move the placeholder earlier. iOS: follow the
+backend/this spec; sending is optional, receiving must tolerate it per (1)–(2).
+
+**Not part of this spec:** the plaintext twin `metadata.thumbhash` on ordinary (unsealed) media
+messages is a client metadata convention like `duration_ms`, not a frame field.
 
 ### 8.2 File encryption
 
