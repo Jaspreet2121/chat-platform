@@ -49,6 +49,11 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # 60 s to shut down cleanly (Docker's default is 10 s, then SIGKILL — a WAL replay on the way back
+    # up at best). Applies only when the container is RECREATED or the host reboots; `restart` alone
+    # keeps the old value. Note: on a host reboot the DAEMON's --shutdown-timeout (default 15 s) caps
+    # this — stop the stack explicitly with `stop --timeout 60` before `sudo reboot`.
+    stop_grace_period: 60s
     mem_limit: 768m
     environment:
       POSTGRES_DB: chat_platform
@@ -289,6 +294,8 @@ services:
   kafka:
     image: bitnamilegacy/kafka:3.7.1-debian-12-r4
     restart: unless-stopped
+    # See postgres: a clean broker shutdown flushes the log; 10 s is not enough.
+    stop_grace_period: 60s
     networks: [chatnet]
     # PHASE 1 = OFF: gated behind the "kafka" profile, so plain `up -d` does NOT start it. Enable with
     # `docker compose --profile kafka up -d` (+ set the publish flags true in .env).
@@ -481,6 +488,8 @@ services:
   scylla:
     image: scylladb/scylla:6.2
     restart: unless-stopped
+    # See postgres: Scylla drains its commitlog on SIGTERM; killed at 10 s it replays on boot (slow) or worse.
+    stop_grace_period: 60s
     profiles: ["scylla"]
     networks: [chatnet]
     mem_limit: 1500m
