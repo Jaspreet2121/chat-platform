@@ -197,7 +197,7 @@ de, red se zyada mehnga padta hai.
 
 ## 7. Failures se aaye rules
 
-Poori list `engineering-rules.md` mein hai; yeh woh hain jo baar-baar lautte hain.
+Poori list `GROWBLIC-HANDOFF-4.md` ke §9 (Bug classes) mein hai; yeh woh hain jo baar-baar lautte hain.
 
 **Silent failure**
 - Jo guard failure return kare par failure state likhe nahi, woh silent pend hai.

@@ -194,11 +194,15 @@ a compatible addition on both existing clients, verified in source:
    encoding only appends `thumbhash` when non-null. Web's `canonical.ts` passes the `media` object
    through as-is, so it neither adds nor strips the key.
 
-**Who sends and who renders, today.** Android sends and renders it. **Web does not send it and does
-not render it** (its `MediaDescriptor` has no `thumbhash`; the reference JS `thumbhash` module would
-be needed to decode) — web receivers still get an instant blurred preview from `thumb`, which
-Android also populates, so thumbhash on web would only move the placeholder earlier. iOS: follow the
-backend/this spec; sending is optional, receiving must tolerate it per (1)–(2).
+**Who sends and who renders, today.** Android sends and renders it (vc28). **iOS sends AND renders
+it**: `docs/PARITY.md` in `growblic-ios` records the sealed codec encoding `media/thumbhash/font/
+entities` in the fixed order with the copied fixtures passing (Slice 4, `fe90973`), the image
+pipeline computing a ThumbHash with the vendored evanw module (`Core/Media/Vendor`, MIT) alongside the
+32 px inline preview (Slice 5), and the placeholder painted in bubbles and in the status viewer. **Web
+is the only client that neither sends nor renders it** (its `MediaDescriptor` has no `thumbhash`; the
+reference JS `thumbhash` module would be needed to decode) — web receivers still get an instant
+blurred preview from `thumb`, which both mobile clients populate, so thumbhash on web would only move
+the placeholder earlier.
 
 **Not part of this spec:** the plaintext twin `metadata.thumbhash` on ordinary (unsealed) media
 messages is a client metadata convention like `duration_ms`, not a frame field.
@@ -418,12 +422,24 @@ after the fact: the key died with the call, and a stored envelope is only a targ
 
 ## 11. Rich text (`font` + `entities`) — NORMATIVE
 
-**PROVENANCE.** This section was written from the agreed field list, NOT copied from Android's
-`docs/e2ee-frame-amendment-entities.md` — that file is not present in this repository or any sibling
-checkout on the machine this was built on. The key order, compact-JSON rule and UTF-8 encoding below
-are exactly the ones §2 already fixes, so a byte-for-byte match is expected; **verify this section
-against the Android amendment before shipping a cross-platform sealed frame that carries
-formatting**, and correct it here if the two disagree.
+**PROVENANCE — SHIPPED FORMAT (Android 1.8.0 / vc41).** Merged on 2026-09-23 with Android's
+`docs/e2ee-frame-amendment-entities.md` (repo `Jaspreet2121/exway-android`, commit `48f33a6`,
+2026-09-16, "Rich text slice 1: entities render + wire"). The earlier note here said that file
+"is not present in this repository or any sibling checkout" — it was in the Android repo. This is
+the normative copy; the Android file is the record of where it came from.
+
+The two texts were compared field by field and **agree on everything that reaches the wire**: the
+cleartext order (`font` then `entities`, both after `body`/`media`), omission when absent OR empty,
+the per-entity key order `type, offset, length, url, lang` with the last two emitted only when set,
+UTF-16 code units, the thirteen type slugs, and the ≤100 cap. Verified against web in source, not
+on trust: `canonical.ts` `ordered()` appends `font` then `entities` only when non-empty and
+`orderedEntity()` rebuilds each entity in the fixed order with `url`/`lang` conditional;
+`secretChat.ts` sends both on the sealed path; `richText.ts` `sanitizeEntities()` receives them;
+and the §11.4 fixture bytes are pinned by `apps/web/src/lib/e2ee/__tests__/e2ee.test.ts`. Android
+(per the amendment): `SealedFrameCodec` builds the same bytes; iOS: `docs/PARITY.md` records the
+sealed codec handling `font/entities` ordering with all copied fixtures passing (Slice 4,
+`fe90973`). The amendment's acceptance bar — byte-for-byte cross-decrypt — is therefore met by
+construction on all three; §11.6 records the one place the receiver texts diverge.
 
 A sealed message may carry the same formatting a plaintext one does. Both fields are OPTIONAL and
 both are part of the SIGNED cleartext — formatting that rode outside the envelope could be rewritten
@@ -492,3 +508,32 @@ Render `font` and `entities` over the decrypted `body`. An UNKNOWN `font` or an 
 already proved the sender wrote it, and refusing would make any future formatting type a hard
 compatibility break. A span whose `offset + length` exceeds the decrypted body IS dropped: it cannot
 be rendered, and clamping it would move formatting onto text the sender did not mark.
+
+### 11.6 Receiver tolerance — what is normative, and one recorded divergence
+
+The amendment adds constraints a conformant sender SHOULD meet and a receiver MUST tolerate: offsets
+sorted ascending; non-overlapping except legal nesting of inline types; at most 100 entities. A
+receiver **never throws on bad input** — it drops what it cannot render and renders the rest plainly.
+Web (`richText.ts`) implements this as: unknown `type` → dropped; more than 100 → the first 100
+kept; zero-length span → dropped; `url` only on `link` and `https://` only, else the entity is
+dropped; `lang` only on `pre`; out-of-range span → dropped.
+
+**Divergence, recorded rather than papered over.** The Android amendment's text says a receiver
+*"clamps out-of-range spans to the body"*; §11.5 above says an out-of-range span is *dropped*, and
+web does drop it (`richText.ts` `sanitizeEntity`: `offset + length > limit → null`). **§11.5 is
+normative**: clamping moves formatting onto text the sender did not mark, and a signed frame should
+not be silently re-shaped on receive. Android's actual receiver behaviour is not verifiable from this
+repository — if `SealedFrameCodec`/its renderer clamps, that is the one thing to bring in line, and it
+affects only malformed frames (a conformant sender never emits an out-of-range span), never the bytes
+or the signature.
+
+**Who sends and renders, today.** Android sends and renders (slice 1 wired it; the composer authoring
+came in the later rich-text slices). Web sends (`secretChat.ts`) and renders (`richText.ts`). iOS's
+sealed codec encodes and decodes the fields with the fixtures passing (Slice 4); its rendering is not
+asserted here.
+
+**The plain (unsealed) twin.** On a plain create the same array rides `metadata.entities`, a client
+metadata convention like `duration_ms`/`font` — not part of this frame spec. A sealed create carries
+NO plaintext metadata: `entities` never appears beside the envelope (the amendment locks this with
+Android's `SealedCreatePayloadTest`). The sealed path needs no server change: the frame is
+end-to-end and the server never sees it.
