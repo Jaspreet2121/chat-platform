@@ -167,7 +167,16 @@ defmodule RealtimeGateway.CallSignaling do
 
       # The push carries only the BOOLEAN hint — envelopes are far too large for a data push and would
       # blow the FCM cap; the callee fetches GET /api/v1/calls/:id for them (E2EE_FRAME.md §calls).
-      emit_incoming_push(callee_id, caller_name, type, call_id, not is_nil(e2ee_offer))
+      emit_incoming_push(%{
+        callee_id: callee_id,
+        caller_id: caller_id,
+        caller_name: caller_name,
+        type: type,
+        call_id: call_id,
+        conversation_id: conversation_id,
+        e2ee: not is_nil(e2ee_offer)
+      })
+
       :ok
     end
   end
@@ -1172,11 +1181,37 @@ defmodule RealtimeGateway.CallSignaling do
     error -> Logger.warning("ended-call chat write raised, ignored: #{inspect(error)}")
   end
 
+  # THE ONE incoming-push event shape, for the direct ring and (130-group) the group/adhoc rings alike.
+  # Both senders read `caller_id` and `conversation_id` (ApnsSender.call_payload, FcmSender.call_data) and
+  # docs/05-api-contracts/ios-push.md promises them — yet the direct producer never wrote either, so every
+  # iOS/Android call push carried caller_id "" and no conversation. One builder, so the two paths cannot
+  # drift again. `e2ee` is DISPLAY HINT ONLY (111): envelopes never ride a push — see GET /api/v1/calls/:id.
+  # `kind`, `sent_at` and `ring_deadline_at` are optional and set by the group producer (below).
+  defp incoming_push_event(type, ring, correlation) do
+    %{
+      "type" => type,
+      "call_id" => ring.call_id,
+      "callee_id" => ring.callee_id,
+      "caller_id" => ring.caller_id,
+      "caller_name" => ring.caller_name,
+      "call_type" => ring.type,
+      "conversation_id" => Map.get(ring, :conversation_id),
+      "e2ee" => Map.get(ring, :e2ee, false),
+      "correlation_id" => correlation
+    }
+    |> maybe_put_event("kind", Map.get(ring, :kind))
+    |> maybe_put_event("sent_at", Map.get(ring, :sent_at))
+    |> maybe_put_event("ring_deadline_at", Map.get(ring, :ring_deadline_at))
+  end
+
+  defp maybe_put_event(map, _key, nil), do: map
+  defp maybe_put_event(map, key, value), do: Map.put(map, key, value)
+
   # Best-effort incoming-call push for a backgrounded callee. Reuses the message-push path: fire-and-forget
   # produce onto the Kafka bus (gated by CALL_PUSH_ENABLED); notification_service's CallIncomingConsumer
   # turns it into a web-push via PushSender. A no-op when the flag/Kafka path is off (same ceiling as
   # message pushes) — the reliable ring is the socket broadcast above; this is only the backgrounded case.
-  defp emit_incoming_push(callee_id, caller_name, type, call_id, e2ee) do
+  defp emit_incoming_push(%{callee_id: callee_id, call_id: call_id} = ring) do
     if call_push_enabled?() do
       correlation = SharedInfra.Correlation.get_or_generate()
 
@@ -1186,17 +1221,7 @@ defmodule RealtimeGateway.CallSignaling do
         # The MAP, not a pre-encoded string: BrodProducer JSON-encodes its value itself (its documented
         # contract — message_service passes a map too). Encoding here produced DOUBLE-encoded events the
         # notification consumer silently ignored — zero call pushes ever fired.
-        value = %{
-          "type" => "call.incoming",
-          "call_id" => call_id,
-          "callee_id" => callee_id,
-          "caller_name" => caller_name,
-          "call_type" => type,
-          # DISPLAY HINT ONLY (111): lets a push-woken client show the lock while it fetches. The
-          # envelopes themselves never ride a push — see GET /api/v1/calls/:id.
-          "e2ee" => e2ee,
-          "correlation_id" => correlation
-        }
+        value = incoming_push_event("call.incoming", ring, correlation)
 
         # The GATEWAY'S OWN brod client — the producer's default is :message_service_kafka_client, which
         # exists only in the message-service release; producing without this option is exactly the bug that

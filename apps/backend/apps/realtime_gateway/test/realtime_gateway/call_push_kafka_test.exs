@@ -116,6 +116,11 @@ defmodule RealtimeGateway.CallPushKafkaTest do
 
     assert_receive {:produced, "call.events.v1", "callee-1", value, opts}, 1000
 
+    # P2 (2026-09-23): both senders read these and the iOS push contract promises them, but the
+    # producer never wrote either — every call push carried caller_id "" and no conversation.
+    assert value["caller_id"] == "caller-1"
+    assert Map.has_key?(value, "conversation_id")
+
     # THE FIX: the gateway's own client is selected per-call (the default would target a client that
     # does not exist in this release).
     assert opts[:client] == :realtime_gateway_kafka_client
