@@ -518,14 +518,17 @@ Web (`richText.ts`) implements this as: unknown `type` → dropped; more than 10
 kept; zero-length span → dropped; `url` only on `link` and `https://` only, else the entity is
 dropped; `lang` only on `pre`; out-of-range span → dropped.
 
-**Divergence, recorded rather than papered over.** The Android amendment's text says a receiver
-*"clamps out-of-range spans to the body"*; §11.5 above says an out-of-range span is *dropped*, and
-web does drop it (`richText.ts` `sanitizeEntity`: `offset + length > limit → null`). **§11.5 is
-normative**: clamping moves formatting onto text the sender did not mark, and a signed frame should
-not be silently re-shaped on receive. Android's actual receiver behaviour is not verifiable from this
-repository — if `SealedFrameCodec`/its renderer clamps, that is the one thing to bring in line, and it
-affects only malformed frames (a conformant sender never emits an out-of-range span), never the bytes
-or the signature.
+**Out-of-range spans: receivers DROP, senders may clamp their own text.** The Android amendment's
+text said a receiver *"clamps out-of-range spans to the body"*; §11.5 says an out-of-range span is
+*dropped*, and **§11.5 is normative**: clamping moves formatting onto text the sender did not mark,
+and a signed frame should not be silently re-shaped on receive. Both shipped receivers now do this —
+web (`richText.ts` `sanitizeEntity`: `offset + length > limit → null`) and Android since
+`exway-android` `553cadf` (`RichText.kt` `normalizeReceived`). Android's **composer/send path still
+clamps, on purpose**: there the text is the sender's own, so clamping a span to the body it is about
+to sign is authoring, not re-shaping someone else's signed frame. The two rules are not in tension —
+one is what you do to your own draft, the other is what you do to a received signature. iOS's
+receiver behaviour is **pending confirmation**. This affects only malformed frames (a conformant
+sender never emits an out-of-range span), never the bytes or the signature.
 
 **Who sends and renders, today.** Android sends and renders (slice 1 wired it; the composer authoring
 came in the later rich-text slices). Web sends (`secretChat.ts`) and renders (`richText.ts`). iOS's
