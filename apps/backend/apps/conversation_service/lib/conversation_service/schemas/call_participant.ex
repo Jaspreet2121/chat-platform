@@ -22,12 +22,24 @@ defmodule ConversationService.Schemas.CallParticipant do
     field(:status, :string, default: "invited")
     field(:joined_at, :utc_datetime_usec)
     field(:left_at, :utc_datetime_usec)
+    # 131: when THIS member's ring was emitted (reset on re-invite); when they declined.
+    field(:rung_at, :utc_datetime_usec)
+    field(:declined_at, :utc_datetime_usec)
     field(:created_at, :utc_datetime_usec)
   end
 
   def create_changeset(attrs) do
     %__MODULE__{}
-    |> cast(attrs, [:call_id, :user_id, :status, :joined_at, :left_at, :created_at])
+    |> cast(attrs, [
+      :call_id,
+      :user_id,
+      :status,
+      :joined_at,
+      :left_at,
+      :rung_at,
+      :declined_at,
+      :created_at
+    ])
     |> validate_required([:call_id, :user_id, :status, :created_at])
     |> validate_inclusion(:status, @statuses)
   end
@@ -35,7 +47,7 @@ defmodule ConversationService.Schemas.CallParticipant do
   # Per-member transition: status + the relevant timestamp (joined_at on join, left_at on leave).
   def status_changeset(%__MODULE__{} = participant, attrs) do
     participant
-    |> cast(attrs, [:status, :joined_at, :left_at])
+    |> cast(attrs, [:status, :joined_at, :left_at, :rung_at, :declined_at])
     |> validate_required([:status])
     |> validate_inclusion(:status, @statuses)
   end

@@ -40,6 +40,63 @@ defmodule ConversationService.GroupCallStoreTest do
   end
 
   @tag :postgres_integration
+  test "131: invitees are rung on create (rung_at set), the initiator never is (NULL)" do
+    {owner, [a, b], conv_id} = group_of(2)
+
+    assert {:ok, %{participants: parts}} =
+             CallStore.create_group_call(%{
+               "initiator_id" => owner,
+               "conversation_id" => conv_id,
+               "type" => "voice"
+             })
+
+    by_user = Map.new(parts, &{&1.user_id, &1})
+    assert is_nil(by_user[owner].rung_at)
+    assert is_binary(by_user[a].rung_at)
+    assert is_binary(by_user[b].rung_at)
+    assert Enum.all?([a, b], &is_nil(by_user[&1].declined_at))
+  end
+
+  @tag :postgres_integration
+  test "131: a re-invite of a declined member RESETS rung_at; the decline recorded declined_at" do
+    {owner, [a, _b], conv_id} = group_of(2)
+
+    {:ok, %{call: call}} =
+      CallStore.create_group_call(%{
+        "initiator_id" => owner,
+        "conversation_id" => conv_id,
+        "type" => "voice"
+      })
+
+    {:ok, %{participants: parts}} = CallStore.get_call_with_participants(%{"call_id" => call.id})
+    first_ring = Enum.find(parts, &(&1.user_id == a)).rung_at
+
+    # Decline: declined_at is written, rung_at is untouched.
+    {:ok, %{participant: declined}} =
+      CallStore.decline_group_call(%{"call_id" => call.id, "user_id" => a})
+
+    assert declined.status == "declined"
+    assert is_binary(declined.declined_at)
+    assert declined.rung_at == first_ring
+
+    # Keep the call alive so the re-add is allowed, then re-invite: a NEW ring, a NEW rung_at.
+    # (Sleep so the second timestamp is strictly later at microsecond resolution.)
+    Process.sleep(2)
+
+    assert {:ok, _} =
+             CallStore.add_call_participant(%{
+               "call_id" => call.id,
+               "actor_id" => owner,
+               "user_id" => a
+             })
+
+    {:ok, %{participants: parts2}} = CallStore.get_call_with_participants(%{"call_id" => call.id})
+    re_rung = Enum.find(parts2, &(&1.user_id == a))
+    assert re_rung.status == "invited"
+    assert re_rung.rung_at > first_ring
+  end
+
+  @tag :postgres_integration
   test "join_group_call: a late join flips the call ringing → ongoing" do
     {owner, [a, _b], conv_id} = group_of(2)
 

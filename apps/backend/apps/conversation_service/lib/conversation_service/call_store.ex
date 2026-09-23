@@ -461,7 +461,11 @@ defmodule ConversationService.CallStore do
          {:ok, call_id} <- required(attrs, "call_id"),
          {:ok, user_id} <- required(attrs, "user_id"),
          {:ok, call} <- fetch_group_call(call_id) do
-      upsert_participant_status(call_id, user_id, %{status: "declined"})
+      upsert_participant_status(call_id, user_id, %{
+        status: "declined",
+        declined_at: DateTime.utc_now()
+      })
+
       call = maybe_close_call(call)
 
       {:ok,
@@ -909,7 +913,10 @@ defmodule ConversationService.CallStore do
       user_id: user_id,
       status: status,
       created_at: created_at,
-      joined_at: joined_at
+      joined_at: joined_at,
+      # 131: an invited row is rung the moment it is created. The initiator is seated joined and
+      # never rung, so its rung_at stays NULL — that NULL is how "was this row ever rung" is asked.
+      rung_at: if(status == "invited", do: created_at, else: nil)
     }
     |> CallParticipant.create_changeset()
     |> Repo.insert!()
@@ -1103,7 +1110,11 @@ defmodule ConversationService.CallStore do
         :ok
 
       %CallParticipant{} = participant ->
-        participant |> CallParticipant.status_changeset(%{status: "invited"}) |> Repo.update()
+        # A declined/left/missed member being rung AGAIN: reset rung_at so the ring deadline the push
+        # carries starts from this ring, not the first one (131).
+        participant
+        |> CallParticipant.status_changeset(%{status: "invited", rung_at: DateTime.utc_now()})
+        |> Repo.update()
     end
   end
 
@@ -1369,6 +1380,8 @@ defmodule ConversationService.CallStore do
       status: p.status,
       joined_at: iso8601(p.joined_at),
       left_at: iso8601(p.left_at),
+      rung_at: iso8601(p.rung_at),
+      declined_at: iso8601(p.declined_at),
       created_at: iso8601(p.created_at)
     }
   end
