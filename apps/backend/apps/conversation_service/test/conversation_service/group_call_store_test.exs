@@ -97,6 +97,63 @@ defmodule ConversationService.GroupCallStoreTest do
   end
 
   @tag :postgres_integration
+  test "list_stale_ringing_group_calls: only group/adhoc calls still ringing PAST the cutoff" do
+    {owner, [_a, _b], conv_id} = group_of(2)
+
+    {:ok, %{call: fresh}} =
+      CallStore.create_group_call(%{
+        "initiator_id" => owner,
+        "conversation_id" => conv_id,
+        "type" => "voice"
+      })
+
+    # A second group call, backdated 2 minutes — a ring whose timer died.
+    {:ok, %{call: stale}} =
+      CallStore.create_group_call(%{
+        "initiator_id" => owner,
+        "conversation_id" => conv_id,
+        "type" => "voice"
+      })
+
+    backdate!(stale.id, 120)
+
+    # An ongoing (answered) old group call, and an old DIRECT ringing call: neither is the reaper's.
+    {:ok, %{call: answered}} =
+      CallStore.create_group_call(%{
+        "initiator_id" => owner,
+        "conversation_id" => conv_id,
+        "type" => "voice"
+      })
+
+    backdate!(answered.id, 120)
+
+    Repo.query!("UPDATE calls SET status = 'ongoing' WHERE id = $1", [
+      Ecto.UUID.dump!(answered.id)
+    ])
+
+    direct_id = Ecto.UUID.generate()
+
+    Repo.query!(
+      "INSERT INTO calls (id, kind, caller_id, callee_id, room_name, type, status, created_at) " <>
+        "VALUES ($1, 'direct', $2, $3, $4, 'voice', 'ringing', now() - interval '2 minutes')",
+      [
+        Ecto.UUID.dump!(direct_id),
+        Ecto.UUID.dump!(owner),
+        Ecto.UUID.dump!(new_user!()),
+        "call-" <> direct_id
+      ]
+    )
+
+    assert {:ok, %{call_ids: ids}} =
+             CallStore.list_stale_ringing_group_calls(%{"older_than_seconds" => 60})
+
+    assert stale.id in ids
+    refute fresh.id in ids
+    refute answered.id in ids
+    refute direct_id in ids
+  end
+
+  @tag :postgres_integration
   test "join_group_call: a late join flips the call ringing → ongoing" do
     {owner, [a, _b], conv_id} = group_of(2)
 
@@ -702,6 +759,13 @@ defmodule ConversationService.GroupCallStoreTest do
   end
 
   # A fresh app user (auth parent only, NOT in any conversation) — an "outside person" for add tests.
+  defp backdate!(call_id, seconds) do
+    Repo.query!(
+      "UPDATE calls SET created_at = now() - ($2 || ' seconds')::interval WHERE id = $1",
+      [Ecto.UUID.dump!(call_id), Integer.to_string(seconds)]
+    )
+  end
+
   defp new_user! do
     user_id = Ecto.UUID.generate()
     insert_user_auth_parent!(user_id)

@@ -182,6 +182,10 @@ defmodule ConversationService.ConversationClientInProcess do
     do: ConversationService.CallStore.mark_group_participants_missed(attrs)
 
   @impl true
+  def list_stale_ringing_group_calls(attrs),
+    do: ConversationService.CallStore.list_stale_ringing_group_calls(attrs)
+
+  @impl true
   def get_call_with_participants(attrs),
     do: ConversationService.CallStore.get_call_with_participants(attrs)
 

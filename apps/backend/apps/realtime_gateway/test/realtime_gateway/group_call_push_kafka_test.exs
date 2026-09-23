@@ -71,6 +71,17 @@ defmodule RealtimeGateway.GroupCallPushKafkaTest do
 
     def get_call_with_participants(%{"call_id" => id}),
       do: {:ok, %{call: %{@call | id: id}, participants: []}}
+
+    def add_call_participant(%{"call_id" => id, "user_id" => user}),
+      do:
+        {:ok,
+         %{
+           call: %{@call | id: id, status: "ongoing"},
+           added_user_id: user,
+           room: "aroom_1",
+           type: "voice",
+           conversation_id: nil
+         }}
   end
 
   defmodule CaptureEndpoint do
@@ -193,6 +204,27 @@ defmodule RealtimeGateway.GroupCallPushKafkaTest do
     assert value["callee_id"] == @t1
     assert value["reason"] == "declined"
     assert value["call_id"] == "acall_1"
+  end
+
+  test "group_add arms its OWN ring timeout in the adder's channel (it never did before)" do
+    prev = Application.get_env(:realtime_gateway, :call_ring_timeout_ms)
+    Application.put_env(:realtime_gateway, :call_ring_timeout_ms, 20)
+
+    on_exit(fn ->
+      if prev,
+        do: Application.put_env(:realtime_gateway, :call_ring_timeout_ms, prev),
+        else: Application.delete_env(:realtime_gateway, :call_ring_timeout_ms)
+    end)
+
+    assert {:reply, {:ok, _}, _} =
+             CallSignaling.handle_event(
+               "call:group_add",
+               %{"call_id" => "acall_1", "user_id" => @t2},
+               socket(@caller)
+             )
+
+    # The timer message lands in THIS process — the channel that did the add — like group_invite's.
+    assert_receive {:group_ring_timeout, "acall_1"}, 1000
   end
 
   test "the brod client comes up for the GROUP flag alone (the gate knows both producers)" do

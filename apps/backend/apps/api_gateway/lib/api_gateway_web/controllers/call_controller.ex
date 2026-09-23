@@ -8,6 +8,15 @@ defmodule ApiGatewayWeb.CallController do
 
   require Logger
 
+  # 130-group: the dead-timer backstop rides every call endpoint (see ApiGatewayWeb.CallReaper).
+  # Claims a 60 s slot per node and does its work in a Task — the request never waits for it.
+  plug :maybe_reap
+
+  defp maybe_reap(conn, _opts) do
+    ApiGatewayWeb.CallReaper.maybe_reap()
+    conn
+  end
+
   alias ApiGatewayWeb.ErrorResponse
 
   # GET /api/v1/calls?cursor=&limit= → { "calls": [ …, counterpart_id, counterpart_name ],

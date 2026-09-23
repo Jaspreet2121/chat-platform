@@ -693,6 +693,13 @@ defmodule RealtimeGateway.CallSignaling do
         ring_deadline_at: deadline.ring_deadline_at
       })
 
+      # ...and its own ring timeout, in the ADDER's channel (this process). group_add never armed one,
+      # so an added member who never answered stayed `invited` for the life of the call. The handler is
+      # idempotent (still-invited → missed; a join first makes it a no-op) and, with people in the
+      # call, never closes it — so re-arming per add is safe. ring_timeout_ms/0 rather than the
+      # attribute so a test can shrink it (the module's stated reason for the config key).
+      Process.send_after(self(), {:group_ring_timeout, call_id}, ring_timeout_ms())
+
       {:reply, {:ok, %{call_id: call_id, added_user_id: added}}, socket}
     else
       {:error, :user_not_found} -> reply_error(socket, "call.user_not_found")

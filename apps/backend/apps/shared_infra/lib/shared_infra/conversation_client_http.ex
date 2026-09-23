@@ -94,6 +94,8 @@ defmodule SharedInfra.ConversationClientHttp do
 
   @impl true
   def mark_group_participants_missed(attrs), do: post("/internal/calls/group/miss", attrs)
+  @impl true
+  def list_stale_ringing_group_calls(attrs), do: post("/internal/calls/group/stale", attrs)
 
   @impl true
   def get_call_with_participants(attrs), do: post("/internal/calls/group/get", attrs)

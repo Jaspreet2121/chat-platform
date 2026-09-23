@@ -221,6 +221,10 @@ defmodule ConversationService.HTTP.Router do
     send_result(conn, ConversationService.CallStore.mark_group_participants_missed(body(conn)))
   end
 
+  post "/internal/calls/group/stale" do
+    send_result(conn, ConversationService.CallStore.list_stale_ringing_group_calls(body(conn)))
+  end
+
   post "/internal/calls/group/get" do
     send_result(conn, ConversationService.CallStore.get_call_with_participants(body(conn)))
   end

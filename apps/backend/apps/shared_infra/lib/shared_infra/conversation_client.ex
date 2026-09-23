@@ -75,6 +75,7 @@ defmodule SharedInfra.ConversationClient do
   @callback decline_group_call(attrs()) :: result()
   @callback leave_group_call(attrs()) :: result()
   @callback mark_group_participants_missed(attrs()) :: result()
+  @callback list_stale_ringing_group_calls(attrs()) :: result()
   @callback get_call_with_participants(attrs()) :: result()
   @callback get_ongoing_group_call(attrs()) :: result()
   # Phase-3 C2 — add a participant to a live call + the token/join authorization predicate.
@@ -135,6 +136,7 @@ defmodule SharedInfra.ConversationClient do
                       decline_group_call: 1,
                       leave_group_call: 1,
                       mark_group_participants_missed: 1,
+                      list_stale_ringing_group_calls: 1,
                       get_call_with_participants: 1,
                       get_ongoing_group_call: 1,
                       add_call_participant: 1,
@@ -239,6 +241,10 @@ defmodule SharedInfra.ConversationClient do
   def decline_group_call(attrs), do: adapter().decline_group_call(attrs)
   def leave_group_call(attrs), do: adapter().leave_group_call(attrs)
   def mark_group_participants_missed(attrs), do: adapter().mark_group_participants_missed(attrs)
+
+  def list_stale_ringing_group_calls(attrs),
+    do: adapter().list_stale_ringing_group_calls(attrs)
+
   def get_call_with_participants(attrs), do: adapter().get_call_with_participants(attrs)
   def get_ongoing_group_call(attrs), do: adapter().get_ongoing_group_call(attrs)
   def add_call_participant(attrs), do: adapter().add_call_participant(attrs)

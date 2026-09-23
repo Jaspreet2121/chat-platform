@@ -516,6 +516,50 @@ defmodule ConversationService.CallStore do
     _ -> {:error, :call_invalid}
   end
 
+  @doc """
+  The reaper's read (130-group): group/adhoc calls still `ringing` whose ring window closed at least
+  `older_than_seconds` ago. Returns `{:ok, %{call_ids: [...]}}`, at most 50 per call, oldest first.
+
+  WHY IT EXISTS: the group ring timeout is a `Process.send_after` in the initiator's channel
+  process. If that socket dies before it fires, the timer dies with it — invited rows never go
+  missed, the call stays ringing forever, nobody gets `call:group_ended`. This read lets the gateway
+  finish those timeouts late. Direct calls are excluded on purpose: they have their own timer path
+  and this must never second-guess it. Never errors — DB-off or a bad argument is an empty list.
+  """
+  def list_stale_ringing_group_calls(attrs) do
+    with :ok <- persistence(),
+         {:ok, seconds} <- positive_seconds(get(attrs, "older_than_seconds")) do
+      cutoff = DateTime.add(DateTime.utc_now(), -seconds, :second)
+
+      ids =
+        from(c in Call,
+          where:
+            c.kind in ["group", "adhoc"] and c.status == "ringing" and c.created_at < ^cutoff,
+          order_by: [asc: c.created_at],
+          limit: 50,
+          select: c.id
+        )
+        |> Repo.all()
+
+      {:ok, %{call_ids: ids}}
+    else
+      _ -> {:ok, %{call_ids: []}}
+    end
+  rescue
+    _ -> {:ok, %{call_ids: []}}
+  end
+
+  defp positive_seconds(n) when is_integer(n) and n > 0, do: {:ok, n}
+
+  defp positive_seconds(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} when n > 0 -> {:ok, n}
+      _ -> :error
+    end
+  end
+
+  defp positive_seconds(_), do: :error
+
   @doc "Fetch a call + all its participant rows. attrs: \"call_id\"."
   def get_call_with_participants(attrs) do
     with :ok <- persistence(),
