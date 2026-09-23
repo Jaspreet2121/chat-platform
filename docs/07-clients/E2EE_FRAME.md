@@ -523,12 +523,14 @@ text said a receiver *"clamps out-of-range spans to the body"*; §11.5 says an o
 *dropped*, and **§11.5 is normative**: clamping moves formatting onto text the sender did not mark,
 and a signed frame should not be silently re-shaped on receive. Both shipped receivers now do this —
 web (`richText.ts` `sanitizeEntity`: `offset + length > limit → null`) and Android since
-`exway-android` `553cadf` (`RichText.kt` `normalizeReceived`). Android's **composer/send path still
+`exway-android` `553cadf` (`RichText.kt` `normalizeReceived`), and iOS since `growblic-ios`
+`8e22e4d` (with a unit test pinning the §11.5 drop rule — a received span never traps on a hostile
+number). **All three receivers — Android, web, iOS — drop.** Android's **composer/send path still
 clamps, on purpose**: there the text is the sender's own, so clamping a span to the body it is about
 to sign is authoring, not re-shaping someone else's signed frame. The two rules are not in tension —
-one is what you do to your own draft, the other is what you do to a received signature. iOS's
-receiver behaviour is **pending confirmation**. This affects only malformed frames (a conformant
-sender never emits an out-of-range span), never the bytes or the signature.
+one is what you do to your own draft, the other is what you do to a received signature. This affects
+only malformed frames (a conformant sender never emits an out-of-range span), never the bytes or the
+signature.
 
 **Who sends and renders, today.** Android sends and renders (slice 1 wired it; the composer authoring
 came in the later rich-text slices). Web sends (`secretChat.ts`) and renders (`richText.ts`). iOS's
