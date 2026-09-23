@@ -13,6 +13,15 @@ export function getAccessToken() {
   return window.localStorage.getItem(accessTokenKey);
 }
 
+/** The refresh token, for the 401 interceptor. Same MVP browser storage caveat as the access token. */
+export function getRefreshToken() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  return window.localStorage.getItem(refreshTokenKey);
+}
+
 export function hasAccessToken() {
   return Boolean(getAccessToken());
 }

@@ -1,5 +1,6 @@
-import { clearSessionTokens, getAccessToken } from "./session";
+import { clearSessionTokens, getAccessToken, getRefreshToken, setSessionTokens } from "./session";
 import { deviceDisplayName, getOrCreateDeviceId } from "./device";
+import { classifyRefreshResponse, createSingleFlight, type RefreshOutcome } from "./refresh";
 
 const defaultApiBaseUrl = "http://localhost:4000";
 
@@ -88,6 +89,9 @@ export type ConversationListItem = {
   unread_count?: number;
   // Last ACTIVITY (last message time, else conversation update) — the list sorts by this, live.
   updated_at?: string;
+  // MESSAGE REQUESTS (128): true while this is an unaccepted request. Present in EVERY scope, so a
+  // row can be identified as pending wherever it appears, not only in the requests bucket.
+  request_pending?: boolean;
 };
 
 export type ConversationDetail = {
@@ -274,8 +278,77 @@ function destinationPayload(destination: string) {
   return value.includes("@") ? { email: value } : { phone_number: value };
 }
 
+/**
+ * THE one /auth/refresh call, shared by every concurrent 401. See refresh.ts for why this is
+ * single-flight: N parallel refreshes of the SAME token look like reuse to the server, and the
+ * client would sign itself out by trying too hard.
+ *
+ * device_id is REQUIRED. The gateway does not validate it on this route, so a request without one
+ * is accepted and forwarded, and auth then refuses it because the submitted device does not match
+ * the one stored on the token — answering 401 auth.refresh_invalid, which reads exactly like a dead
+ * session. Omitting it would make this whole mechanism fail closed on its very first use.
+ */
+const refreshAccessToken = createSingleFlight<RefreshOutcome>(async () => {
+  const refreshToken = getRefreshToken();
+
+  if (!refreshToken) {
+    return { status: "failed", reason: "no refresh token stored" };
+  }
+
+  let status: number;
+  let body: { access_token?: string; refresh_token?: string; error?: { code?: string } } | null;
+
+  try {
+    const response = await fetch(`${apiBaseUrl()}/api/v1/auth/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken, device_id: getOrCreateDeviceId() }),
+      cache: "no-store"
+    });
+
+    status = response.status;
+    body = await response.json().catch(() => null);
+  } catch (error) {
+    // NETWORK, not a verdict. Offline, a captive portal, a proxy hiccup — the tokens may be fine.
+    return { status: "failed", reason: error instanceof Error ? error.message : "network error" };
+  }
+
+  const outcome = classifyRefreshResponse(status, body);
+
+  if (outcome.status === "refreshed") {
+    setSessionTokens({ accessToken: body?.access_token, refreshToken: body?.refresh_token });
+  }
+
+  return outcome;
+});
+
+/** Clear the session and send the user to /login — only ever called on a server verdict. */
+function signOut(notice: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const here = window.location.pathname;
+
+  // Never from an auth page: the login and link flows 401 legitimately, and redirecting would loop.
+  if (here === "/login" || here === "/link") {
+    return;
+  }
+
+  clearSessionTokens();
+  window.location.replace(`/login?notice=${encodeURIComponent(notice)}`);
+}
+
 // Exported for sibling client libs (push.ts) — same auth/error handling everywhere.
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return requestWithRefresh<T>(path, init, true);
+}
+
+async function requestWithRefresh<T>(
+  path: string,
+  init: RequestInit,
+  mayRetry: boolean
+): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
 
@@ -301,17 +374,26 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   const data = (await response.json().catch(() => ({}))) as T | ApiError;
 
   if (!response.ok) {
-    // BELT (2026-08-18): a 401 while we HOLD a token means the session died server-side (revoked,
-    // expired) and any realtime signal was missed — sign out here rather than leaving a dead app.
-    // Guards: only with a stored token (the login/link flows themselves 401 without one) and never
-    // when already on an auth page (no redirect loops).
-    if (response.status === 401 && token && typeof window !== "undefined") {
-      const path = window.location.pathname;
+    // A 401 while we HOLD a token means the access token is dead. Since 2026-09-23 that is a REFRESH
+    // first, not a sign-out: the previous behaviour cleared the session on any 401 and is why a
+    // shorter access-token TTL could not ship.
+    //
+    // `mayRetry` makes this exactly one attempt. A second 401 after a successful refresh means the
+    // session is genuinely gone, and retrying further would re-refresh a freshly rotated token — the
+    // reuse pattern refresh.ts exists to avoid.
+    if (response.status === 401 && token && mayRetry && typeof window !== "undefined") {
+      const outcome = await refreshAccessToken();
 
-      if (path !== "/login" && path !== "/link") {
-        clearSessionTokens();
-        window.location.replace("/login?notice=revoked");
+      if (outcome.status === "refreshed") {
+        return requestWithRefresh<T>(path, init, false);
       }
+
+      if (outcome.status === "signed_out") {
+        signOut(outcome.code === "auth.refresh_expired" ? "expired" : "revoked");
+      }
+
+      // "failed" → fall through and throw. The session is LEFT ALONE: a network error is not the
+      // server telling us anything, and the next user action will try again.
     }
 
     const apiError = data as ApiError;
@@ -1157,6 +1239,46 @@ export function listConversations() {
   return request<{
     conversations: ConversationListItem[];
   }>("/api/v1/conversations");
+}
+
+/**
+ * MESSAGE REQUESTS (128). A first DM from a stranger waits here until the recipient answers it.
+ *
+ * A SEPARATE fetch, not a filter: every conversation is in exactly one scope, and the normal inbox
+ * deliberately EXCLUDES unaccepted requests. Filtering the main list client-side would always show
+ * an empty bucket, because the rows are not in it. See docs/05-api-contracts/message-requests.md.
+ */
+export function listMessageRequests() {
+  return request<{
+    conversations: ConversationListItem[];
+  }>("/api/v1/conversations?scope=requests");
+}
+
+/**
+ * ACCEPT: the chat joins the normal inbox, pushes resume, and the pair counts as a shared
+ * conversation everywhere (presence, status audience, profile photo).
+ *
+ * 404 `conversations.request_not_found` covers "no such conversation", "already answered" AND "you
+ * are not the recipient" — deliberately indistinguishable, so nobody can probe whether a request is
+ * sitting unanswered in someone else's bucket. Treat all three as "it is gone" and refresh the list.
+ */
+export function acceptMessageRequest(conversationId: string) {
+  return request<{ conversation_id: string; status: string }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/request/accept`,
+    { method: "POST", body: JSON.stringify({}) }
+  );
+}
+
+/**
+ * DECLINE: blocks the sender and archives the chat, in one transaction, and is SILENT — the sender
+ * gets no frame, no push and no error, and their later messages take the existing block path where
+ * they still see a single tick. Nothing is deleted; the chat stays reachable under archived.
+ */
+export function declineMessageRequest(conversationId: string) {
+  return request<{ conversation_id: string; status: string }>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/request/decline`,
+    { method: "POST", body: JSON.stringify({}) }
+  );
 }
 
 // USER-SCOPED soft-hides (server-side; nothing is deleted for anyone else). Clear = hide history
