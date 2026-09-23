@@ -1845,6 +1845,9 @@ export default function ChatPage() {
         )}
       >
         <ConversationSidebar
+          onRefreshConversations={() => {
+            void refreshConversationList();
+          }}
           openNewConvNonce={newConvNonce}
           searchFocusNonce={searchFocusNonce}
           fabHidden={inputFocused}

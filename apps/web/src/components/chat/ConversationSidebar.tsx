@@ -8,6 +8,7 @@ import type {
   Session,
   UserProfile
 } from "@/lib/api";
+import { listMessageRequests } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { riseItem, staggerContainer } from "@/lib/motion";
 import { ConversationListItem } from "./ConversationListItem";
@@ -16,13 +17,15 @@ import { EmptyState } from "./EmptyState";
 import { MessageSearchModal } from "./MessageSearchModal";
 import { NewConversationModal } from "./NewConversationModal";
 import { NearbyPeopleModal } from "./NearbyPeopleModal";
+import { MessageRequestsPanel } from "./MessageRequestsPanel";
 
-type ConversationFilter = "all" | "unread" | "groups";
+type ConversationFilter = "all" | "unread" | "groups" | "requests";
 
 const FILTERS: { key: ConversationFilter; label: string }[] = [
   { key: "all", label: "All" },
   { key: "unread", label: "Unread" },
-  { key: "groups", label: "Groups" }
+  { key: "groups", label: "Groups" },
+  { key: "requests", label: "Requests" }
 ];
 
 export type ConversationSidebarProps = {
@@ -49,6 +52,11 @@ export type ConversationSidebarProps = {
   conversations: ConversationListItemData[];
   selectedConversationId: string;
   onSelectConversation: (conversationId: string) => void;
+  /**
+   * Re-read the main inbox. Called after a message request is answered: accepting moves the row out
+   * of the requests bucket and INTO the inbox, so the list the parent holds is stale until it re-reads.
+   */
+  onRefreshConversations?: () => void;
   /** Open a conversation AND scroll to a specific message (used by search results). */
   onJumpToMessage: (conversationId: string, messageId: string) => void;
   isLoading: boolean;
@@ -75,6 +83,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
     conversations,
     selectedConversationId,
     onSelectConversation,
+    onRefreshConversations,
     onJumpToMessage,
     isLoading,
     openNewConvNonce,
@@ -121,6 +130,45 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
   }, [isHeaderMenuOpen]);
   // Client-side filter by conversation state/type (a UI view of the existing list — no fetch).
   const [filter, setFilter] = useState<ConversationFilter>("all");
+
+  // MESSAGE REQUESTS (128) are the exception: a SEPARATE fetch, because the main inbox deliberately
+  // excludes unaccepted requests, so filtering the list we already have would always be empty.
+  //
+  // ONE state object, written only from the promise callbacks. Setting a loading flag in the effect
+  // BODY would be a synchronous setState in an effect (the lint rule this codebase enforces, and the
+  // cascading-render problem behind it). Keeping the previous rows visible during a re-fetch is also
+  // the better behaviour: answering a request re-reads the bucket, and a loading flash would blank a
+  // list the user is still looking at.
+  const [requestsState, setRequestsState] = useState<{
+    loading: boolean;
+    items: ConversationListItemData[];
+  }>({ loading: true, items: [] });
+  const [requestsNonce, setRequestsNonce] = useState(0);
+  const requests = requestsState.items;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    listMessageRequests()
+      .then((response) => {
+        if (!cancelled) setRequestsState({ loading: false, items: response.conversations ?? [] });
+      })
+      .catch(() => {
+        // Non-fatal: the bucket is additive. A failure leaves the badge off rather than breaking the
+        // sidebar — the inbox is the thing the user actually needs.
+        if (!cancelled) setRequestsState({ loading: false, items: [] });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [requestsNonce]);
+
+  // A decision moves the row OUT of the bucket and (on accept) into the inbox, so both must re-read.
+  function handleRequestAnswered() {
+    setRequestsNonce((value) => value + 1);
+    onRefreshConversations?.();
+  }
   const filteredConversations = conversations
     .filter((conversation) => {
       if (filter === "unread") return (conversation.unread_count ?? 0) > 0;
@@ -254,14 +302,30 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
               )}
             >
               {option.label}
+              {option.key === "requests" && requests.length > 0 ? (
+                <span
+                  className={cn(
+                    "ml-1.5 rounded-full px-1.5 text-[10px] font-semibold",
+                    active ? "bg-white/25 text-white" : "accent-gradient text-white"
+                  )}
+                >
+                  {requests.length}
+                </span>
+              ) : null}
             </button>
           );
         })}
       </div>
 
-      {/* Conversation list */}
+      {/* Conversation list — or the requests bucket, which is its own fetch and its own actions. */}
       <div className="relative min-h-0 flex-1 overflow-y-auto pb-1">
-        {isLoading ? (
+        {filter === "requests" ? (
+          <MessageRequestsPanel
+            requests={requests}
+            isLoading={requestsState.loading}
+            onAnswered={handleRequestAnswered}
+          />
+        ) : isLoading ? (
           <EmptyState title="Loading conversations…" />
         ) : conversations.length === 0 ? (
           <EmptyState
