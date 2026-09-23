@@ -110,9 +110,25 @@ defmodule ApiGatewayWeb.CallController do
     with {:ok, authorization} <- authorization_header(conn),
          {:ok, session} <-
            SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
-         {:ok, call} <- fetch_call(call_id),
-         :ok <- ensure_callee(call, session.user_id) do
-      decline_ringing_call(conn, call, call_id)
+         {:ok, call} <- fetch_call(call_id) do
+      # 130-group: ONE endpoint, two flows. A direct call's decline is the callee's alone; a
+      # group/adhoc/link decline is any participant's, and writes their own row.
+      case cget(call, :kind) || "direct" do
+        "direct" ->
+          with :ok <- ensure_callee(call, session.user_id) do
+            decline_ringing_call(conn, call, call_id)
+          else
+            {:error, :forbidden} ->
+              ErrorResponse.forbidden(
+                conn,
+                "calls.forbidden",
+                "Only the callee can decline this call"
+              )
+          end
+
+        _group_like ->
+          decline_group_call(conn, call, call_id, session.user_id)
+      end
     else
       {:error, :not_found} ->
         ErrorResponse.not_found(conn, "calls.not_found", "Call not found")
@@ -126,6 +142,153 @@ defmodule ApiGatewayWeb.CallController do
   end
 
   def reject(conn, _params), do: ErrorResponse.invalid_request(conn, "calls.invalid_request")
+
+  @doc """
+  POST /api/v1/calls/:id/join — the REST twin of `call:group_join` (130-group).
+
+  WHY IT EXISTS: a group member woken by a VoIP/FCM push has no socket yet. Answering must not wait
+  for one, so this seats them `joined` through the SAME store transition the socket handler uses
+  (ConversationClient.join_group_call — first join flips the call ringing → ongoing), broadcasts the
+  same `call:participant_joined` to the invited+joined members, and emits the same "answered" stop
+  to the member's own other devices. Reply = the socket reply's shape, so the client fetches a
+  LiveKit token next exactly as it would after a socket join.
+
+  Group/adhoc/link only. A direct call is answered by the callee over the socket (or the /v1
+  accept), and a non-participant is told the call does not exist (404), never that it does.
+  """
+  def join(conn, %{"id" => call_id}) when is_binary(call_id) and call_id != "" do
+    with {:ok, authorization} <- authorization_header(conn),
+         {:ok, session} <-
+           SharedInfra.AuthClient.current_session(%{"authorization" => authorization}),
+         {:ok, call} <- fetch_call(call_id),
+         :ok <- ensure_group_like(call),
+         :ok <- ensure_party(call, session.user_id) do
+      case SharedInfra.ConversationClient.join_group_call(%{
+             "call_id" => call_id,
+             "user_id" => session.user_id
+           }) do
+        {:ok, result} ->
+          joined = cget(result, :participant)
+
+          broadcast_to_participants(
+            call_id,
+            session.user_id,
+            ["invited", "joined"],
+            "call:participant_joined",
+            %{
+              call_id: call_id,
+              user_id: session.user_id,
+              joined_at: cget(joined, :joined_at)
+            }
+          )
+
+          RealtimeGateway.CallSignaling.emit_group_cancel_push(
+            call_id,
+            session.user_id,
+            "answered"
+          )
+
+          json(conn, %{
+            call_id: call_id,
+            room: cget(cget(result, :call), :room_name) || cget(call, :room_name),
+            participants: participants_of(call_id)
+          })
+
+        {:error, :call_ended} ->
+          ErrorResponse.conflict(conn, "calls.ended", "This call has ended")
+
+        _ ->
+          ErrorResponse.service_unavailable(conn, "calls.unavailable")
+      end
+    else
+      {:error, :not_found} -> ErrorResponse.not_found(conn, "calls.not_found", "Call not found")
+      {:error, :forbidden} -> ErrorResponse.not_found(conn, "calls.not_found", "Call not found")
+      {:error, :not_group} -> ErrorResponse.invalid_request(conn, "calls.not_group_call")
+      _ -> ErrorResponse.unauthorized(conn, "auth.unauthorized", "Invalid or missing session")
+    end
+  end
+
+  def join(conn, _params), do: ErrorResponse.invalid_request(conn, "calls.invalid_request")
+
+  defp ensure_group_like(call) do
+    if (cget(call, :kind) || "direct") in ["group", "adhoc", "link"],
+      do: :ok,
+      else: {:error, :not_group}
+  end
+
+  # The group/adhoc/link decline (130-group): the caller's OWN participant row is what changes, so
+  # authorization is participation, exactly as show/token check it. Idempotent: a member who already
+  # declined, or a call that already closed, gets 200 and nothing is written or broadcast again —
+  # the closed-app double-tap and the timeout race both land here. A non-participant gets 404, the same
+  # answer as a call that does not exist.
+  defp decline_group_call(conn, call, call_id, user_id) do
+    with :ok <- ensure_party(call, user_id) do
+      already =
+        cget(call, :status) in ["ended", "missed", "cancelled"] or
+          participant_status(call_id, user_id) == "declined"
+
+      if already do
+        json(conn, %{call_id: call_id})
+      else
+        case SharedInfra.ConversationClient.decline_group_call(%{
+               "call_id" => call_id,
+               "user_id" => user_id
+             }) do
+          {:ok, _result} ->
+            broadcast_to_participants(
+              call_id,
+              user_id,
+              ["invited", "joined"],
+              "call:participant_declined",
+              %{call_id: call_id, user_id: user_id}
+            )
+
+            RealtimeGateway.CallSignaling.emit_group_cancel_push(call_id, user_id, "declined")
+            json(conn, %{call_id: call_id})
+
+          _ ->
+            ErrorResponse.service_unavailable(conn, "calls.unavailable")
+        end
+      end
+    else
+      {:error, :forbidden} -> ErrorResponse.not_found(conn, "calls.not_found", "Call not found")
+    end
+  end
+
+  defp participants_of(call_id) do
+    case SharedInfra.ConversationClient.get_call_with_participants(%{"call_id" => call_id}) do
+      {:ok, result} -> cget(result, :participants) || []
+      _ -> []
+    end
+  end
+
+  defp participant_status(call_id, user_id) do
+    call_id
+    |> participants_of()
+    |> Enum.find(&(cget(&1, :user_id) == user_id))
+    |> cget(:status)
+  end
+
+  # The gateway-side twin of CallSignaling.broadcast_group/6: every participant in `statuses` except the
+  # actor, over their user topic, from this release's endpoint.
+  defp broadcast_to_participants(call_id, actor, statuses, event, payload) do
+    call_id
+    |> participants_of()
+    |> Enum.filter(&(cget(&1, :status) in statuses))
+    |> Enum.map(&cget(&1, :user_id))
+    |> Enum.reject(&(is_nil(&1) or &1 == actor))
+    |> Enum.each(fn user_id ->
+      Task.start(fn ->
+        try do
+          ApiGatewayWeb.Endpoint.broadcast("user:" <> user_id, event, payload)
+        rescue
+          _ -> :ok
+        end
+      end)
+    end)
+
+    :ok
+  end
 
   # Call-authorize a LiveKit token request. The room is "call-"<>call_id; we resolve the call row and check
   # the user belongs to it: GROUP calls authorize on a `group_call_participants` row (invited or joined —

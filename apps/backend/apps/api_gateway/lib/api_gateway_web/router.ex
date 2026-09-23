@@ -480,6 +480,10 @@ defmodule ApiGatewayWeb.Router do
     # the app (its socket) is CLOSED, so tapping Decline has no socket to push `call:reject` over. This gives
     # Decline a session-authed REST path (callee-only) so the call resolves as DECLINED, not a 35s ring-timeout.
     post "/:id/reject", CallController, :reject
+
+    # 130-group: the REST twin of `call:group_join`, for the push-woken member with no socket yet.
+    # Group/adhoc/link calls only (a direct call is answered over the socket, or by the /v1 accept).
+    post "/:id/join", CallController, :join
   end
 
   # Call links (L1) — reusable link → conversation-less "link" call. Registered users only (session-gated in
