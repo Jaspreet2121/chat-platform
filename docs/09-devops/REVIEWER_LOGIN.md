@@ -1,7 +1,9 @@
-# Play-Reviewer Test Login
+# Reviewer / test-login allowlist
 
 A config-driven allowlist of phone numbers whose OTP is a **fixed code** and whose login **never
-sends an SMS** — so Google Play reviewers can sign in to a working account. Off by default
+sends an SMS** — so store reviewers can sign in to a working account, and so we have test logins that
+spend no SMS credit and need no real handset. Built for Play review; Apple App Review and our own
+test accounts now ride the same mechanism. Off by default
 everywhere; nothing about an allowlisted session is special once minted (normal tenant-zero
 session, normal TTLs, normal rate limits).
 
@@ -45,6 +47,116 @@ session, normal TTLs, normal rate limits).
 4. Apply env changes:
 
        docker compose -f docker-compose.prod.yml --profile calls --profile kafka up -d auth
+
+## The allowlist today
+
+Five entries. The codes for the test numbers are deliberately unguessable-free — these accounts hold
+no real data and exist only to be signed into — while the **seeded Play-reviewer** code is a real
+secret and is not written down here.
+
+| Number | Code | Purpose |
+|---|---|---|
+| `+15550100001` | *(secret, in `.env`)* | The seeded **Play Reviewer** account — @playreviewer, the Skifi Support chat, the call-history row |
+| `+15550199001` | `900001` | Test account **A** — the one end of a two-account test |
+| `+15550199002` | `900002` | Test account **B** — the other end |
+| `+15550199003` | `900003` | **App Review only** (Apple). Reserved for App Store review; do not use it for day-to-day testing, so its state stays predictable when a reviewer signs in |
+| `+15550199004` | `900004` | **Account-deletion testing.** Reusable — see below |
+
+### Adding the two new entries
+
+`REVIEWER_TEST_LOGINS` is a **single comma-separated line**, so a new entry is appended to the
+existing value, never written on a second line. The format the parser accepts is
+`<E.164 phone>:<6 digits>`, comma-separated; malformed entries are silently dropped (counted in the
+boot log, never printed), so a typo disables that one login with no other symptom.
+
+> **Read the current value before you replace it.** The seeded Play-reviewer entry carries a code
+> that only `.env` has. Overwriting the line with one that omits it **breaks the Play reviewer
+> login** — and the only symptom is that their OTP stops working.
+
+```bash
+cd ~/chat-platform
+grep '^REVIEWER_TEST_LOGINS=' .env
+```
+
+Append the two, preserving whatever is already there:
+
+```bash
+cp .env ~/.env.bak-$(date +%F)
+sed -i 's/^REVIEWER_TEST_LOGINS=\(.*\)$/REVIEWER_TEST_LOGINS=\1,+15550199003:900003,+15550199004:900004/' .env
+grep '^REVIEWER_TEST_LOGINS=' .env
+```
+
+The result must read as one line, five entries, no spaces:
+
+```
+REVIEWER_TEST_LOGINS=+15550100001:<existing secret>,+15550199001:900001,+15550199002:900002,+15550199003:900003,+15550199004:900004
+```
+
+### Applying it — one command, `auth` only
+
+```bash
+docker compose -f docker-compose.prod.yml --profile calls --profile kafka up -d auth
+```
+
+**`up -d`, not `restart`.** `restart` reuses the existing container with its existing environment and
+would silently do nothing; `up -d` sees the changed env, recreates the container, and `load/0` re-reads
+it at boot.
+
+**And `auth` alone is correct here**, despite the standing rule that the gateway ships with-or-before
+auth. That rule exists because auth returning *new error atoms* needs a gateway that has them — it is
+about shipping new **code**. This changes only an environment variable; the auth image is unchanged, so
+there is nothing for the gateway to fail to recognise.
+
+**Shows it worked** — the count, which is all that is ever logged:
+
+```bash
+docker compose -f docker-compose.prod.yml logs --tail=50 auth | grep -i "reviewer test logins"
+```
+
+Expect `reviewer test logins: 5 configured`. A **lower number means entries were dropped as
+malformed** — check for a space after a comma, a missing `+`, or a code that is not exactly six
+digits. A `… N malformed entries DROPPED` warning on the same line names how many.
+
+Then prove one end to end, on a new number only:
+
+```bash
+API=https://api.growblic.com
+REQ=$(curl -sS -X POST $API/api/v1/auth/otp/request -H 'content-type: application/json' \
+  -d '{"phone_number":"+15550199003","purpose":"login"}')
+OTP_ID=$(echo "$REQ" | python3 -c 'import json,sys;print(json.load(sys.stdin)["otp_request_id"])')
+curl -sS -X POST $API/api/v1/auth/otp/verify -H 'content-type: application/json' \
+  -d "{\"otp_request_id\":\"$OTP_ID\",\"phone_number\":\"+15550199003\",\"otp_code\":\"900003\",\"device_id\":\"allowlist-check\"}" \
+  | head -c 200; echo
+```
+
+Expect an `access_token`. `auth.otp_invalid` means that entry did not parse.
+
+## Why `+15550199004` is reusable for deletion testing
+
+Self-serve deletion (130) writes a **tombstone**: the `users_auth` row survives with its id, and the
+identity columns are scrubbed — `phone_number = NULL`, `email = NULL`, `password_hash = NULL`,
+`external_id = NULL` (`AuthService.AccountDeletion`). The unique index on the phone is **partial**, on
+`phone_number IS NOT NULL`, so a NULL frees the number immediately and the next OTP request for it
+auto-creates a fresh account. Deleting and re-registering the same number is therefore repeatable with
+no cleanup and no DB surgery.
+
+Two things that are **not** reset, and will bite on the second run:
+
+* **The username is held for 30 days.** Deletion inserts into `username_holds` with
+  `held_until = now() + interval '30 days'`, so the account's @handle cannot be taken again — not even
+  by you, re-registering the same number. Use a **different username each run**, or expect the claim to
+  be refused. The hold exists to close the vacated-handle impersonation vector, so do not clear it to
+  make testing easier.
+* **Messages other people received are theirs and survive.** That is the designed behaviour, not
+  leakage: if `+15550199004` had written to a test peer, those rows stay in the peer's history with the
+  now-tombstoned sender id.
+
+Deletion requires re-auth with the account's own registered phone number, so the delete call must
+present `+15550199004` — a valid session alone is not enough.
+
+> **Still: never run deletion against `+15550100001`, `…199001`, `…199002` or `…199003`.**
+> `…199004` exists precisely so the others keep their state. `…199003` in particular is reserved for
+> App Review and should look the same every time a reviewer opens it.
 
 ## Rotating the code
 
