@@ -325,6 +325,52 @@ defmodule MessageService.ScyllaStoreIntegrationTest do
              })
   end
 
+  test "a LIVE-LOCATION STOP is a metadata patch: ended_at lands, live clears, body/status untouched" do
+    conversation_id = Ecto.UUID.generate()
+
+    {message_id, _} =
+      put!(conversation_id, DateTime.utc_now(), %{
+        "message_type" => "live_location",
+        "body" => "",
+        "metadata" => %{"lat" => "12.9716", "lng" => "77.5946", "live" => "true"}
+      })
+
+    stopped_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+    # The exact shape Messages.apply_message_update(:metadata, …) sends: the FULL merged map, no body.
+    assert {:ok, patched} =
+             ScyllaAdapter.update_message(%{
+               "conversation_id" => conversation_id,
+               "message_id" => message_id,
+               "metadata" => %{
+                 "lat" => "12.9800",
+                 "lng" => "77.6000",
+                 "live" => "false",
+                 "ended_at" => stopped_at
+               }
+             })
+
+    # The response is not an "edit".
+    assert patched.status == "active"
+    assert patched.body == ""
+    assert patched.metadata["live"] == "false"
+    assert patched.metadata["ended_at"] == stopped_at
+
+    # And neither is the ROW: a fresh point read shows the stop persisted and nothing else moved.
+    assert {:ok, got} =
+             ScyllaAdapter.get_message(%{
+               "conversation_id" => conversation_id,
+               "message_id" => message_id
+             })
+
+    assert got.metadata["live"] == "false"
+    assert got.metadata["ended_at"] == stopped_at
+    assert got.metadata["lat"] == "12.9800"
+    assert got.status == "active"
+    assert got.body == ""
+    assert is_nil(got.edited_at)
+  end
+
   test "receipts LAND and are READABLE: delivered then read for the same user upserts, not duplicates" do
     conversation_id = Ecto.UUID.generate()
     {message_id, _} = put!(conversation_id, DateTime.utc_now())

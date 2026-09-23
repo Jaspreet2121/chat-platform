@@ -63,6 +63,28 @@ defmodule MessageService.Persistence.MessageTimelineWrites do
     )
   end
 
+  # A METADATA PATCH is not an edit. Only the metadata column moves; body, status and edited_at are
+  # untouched, so a live-location stop (live:"false" + ended_at) lands without the row turning into
+  # an "edited" message with a NULL body — which is exactly what running mark_edited_plan for it did.
+  # The caller has already merged the patch into the full map; this persists the whole map.
+  def patch_metadata_plan(attrs) do
+    QueryPlan.new(
+      :patch_message_metadata,
+      @table,
+      """
+      UPDATE messages_by_conversation
+      SET metadata = ?
+      WHERE conversation_id = ? AND bucket_date = ? AND message_id = ?
+      """,
+      [
+        ScyllaCodec.encode_metadata(Attrs.get(attrs, :metadata)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :conversation_id)),
+        ScyllaCodec.encode_date(Attrs.get(attrs, :bucket_date)),
+        ScyllaCodec.encode_uuid(Attrs.get(attrs, :message_id))
+      ]
+    )
+  end
+
   def mark_deleted_plan(attrs) do
     QueryPlan.new(
       :mark_message_deleted,

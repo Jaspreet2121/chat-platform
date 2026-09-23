@@ -587,10 +587,33 @@ defmodule MessageService.MessageStore.ScyllaAdapter do
 
   @impl true
   def update_message(attrs) do
+    # TWO MODES, the same two the Postgres adapter has always had. A metadata patch (live-location
+    # position / stop) moves ONLY the metadata column: no outbox event, no search refresh, and the row
+    # keeps its body, status and edited_at. Until 2026-09-23 this adapter ran the body-edit plan for
+    # both, so a live-location stop came back status "edited", body NULL, and — because that plan
+    # never writes metadata — still live. The caller has merged the patch into the full map.
+    case attr(attrs, "metadata") do
+      metadata when is_map(metadata) -> patch_metadata(attrs, metadata)
+      _ -> edit_body(attrs)
+    end
+  end
+
+  defp patch_metadata(attrs, metadata) do
+    mutate_resolved(attrs, fn bucket ->
+      MessageTimelineWrites.patch_metadata_plan(Map.put(attrs, "bucket_date", bucket))
+    end)
+    |> case do
+      # mutate_resolved hands back the PRE-write row; the response carries what was just written.
+      {:ok, row} -> {:ok, Map.put(response_from_row(row), :metadata, metadata)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp edit_body(attrs) do
     # A BODY edit stages message.updated.v1 (durable intent BEFORE the write, promote+publish on
     # success, abort-with-evidence on failure — the delete path's lifecycle). The inbox preview is
     # maintained from the topic under this store, so without the event an edited last message kept
-    # its ORIGINAL text in the chat list. A metadata patch (live-location) is not an edit: nothing.
+    # its ORIGINAL text in the chat list.
     event_ids =
       if is_binary(attr(attrs, "body")),
         do: MessageService.EventOutbox.stage_updated(enrich_with_sender(attrs)),
@@ -2267,10 +2290,17 @@ defmodule MessageService.MessageStore.InMemoryAdapter do
           nil
 
         message ->
-          message
-          |> Map.put(:body, attrs["body"])
-          |> Map.put(:status, "edited")
-          |> Map.put(:edited_at, attrs["edited_at"])
+          # Same two modes as the Scylla and Postgres adapters: a metadata patch moves only metadata.
+          case attrs["metadata"] do
+            metadata when is_map(metadata) ->
+              Map.put(message, :metadata, metadata)
+
+            _ ->
+              message
+              |> Map.put(:body, attrs["body"])
+              |> Map.put(:status, "edited")
+              |> Map.put(:edited_at, attrs["edited_at"])
+          end
       end
 
     case updated_message do
