@@ -65,6 +65,7 @@ defmodule RealtimeGateway.Application do
   def kafka_client_needed? do
     brod_producer_selected?() and
       (RealtimeGateway.CallSignaling.call_push_enabled?() or
+         RealtimeGateway.CallSignaling.group_call_push_enabled?() or
          RealtimeGateway.AutoReplyConsumer.enabled?())
   end
 

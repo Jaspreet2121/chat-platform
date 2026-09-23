@@ -105,6 +105,35 @@ defmodule NotificationService.ApnsDeliveryTest do
   end
 
   @tag :postgres_integration
+  test "a GROUP ring carries apns-expiration = the ring deadline; a direct ring carries none" do
+    user = user!()
+    token!(user, "voip", "production")
+
+    deadline = DateTime.utc_now() |> DateTime.add(35, :second)
+
+    ApnsSender.deliver_call(
+      %{
+        "call_id" => "g1",
+        "kind" => "group",
+        "ring_deadline_at" => DateTime.to_iso8601(deadline)
+      },
+      user
+    )
+
+    assert [sent] = Transport.sent()
+
+    # Apple drops a push it has not delivered by this UNIX time — a device that comes online after the
+    # server closed the call never gets its ring at all. The ONLY cutoff that helps a closed app.
+    assert sent.headers["apns-expiration"] == Integer.to_string(DateTime.to_unix(deadline))
+    assert sent.body["kind"] == "group"
+    assert sent.body["ring_deadline_at"] == DateTime.to_iso8601(deadline)
+
+    ApnsSender.deliver_call(%{"call_id" => "d1"}, user)
+    assert [_group, direct] = Transport.sent()
+    refute Map.has_key?(direct.headers, "apns-expiration")
+  end
+
+  @tag :postgres_integration
   test "a SANDBOX token goes to the sandbox host — the environment is a property of the TOKEN" do
     user = user!()
     token = token!(user, "voip", "sandbox")

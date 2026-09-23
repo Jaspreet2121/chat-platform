@@ -36,6 +36,19 @@ defmodule NotificationService.FcmSenderTest do
     }
   end
 
+  # ---- The stale-ring cutoff (pure; no DB) ----
+
+  test "a group ring's ttl comes from ring_deadline_at; a direct ring keeps the 35s window" do
+    deadline = DateTime.utc_now() |> DateTime.add(20, :second) |> DateTime.to_iso8601()
+    assert FcmSender.call_ttl(%{"ring_deadline_at" => deadline}) in ["19s", "20s"]
+    assert FcmSender.call_ttl(%{}) == "35s"
+    # A deadline already in the past never yields "0s" (FCM rejects it) — 1s, deliver-or-die.
+    past = DateTime.utc_now() |> DateTime.add(-5, :second) |> DateTime.to_iso8601()
+    assert FcmSender.call_ttl(%{"ring_deadline_at" => past}) == "1s"
+    # kind rides the data so the client can pick the group UI.
+    assert FcmSender.call_data(%{"call_id" => "g1", "kind" => "adhoc"})["kind"] == "adhoc"
+  end
+
   # ---- Delivery (real rows; faked transport + presence) ----
 
   describe "delivery" do

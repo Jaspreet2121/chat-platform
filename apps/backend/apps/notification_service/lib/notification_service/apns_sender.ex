@@ -128,7 +128,14 @@ defmodule NotificationService.ApnsSender do
   """
   def deliver_call(attrs, callee_id) do
     if configured?() do
-      send_to_tokens(callee_id, "voip", call_payload(attrs), @voip_topic, "voip")
+      send_to_tokens(
+        callee_id,
+        "voip",
+        call_payload(attrs),
+        @voip_topic,
+        "voip",
+        expiration_headers(attrs)
+      )
     end
 
     :ok
@@ -210,6 +217,30 @@ defmodule NotificationService.ApnsSender do
       "e2ee" => attrs["e2ee"] == true
     }
     |> maybe_put("conversation_id", attrs["conversation_id"])
+    # 130-group: present on group/adhoc rings. `kind` picks the client's UI; the two timestamps let a
+    # push-woken client refuse to ring a call whose window has already closed (it must still report the
+    # push to CallKit — and then end it as unanswered).
+    |> maybe_put("kind", attrs["kind"])
+    |> maybe_put("sent_at", attrs["sent_at"])
+    |> maybe_put("ring_deadline_at", attrs["ring_deadline_at"])
+  end
+
+  # `apns-expiration`: the UNIX time after which Apple drops an undelivered push. Set from the ring
+  # deadline so a device that comes online after the server has closed the call never receives its
+  # ring at all — the strongest form of the stale-ring cutoff, and the only one that helps an app that
+  # is not running. Absent (a direct ring, or an old producer) → no header, Apple's default.
+  @doc false
+  def expiration_headers(attrs) do
+    case attrs["ring_deadline_at"] do
+      deadline when is_binary(deadline) ->
+        case DateTime.from_iso8601(deadline) do
+          {:ok, dt, _} -> [{"apns-expiration", Integer.to_string(DateTime.to_unix(dt))}]
+          _ -> []
+        end
+
+      _ ->
+        []
+    end
   end
 
   @doc false
@@ -230,13 +261,13 @@ defmodule NotificationService.ApnsSender do
 
   # ---- Delivery -------------------------------------------------------------------------------
 
-  defp send_to_tokens(user_id, kind, payload, topic, push_type) do
+  defp send_to_tokens(user_id, kind, payload, topic, push_type, extra_headers \\ []) do
     case tokens_for(user_id, kind) do
       [] ->
         log_skipped(user_id, "no_#{kind}_tokens")
 
       targets ->
-        Enum.each(targets, &send_one(&1, payload, topic, push_type))
+        Enum.each(targets, &send_one(&1, payload, topic, push_type, extra_headers))
     end
   end
 
@@ -257,18 +288,25 @@ defmodule NotificationService.ApnsSender do
     _ -> []
   end
 
-  defp send_one(%{token: token, environment: environment}, payload, topic, push_type) do
+  defp send_one(
+         %{token: token, environment: environment},
+         payload,
+         topic,
+         push_type,
+         extra_headers
+       ) do
     with {:ok, jwt} <- ProviderToken.fetch() do
       url = "https://#{host(environment)}/3/device/#{token}"
 
-      headers = [
-        {"authorization", "bearer " <> jwt},
-        {"apns-topic", topic},
-        {"apns-push-type", push_type},
-        # 10 = deliver immediately. A VoIP push MUST be 10; Apple rejects 5 on that type.
-        {"apns-priority", "10"},
-        {"content-type", "application/json"}
-      ]
+      headers =
+        [
+          {"authorization", "bearer " <> jwt},
+          {"apns-topic", topic},
+          {"apns-push-type", push_type},
+          # 10 = deliver immediately. A VoIP push MUST be 10; Apple rejects 5 on that type.
+          {"apns-priority", "10"},
+          {"content-type", "application/json"}
+        ] ++ extra_headers
 
       transport().post(url, headers, Jason.encode!(payload))
       |> handle_response(token, topic)

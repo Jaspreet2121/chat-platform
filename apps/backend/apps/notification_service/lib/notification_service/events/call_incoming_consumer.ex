@@ -41,6 +41,13 @@ defmodule NotificationService.Events.CallIncomingConsumer do
       {:ok, %{"type" => "call.incoming"} = event} ->
         dispatch(event)
 
+      # 130-group: a GROUP/ADHOC member's ring. Same three legs, same callee_id keying — the payload
+      # additionally carries kind / sent_at / ring_deadline_at, which the senders pass through and
+      # turn into the expiration / ttl. An OLDER notification image logs this type as unrecognised
+      # and commits, which is why the gateway can ship its producer before this consumer knows it.
+      {:ok, %{"type" => "call.group_incoming"} = event} ->
+        dispatch(event)
+
       # The terminal chase (2026-08-17): the gateway produces call.cancelled on caller-cancel and on the
       # server ring-timeout so a BACKGROUNDED callee's handset stops ringing (the socket broadcast can't
       # reach a dead socket; observed on MIUI ringing a dead call for a minute). FCM data-only.

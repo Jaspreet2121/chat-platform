@@ -99,6 +99,13 @@ defmodule NotificationService.CallIncomingConsumerTest do
     assert log =~ "JSON decode failed"
   end
 
+  test "a call.group_incoming event (130-group) dispatches like a direct ring and commits" do
+    corr = "corr-#{System.unique_integer([:positive])}"
+    event = event(corr) |> Map.put("type", "call.group_incoming") |> Map.put("kind", "group")
+    assert {:ok, :commit, :state} = handle!(Jason.encode!(event))
+    assert SharedInfra.Correlation.get() == corr
+  end
+
   test "a call.cancelled event dispatches (the stop-ringing branch) and commits" do
     corr = "corr-#{System.unique_integer([:positive])}"
 

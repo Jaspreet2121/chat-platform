@@ -150,7 +150,8 @@ defmodule NotificationService.FcmSender do
       # timeout (CallSignaling @ring_timeout_ms, 35s): a ring push FCM could not deliver inside the
       # ring window is for a call that has already timed out — it must die in transit, never ring a
       # dead call late (the recorded MIUI 40s-late ring).
-      android = %{"ttl" => "35s", "collapse_key" => collapse_key(attrs)}
+      # 130-group: a group/adhoc ring carries its own ring_deadline_at; the ttl comes from that.
+      android = %{"ttl" => call_ttl(attrs), "collapse_key" => collapse_key(attrs)}
       send_to_devices(callee_id, data, android)
     else
       log_skipped(callee_id, "call_callee_foreground")
@@ -212,6 +213,23 @@ defmodule NotificationService.FcmSender do
       "e2ee" => to_string(attrs["e2ee"] == true)
     }
     |> maybe_put("conversation_id", attrs["conversation_id"])
+    # 130-group: present on group/adhoc rings (see ApnsSender.call_payload for what each is for).
+    |> maybe_put("kind", attrs["kind"])
+    |> maybe_put("sent_at", attrs["sent_at"])
+    |> maybe_put("ring_deadline_at", attrs["ring_deadline_at"])
+  end
+
+  # The FCM `ttl` is the same stale-ring cutoff as APNs' expiration, expressed as a duration. From the
+  # ring deadline when the event carries one (a mid-call re-ring gets its own, shorter, window), else
+  # the 35 s ring window a direct call has always used. Never below 1 s: FCM rejects "0s".
+  @doc false
+  def call_ttl(attrs) do
+    with deadline when is_binary(deadline) <- attrs["ring_deadline_at"],
+         {:ok, dt, _} <- DateTime.from_iso8601(deadline) do
+      "#{max(DateTime.diff(dt, DateTime.utc_now(), :second), 1)}s"
+    else
+      _ -> "35s"
+    end
   end
 
   @doc false

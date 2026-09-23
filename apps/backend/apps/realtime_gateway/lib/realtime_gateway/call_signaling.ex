@@ -356,6 +356,8 @@ defmodule RealtimeGateway.CallSignaling do
         room = cget(call, :room_name)
         {caller_name, caller_avatar_url} = resolve_caller(initiator, app_id(socket))
 
+        deadline = ring_deadline()
+
         Enum.each(others, fn member_id ->
           broadcast(
             socket,
@@ -372,6 +374,19 @@ defmodule RealtimeGateway.CallSignaling do
             }
             |> put_avatar(caller_avatar_url)
           )
+
+          # 130-group: the backgrounded member's ring. One event PER MEMBER, keyed by that member.
+          emit_group_incoming_push(%{
+            callee_id: member_id,
+            caller_id: initiator,
+            caller_name: caller_name,
+            type: type,
+            call_id: call_id,
+            conversation_id: cid,
+            kind: "group",
+            sent_at: deadline.sent_at,
+            ring_deadline_at: deadline.ring_deadline_at
+          })
         end)
 
         # Server-side group ring timeout (this = the initiator's channel). On fire we mark still-invited
@@ -434,6 +449,8 @@ defmodule RealtimeGateway.CallSignaling do
 
       # FAN-OUT LAST. Same frame the group path rings with; conversation_id is nil by construction
       # and the client renders caller_name + participants instead of a group title.
+      deadline = ring_deadline()
+
       Enum.each(others, fn member_id ->
         broadcast(
           socket,
@@ -450,6 +467,18 @@ defmodule RealtimeGateway.CallSignaling do
           }
           |> put_avatar(caller_avatar_url)
         )
+
+        emit_group_incoming_push(%{
+          callee_id: member_id,
+          caller_id: me,
+          caller_name: caller_name,
+          type: type,
+          call_id: call_id,
+          conversation_id: nil,
+          kind: "adhoc",
+          sent_at: deadline.sent_at,
+          ring_deadline_at: deadline.ring_deadline_at
+        })
       end)
 
       # Same server-side ring timeout as the group path; the store's expiry marks still-invited
@@ -539,6 +568,9 @@ defmodule RealtimeGateway.CallSignaling do
           joined_at: joined_at
         })
 
+        # This member answered on THIS device: stop the ring on their other devices (130-group).
+        emit_group_cancel_push(call_id, me, "answered")
+
         {:reply, {:ok, %{call_id: call_id, room: room}}, socket}
 
       {:error, :not_a_member} ->
@@ -571,6 +603,9 @@ defmodule RealtimeGateway.CallSignaling do
             user_id: me
           }
         )
+
+        # The decliner's other devices must stop ringing too.
+        emit_group_cancel_push(call_id, me, "declined")
 
         maybe_broadcast_group_ended(socket, call_id, cget(result, :call))
         {:reply, {:ok, %{call_id: call_id}}, socket}
@@ -627,6 +662,7 @@ defmodule RealtimeGateway.CallSignaling do
            }) do
       added = cget(result, :added_user_id) || user_id
       {caller_name, caller_avatar_url} = resolve_caller(actor, app_id(socket))
+      deadline = ring_deadline()
 
       broadcast(
         socket,
@@ -643,6 +679,19 @@ defmodule RealtimeGateway.CallSignaling do
         }
         |> put_avatar(caller_avatar_url)
       )
+
+      # A mid-call add is a fresh ring for ONE member: its own deadline, its own push.
+      emit_group_incoming_push(%{
+        callee_id: added,
+        caller_id: actor,
+        caller_name: caller_name,
+        type: cget(result, :type),
+        call_id: call_id,
+        conversation_id: cget(result, :conversation_id),
+        kind: cget(result, :call) |> cget(:kind) || "group",
+        sent_at: deadline.sent_at,
+        ring_deadline_at: deadline.ring_deadline_at
+      })
 
       {:reply, {:ok, %{call_id: call_id, added_user_id: added}}, socket}
     else
@@ -886,6 +935,20 @@ defmodule RealtimeGateway.CallSignaling do
         "call:group_ended",
         %{call_id: call_id}
       )
+
+      # 130-group: a member whose ring was never answered (still invited, or just flipped to missed by
+      # the timeout) may have a VoIP/FCM ring in flight or on screen — send them the stop.
+      case ConversationClient.get_call_with_participants(%{"call_id" => call_id}) do
+        {:ok, result} ->
+          (cget(result, :participants) || [])
+          |> Enum.filter(&(cget(&1, :status) in ["invited", "missed"]))
+          |> Enum.map(&cget(&1, :user_id))
+          |> Enum.reject(&is_nil/1)
+          |> Enum.each(&emit_group_cancel_push(call_id, &1, status))
+
+        _ ->
+          :ok
+      end
     end
 
     if status == "missed", do: write_missed_group_message(call, socket)
@@ -1290,6 +1353,96 @@ defmodule RealtimeGateway.CallSignaling do
     :ok
   rescue
     _ -> :ok
+  end
+
+  # The ring window, as the two timestamps a push carries. `sent_at` is when the ring was emitted;
+  # `ring_deadline_at` is when the server's group_ring_timeout will flip an unanswered invite to missed.
+  # Both ISO 8601 UTC. The senders turn the deadline into `apns-expiration` (Apple drops a push it has
+  # not delivered by then) and the FCM `ttl`; the client compares it on wake so a push delivered late
+  # never rings a call the server has already closed.
+  defp ring_deadline do
+    now = DateTime.utc_now()
+
+    %{
+      sent_at: DateTime.to_iso8601(now),
+      ring_deadline_at:
+        now |> DateTime.add(@ring_timeout_ms, :millisecond) |> DateTime.to_iso8601()
+    }
+  end
+
+  # 130-group: the backgrounded GROUP/ADHOC member's ring — `call.group_incoming`, one event per member,
+  # keyed by THAT member. Per-member events rather than one with a list, for two reasons: the partition
+  # key is the recipient, so this ring and the later `call.cancelled` that chases it land on one
+  # partition in order; and every sender on the consumer side is already keyed on callee_id, so the
+  # ring leg needs no consumer change beyond the type clause. Behind ITS OWN flag, default OFF: until
+  # Android and iOS branch on `kind`, a group push would open the 1-on-1 call screen.
+  defp emit_group_incoming_push(%{callee_id: member_id, call_id: call_id} = ring) do
+    if group_call_push_enabled?() do
+      correlation = SharedInfra.Correlation.get_or_generate()
+      value = incoming_push_event("call.group_incoming", ring, correlation)
+      produce_call_event(member_id, value, "call.group_incoming", call_id, correlation)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  @doc false
+  # The stop for one group member — answered elsewhere, declined, or the call ended/missed. Same
+  # `call.cancelled` type the direct path produces (the senders already handle it), keyed by the member
+  # so it chases their own ring on the same partition. Public (doc-hidden) so the REST join/decline in
+  # the gateway can emit the same stop the socket handlers do — one producer, no drift.
+  def emit_group_cancel_push(call_id, member_id, reason)
+      when is_binary(call_id) and is_binary(member_id) and member_id != "" do
+    if group_call_push_enabled?() do
+      correlation = SharedInfra.Correlation.get_or_generate()
+
+      value = %{
+        "type" => "call.cancelled",
+        "call_id" => call_id,
+        "callee_id" => member_id,
+        "reason" => reason,
+        "correlation_id" => correlation
+      }
+
+      produce_call_event(member_id, value, "call.cancelled", call_id, correlation)
+    end
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  def emit_group_cancel_push(_call_id, _member_id, _reason), do: :ok
+
+  # Fire-and-forget produce onto call.events.v1 with the GATEWAY'S OWN brod client (see
+  # emit_incoming_push for why that option is load-bearing). A produce failure logs and never fails
+  # the ring — resilience is not invisibility.
+  defp produce_call_event(key, value, label, call_id, correlation) do
+    Task.start(fn ->
+      SharedInfra.Correlation.put(correlation)
+
+      case SharedInfra.Kafka.Producer.produce(@call_events_topic, key, value,
+             client: RealtimeGateway.Application.kafka_client_name()
+           ) do
+        {:ok, _} ->
+          :ok
+
+        {:error, reason} ->
+          Logger.warning("#{label} push produce failed (call #{call_id}): #{inspect(reason)}")
+      end
+    end)
+
+    :ok
+  end
+
+  # Public (doc-hidden) for the same reason as call_push_enabled?/0: the brod-client gate in
+  # RealtimeGateway.Application must bring the client up when EITHER producer is on.
+  @doc false
+  def group_call_push_enabled? do
+    Application.get_env(:realtime_gateway, :group_call_push_enabled, false) ||
+      System.get_env("CALL_GROUP_PUSH_ENABLED") in ["true", "1", "yes"]
   end
 
   # Public (doc-hidden) so RealtimeGateway.Application's brod-client gate reuses THIS predicate — one
