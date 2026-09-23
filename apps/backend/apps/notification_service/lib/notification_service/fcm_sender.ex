@@ -329,8 +329,15 @@ defmodule NotificationService.FcmSender do
   # leg uses for push_subscriptions. The auth service OWNS and writes fcm_tokens; notification_service
   # only reads it, and only deletes rows FCM has declared dead (below). It does NOT call
   # AuthService.FcmTokens: notification_service has no dependency on auth_service and must not grow one.
+  # ANDROID ROWS ONLY. Since 129 this table also holds iOS APNs tokens (platform = 'ios', kind
+  # alert|voip). Posting one of those to FCM gets 400 INVALID_ARGUMENT — which dead_token?/1 rightly
+  # treats as "never a valid FCM token" — and prune/2 then DELETES the iOS row. Without this filter,
+  # every FCM push to a user with an iPhone registered erased that user's APNs tokens. The APNs leg
+  # already filters its own platform (ApnsSender.tokens_for: platform = 'ios' AND kind = $2).
   defp tokens_for(user_id) do
-    query = "SELECT token, device_id FROM fcm_tokens WHERE user_id = $1::text::uuid"
+    query =
+      "SELECT token, device_id FROM fcm_tokens " <>
+        "WHERE user_id = $1::text::uuid AND platform = 'android'"
 
     case Repo.query(query, [user_id]) do
       {:ok, %{rows: rows}} ->

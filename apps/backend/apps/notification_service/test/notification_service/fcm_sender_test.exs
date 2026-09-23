@@ -22,6 +22,8 @@ defmodule NotificationService.FcmSenderTest do
   @message "74444444-4444-4444-8444-444444444444"
   @token_a "fcm-token-device-a-aaaaaaaaaaaaaaaaaaaaaa"
   @token_b "fcm-token-device-b-bbbbbbbbbbbbbbbbbbbbbb"
+  # An APNs device token: 64 hex characters, nothing FCM would ever accept.
+  @ios_token "0f0e0d0c0b0a09080706050403020100ffeeddccbbaa99887766554433221100"
 
   defp attrs do
     %{
@@ -183,6 +185,32 @@ defmodule NotificationService.FcmSenderTest do
       FcmSender.deliver(attrs(), [@recipient])
       # A transient server error is NOT a dead device — the row stays.
       assert token_count(@token_a) == 1
+    end
+
+    @tag :postgres_integration
+    test "an iOS row is NEITHER sent to FCM NOR pruned when FCM rejects the Android one" do
+      # Since 129 fcm_tokens holds APNs tokens too (platform = 'ios'). FCM answers a non-FCM token
+      # with 400 INVALID_ARGUMENT, which is exactly the shape prune keys on — so before the platform
+      # filter, one Android push deleted the same user's iPhone registrations. Seed both platforms for
+      # one user, make FCM reject everything it is sent, and prove the iOS row is untouched.
+      seed_message!()
+      seed_tokens!([@token_a])
+      seed_ios_token!(@ios_token, "iphone-1")
+
+      FcmFakes.respond_with([
+        {:ok, %{status: 400, body: %{"error" => %{"status" => "INVALID_ARGUMENT"}}}}
+      ])
+
+      FcmSender.deliver(attrs(), [@recipient])
+
+      # Exactly one post, and it carried the Android token — the iOS token never left the box.
+      # (The 4th element is the FCM ACCESS token; the device token rides in message.token.)
+      assert_receive {:fcm_post, _url, %{"message" => %{"token" => @token_a}}, _access}, 500
+      refute_receive {:fcm_post, _url, %{"message" => %{"token" => @ios_token}}, _access}, 200
+
+      # The Android row was rightly pruned on the 400; the iOS row was never a candidate.
+      assert token_count(@token_a) == 0
+      assert token_count(@ios_token) == 1
     end
 
     @tag :postgres_integration
@@ -441,6 +469,16 @@ defmodule NotificationService.FcmSenderTest do
 
     Repo.query!(
       "INSERT INTO fcm_tokens (user_id, token, device_id) VALUES ($1::text::uuid, $2, $3) " <>
+        "ON CONFLICT (token) DO UPDATE SET user_id = EXCLUDED.user_id, device_id = EXCLUDED.device_id",
+      [@recipient, token, device_id]
+    )
+  end
+
+  # An iPhone's alert-channel row for the same recipient (129: platform 'ios', kind 'alert').
+  defp seed_ios_token!(token, device_id) do
+    Repo.query!(
+      "INSERT INTO fcm_tokens (user_id, token, device_id, platform, kind, environment) " <>
+        "VALUES ($1::text::uuid, $2, $3, 'ios', 'alert', 'sandbox') " <>
         "ON CONFLICT (token) DO UPDATE SET user_id = EXCLUDED.user_id, device_id = EXCLUDED.device_id",
       [@recipient, token, device_id]
     )
