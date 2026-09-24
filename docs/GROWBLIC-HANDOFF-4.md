@@ -302,7 +302,7 @@ All seven app containers verified to report `8412f4a`; `/health` 200; AASA `200 
 | `+15550199003` | `900003` | **Apple App Review** demo login (reviewers may delete it) |
 | `+15550199004` | `900004` | account-deletion testing — re-registers after deletion; use a new username each run (30-day hold) |
 
-- Nightly PG backup: cron `30 21 * * *` → `~/bin/pg-backup.sh`, 14-day retention, `~/backups/`. **No Scylla backup exists.**
+- Nightly PG backup: cron `30 21 * * *` → `~/bin/pg-backup.sh`, 14-day retention, `~/backups/`. The script is now in the repo at **`scripts/ops/pg-backup.sh`** (canonical; `~/bin/` is an installed copy — the install command is in its header). It fails LOUDLY since 2026-09-24: pg_dump's own exit code via PIPESTATUS, a 100 KB floor, `gzip -t`, a pg_dump-header check, write-to-.tmp-then-mv so a bad run never replaces a good backup, retention only after success, and `OK`/`FAILED` + reason to `~/backups/backup.log`. The old version wrote a 20-byte file on 2026-09-23 and said nothing (§9 rule 33). **No Scylla backup exists.**
 - MinIO: anonymous=private, 9000 bound to 127.0.0.1 only, 9001 never published
 - Kafka consumer flags: `KAFKA_INBOX_CONSUMER_ENABLED=true`, `KAFKA_SEARCH_CONSUMER_ENABLED=true`; the other two off deliberately.
 - FCM: `android.priority: "high"`, data-only envelope.
