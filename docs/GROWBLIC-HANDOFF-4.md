@@ -2,16 +2,16 @@
 
 **Purpose of this file:** everything a fresh session needs to continue work on Growblic without asking. Read it top to bottom once, then use it as reference.
 
-**Last updated:** 23 September 2026 (afternoon IST). Supersedes the 23 Sep morning / 13 Sep versions and HANDOFF-3 (12 Sep). Companion: `GROWBLIC-METHOD.md` (how we work — process, not state). Both live in `chat-platform/docs/`.
+**Last updated:** 24 September 2026 (midday IST). Supersedes the 23 Sep morning / 13 Sep versions and HANDOFF-3 (12 Sep). Companion: `GROWBLIC-METHOD.md` (how we work — process, not state). Both live in `chat-platform/docs/`.
 
-**What changed since the 13 Sep version (read this first):**
-- A native **iOS app** exists (`Jaspreet2121/growblic-ios`, on the Mac mini) — Slices 0–14b done, Slice 15 in batches. See §8b.
-- Backend **`8412f4a` is live on all 7 app services** (deployed 23 Sep 03:45 IST): APNs sender (disabled until the key exists), account deletion, 30 s refresh grace window, reviewer allowlist, AASA, dating-photo guard, reply-as-accept. Migrations **129 + 130** applied.
-- Web **`3412eee`** live: refresh-on-401 (single-flight) + message-requests bucket.
-- Marketing site **`cddc863`** live: `/delete-account` page for Play; privacy policy §6 fixed.
-- Android: `client_msg_id` was **never sent by any release** until `185966a`; paging, presence, OTP, key-publish fixes; account deletion `4dfbdfd`.
-- **Caddy is in a fragile state until the maintenance window** — do NOT restart Caddy or reboot EC2 (§5 #4, §10).
-- The owner now **runs every EC2 command himself** (EC2 Instance Connect in the browser). Claude Code has no SSH to the box. The planner writes the exact block.
+**What changed since the 23 Sep version (read this first):**
+- **A 9.5 h OUTAGE happened on the night of 23 Sep** (01:46 → 11:15 IST). The maintenance window ran `docker compose stop` before `sudo reboot`; `restart: unless-stopped` does not restore a container you stopped, so the box rebooted into an empty stack and nothing alerted anybody. **§9 rule 33.** All three contributing gaps are now closed: both runbooks raise the daemon's `shutdown-timeout` instead of stopping anything, an external uptime monitor is specified (`docs/09-devops/UPTIME_MONITORING.md`), and the nightly backup fails loudly (`scripts/ops/pg-backup.sh`).
+- Backend **`9b0ec4a` is live on all 7 app services** (deployed 23 Sep night): the group-call slice — group/adhoc push behind `CALL_GROUP_PUSH_ENABLED` (**unset**, so nothing is produced), REST `join` + kind-dispatching `reject`, the dead-timer reaper, the FCM `platform = 'android'` filter (it was deleting iPhone APNs rows), one incoming-push builder — plus the live-location Scylla fix. Migration **131** applied.
+- **The maintenance window is DONE:** `stop_grace_period` 60 s on postgres/scylla/kafka, Caddy recreated on **directory mounts** (the §5 #4 "fragile" state is resolved), host rebooted.
+- Android **`cf4d4fd`**: branches on the push `kind` for group/adhoc rings, honours the stale cutoff, REST answer/decline, and **"Add member" is owner-only** (it used to be offered to everyone and the server refused). Rich-text drop rule `553cadf`.
+- iOS **Slice 16 done**, plus header / tab-bar / avatar work through `3a65cf5` (main head `e0f75d9`). Simulator work is complete; what remains needs the paid team, a real iPhone, or the backend. See §8b.
+- Web **`3412eee`** and marketing site **`cddc863`** unchanged.
+- The owner **runs every EC2 command himself** (EC2 Instance Connect in the browser). Claude Code has no SSH to the box. The planner writes the exact block.
 
 ---
 
@@ -113,11 +113,11 @@ Non-negotiable; they appear in almost every prompt.
 1. **`MESSAGE_STORE_ADAPTER=scylla` in prod. The Postgres `messages` table is EMPTY.** Any `SELECT … FROM messages` in prod returns nothing. Four bugs so far. **Always check which store a query hits.** Consequence for backups: the nightly/predeploy `pg_dump` contains **zero messages**; there is no Scylla backup yet (§10).
 2. **Config like `:tokens` goes in `runtime.exs`, not `config.exs`.**
 3. **`--force-recreate` when redeploying** a running service, and **`--no-deps`** when a single service is recreated after an `.env`/compose change (otherwise compose can recreate postgres/kafka/etc. whose config "changed").
-4. **Caddy — CURRENT STATE IS FRAGILE (23 Sep):**
-   - Prod Caddy still runs the old container with **single-file bind mounts**: `infra/caddy/Caddyfile → /etc/caddy/Caddyfile` and `infra/caddy/assetlinks.json → /srv/.well-known/assetlinks.json`. `git pull` replaces files by rename, so the container keeps the old inode — `caddy validate` + `reload` from `/etc/caddy/Caddyfile` silently reload STALE config.
-   - The running config was loaded on 23 Sep via a workaround: the new Caddyfile copied to `/tmp/Caddyfile.new` inside the container, validated and reloaded from there (md5 `bd1acc7b…` = the Caddyfile at `8412f4a`).
-   - `59647d2` moved `assetlinks.json` to `infra/caddy/srv/.well-known/` and switched compose to **directory mounts** (`./infra/caddy:/etc/caddy:ro`, `./infra/caddy/srv:/srv:ro`). The host no longer has `infra/caddy/assetlinks.json`, so **if the old Caddy container restarts before the maintenance window, assetlinks breaks or Caddy fails to start.**
-   - **Do not restart Caddy, do not reboot EC2, never run a bare `up -d`** until `docs/deploy/maintenance-window.md` steps 1–2 are done. After that, the rule is: validate from disk via `docker run`, md5 the file inside the container against the working tree, then reload.
+4. **Caddy — directory mounts, RESOLVED 23 Sep night:**
+   - Prod Caddy now runs on **directory mounts** (`./infra/caddy:/etc/caddy:ro`, `./infra/caddy/srv:/srv:ro`, from `59647d2`), recreated in the maintenance window. The fragile single-file state is gone.
+   - **Why it mattered, and the rule that outlives it:** a single-file bind mount pins the file's *inode* at container start. `git pull` replaces a file by writing a new one and renaming over it, so the container kept reading the old one and `caddy validate` + `reload` reported success while serving STALE config. For a while the running config had to be loaded via a workaround (copy to `/tmp/Caddyfile.new` inside the container, reload from there). **Never mount a single file you intend to edit.**
+   - The standing procedure is now: validate **from disk** via `docker run --rm -v "$PWD/infra/caddy:/etc/caddy:ro" caddy:2.8-alpine caddy validate …`, `md5sum` the file *inside* the container against the working tree, then `caddy reload`. Recreate only as a planned step.
+   - `59647d2` moved `assetlinks.json` to `infra/caddy/srv/.well-known/`; the host no longer has `infra/caddy/assetlinks.json` and does not need it.
    - Caddy path matchers are **case-insensitive** — use `path_regexp` for case-sensitive rules.
    - The **AASA is served inline** (`handle /.well-known/apple-app-site-association` + `respond` one-line JSON, `Content-Type application/json`, 118 bytes) inside the existing `web.growblic.com` block — never a second `web.growblic.com { }` block (ambiguous site def → restart loop). Check the body with curl, not just the status.
 5. **Deploy order: gateway with-or-before auth / conversation** (InternalApi `String.to_existing_atom`). An env-only change (no image change) may recreate `auth` alone.
@@ -264,31 +264,37 @@ Use `+15550199001 / 900001`. **Every refresh call must send `device_id`** matchi
 
 ---
 
-## 7. Production state (23 Sep, afternoon)
+## 7. Production state (24 Sep, midday)
 
-**Backend/web repo `chat-platform`** — remote main ≥ `3412eee` (later commits are docs only).
+**Backend/web repo `chat-platform`** — remote main ≥ `874de5c`; the deployed backend is `9b0ec4a` (everything after it is docs and ops scripts).
 
 | Service | Running SHA | Notes |
 |---|---|---|
-| gateway (+realtime) | `8412f4a` | reply-as-accept frames, push route kind/environment, user delete route |
-| auth | `8412f4a` | refresh grace window, account deletion, APNs token store, reviewer allowlist (6) |
-| conversation | `8412f4a` | reply-as-accept (`authorize_send`) |
-| message | `8412f4a` | |
-| user | `8412f4a` | dating-photo purpose guard (user_avatar only) |
-| media | `8412f4a` | |
-| notification | `8412f4a` | APNs sender built, **disabled** (APNS_* env unset) |
+| gateway (+realtime) | `9b0ec4a` | group ring producers (flag OFF), REST `join`, `reject` by kind, the reaper plug, `GET /calls/:id` fixed for group invitees |
+| auth | `9b0ec4a` | refresh grace window, account deletion, APNs token store, reviewer allowlist (6) |
+| conversation | `9b0ec4a` | `rung_at`/`declined_at` writes, the stale-ringing-calls read, reply-as-accept |
+| message | `9b0ec4a` | live-location metadata patch no longer runs the body-edit plan (Scylla) |
+| user | `9b0ec4a` | dating-photo purpose guard (user_avatar only) |
+| media | `9b0ec4a` | |
+| notification | `9b0ec4a` | `platform = 'android'` filter (was deleting iOS rows), `call.group_incoming` clause, `apns-expiration`; APNs sender still **disabled** (APNS_* unset) |
 | web | `3412eee` | refresh-on-401 single-flight, message-requests bucket |
-| caddy | old container (~19 Sep) | config reloaded 23 Sep from `/tmp/Caddyfile.new` (Caddyfile @ `8412f4a`, AASA live) — **fragile, see §5 #4** |
+| caddy | recreated 23 Sep night | **directory mounts** — the fragile single-file state is resolved (§5 #4). AASA + assetlinks served |
 | marketing site | `cddc863` (growblicwebsite) | `/delete-account`, privacy §6, footer + sitemap |
 
-All seven app containers verified to report `8412f4a`; `/health` 200; AASA `200 application/json 118`.
+All seven app containers verified to report `9b0ec4a`; `/health` 200; AASA `200 application/json 118`.
+`CALL_GROUP_PUSH_ENABLED` is **unset** — the group-push producer is proven silent when off, and stays off until both clients branch on `kind` (Android already does, `cf4d4fd`).
 
-**Android repo** — remote main ≥ `4dfbdfd`: cross-platform fixes `185966a..40fe6be`, presence skew `ac21992`, account deletion `4dfbdfd`. Release build **1.9.0 / versionCode 43**, on the vivo (debug-keystore re-sign). **Play AAB is stale** (built before these fixes) — rebuild before upload.
+**Endpoint truth, checked 24 Sep** — only `api.growblic.com/health` has a public 200 health route.
+`web.growblic.com/health` is **404** and `media.growblic.com/health` is **403** on a healthy box;
+`web.growblic.com/` is a **307** to `/login`. Check `api/health`, `web/login`, `www/` — the runbooks
+used to check the other three and failed every time.
 
-**iOS repo** `growblic-ios` — main at Slice 15 Batch 1 (`36a7ab1` + follow-ups). No TestFlight yet.
+**Android repo** — remote main ≥ `cf4d4fd` (head `6c878cd`, docs): group/adhoc rings by push with the `kind` branch and the stale cutoff, REST answer/decline, **"Add member" owner-only**; rich-text drop rule `553cadf`; earlier — `client_msg_id` (`185966a`), presence skew `ac21992`, account deletion `4dfbdfd`. Release build **1.9.0 / versionCode 43**, on the vivo (debug-keystore re-sign). **Play AAB is stale** — rebuild before upload.
+
+**iOS repo** `growblic-ios` — **Slice 16 done** (`8bdd03c`), then header / tab-bar / avatar work through `3a65cf5`; main head `e0f75d9`. Simulator work complete. No TestFlight yet.
 
 ### Migrations applied
-116 calls adhoc · 117 wallpaper · 118 e2ee two-party OFF · 119 auto-reply unwrap · 120 `conversation_settings.sharing_disabled` · 121 `fcm_tokens` NOT NULL device_id · 122 `user_profiles` display_name nullable · 123 shadow-account delete (deleted 0) · 124 `media_assets.variants` · 125 `dm_streaks` + participant columns · 126 `checklist_items` · 127 `view_once_expiry` ledger · 128 `conversation_participants.request_pending_at` · **129** `fcm_tokens.kind`/`environment` + unique per kind (APNs) · **130** account deletion (`users_auth.deleted_at`, username holds). Backups: `~/predeploy-2026-09-23.sql.gz` (1.6 MB, PG only), `~/backups/` nightly.
+116 calls adhoc · 117 wallpaper · 118 e2ee two-party OFF · 119 auto-reply unwrap · 120 `conversation_settings.sharing_disabled` · 121 `fcm_tokens` NOT NULL device_id · 122 `user_profiles` display_name nullable · 123 shadow-account delete (deleted 0) · 124 `media_assets.variants` · 125 `dm_streaks` + participant columns · 126 `checklist_items` · 127 `view_once_expiry` ledger · 128 `conversation_participants.request_pending_at` · **129** `fcm_tokens.kind`/`environment` + unique per kind (APNs) · **130** account deletion (`users_auth.deleted_at`, username holds) · **131** group-call ring timestamps (`group_call_participants.rung_at`/`declined_at` + the partial index `idx_calls_ringing_group_created`). Backups: `~/predeploy-2026-09-23-night.sql.gz`, `~/backups/` nightly — the script now **fails loudly** (see Frozen config).
 
 ### Frozen config
 `REVIEWER_TEST_LOGINS` — 6 entries (codes for the first two live only in `.env` / the owner's password manager; never write them here):
@@ -307,7 +313,9 @@ All seven app containers verified to report `8412f4a`; `/health` 200; AASA `200 
 - Kafka consumer flags: `KAFKA_INBOX_CONSUMER_ENABLED=true`, `KAFKA_SEARCH_CONSUMER_ENABLED=true`; the other two off deliberately.
 - FCM: `android.priority: "high"`, data-only envelope.
 - `.env` backups from 23 Sep: `~/.env.bak-2026-09-23-*`.
-- EC2 says **"System restart required"** (kernel updates) — reboot is the last step of the maintenance window.
+- **Maintenance window DONE (23 Sep night):** `stop_grace_period: 60s` on postgres/scylla/kafka (in `docker-compose.prod.yml`; applies only at recreate/reboot), Caddy on directory mounts, host rebooted — the kernel update is applied.
+- **`/etc/docker/daemon.json` `"shutdown-timeout": 60` is NOT set yet.** It is what makes a plain `sudo reboot` graceful, and the only thing that helps an *unplanned* one; `stop_grace_period` governs `docker stop` only. Next window — see §10.
+- **`CALL_GROUP_PUSH_ENABLED` unset** (group push producer silent).
 
 ### Apple Developer account
 - Org team **GROWBLIC PRIVATE LIMITED**, Team ID `FXGBWKT8FB`. Account Holder: Suman Rani. `growblic@gmail.com` is **Admin** (can create APNs keys, register devices) and is signed into Xcode on the mini.
@@ -334,6 +342,34 @@ Harness state: A–B DM has `e2ee_disabled` set; "Sharing Smoke" group `9ef3cc1a
 ---
 
 ## 8. What has been completed
+
+### 23–24 Sep
+
+**Group calls — the server half** (`aa979d6..3f44675`, live as `9b0ec4a`). The iOS Batch 3 audit found
+five gaps; four are closed. `GET /calls/:id` returned **404 to every group invitee** — the controller
+had two participation checks expecting different shapes, so the same user could mint a LiveKit token
+and still be told the call did not exist, including the sealed `e2ee_offer` that endpoint exists to
+serve. `call.group_incoming` is now produced **per member, keyed by that member**, at all three ring
+sites, with three cancel legs (answered / declined / ended-or-missed) and the stale-ring cutoff
+(`apns-expiration` on APNs, `ttl` from the deadline on FCM) — all behind `CALL_GROUP_PUSH_ENABLED`,
+**default OFF**. Migration **131** adds `rung_at`/`declined_at`. `POST /calls/:id/join` is the REST
+twin of the socket join for a push-woken member; `reject` dispatches on kind with an idempotent 200.
+A reaper rides the call endpoints and finishes ring timeouts whose channel process died (the
+`ongoing`-call cap was deliberately NOT built — it would end a real long call; it waits on LiveKit
+webhooks). **`group_add` never armed a ring timer** and now does.
+
+**Found while building it:** `FcmSender.tokens_for` selected every `fcm_tokens` row for a user with no
+platform filter. Since 129 that table holds iOS APNs tokens; FCM answers those 400 `INVALID_ARGUMENT`,
+which the prune logic reads as a dead token — so **every FCM push to a user with an iPhone registered
+deleted that user's APNs rows.** No iOS tokens existed in prod yet, so nothing was lost.
+
+**Live-location stop never persisted (Scylla).** `ScyllaAdapter.update_message` ran the body-edit plan
+for a metadata patch, so a stop came back `status:"edited"`, `body:null`, still live, and `ended_at`
+was never written. The only producer of `metadata_patch` is the socket live-location handler, so this
+hit Android and iOS identically. Fixed with a metadata-mode plan.
+
+**The 23 Sep night outage** — see §9 rule 33 and the header. Runbooks, uptime monitoring and the
+backup script all changed as a result.
 
 ### 22–23 Sep
 
@@ -421,11 +457,13 @@ See the 13 Sep version of this file / HANDOFF-3 for full paragraphs. Headlines: 
 ## 10. Pending work
 
 ### Next on EC2 (owner, planner gives commands)
-1. **Maintenance window (tonight / quiet time)** — `docs/deploy/maintenance-window.md`: (1) `stop_grace_period` 60 s for postgres/scylla/kafka, (2) Caddy recreate with directory mounts (fixes the missing `assetlinks.json` source), (3) reboot, then verify every service (incl. profiled) and all 7 SHAs. Until done: no Caddy restart, no reboot, no bare `up -d`.
-2. **APNs key** once the membership is active (§7 Apple).
-3. **Part 4** (15-min login access token) — unblocked by web `f1cf618`; confirm web refresh in an incognito session first, then a small auth slice + deploy.
-4. Check the old volume `growblic-site_growblic-leads` for leads (read-only command from the Air).
-5. Set `RESEND_API_KEY` (verified sender domain) so the contact form emails.
+1. **Uptime monitor** — `docs/09-devops/UPTIME_MONITORING.md`, ~10 minutes of clicking. Three monitors (api/health keyword, web/login, www), email **and** push, and the step-4 test that proves the alert actually arrives. This is the gap that turned a bad reboot into 9.5 hours.
+2. **Install the hardened backup script** — one command, in the header of `scripts/ops/pg-backup.sh`. It pulls, keeps the old script, installs to `~/bin/pg-backup.sh` (crontab unchanged), runs once and prints the log.
+3. **`/etc/docker/daemon.json` → `"shutdown-timeout": 60`**, next quiet moment: validate the JSON, `sudo systemctl restart docker` (that bounces every container, ~30 s). It is what makes a plain reboot graceful and the only thing that helps an unplanned one. `docs/deploy/maintenance-window.md` step 3a.
+4. **APNs key** once the membership is active (§7 Apple).
+5. **Part 4** (15-min login access token) — inspected 24 Sep; see the report before building.
+6. Check the old volume `growblic-site_growblic-leads` for leads (read-only command from the Air).
+7. Set `RESEND_API_KEY` (verified sender domain) so the contact form emails.
 
 ### Blocking the Play upload
 1. **Delete account URL** → Play Console → App content → Data safety: `https://www.growblic.com/delete-account` (live, 200).
@@ -444,10 +482,10 @@ See the 13 Sep version of this file / HANDOFF-3 for full paragraphs. Headlines: 
 ### Queues by machine
 | Machine | Queue |
 |---|---|
-| **mini – iOS** | Slice 15 Batches 2–5 → 7b (after activation) → real-iPhone batch |
-| **mini – Android** | Device checks when phones are attached: account deletion on `+15550199004`; @guru key publish on the POCO; Android↔iOS E2EE with @growblic01; `tz_offset_minutes` on message create (prompt written); `UnreadDividerTest` red |
-| **Air – docs** | Commit `docker-compose.selfhost.yml` + README + `.env.example` to growblicwebsite; `GROWBLIC-METHOD.md` updates (iOS row, rules 26/27); merge the thumbhash amendment (`exway-android/docs/e2ee-frame-amendment-thumbhash.md`) into `E2EE_FRAME.md` |
-| **Air – backend backlog** | VoIP stale-ring cutoff (`apns-expiration` + a timestamp; iOS must report every VoIP push to CallKit) · change-number endpoint · "who can add me to groups" privacy setting (`contacts` must mean `shares_conversation?` or pick another middle value) · conversation-less call start (ad-hoc group calls) · `GET /keys/users` self key status (visible / revoked / missing) · Scylla date cursor for jump-to-date · **Scylla backup** (`nodetool snapshot` + schema `DESCRIBE`, copy off, `clearsnapshot`; path resolution untested) · `/admin/health` 404 on prod · 20 undocumented `/v1` routes · `get_conversation` reads settings 4× · key-rotation push |
+| **mini – iOS** | Slice 16 done; simulator work complete. → **7b** (needs the paid team) → the **real-iPhone batch**. Blocked on the backend: live-location stop (now deployed — retest), the group push flag, view-once "Opened" sync |
+| **mini – Android** | **Retest live-location STOP** (the Scylla fix is deployed). Device checks when phones are attached: account deletion on `+15550199004`; @guru key publish on the POCO; Android↔iOS E2EE with @growblic01; `tz_offset_minutes` on message create (prompt written); `UnreadDividerTest` red |
+| **Air – docs** | *(empty — the selfhost compose + README + `.env.example`, the METHOD updates, and both E2EE_FRAME amendments all shipped 23–24 Sep)* |
+| **Air – backend backlog** | change-number endpoint · "who can add me to groups" privacy setting (`contacts` must mean `shares_conversation?` or pick another middle value) · `GET /keys/users` self key status (visible / revoked / missing) · Scylla date cursor for jump-to-date · **Scylla backup** (`nodetool snapshot` + schema `DESCRIBE`, copy off, `clearsnapshot`; path resolution untested — and the PG dump contains **zero** messages, so this is the real gap) · **`ongoing`-call reaper** (waits on LiveKit room/participant webhooks; a clock alone would end a real long call) · `/admin/health` 404 on prod · 20 undocumented `/v1` routes · `get_conversation` reads settings 4× · key-rotation push · **a restore rehearsal** — no backup has ever been restored |
 | **Air – web** | Web view-once placeholder; web turn-on tiles; delete/decline UX polish |
 
 ### Real bugs, open
