@@ -111,10 +111,11 @@ Postgres `accepting connections`, Scylla `scylla CQL OK`, Kafka listing topics, 
 > ps -o args= -C dockerd | tr ' ' '\n' | grep -i shutdown || echo "(no --shutdown-timeout flag)"
 > ```
 >
-> Rather than editing the daemon config inside this window, step 3 stops the stack **explicitly** with
-> a 60 s timeout before rebooting, which uses the StopTimeout you just set and needs no daemon change.
-> Raising `--shutdown-timeout` is still worth doing separately, because an **unplanned** reboot gets no
-> explicit stop.
+> **Step 3 therefore raises the daemon's timeout, and NEVER stops the stack before rebooting.** An
+> earlier version of this file said to run `compose stop --timeout 60` first. Do not: that marks every
+> container user-stopped, and `restart: unless-stopped` deliberately does not restore those on daemon
+> start — the box reboots into an empty stack. That is the 2026-09-23 outage (handoff §9 rule 33).
+> Raising `shutdown-timeout` also covers the **unplanned** reboot, which gets no ceremony at all.
 
 **Rollback for step 1:**
 
@@ -178,8 +179,8 @@ curl -sS -D- https://web.growblic.com/.well-known/apple-app-site-association \
 curl -sS https://web.growblic.com/.well-known/apple-app-site-association | python3 -m json.tool
 curl -sS -o /dev/null -w 'assetlinks %{http_code} %{content_type} %{size_download}\n' \
   https://web.growblic.com/.well-known/assetlinks.json
-for h in api.growblic.com web.growblic.com media.growblic.com; do
-  printf '%-22s %s\n' "$h" "$(curl -s -o /dev/null -w '%{http_code}' https://$h/health 2>/dev/null || echo ERR)"
+for u in https://api.growblic.com/health https://web.growblic.com/login https://www.growblic.com/; do
+  printf '%-42s %s\n' "$u" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$u" 2>/dev/null || echo ERR)"
 done
 ```
 
@@ -203,21 +204,63 @@ restore the files on disk and `docker compose -f docker-compose.prod.yml restart
 
 ---
 
-## Step 3 — reboot the box
+## Step 3 — give the daemon time to stop things, then reboot
 
-**Stop the stack explicitly first.** This is what makes the reboot graceful: it uses the 60 s
-StopTimeout from step 1, which the daemon's own shutdown would otherwise cap at ~15 s. Name every
-profile or the profiled services are not included:
+> **NEVER `docker compose stop` before a reboot.** It marks the containers user-stopped and
+> `restart: unless-stopped` will not bring them back — the 2026-09-23 outage, §9 rule 33. The whole
+> point of this step is that the containers are still RUNNING when the host goes down, so the restart
+> policy restores them.
+
+### 3a. Raise the daemon's shutdown timeout
+
+`stop_grace_period` (step 1) governs `docker stop`. On a reboot it is the **daemon** that stops the
+containers, capped by its own `shutdown-timeout` — **15 s by default**, which is what makes an
+unprepared reboot ungraceful for Postgres, Scylla and Kafka. Raise it to match:
 
 ```bash
-docker compose -f docker-compose.prod.yml \
-  --profile kafka --profile scylla --profile calls stop --timeout 60
-docker compose -f docker-compose.prod.yml \
-  --profile kafka --profile scylla --profile calls ps --format '{{.Service}}\t{{.Status}}'
+cat /etc/docker/daemon.json 2>/dev/null || echo "(no daemon.json — defaults apply)"
+sudo cp /etc/docker/daemon.json /etc/docker/daemon.json.bak-$(date +%F) 2>/dev/null || true
 ```
 
-Every service must read `Exited (0)`. An `Exited (137)` is a `SIGKILL` — the process did not stop in
-time. Note which one; it is the one to watch on the way back up.
+If the file does **not** exist, create it:
+
+```bash
+printf '{\n  "shutdown-timeout": 60\n}\n' | sudo tee /etc/docker/daemon.json
+```
+
+If it **does** exist, add the one key by hand (`sudo nano /etc/docker/daemon.json`) — do not
+overwrite it, it may carry log or storage settings this box depends on.
+
+**Validate before restarting the daemon.** A malformed `daemon.json` stops Docker from starting at
+all, which is far worse than a slow shutdown:
+
+```bash
+python3 -m json.tool /etc/docker/daemon.json && echo "JSON OK"
+```
+
+> **Checkpoint 3a** — paste the file and the `JSON OK` line. No `JSON OK`: fix the file (or restore
+> `/etc/docker/daemon.json.bak-*`) and do not continue.
+
+Apply it. **This restarts every container** — a ~30 s interruption, which is why it belongs in the
+window and not in a deploy:
+
+```bash
+sudo systemctl restart docker
+sleep 30
+ps -o args= -C dockerd | tr ' ' '\n' | grep -i shutdown-timeout || echo "(flag not in argv — daemon.json is still in effect)"
+docker compose -f docker-compose.prod.yml --profile kafka --profile scylla --profile calls ps \
+  --format '{{.Service}}\t{{.Status}}' | sort
+```
+
+A daemon restart is not a user stop, so `unless-stopped` brings everything back by itself — this is
+the same mechanism the reboot will use, and seeing it work here is the rehearsal.
+
+> **Checkpoint 3b** — paste the `ps` table. Every service `Up` again (the two `-init` jobs `Exited (0)`).
+> If Docker itself did not come back: `sudo systemctl status docker` and restore the `.bak` file.
+
+### 3c. Reboot
+
+Nothing to stop. Just go:
 
 ```bash
 sudo reboot
@@ -232,16 +275,46 @@ affect this** — a profile is a compose-CLI concept while the restart policy be
 so `scylla`, `kafka`, `kafka-init`, `notification` and `livekit` come back without being named. Verify
 that rather than assume it:
 
+**This block comes first, and it is the one that must not be skipped.** It names anything that is not
+running and starts it. Run it the moment you reconnect, before any other check:
+
 ```bash
 cd ~/chat-platform
 uptime                     # confirm it actually rebooted
-docker compose -f docker-compose.prod.yml --profile kafka --profile scylla --profile calls ps \
-  --format '{{.Service}}\t{{.Status}}' | sort | tee ~/after-window.txt
-diff ~/before-window.txt ~/after-window.txt && echo "same service set as before the window"
+
+docker compose -f docker-compose.prod.yml --profile kafka --profile scylla --profile calls ps -a \
+  --format '{{.Service}}\t{{.State}}' | sort | tee ~/after-window.txt
+NOT_RUNNING=$(awk -F'\t' '$2 != "running" && $1 !~ /-init$/ {print $1}' ~/after-window.txt | tr '\n' ' ')
+if [ -n "$NOT_RUNNING" ]; then
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo "!!! NOT RUNNING: $NOT_RUNNING"
+  echo "!!! PROD IS DOWN — start them with the next command."
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+else
+  echo "=== every service is running ==="
+fi
 ```
 
-Every service `Up`, none `Restarting`. `kafka-init` and `minio-init` are one-shot jobs and correctly
-read `Exited (0)` — that is not a failure.
+If that printed the banner, start them — `start`, not `up -d`, because the images and config are
+already correct and only the container state is wrong:
+
+```bash
+docker compose -f docker-compose.prod.yml --profile kafka --profile scylla --profile calls \
+  start $NOT_RUNNING
+sleep 20
+docker compose -f docker-compose.prod.yml --profile kafka --profile scylla --profile calls ps \
+  --format '{{.Service}}\t{{.Status}}' | sort
+```
+
+> **Checkpoint** — paste the banner-or-not line and, if it fired, the `ps` table after `start`.
+> Do not move on until the banner is gone. `kafka-init` and `minio-init` are one-shot jobs and
+> correctly read `Exited (0)` — the `-init` filter above already excludes them.
+
+Then the set comparison:
+
+```bash
+diff <(cut -f1 ~/before-window.txt) <(cut -f1 ~/after-window.txt) && echo "same service set as before the window"
+```
 
 Give the stateful services a moment, then check them directly:
 
@@ -274,8 +347,8 @@ All seven must read `OK`.
 ### The endpoints
 
 ```bash
-for h in api.growblic.com web.growblic.com media.growblic.com; do
-  printf '%-22s %s\n' "$h" "$(curl -s -o /dev/null -w '%{http_code}' https://$h/health 2>/dev/null || echo ERR)"
+for u in https://api.growblic.com/health https://web.growblic.com/login https://www.growblic.com/; do
+  printf '%-42s %s\n' "$u" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$u" 2>/dev/null || echo ERR)"
 done
 curl -sS -o /dev/null -w 'AASA       %{http_code} %{content_type} %{size_download}\n' \
   https://web.growblic.com/.well-known/apple-app-site-association
@@ -283,7 +356,12 @@ curl -sS -o /dev/null -w 'assetlinks %{http_code} %{content_type} %{size_downloa
   https://web.growblic.com/.well-known/assetlinks.json
 ```
 
-AASA `200 application/json 118`, assetlinks `200 application/json` non-zero, the three hosts `200`.
+All three `200`. **These are the URLs that actually answer 200 when healthy** — an earlier version of
+this file checked `/health` on all three hosts, but only the API has one: `web.growblic.com/health` is
+**404** and `media.growblic.com/health` is **403** on a perfectly healthy box, so that check failed
+every time and taught you to ignore it. Media has no unauthenticated 200 endpoint; it is exercised by
+the app's presign path, not by a monitor. AASA `200 application/json 118`, assetlinks
+`200 application/json` non-zero.
 
 Finally, read the logs for anything that came back unhappy — a service can be `Up` and still be
 failing on every request:
