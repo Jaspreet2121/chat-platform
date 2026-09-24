@@ -41,6 +41,7 @@ import { disablePush } from "@/lib/push";
 import {
   ConversationChannel,
   createSocket,
+  startTokenFreshness,
   joinConversationChannel,
   joinUserChannel,
   type CallType,
@@ -132,6 +133,8 @@ const compressibleImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]
 export default function ChatPage() {
   const router = useRouter();
   const socketRef = useRef<Socket | null>(null);
+  // Cleanup for the token-freshness keeper (see startTokenFreshness): one per socket.
+  const stopFreshnessRef = useRef<(() => void) | null>(null);
   // The joined user:<id> channel, lifted to state so the CallProvider can ride its call:* plane (Slice 3/4).
   const [userChannel, setUserChannel] = useState<UserChannel | null>(null);
   // Imperative handle into the CallProvider (which renders below this component) so the DM call button here
@@ -490,6 +493,7 @@ export default function ChatPage() {
       try {
         if (!socketRef.current) {
           socketRef.current = createSocket();
+          stopFreshnessRef.current = startTokenFreshness(socketRef.current);
         }
 
         joinedChannel = await joinConversationChannel(
@@ -630,6 +634,12 @@ export default function ChatPage() {
       }
 
       socketRef.current?.disconnect();
+      // NULL IT. `createSocket` is guarded by `if (!socketRef.current)`, so a ref left pointing at a
+      // disconnected socket makes a remount reuse it — including whatever connect state it was in.
+      // A fresh mount deserves a fresh socket.
+      socketRef.current = null;
+      stopFreshnessRef.current?.();
+      stopFreshnessRef.current = null;
     };
   }, []);
 
@@ -1612,7 +1622,10 @@ export default function ChatPage() {
 
     (async () => {
       try {
-        if (!socketRef.current) socketRef.current = createSocket();
+        if (!socketRef.current) {
+          socketRef.current = createSocket();
+          stopFreshnessRef.current = startTokenFreshness(socketRef.current);
+        }
         const joined = await joinUserChannel(socketRef.current, session.user_id);
         if (!isActive) {
           joined.leave();

@@ -1,5 +1,6 @@
 import { Channel, Presence, Socket } from "phoenix";
 import type { Message, ReactionCount } from "./api";
+import { ensureFreshAccessToken } from "./api";
 import { getAccessToken } from "./session";
 
 const defaultRealtimeUrl = "ws://localhost:4000/socket";
@@ -101,12 +102,86 @@ function realtimeUrl() {
   return process.env.NEXT_PUBLIC_REALTIME_URL ?? defaultRealtimeUrl;
 }
 
-export function createSocket() {
-  const token = getAccessToken();
+/**
+ * The connect params, read at CALL time. PURE (the token source is injected) so the "reads the
+ * latest token" property is testable without a browser.
+ */
+export function socketParams(readToken: () => string | null): Record<string, string> {
+  const token = readToken();
+  return token ? { authorization: `Bearer ${token}` } : {};
+}
 
+/**
+ * THE PARAMS ARE A FUNCTION, NOT AN OBJECT — this is the whole fix.
+ *
+ * phoenix wraps `params` in `closure()`: a function is re-evaluated on every (re)connect, a plain
+ * object is frozen into a constant forever. This used to pass an object built from the token read
+ * once at construction, and `socketRef` lives for the tab's whole life — so any reconnect after the
+ * access token expired presented a DEAD token, the gateway refused the upgrade
+ * (`user_socket.ex`: malformed/expired/wrong-typ → :error), and phoenix retried that same dead token
+ * forever. Realtime went silently dead while REST kept working, because REST refreshes on 401.
+ * Invisible at a 3 h token; the normal case at 15 minutes.
+ */
+export function createSocket() {
   return new Socket(realtimeUrl(), {
-    params: token ? { authorization: `Bearer ${token}` } : {}
+    params: () => socketParams(getAccessToken)
   });
+}
+
+/** How often to re-check freshness while the tab is visible. */
+const FRESHNESS_POLL_MS = 30_000;
+
+/**
+ * Keep the stored access token fresh enough for the socket, and wake a socket that is down.
+ *
+ * Two triggers, for two different failures:
+ *   * a poll while VISIBLE — a tab left open past the TTL refreshes before the token dies, so the
+ *     next reconnect (whenever it comes) has something valid to present;
+ *   * `visibilitychange` → visible — a tab that was asleep missed every poll, and its socket may
+ *     already have been refused. Refresh first, then reconnect.
+ *
+ * The reconnect is deliberately NOT fired on every poll: phoenix runs its own backoff, and forcing
+ * `connect()` alongside it would fight it. It fires only when something CHANGED — a token was
+ * rotated (so a refusal may now be fixable) or the tab just came back.
+ *
+ * Returns a cleanup. Never throws: a freshness failure must not take the socket down with it.
+ */
+export function startTokenFreshness(socket: Socket): () => void {
+  if (typeof document === "undefined") {
+    return () => undefined;
+  }
+
+  let stopped = false;
+
+  async function check(force: boolean) {
+    if (stopped || document.visibilityState !== "visible") {
+      return;
+    }
+
+    let rotated = false;
+
+    try {
+      const result = await ensureFreshAccessToken();
+      rotated = result.status === "refreshed";
+    } catch {
+      // A freshness failure is never fatal — the 401 path still covers REST, and the next poll retries.
+    }
+
+    if (!stopped && (rotated || force) && socket.isConnected() === false) {
+      socket.connect();
+    }
+  }
+
+  const onVisible = () => void check(true);
+  const timer = setInterval(() => void check(false), FRESHNESS_POLL_MS);
+  document.addEventListener("visibilitychange", onVisible);
+  void check(false);
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+    document.removeEventListener("visibilitychange", onVisible);
+  };
 }
 
 function push(channel: Channel, event: string, payload: object) {

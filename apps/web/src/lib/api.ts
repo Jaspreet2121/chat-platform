@@ -1,6 +1,18 @@
-import { clearSessionTokens, getAccessToken, getRefreshToken, setSessionTokens } from "./session";
+import {
+  clearSessionTokens,
+  getAccessExpiresAt,
+  getAccessToken,
+  getRefreshToken,
+  setSessionTokens
+} from "./session";
 import { deviceDisplayName, getOrCreateDeviceId } from "./device";
-import { classifyRefreshResponse, createSingleFlight, type RefreshOutcome } from "./refresh";
+import {
+  classifyRefreshResponse,
+  createFreshnessGate,
+  createSingleFlight,
+  type FreshnessResult,
+  type RefreshOutcome
+} from "./refresh";
 
 const defaultApiBaseUrl = "http://localhost:4000";
 
@@ -296,7 +308,12 @@ const refreshAccessToken = createSingleFlight<RefreshOutcome>(async () => {
   }
 
   let status: number;
-  let body: { access_token?: string; refresh_token?: string; error?: { code?: string } } | null;
+  let body: {
+    access_token?: string;
+    refresh_token?: string;
+    access_token_expires_in_seconds?: number;
+    error?: { code?: string };
+  } | null;
 
   try {
     const response = await fetch(`${apiBaseUrl()}/api/v1/auth/refresh`, {
@@ -316,10 +333,30 @@ const refreshAccessToken = createSingleFlight<RefreshOutcome>(async () => {
   const outcome = classifyRefreshResponse(status, body);
 
   if (outcome.status === "refreshed") {
-    setSessionTokens({ accessToken: body?.access_token, refreshToken: body?.refresh_token });
+    setSessionTokens({
+      accessToken: body?.access_token,
+      refreshToken: body?.refresh_token,
+      // THE ROTATION IS WHERE THE EXPIRY IS LEARNED. Without persisting it here the socket would go
+      // back to guessing after the very first refresh.
+      accessTokenExpiresInSeconds: body?.access_token_expires_in_seconds
+    });
   }
 
   return outcome;
+});
+
+/**
+ * Make sure the stored access token is worth presenting, refreshing through the SAME single-flight
+ * the 401 path uses when it is within a minute of expiry (or its expiry is unknown).
+ *
+ * WHY IT EXISTS: phoenix's socket `params` callback is synchronous, so it cannot await a refresh —
+ * the token has to be fresh before the (re)connect runs. REST needs none of this; it has the 401.
+ * A `fresh` result means no network happened at all.
+ */
+export const ensureFreshAccessToken: () => Promise<FreshnessResult> = createFreshnessGate({
+  readExpiry: getAccessExpiresAt,
+  now: () => Date.now(),
+  refresh: refreshAccessToken
 });
 
 /** Clear the session and send the user to /login — only ever called on a server verdict. */

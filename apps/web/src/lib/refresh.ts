@@ -50,6 +50,55 @@ export function shouldSignOut(code: string | null | undefined): code is SignOutC
 }
 
 /**
+ * Is the stored access token too close to expiry to be worth presenting?
+ *
+ * PURE. `null` — a session stored before the expiry was persisted, or a login response that did not
+ * carry one — is treated as STALE: one refresh teaches us the real expiry and everything after it is
+ * exact. The alternative (assume fresh) leaves the socket presenting a token it cannot reason about,
+ * which is the bug this exists to close.
+ *
+ * The leeway is what makes this safe for a SYNCHRONOUS consumer. phoenix's `params` callback cannot
+ * await, so the token must already be fresh when it runs; refreshing a minute early is what buys that.
+ */
+export function shouldRefreshAccessToken(
+  expiresAtMs: number | null,
+  nowMs: number,
+  leewayMs = 60_000
+): boolean {
+  if (expiresAtMs === null) {
+    return true;
+  }
+
+  return expiresAtMs - nowMs <= leewayMs;
+}
+
+/** What the freshness gate did. `fresh` means it decided nothing needed doing — no network at all. */
+export type FreshnessResult = { status: "fresh" } | RefreshOutcome;
+
+/**
+ * Build the "make sure the access token is usable" gate the socket and the visibility handler call.
+ *
+ * Every dependency is injected so the decision is testable without a browser, a clock or a server.
+ * It does NOT add a second single-flight: `refresh` is already the shared one, so N concurrent
+ * callers through a stale gate still produce exactly ONE rotation — which is the property that keeps
+ * a tab waking up from sleep from firing a refresh storm the server would read as token reuse.
+ */
+export function createFreshnessGate(deps: {
+  readExpiry: () => number | null;
+  now: () => number;
+  refresh: () => Promise<RefreshOutcome>;
+  leewayMs?: number;
+}): () => Promise<FreshnessResult> {
+  return async () => {
+    if (!shouldRefreshAccessToken(deps.readExpiry(), deps.now(), deps.leewayMs)) {
+      return { status: "fresh" };
+    }
+
+    return deps.refresh();
+  };
+}
+
+/**
  * Wrap an async function so that concurrent callers share ONE execution.
  *
  * PURE in the sense that matters for testing: no network, no storage, no globals — it takes a

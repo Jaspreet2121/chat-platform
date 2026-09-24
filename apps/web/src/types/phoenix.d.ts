@@ -17,7 +17,11 @@ declare module "phoenix" {
     constructor(
       endPoint: string,
       options?: {
-        params?: Record<string, string>;
+        // A FUNCTION is re-evaluated on every (re)connect; a plain object is frozen into a constant.
+        // phoenix.js wraps this in `closure()`, which returns a function as-is and wraps anything
+        // else in `() => value`. This shim used to allow only the object form, which is how the
+        // socket ended up pinned to the token it was built with.
+        params?: Record<string, string> | (() => Record<string, string>);
       }
     );
 

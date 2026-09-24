@@ -67,7 +67,9 @@ export default function LinkPage() {
       if (outcome.status === "approved") {
         setSessionTokens({
           accessToken: outcome.session.access_token,
-          refreshToken: outcome.session.refresh_token
+          refreshToken: outcome.session.refresh_token,
+          // The QR-link approval gives an ABSOLUTE expiry, not a relative TTL.
+          accessExpiresAt: outcome.session.expires_at
         });
         // The linked session's identity: session_revoked matches on this (the device_id was minted
         // server-side and this browser never learns it as an identity).

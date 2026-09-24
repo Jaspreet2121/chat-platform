@@ -150,7 +150,10 @@ function LoginForm() {
       // OTP mechanics unchanged: store the tokens exactly as before.
       setSessionTokens({
         accessToken: response.access_token,
-        refreshToken: response.refresh_token
+        refreshToken: response.refresh_token,
+        // The socket refreshes BEFORE a (re)connect, which it can only do if it knows when the
+        // token dies. Login is where that starts.
+        accessTokenExpiresInSeconds: response.access_token_expires_in_seconds
       });
       setSessionId(response.session_id);
       setUserId(response.user_id);

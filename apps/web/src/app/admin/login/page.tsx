@@ -165,7 +165,8 @@ function AdminLoginForm() {
       });
       setSessionTokens({
         accessToken: response.access_token,
-        refreshToken: response.refresh_token
+        refreshToken: response.refresh_token,
+        accessTokenExpiresInSeconds: response.access_token_expires_in_seconds
       });
 
       // Admin-only gate: only admins enter the console. A non-admin who authenticates correctly is
