@@ -32,6 +32,12 @@ defmodule ApiGatewayWeb.AdminModerationController do
   plug RequirePermission, "roles.manage" when action in [:set_user_role]
   plug RequirePermission, "users.delete" when action in [:delete_user]
 
+  # STEP-UP (132): ban and permanent delete always. A role change is gated INSIDE the action, because
+  # "to or from root/admin" needs the target's CURRENT role, which a plug cannot see. Ordered after
+  # RequirePermission on purpose — you must be allowed to do the thing before being asked to prove
+  # it is really you; the other order would tell a moderator to step up for something root-only.
+  plug ApiGatewayWeb.Plugs.RequireReauth when action in [:ban_user, :delete_user]
+
   # --- Users ----------------------------------------------------------------------------------
   def list_users(conn, params) do
     forward(conn, SharedInfra.AuthClient.list_users(scoped(take_paging(params))))
@@ -205,16 +211,25 @@ defmodule ApiGatewayWeb.AdminModerationController do
 
   # --- Roles (IAM Phase 1) --------------------------------------------------------------------
   def set_user_role(conn, %{"id" => user_id} = params) do
-    forward(
-      conn,
-      SharedInfra.AuthClient.set_user_role(
-        scoped(conn, %{
-          "user_id" => user_id,
-          "role" => params["role"],
-          "actor_user_id" => actor(conn)
-        })
+    with :ok <- ensure_reauth_for_role_change(conn, user_id, params["role"]) do
+      forward(
+        conn,
+        SharedInfra.AuthClient.set_user_role(
+          scoped(conn, %{
+            "user_id" => user_id,
+            "role" => params["role"],
+            "actor_user_id" => actor(conn)
+          })
+        )
       )
-    )
+    else
+      {:error, :reauth_required} ->
+        ErrorResponse.forbidden(
+          conn,
+          "admin.reauth_required",
+          "Confirm it's you: re-enter the code sent to your phone"
+        )
+    end
   end
 
   # Permanent delete (root-only via RequirePermission users.delete). Guards + transaction live in auth.
@@ -327,6 +342,40 @@ defmodule ApiGatewayWeb.AdminModerationController do
     do: ErrorResponse.invalid_request(conn, "admin.report_not_found")
 
   defp error(conn, _reason), do: ErrorResponse.invalid_request(conn, "admin.invalid_request")
+
+  # STEP-UP for a role change, gated on the PRIVILEGED SET on either side (132). A plug cannot decide
+  # this: "to root/admin" is in the request, but "FROM root/admin" — demoting a root, the move that
+  # actually removes someone's power — is only knowable by reading the target's current role. So the
+  # check happens here, after the permission plug, with one lookup.
+  #
+  # Unreadable current role → treated as privileged, i.e. step up anyway. A lookup failure must not
+  # be the thing that lets a role change through unproven.
+  @privileged_roles ~w(root admin)
+
+  defp ensure_reauth_for_role_change(conn, user_id, new_role) do
+    if new_role in @privileged_roles or current_role_privileged?(user_id) do
+      case SharedInfra.AuthClient.admin_reauth_check(%{
+             "token" => ApiGatewayWeb.Plugs.RequireReauth.reauth_token(conn),
+             "user_id" => actor(conn)
+           }) do
+        {:ok, _} -> :ok
+        _ -> {:error, :reauth_required}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp current_role_privileged?(user_id) do
+    case SharedInfra.AuthClient.get_user_detail(scoped(%{"user_id" => user_id})) do
+      {:ok, detail} ->
+        auth = cget(detail, :auth) || %{}
+        (cget(auth, :role) || "") in @privileged_roles or cget(auth, :is_admin) == true
+
+      _ ->
+        true
+    end
+  end
 
   defp actor(conn), do: conn.assigns.admin_session.user_id
 

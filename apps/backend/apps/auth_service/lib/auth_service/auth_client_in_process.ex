@@ -202,6 +202,20 @@ defmodule AuthService.AuthClientInProcess do
   def revoke_all_sessions(attrs), do: AuthService.Devices.revoke_all_sessions(attrs)
 
   @impl true
+  def admin_reauth_request(attrs), do: AuthService.AdminReauth.request(attrs)
+
+  @impl true
+  def admin_reauth_verify(attrs), do: AuthService.AdminReauth.verify(attrs)
+
+  @impl true
+  def admin_reauth_check(attrs) do
+    case AuthService.AdminReauth.verify_token(attrs["token"] || "", attrs["user_id"] || "") do
+      :ok -> {:ok, %{valid: true}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @impl true
   def session_active?(attrs), do: AuthService.Devices.session_active?(attrs)
 
   @impl true

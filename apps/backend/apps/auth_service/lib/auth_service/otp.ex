@@ -191,6 +191,38 @@ defmodule AuthService.OTP do
   end
 
   @doc """
+  Verify an OTP and CONSUME it, WITHOUT minting a session — the step-up path (admin re-auth, 132).
+
+  Deliberately reuses the login verifier's own primitives rather than reimplementing them: the same
+  lookup (which rejects an expired or already-consumed row), the same charge-BEFORE-check ordering
+  that makes a wrong guess always cost an attempt, and the same brute-force cap. The only difference
+  is the ending — no session, no tokens, no device row. The code is consumed on success so a
+  step-up proof cannot be replayed inside its TTL.
+
+  The reviewer override cannot reach here: it is keyed on `purpose: "login"`, and this path is only
+  ever called with `admin_reauth`.
+  """
+  def verify_code_only(attrs) when is_map(attrs) do
+    now = DateTime.utc_now()
+
+    with {:repo, true} <- {:repo, repo_started?()},
+         {:ok, otp_request_id} <- otp_request_id(attrs),
+         {:ok, otp_code} <- submitted_otp(attrs),
+         {:ok, destination, _delivery_method} <- destination(attrs),
+         purpose <- get_attr(attrs, :purpose) || "login",
+         {:ok, verification_code} <-
+           get_verification_code(otp_request_id, destination, purpose, now),
+         {:ok, attempt} <- charge_attempt(verification_code),
+         :ok <- check_code(verification_code, otp_code, attempt, now) do
+      AuthService.VerificationCodes.burn_verification_code(verification_code.id, now)
+      {:ok, %{verified: true, destination: destination, purpose: purpose}}
+    else
+      {:repo, false} -> {:error, :repo_not_started}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
   Attempts allowed per `otp_request_id` before the code is burned. Exposed so the gateway's
   per-(IP, phone) verify limit can be reasoned about against it — see the rate-limit policy doc.
   """

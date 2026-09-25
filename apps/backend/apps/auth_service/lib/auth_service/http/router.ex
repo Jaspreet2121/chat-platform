@@ -303,6 +303,26 @@ defmodule AuthService.HTTP.Router do
     send_result(conn, AuthService.Devices.revoke_all_sessions(body(conn)))
   end
 
+  post "/internal/admin/reauth/request" do
+    send_result(conn, AuthService.AdminReauth.request(body(conn)))
+  end
+
+  post "/internal/admin/reauth/verify" do
+    send_result(conn, AuthService.AdminReauth.verify(body(conn)))
+  end
+
+  post "/internal/admin/reauth/check" do
+    attrs = body(conn)
+
+    result =
+      case AuthService.AdminReauth.verify_token(attrs["token"] || "", attrs["user_id"] || "") do
+        :ok -> {:ok, %{valid: true}}
+        {:error, reason} -> {:error, reason}
+      end
+
+    send_result(conn, result)
+  end
+
   post "/internal/devices/session_active" do
     send_result(conn, AuthService.Devices.session_active?(body(conn)))
   end

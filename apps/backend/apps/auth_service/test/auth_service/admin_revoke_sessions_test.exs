@@ -103,6 +103,7 @@ defmodule AuthService.AdminRevokeSessionsTest do
     session!(user, "phone-1")
 
     assert {:ok, %{revoked_count: 1}} = Devices.revoke_all_sessions(%{"user_id" => user})
+
     assert {:ok, %{revoked_count: 0, revoked_device_ids: []}} =
              Devices.revoke_all_sessions(%{"user_id" => user})
   end

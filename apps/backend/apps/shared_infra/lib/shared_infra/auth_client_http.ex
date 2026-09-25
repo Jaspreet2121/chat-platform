@@ -180,6 +180,15 @@ defmodule SharedInfra.AuthClientHttp do
   def revoke_all_sessions(attrs), do: post("/internal/devices/revoke_all", attrs)
 
   @impl true
+  def admin_reauth_request(attrs), do: post("/internal/admin/reauth/request", attrs)
+
+  @impl true
+  def admin_reauth_verify(attrs), do: post("/internal/admin/reauth/verify", attrs)
+
+  @impl true
+  def admin_reauth_check(attrs), do: post("/internal/admin/reauth/check", attrs)
+
+  @impl true
   def session_active?(attrs), do: post("/internal/devices/session_active", attrs)
 
   @impl true

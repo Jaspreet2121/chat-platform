@@ -645,6 +645,11 @@ defmodule ApiGatewayWeb.Router do
     get "/ping", AdminController, :ping
     get "/me", AdminController, :me
 
+    # STEP-UP RE-AUTH (132). Any console role may prove it is really them; what that proof unlocks is
+    # decided per action by RequireReauth. The OTP goes to the admin's OWN registered number.
+    post "/reauth/request", AdminReauthController, :request
+    post "/reauth/verify", AdminReauthController, :verify
+
     get "/analytics/overview", AdminAnalyticsController, :overview
     get "/analytics/timeseries", AdminAnalyticsController, :timeseries
 
