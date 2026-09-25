@@ -295,7 +295,7 @@ export default function AdminRolesPage() {
       <StepUpDialog
         open={Boolean(confirmUser)}
         title="Permanently delete user?"
-        body="Their identity is removed and they can no longer sign in. Conversations they started are kept (reassigned to you) and their past messages remain, shown as “Deleted user.” This cannot be undone."
+        body="Same as when someone deletes their own account: their identity is scrubbed and they can no longer sign in. They leave every chat and group — nothing is reassigned to you or anyone else — and messages they already sent stay, shown as “Deleted account.” Their username is held for 30 days. This cannot be undone."
         confirmLabel="Delete permanently"
         target={confirmUser}
         busy={Boolean(confirmUser) && busyId === confirmUser?.user_id}

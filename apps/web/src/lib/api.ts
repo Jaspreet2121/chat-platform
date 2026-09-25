@@ -1052,9 +1052,11 @@ export function setUserRole(userId: string, role: IamRole | string, reauthToken?
   });
 }
 
-// Permanently delete a user (root-only, users.delete). Anonymize-keep policy on the backend. The backend
-// rejects deleting a root/admin/self (iam.cannot_delete_privileged / iam.cannot_delete_self), surfaced via
-// the thrown message.
+// Permanently delete a user (root-only, users.delete). Runs the SAME deletion as self-serve on the
+// backend: a tombstone (identity scrubbed, account closed), the person leaves every conversation,
+// peers see "Deleted account", the username is held 30 days, and nothing is reassigned to anyone. The
+// backend rejects deleting a root/admin/self (iam.cannot_delete_privileged / iam.cannot_delete_self),
+// surfaced via the thrown message.
 export function deleteUser(userId: string, reauthToken?: string | null) {
   return request<{ user_id: string; deleted: boolean }>(
     `/api/v1/admin/users/${encodeURIComponent(userId)}`,

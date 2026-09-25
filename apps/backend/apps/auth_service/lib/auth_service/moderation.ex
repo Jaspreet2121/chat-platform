@@ -12,6 +12,7 @@ defmodule AuthService.Moderation do
   arrive as JSON over the internal API).
   """
 
+  alias AuthService.AccountDeletion
   alias AuthService.Accounts
   alias AuthService.Repo
   alias SharedInfra.AdminCursor
@@ -326,17 +327,17 @@ defmodule AuthService.Moderation do
   defp validate_role(_), do: {:error, :invalid_role}
 
   @doc """
-  Permanently delete a user (IAM users.delete, root-only — the gateway gates it). "Anonymize-keep" policy:
+  Delete a user from the console. attrs: "user_id", "actor_user_id", "app_id" (+ request context).
 
-    * GUARDS (before any mutation): the target must exist, must NOT be the acting user, and must NOT be a
-      root/admin. Errors: `:user_not_found`, `:cannot_delete_self`, `:cannot_delete_privileged`.
-    * ONE transaction (all-or-nothing): reassign the three NOT-NULL / NO-ACTION blockers
-      (conversations.created_by, media_assets.owner_user_id, call_sessions.started_by) to the acting root
-      so those artifacts survive → hard-delete `users_auth` (Postgres CASCADE removes profile, settings,
-      privacy, device_sessions, refresh_tokens, memberships, app_owners, blocked_users, call_participants,
-      reporter-reports; SET NULL on audit actor etc.) → write the audit row.
-    * ANONYMIZE: messages/reactions/receipts/stars/notifications are LEFT intact (no FK) — their now-orphan
-      sender id resolves to nothing, so the UI shows "Deleted user" while other participants keep the text.
+  Runs `AuthService.AccountDeletion.purge!/2` — THE SAME deletion self-serve runs — inside one
+  transaction with the audit row. Tombstone, not a hole: the identity row stays with `deleted_at`
+  set and its identity columns scrubbed, the person leaves every conversation (`left_at`), peers see
+  "Deleted account", the username is held for 30 days, and NOTHING IS REASSIGNED TO ANYONE. Until
+  2026-09-25 this path hard-deleted the row and moved conversations.created_by to the acting admin,
+  which gave that admin other people's private chats; the dialog said so out loud.
+
+  What stays console-specific are the guards — the target must be in this tenant, must not be the
+  actor, and must not be root/admin — and the audit.
   """
   def delete_user(attrs) do
     target_id = present(attrs["user_id"])
@@ -344,54 +345,21 @@ defmodule AuthService.Moderation do
 
     with {:ok, target} <- fetch_deletable(target_id, app_of(attrs)),
          :ok <- guard_not_self(target_id, actor_id),
-         :ok <- guard_not_privileged(target) do
+         :ok <- guard_not_privileged(target),
+         :ok <- guard_not_deleted(target) do
       Repo.transaction(fn ->
-        target_bin = uuid_param(target_id)
-        actor_bin = uuid_param(actor_id)
-
-        # Reassign the NOT-NULL / ON DELETE NO ACTION blockers to the acting root (keeps the artifacts).
-        Repo.query!("UPDATE conversations SET created_by = $1 WHERE created_by = $2", [
-          actor_bin,
-          target_bin
-        ])
-
-        Repo.query!("UPDATE media_assets SET owner_user_id = $1 WHERE owner_user_id = $2", [
-          actor_bin,
-          target_bin
-        ])
-
-        Repo.query!("UPDATE call_sessions SET started_by = $1 WHERE started_by = $2", [
-          actor_bin,
-          target_bin
-        ])
-
-        # USERNAME HOLD (080): the profile row cascade-deletes below, which would FREE the handle
-        # instantly — the exact claim-a-name-someone-just-vacated impersonation vector the rename hold
-        # closes. Write the same 30-day hold a rename writes (upsert; the deleted user can never
-        # reclaim — the account is gone — so after 30 days it frees like any other hold).
-        Repo.query!(
-          "INSERT INTO username_holds (app_id, username_key, user_id, held_until) " <>
-            "SELECT p.app_id, p.username_key, p.user_id, now() + interval '30 days' " <>
-            "FROM user_profiles p WHERE p.user_id = $1 AND p.username_key IS NOT NULL " <>
-            "ON CONFLICT (app_id, username_key) DO UPDATE " <>
-            "SET user_id = EXCLUDED.user_id, held_until = EXCLUDED.held_until, created_at = now()",
-          [target_bin]
-        )
-
-        # Hard-delete the identity; CASCADE cleans the FK-linked rows. Messages/reactions/receipts/stars/
-        # notifications are intentionally NOT touched (anonymized via the profile deletion above).
-        Repo.query!("DELETE FROM users_auth WHERE id = $1", [target_bin])
+        result = AccountDeletion.purge!(%{id: target_id, role: target.role}, self_serve: false)
 
         audit(
           actor_id,
           "user.delete",
           "user",
           target_id,
-          %{"role" => target.role, "policy" => "anonymize-keep"},
+          %{"role" => target.role, "policy" => "tombstone", "purged_rows" => result.purged},
           attrs
         )
 
-        %{user_id: target_id, deleted: true}
+        %{user_id: target_id, deleted: true, deleted_at: result.deleted_at}
       end)
       |> case do
         {:ok, data} -> {:ok, data}
@@ -399,6 +367,11 @@ defmodule AuthService.Moderation do
       end
     end
   end
+
+  # A tombstone is already deleted. Purging it again would be harmless but the audit row would be a
+  # lie, so answer the way an unknown id is answered.
+  defp guard_not_deleted(%{status: "deleted"}), do: {:error, :user_not_found}
+  defp guard_not_deleted(_target), do: :ok
 
   defp fetch_deletable(nil, _app), do: {:error, :user_not_found}
 
@@ -676,7 +649,11 @@ defmodule AuthService.Moderation do
         action,
         target_type,
         target_id,
-        Jason.encode!(metadata || %{}),
+        # THE MAP, not Jason.encode!(map). The `::jsonb` cast makes Postgrex type this parameter as
+        # jsonb and JSON-encode whatever it is handed — so a pre-encoded string was being stored as a
+        # JSON *string*, and every `metadata->>'reason'` on every audit row read back NULL. Found by
+        # the first test that ever read a metadata key back (AdminDeleteTombstoneTest, 2026-09-25).
+        metadata || %{},
         present(get_in_attrs(ctx, "ip_address")),
         present(get_in_attrs(ctx, "user_agent"))
       ]

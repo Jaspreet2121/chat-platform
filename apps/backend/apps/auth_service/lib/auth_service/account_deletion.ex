@@ -7,12 +7,15 @@ defmodule AuthService.AccountDeletion do
 
   ## The tombstone, and why it is not a hard delete
 
-  `AuthService.Moderation.delete_user/1` — the admin path — hard-deletes `users_auth` and reassigns
-  the three NOT-NULL blockers to the acting root. A self-delete cannot do that: there IS no other
-  actor, and putting a stranger's name on a group the deleted user created is worse than keeping a
-  dead row. More importantly, messages in other people's chats carry a `sender_user_id`; orphan it
-  and the recipient's client renders a blank rather than "Deleted account". So `users_auth` survives
-  with `deleted_at` set, `status = 'deleted'` and its identity columns scrubbed (130).
+  BOTH deletion paths end here. Self-serve (`delete_own_account/1`) and the admin console
+  (`AuthService.Moderation.delete_user/1`) run the same `purge!/2`. Until 2026-09-25 the admin path
+  was different: it hard-deleted `users_auth` and REASSIGNED the three NOT-NULL blockers —
+  conversations.created_by among them — to the acting admin, which handed that admin other people's
+  private chats and said so in the dialog. Putting a stranger's name on a group the deleted user
+  created is worse than keeping a dead row, whoever the stranger is. And messages in other people's
+  chats carry a `sender_user_id`; orphan it and the recipient's client renders a blank rather than
+  "Deleted account". So `users_auth` survives with `deleted_at` set, `status = 'deleted'` and its
+  identity columns scrubbed (130), and nothing is reassigned to anyone.
 
   `Sessions.active_user/1` admits only `status == "active"`, so the status flip is what ends every
   session already in flight — including ones whose access token has minutes left to run.
@@ -71,7 +74,7 @@ defmodule AuthService.AccountDeletion do
          {:ok, claimed_phone} <- required(attrs, "phone_number"),
          {:ok, user} <- fetch_deletable(user_id),
          :ok <- guard_reauth(user, claimed_phone) do
-      Repo.transaction(fn -> purge(user) end)
+      Repo.transaction(fn -> purge!(user, self_serve: true) end)
     end
   rescue
     error in Postgrex.Error ->
@@ -83,7 +86,16 @@ defmodule AuthService.AccountDeletion do
       )
   end
 
-  defp purge(%{id: user_id} = user) do
+  @doc """
+  The deletion itself: leave every conversation, hold the username, purge every cascading table,
+  tombstone the identity. `user` needs `:id` and `:role`. Must run INSIDE a transaction — the
+  callers own that, because the admin path writes its audit row in the same one.
+
+  Public so the admin path runs THIS and not a copy of it. A second implementation of "delete a
+  person" is how the two drifted the first time.
+  """
+  def purge!(%{id: user_id} = user, opts \\ []) do
+    self_serve? = Keyword.get(opts, :self_serve, true)
     now = DateTime.utc_now()
 
     # 1. LEAVE every conversation. Not a delete: see the moduledoc.
@@ -124,7 +136,7 @@ defmodule AuthService.AccountDeletion do
 
     Logger.info(
       "account deleted user=#{user_id} tables=#{length(purged)} rows=#{total} " <>
-        "role=#{user.role} self_serve=true"
+        "role=#{user.role} self_serve=#{self_serve?}"
     )
 
     %{user_id: user_id, deleted_at: DateTime.to_iso8601(now), purged: total}
