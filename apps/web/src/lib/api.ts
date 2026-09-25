@@ -835,6 +835,18 @@ export function banUser(userId: string, reason: string) {
   });
 }
 
+/**
+ * Sign an account out everywhere: every live device_session, its refresh tokens and its push tokens,
+ * then the live sockets are severed server-side. Idempotent — `revoked_count: 0` when nothing was
+ * live, which is what you want from a button an operator may press twice.
+ */
+export function adminRevokeUserSessions(userId: string) {
+  return request<{ user_id: string; revoked: boolean; revoked_count: number }>(
+    `/api/v1/admin/users/${encodeURIComponent(userId)}/revoke-sessions`,
+    { method: "POST", body: JSON.stringify({}) }
+  );
+}
+
 export function adminDeleteMessage(messageId: string) {
   return request<{ status?: string }>(`/api/v1/admin/messages/${encodeURIComponent(messageId)}`, {
     method: "DELETE"

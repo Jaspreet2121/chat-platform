@@ -147,6 +147,34 @@ defmodule AuthService.Devices do
   end
 
   @doc """
+  ADMIN: revoke EVERY live session for `user_id` — the moderator's "sign this account out
+  everywhere". attrs: "user_id".
+
+  Distinct from `revoke_other_devices/1`, which spares the caller's own device: here the actor is an
+  ADMIN, not the account holder, so nothing is spared. Reuses the same transaction as a user-driven
+  revoke, which means it also revokes the refresh tokens and deletes the push tokens — a session that
+  is signed out but still receiving pushes is not signed out.
+
+  Returns `{:ok, %{revoked_count, revoked_device_ids}}`; the device ids ride back so the gateway can
+  sever each live socket. Already-signed-out (or unknown) user → `revoked_count: 0`, never an error:
+  the endpoint is idempotent, which is what you want from a button an operator may press twice.
+  """
+  def revoke_all_sessions(attrs) do
+    with {:ok, user_id} <- required(attrs, "user_id") do
+      live =
+        DeviceSession
+        |> where([s], s.user_id == ^user_id and is_nil(s.revoked_at))
+        |> Repo.all()
+
+      revoke_sessions_tx(live, user_id)
+
+      {:ok, %{revoked_count: length(live), revoked_device_ids: Enum.map(live, & &1.device_id)}}
+    end
+  rescue
+    Ecto.Query.CastError -> {:error, :auth_invalid}
+  end
+
+  @doc """
   Is this (user, device) session still live? ONE indexed EXISTS: the device_session is non-revoked AND
   the account is still ACTIVE — so the realtime heartbeat re-check catches BOTH device revocation and
   admin suspend/ban (which deliberately doesn't touch device_sessions rows; without this, a suspended

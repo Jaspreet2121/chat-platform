@@ -198,6 +198,8 @@ defmodule AuthService.AuthClientInProcess do
 
   @impl true
   def revoke_other_devices(attrs), do: AuthService.Devices.revoke_other_devices(attrs)
+  @impl true
+  def revoke_all_sessions(attrs), do: AuthService.Devices.revoke_all_sessions(attrs)
 
   @impl true
   def session_active?(attrs), do: AuthService.Devices.session_active?(attrs)

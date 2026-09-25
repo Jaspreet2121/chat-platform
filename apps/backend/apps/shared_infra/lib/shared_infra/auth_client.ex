@@ -52,6 +52,7 @@ defmodule SharedInfra.AuthClient do
   @callback revoke_device(attrs()) :: result()
   @callback link_device_session(attrs()) :: result()
   @callback revoke_other_devices(attrs()) :: result()
+  @callback revoke_all_sessions(attrs()) :: result()
   # Realtime revocation fallback: is this (user, device) session still live (non-revoked + account active)?
   @callback session_active?(attrs()) :: result()
   @callback save_push_subscription(attrs()) :: result()
@@ -128,6 +129,7 @@ defmodule SharedInfra.AuthClient do
                       revoke_device: 1,
                       link_device_session: 1,
                       revoke_other_devices: 1,
+                      revoke_all_sessions: 1,
                       session_active?: 1
 
   def current_session(attrs), do: adapter().current_session(attrs)
@@ -194,6 +196,7 @@ defmodule SharedInfra.AuthClient do
   def revoke_device(attrs), do: adapter().revoke_device(attrs)
   def link_device_session(attrs), do: adapter().link_device_session(attrs)
   def revoke_other_devices(attrs), do: adapter().revoke_other_devices(attrs)
+  def revoke_all_sessions(attrs), do: adapter().revoke_all_sessions(attrs)
   def session_active?(attrs), do: adapter().session_active?(attrs)
   def save_push_subscription(attrs), do: adapter().save_push_subscription(attrs)
   def delete_push_subscription(attrs), do: adapter().delete_push_subscription(attrs)

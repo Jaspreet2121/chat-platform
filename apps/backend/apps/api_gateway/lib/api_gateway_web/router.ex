@@ -653,6 +653,9 @@ defmodule ApiGatewayWeb.Router do
     post "/users/:id/suspend", AdminModerationController, :suspend_user
     post "/users/:id/reactivate", AdminModerationController, :reactivate_user
     post "/users/:id/ban", AdminModerationController, :ban_user
+    # Sign an account out everywhere: revoke every live device_session + its refresh tokens + push
+    # tokens, then sever the live sockets. users.moderate — the same capability as suspend/ban.
+    post "/users/:id/revoke-sessions", AdminModerationController, :revoke_sessions
     post "/users/:id/role", AdminModerationController, :set_user_role
     delete "/users/:id", AdminModerationController, :delete_user
 

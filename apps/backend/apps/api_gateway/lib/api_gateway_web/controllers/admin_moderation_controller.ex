@@ -21,6 +21,7 @@ defmodule ApiGatewayWeb.AdminModerationController do
               :suspend_user,
               :reactivate_user,
               :ban_user,
+              :revoke_sessions,
               :delete_message,
               :update_report
             ]
@@ -92,6 +93,62 @@ defmodule ApiGatewayWeb.AdminModerationController do
       )
     )
   end
+
+  @doc """
+  POST /api/v1/admin/users/:id/revoke-sessions — sign this account out everywhere.
+
+  Reuses the SAME transaction a user-driven revoke uses, so the refresh tokens and push tokens go
+  with the sessions: an account that is "signed out" but still receiving pushes is not signed out.
+  Then it does what the device endpoint does for one device, for every device — tells the clients
+  they were signed out BEFORE severing the socket, so an open tab can render the reason instead of a
+  silently dead connection, and notifies secret chats because the user's live key set just changed.
+
+  Idempotent: an account with nothing live answers `revoked_count: 0` rather than an error — this is
+  a button an operator may well press twice.
+  """
+  def revoke_sessions(conn, %{"id" => user_id}) do
+    case SharedInfra.AuthClient.revoke_all_sessions(%{"user_id" => user_id}) do
+      {:ok, result} ->
+        device_ids = cget(result, :revoked_device_ids) || []
+
+        ApiGatewayWeb.SecretChatEvents.emit_keys_changed(user_id)
+
+        Enum.each(device_ids, fn device_id ->
+          ApiGatewayWeb.Endpoint.broadcast("user:" <> user_id, "session_revoked", %{
+            device_id: device_id,
+            session_id: nil
+          })
+
+          ApiGatewayWeb.Endpoint.broadcast(
+            "user_socket:#{user_id}:#{device_id}",
+            "disconnect",
+            %{}
+          )
+        end)
+
+        SharedInfra.AuthClient.write_audit(
+          Map.merge(ApiGatewayWeb.RequestContext.audit_attrs(conn), %{
+            "actor_user_id" => actor(conn),
+            "action" => "user.revoke_sessions",
+            "target_type" => "user",
+            "target_id" => user_id,
+            "metadata" => %{"revoked_count" => cget(result, :revoked_count) || 0}
+          })
+        )
+
+        json(conn, %{
+          user_id: user_id,
+          revoked: true,
+          revoked_count: cget(result, :revoked_count) || 0
+        })
+
+      {:error, reason} ->
+        error(conn, reason)
+    end
+  end
+
+  def revoke_sessions(conn, _params),
+    do: ErrorResponse.invalid_request(conn, "admin.invalid_request")
 
   # --- Messages -------------------------------------------------------------------------------
   # Tenant gate (message_service admin_delete has no app_id): resolve the message's conversation tenant;
@@ -272,6 +329,10 @@ defmodule ApiGatewayWeb.AdminModerationController do
   defp error(conn, _reason), do: ErrorResponse.invalid_request(conn, "admin.invalid_request")
 
   defp actor(conn), do: conn.assigns.admin_session.user_id
+
+  # Internal results come atom-keyed in-process and string-keyed over HTTP — read either.
+  defp cget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp cget(_map, _key), do: nil
 
   defp take_paging(params), do: Map.take(params, ["page", "status", "q"])
 

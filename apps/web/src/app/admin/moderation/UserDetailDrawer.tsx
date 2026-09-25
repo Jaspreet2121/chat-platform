@@ -7,6 +7,7 @@ import {
   Database,
   HardDrive,
   Loader2,
+  LogOut,
   MessageSquare,
   MessagesSquare,
   RotateCcw,
@@ -17,6 +18,7 @@ import {
 import {
   AdminReport,
   AdminUserDetail,
+  adminRevokeUserSessions,
   banUser,
   getAdminUser,
   reactivateUser,
@@ -136,12 +138,26 @@ export function UserDetailDrawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  async function act(action: "suspend" | "reactivate" | "ban") {
+  async function act(action: "suspend" | "reactivate" | "ban" | "revoke") {
     setBusy(true);
     try {
       if (action === "suspend") await suspendUser(userId, "Suspended via admin console");
       else if (action === "reactivate") await reactivateUser(userId);
-      else await banUser(userId, "Banned via admin console");
+      else if (action === "revoke") {
+        // Not destructive and not a status change — the account stays exactly as it is, it just
+        // stops being signed in anywhere. So: no confirmation, but say how many went.
+        const { revoked_count } = await adminRevokeUserSessions(userId);
+        flash(
+          "ok",
+          revoked_count === 0
+            ? "No live sessions to revoke"
+            : `Signed out of ${revoked_count} ${revoked_count === 1 ? "session" : "sessions"}`
+        );
+        setBusy(false);
+        await load();
+        onChanged();
+        return;
+      } else await banUser(userId, "Banned via admin console");
       flash("ok", `User ${action === "reactivate" ? "reactivated" : action + "ned"}`);
       setConfirmBan(false);
       await load();
@@ -217,6 +233,9 @@ export function UserDetailDrawer({
                   Reactivate
                 </Button>
               )}
+              <Button size="sm" variant="ghost" className="border border-border" isLoading={busy} onClick={() => act("revoke")} leftIcon={<LogOut className="h-4 w-4" />}>
+                Revoke sessions
+              </Button>
               <Button size="sm" variant="danger" disabled={busy} onClick={() => setConfirmBan(true)} leftIcon={<Ban className="h-4 w-4" />}>
                 Ban
               </Button>
