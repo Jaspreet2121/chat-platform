@@ -245,12 +245,34 @@ defmodule ApiGatewayWeb.AdminModerationController do
   # --- Audit ----------------------------------------------------------------------------------
   def list_audit(conn, params) do
     result =
-      enrich_rows(SharedInfra.AuthClient.list_audit(take_paging(params)), :entries, %{
-        actor_user_id: :actor
-      })
+      SharedInfra.AuthClient.list_audit(take_paging(params))
+      |> enrich_rows(:entries, %{actor_user_id: :actor})
+      |> enrich_user_targets()
 
     forward(conn, result)
   end
+
+  # The TARGET of an audit row is a user only when target_type says so — a matches view has "list"
+  # there, a content read a conversation id. Those rows keep their raw target; user rows get
+  # target_name / target_username / target_phone, so the log reads "banned @guru", not a uuid.
+  defp enrich_user_targets({:ok, %{} = data}) do
+    entries = mfetch(data, :entries) || []
+    {users, others} = Enum.split_with(entries, &(mfetch(&1, :target_type) == "user"))
+
+    case enrich_rows({:ok, %{rows: users}}, :rows, %{target_id: :target}) do
+      {:ok, %{rows: enriched}} ->
+        by_id = Map.new(enriched, &{mfetch(&1, :id), &1})
+
+        # Original order, each user row swapped for its enriched twin.
+        merged = Enum.map(entries, fn e -> Map.get(by_id, mfetch(e, :id)) || e end)
+        {:ok, Map.put(data, :entries, merged)}
+
+      _ ->
+        {:ok, Map.put(data, :entries, users ++ others)}
+    end
+  end
+
+  defp enrich_user_targets(other), do: other
 
   # Resolve the raw user-id fields in a list response to display_name + phone (ONE batched auth lookup —
   # no N+1) so the admin panel shows WHO, not a hash. `id_fields` maps an id field → a name prefix, so
@@ -285,6 +307,7 @@ defmodule ApiGatewayWeb.AdminModerationController do
             s ->
               acc
               |> Map.put(:"#{prefix}_name", mfetch(s, :display_name))
+              |> Map.put(:"#{prefix}_username", mfetch(s, :username))
               |> Map.put(:"#{prefix}_phone", mfetch(s, :phone_number))
           end
         end)

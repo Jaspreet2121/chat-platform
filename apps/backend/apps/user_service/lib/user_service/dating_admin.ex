@@ -89,6 +89,8 @@ defmodule UserService.DatingAdmin do
           user_high_id: type(m.user_high_id, :string),
           user_low_name: lo.display_name,
           user_high_name: hi.display_name,
+          user_low_username: lo.username,
+          user_high_username: hi.username,
           matched_at: m.matched_at
         }
       )
@@ -122,6 +124,8 @@ defmodule UserService.DatingAdmin do
       user_high_id: row.user_high_id,
       user_low_name: row.user_low_name,
       user_high_name: row.user_high_name,
+      user_low_username: row.user_low_username,
+      user_high_username: row.user_high_username,
       matched_at: DateTime.to_iso8601(row.matched_at),
       # Always true: an unmatched row is deleted, not flagged. Stated explicitly so a reader of the
       # payload is not left wondering whether the field is missing or the data is.

@@ -12,6 +12,7 @@ import {
   getAdminUsers
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
+import { identityTitle, maskPhone } from "@/lib/adminUser";
 import { Pager } from "@/app/admin/_Pager";
 import { usePaging } from "@/app/admin/_usePaging";
 import { cn } from "@/lib/cn";
@@ -20,18 +21,10 @@ function shortId(id?: string | null) {
   return id ? `#${id.slice(0, 8)}` : "—";
 }
 
-function formatPhone(raw?: string | null) {
-  if (!raw) return "";
-  const digits = raw.replace(/\D/g, "");
-  if (digits.length === 12 && digits.startsWith("91")) {
-    return `+91 ${digits.slice(2, 7)} ${digits.slice(7)}`;
-  }
-  return raw.startsWith("+") ? raw : `+${digits}`;
-}
 
 // A user's display label: name → formatted phone → email → (falls back to id at the call site).
 function userLabel(u: AdminUser) {
-  return u.display_name?.trim() || formatPhone(u.phone_number) || u.email?.trim() || "";
+  return identityTitle(u);
 }
 
 // A conversation's title in a given user's list: the direct peer's name, else the group title, else a
@@ -256,9 +249,7 @@ function UsersList({ onOpen }: { onOpen: (u: AdminUser) => void }) {
                   </p>
                   <p className="truncate text-xs text-faint">
                     {u.role ?? "user"}
-                    {u.phone_number && formatPhone(u.phone_number) !== label
-                      ? ` · ${formatPhone(u.phone_number)}`
-                      : ""}
+                    {maskPhone(u.phone_number) ? ` · ${maskPhone(u.phone_number)}` : ""}
                   </p>
                 </div>
                 <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden />
@@ -467,9 +458,10 @@ function MessagesView({
                     className="font-medium text-muted"
                     title={m.sender_user_id ?? undefined}
                   >
-                    {m.sender_display_name?.trim() ||
-                      formatPhone(m.sender_phone) ||
-                      shortId(m.sender_user_id)}
+                    {identityTitle({
+                      display_name: m.sender_display_name,
+                      username: m.sender_username
+                    })}
                   </span>
                   {m.message_type ? <span>{m.message_type}</span> : null}
                   <span className="ml-auto tabular-nums">{fmt(m.created_at)}</span>

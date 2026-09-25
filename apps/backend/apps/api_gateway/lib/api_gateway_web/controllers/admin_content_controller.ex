@@ -177,6 +177,7 @@ defmodule ApiGatewayWeb.AdminContentController do
         s ->
           m
           |> Map.put(:sender_display_name, mget(s, :display_name))
+          |> Map.put(:sender_username, mget(s, :username))
           |> Map.put(:sender_phone, mget(s, :phone_number))
       end
     end)

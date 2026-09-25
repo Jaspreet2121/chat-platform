@@ -28,6 +28,7 @@ import {
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
 import { StepUpDialog } from "@/app/admin/_StepUpDialog";
+import { identityTitle } from "@/lib/adminUser";
 import { MatchesPanel } from "@/app/admin/_MatchesPanel";
 import { cn } from "@/lib/cn";
 
@@ -196,7 +197,9 @@ export function UserDetailDrawer({
   const auth = detail?.auth;
   const profile = detail?.profile;
   const stats = detail?.stats;
-  const name = profile?.display_name || auth?.phone_number || auth?.email || shortId(userId);
+  // The detail drawer is the ONE place the full phone is shown (below, next to "member since");
+  // the title still follows the rule: name, else handle, else "(no name)".
+  const name = identityTitle({ display_name: profile?.display_name, username: profile?.username });
 
   return (
     <div className="fixed inset-0 z-30 flex justify-end">

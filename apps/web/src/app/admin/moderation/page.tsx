@@ -22,7 +22,7 @@ import {
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
 import { cn } from "@/lib/cn";
-import { formatPhone, roleLabel, roleRank, userTitle } from "@/lib/adminUser";
+import { identitySubtitle, identityTitle, roleLabel, roleRank, userTitle } from "@/lib/adminUser";
 import { UserDetailDrawer } from "./UserDetailDrawer";
 
 // A viewer may moderate a target only if strictly higher-ranked, and never themselves (backend enforces).
@@ -297,7 +297,9 @@ function UsersTab({ flash }: { flash: Flash }) {
                       {roleLabel(u)}
                     </span>
                   </p>
-                  <p className="truncate text-xs text-faint">{shortId(u.user_id)}</p>
+                  <p className="truncate text-xs text-faint">
+                    {identitySubtitle(u) || shortId(u.user_id)}
+                  </p>
                 </div>
               </button>
               <StatusBadge status={u.status} />
@@ -474,9 +476,7 @@ function ReportsTab({ flash }: { flash: Flash }) {
               <p className="mt-1 text-xs text-muted">
                 reporter{" "}
                 <span title={r.reporter_user_id ?? undefined}>
-                  {r.reporter_name?.trim() ||
-                    formatPhone(r.reporter_phone) ||
-                    shortId(r.reporter_user_id)}
+                  {identityTitle({ display_name: r.reporter_name, username: r.reporter_username })}
                 </span>{" "}
                 → target{" "}
                 {r.reported_user_id ? (
@@ -488,9 +488,7 @@ function ReportsTab({ flash }: { flash: Flash }) {
                     className="text-brand-hover underline-offset-2 hover:underline"
                     title={r.reported_user_id}
                   >
-                    {r.reported_name?.trim() ||
-                      formatPhone(r.reported_phone) ||
-                      shortId(r.reported_user_id)}
+                    {identityTitle({ display_name: r.reported_name, username: r.reported_username })}
                   </button>
                 ) : (
                   <span className="italic text-faint">deleted user</span>
@@ -581,11 +579,14 @@ function AuditTab() {
             <p className="truncate text-sm text-fg">
               <span className="font-medium">{e.action}</span>{" "}
               <span className="text-muted">
-                {e.target_type} {shortId(e.target_id)}
+                {e.target_type}{" "}
+                {e.target_type === "user"
+                  ? identityTitle({ display_name: e.target_name, username: e.target_username })
+                  : shortId(e.target_id)}
               </span>
             </p>
             <p className="truncate text-xs text-faint" title={e.actor_user_id ?? undefined}>
-              by {e.actor_name?.trim() || formatPhone(e.actor_phone) || shortId(e.actor_user_id)}
+              by {identityTitle({ display_name: e.actor_name, username: e.actor_username })}
               {/* Where the action came from. An audit row recording who and what but not from
                   where cannot answer the question it exists for. */}
               {e.ip_address ? <span> · {e.ip_address}</span> : null}

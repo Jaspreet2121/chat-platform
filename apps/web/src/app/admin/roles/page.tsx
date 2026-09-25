@@ -12,6 +12,7 @@ import {
   setUserRole
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
+import { identitySubtitle, identityTitle } from "@/lib/adminUser";
 import { Pager } from "@/app/admin/_Pager";
 import { StepUpDialog } from "@/app/admin/_StepUpDialog";
 
@@ -20,18 +21,9 @@ const PRIVILEGED_ROLES: readonly string[] = ["root", "admin"];
 import { usePaging } from "@/app/admin/_usePaging";
 import { cn } from "@/lib/cn";
 
-// Pretty-print a phone: +91 83770 03300 for a 12-digit +91 number, else a sensible +digits form.
-function formatPhone(raw?: string | null) {
-  if (!raw) return "";
-  const digits = raw.replace(/\D/g, "");
-  if (digits.length === 12 && digits.startsWith("91")) {
-    return `+91 ${digits.slice(2, 7)} ${digits.slice(7)}`;
-  }
-  return raw.startsWith("+") ? raw : `+${digits}`;
-}
 
 function labelOf(u: AdminUser) {
-  return u.display_name?.trim() || formatPhone(u.phone_number) || u.email?.trim() || shortId(u.user_id);
+  return identityTitle(u);
 }
 
 function shortId(id?: string | null) {
@@ -215,11 +207,11 @@ export default function AdminRolesPage() {
           {users.map((u) => {
             // Dropdown defaults to the user's CURRENT role; Apply enables only on a real change.
             const selected = choice[u.user_id] ?? u.role ?? "";
-            const name = u.display_name?.trim() || "";
-            const phone = formatPhone(u.phone_number);
+            const name = identityTitle(u);
+            const phone = identitySubtitle(u);
             const email = u.email?.trim() || "";
-            // Prefer name → phone → email as the label; only fall back to the id when there's nothing else.
-            const label = name || phone || email;
+            // name → @handle → "(no name)"; the phone is masked and secondary, never the label.
+            const label = name;
             const roleChip = u.role || (u.is_admin ? "admin" : "user");
             return (
               <div key={u.user_id} className="flex items-center gap-3 p-3">

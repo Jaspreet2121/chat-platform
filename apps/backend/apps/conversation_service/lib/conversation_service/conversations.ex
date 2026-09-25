@@ -119,15 +119,17 @@ defmodule ConversationService.Conversations do
           # Admin console is first-party only → only this tenant's conversations ($2).
           app_bin = app_uuid(SharedInfra.Tenancy.app_id_or_default(get_attr(attrs, "app_id")))
 
+          # NEVER the phone number. A direct chat's label is the peer's name, else their handle, else a
+          # plain "(no name)" — a phone as a title is exactly the leak the console's naming rule
+          # exists to stop, and this subquery was the one place it still happened.
           sql =
             "SELECT c.id::text, c.type, c.title, c.status, " <>
               "to_char(c.updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS last_activity, " <>
               "(SELECT count(*) FROM message_search s WHERE s.conversation_id = c.id) AS message_count, " <>
               "(SELECT count(*) FROM conversation_participants p WHERE p.conversation_id = c.id) AS participant_count, " <>
-              "(SELECT COALESCE(up.display_name, ua.phone_number, o.user_id::text) " <>
+              "(SELECT COALESCE(up.display_name, '@' || up.username, '(no name)') " <>
               "   FROM conversation_participants o " <>
               "   LEFT JOIN user_profiles up ON up.user_id = o.user_id " <>
-              "   LEFT JOIN users_auth ua ON ua.id = o.user_id " <>
               "   WHERE o.conversation_id = c.id AND o.user_id <> $1 " <>
               "   ORDER BY o.joined_at LIMIT 1) AS other_name " <>
               "FROM conversations c " <>

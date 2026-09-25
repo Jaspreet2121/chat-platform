@@ -5,6 +5,7 @@ import { AlertTriangle, HeartHandshake, Loader2 } from "lucide-react";
 import { AdminMatch, getAdminMatches, getAdminUserMatches } from "@/lib/api";
 import { Button, Card, Input } from "@/components";
 import { Pager } from "@/app/admin/_Pager";
+import { identityTitle } from "@/lib/adminUser";
 import { usePaging } from "@/app/admin/_usePaging";
 import {
   REASON_MAX_LENGTH,
@@ -151,9 +152,13 @@ export function MatchesPanel({ userId }: { userId?: string }) {
               <HeartHandshake className="h-4 w-4 shrink-0 text-faint" aria-hidden />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-fg">
-                  <span title={m.user_low_id}>{m.user_low_name?.trim() || m.user_low_id}</span>
+                  <span title={m.user_low_id}>
+                    {identityTitle({ display_name: m.user_low_name, username: m.user_low_username })}
+                  </span>
                   <span className="text-faint"> · </span>
-                  <span title={m.user_high_id}>{m.user_high_name?.trim() || m.user_high_id}</span>
+                  <span title={m.user_high_id}>
+                    {identityTitle({ display_name: m.user_high_name, username: m.user_high_username })}
+                  </span>
                 </p>
               </div>
               <span className="shrink-0 text-xs text-faint tabular-nums">{m.matched_at}</span>

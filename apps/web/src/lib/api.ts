@@ -737,6 +737,7 @@ export type AdminUser = {
   // /admin/users list so the console can show who a user is and their current role.
   role?: string | null;
   display_name?: string | null;
+  username?: string | null;
   created_at?: string | null;
 };
 
@@ -769,8 +770,10 @@ export type AdminReport = {
   reported_user_id?: string | null;
   // Resolved by the backend (batched) — name/phone for the reporter + reported user.
   reporter_name?: string | null;
+  reporter_username?: string | null;
   reporter_phone?: string | null;
   reported_name?: string | null;
+  reported_username?: string | null;
   reported_phone?: string | null;
   conversation_id?: string | null;
   reported_message_id?: string | null;
@@ -786,7 +789,13 @@ export type AuditEntry = {
   actor_user_id?: string | null;
   // Resolved by the backend (batched) — the acting user's name/phone.
   actor_name?: string | null;
+  actor_username?: string | null;
   actor_phone?: string | null;
+  // Resolved only when target_type is "user" — a matches view's target is "list", a content read's
+  // is a conversation id, and those stay raw.
+  target_name?: string | null;
+  target_username?: string | null;
+  target_phone?: string | null;
   action: string;
   target_type: string;
   target_id?: string | null;
@@ -830,6 +839,7 @@ export type AdminUserDetail = {
   };
   profile: {
     display_name?: string | null;
+    username?: string | null;
     avatar_media_id?: string | null;
     bio?: string | null;
     created_at?: string | null;
@@ -958,6 +968,8 @@ export type AdminMatch = {
   user_high_id: string;
   user_low_name?: string | null;
   user_high_name?: string | null;
+  user_low_username?: string | null;
+  user_high_username?: string | null;
   matched_at: string;
   // Always true today: an unmatch DELETES the row rather than flagging it, so only live matches
   // exist to list. The field is sent explicitly so a reader is not left guessing.
@@ -1063,6 +1075,7 @@ export type AdminMessage = {
   sender_user_id?: string | null;
   // Resolved by the backend (batched) so the admin viewer shows WHO sent it, not a raw id.
   sender_display_name?: string | null;
+  sender_username?: string | null;
   sender_phone?: string | null;
   message_type?: string | null;
   status?: string | null;

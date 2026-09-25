@@ -439,8 +439,12 @@ defmodule AuthService.Accounts do
     if ids == [] do
       %{summaries: []}
     else
+      # username and avatar ride along with the name: the console shows WHO — name first,
+      # @username second — and only then a phone, masked. A summary without the handle would leave
+      # every list falling back to the phone for anyone who never set a display name.
       sql =
-        "SELECT ua.id::text, up.display_name, ua.phone_number " <>
+        "SELECT ua.id::text, up.display_name, up.username, ua.phone_number, " <>
+          "up.avatar_media_id::text " <>
           "FROM users_auth ua LEFT JOIN user_profiles up ON up.user_id = ua.id " <>
           "WHERE ua.id::text = ANY($1)"
 
@@ -448,8 +452,14 @@ defmodule AuthService.Accounts do
 
       %{
         summaries:
-          Enum.map(rows, fn [id, display_name, phone] ->
-            %{user_id: id, display_name: display_name, phone_number: phone}
+          Enum.map(rows, fn [id, display_name, username, phone, avatar_media_id] ->
+            %{
+              user_id: id,
+              display_name: display_name,
+              username: username,
+              phone_number: phone,
+              avatar_media_id: avatar_media_id
+            }
           end)
       }
     end

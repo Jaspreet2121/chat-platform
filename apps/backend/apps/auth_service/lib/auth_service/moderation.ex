@@ -473,14 +473,15 @@ defmodule AuthService.Moderation do
 
   defp fetch_profile(user_id) do
     case Repo.query!(
-           "SELECT display_name, avatar_media_id::text, bio, " <>
+           "SELECT display_name, username, avatar_media_id::text, bio, " <>
              "to_char(created_at, #{@ts}) AS created_at, to_char(updated_at, #{@ts}) AS updated_at " <>
              "FROM user_profiles WHERE user_id = $1",
            [uuid_param(user_id)]
          ) do
-      %Postgrex.Result{rows: [[display_name, avatar, bio, created_at, updated_at]]} ->
+      %Postgrex.Result{rows: [[display_name, username, avatar, bio, created_at, updated_at]]} ->
         %{
           display_name: display_name,
+          username: username,
           avatar_media_id: avatar,
           bio: bio,
           created_at: created_at,
