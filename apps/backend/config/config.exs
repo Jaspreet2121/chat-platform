@@ -2,13 +2,23 @@ import Config
 
 config :phoenix, :json_library, Jason
 
+# Keys Phoenix replaces with "[FILTERED]" in the per-request `Parameters:` log line. That line is
+# emitted at :debug and prod logs at :info, so in practice it is never written — but "in practice"
+# is a log-level setting away from writing address books to disk. The three phone keys are here so
+# that raising the level to debug (to chase a bug at 2am) cannot start logging personal data:
+#   * "phone_numbers" — the contacts-sync body: up to 2,000 numbers from a user's address book.
+#   * "phone_number"  — login/OTP request bodies and the internal by_phones lookup.
+#   * "phone"         — the single by-phone lookup's query param.
 config :phoenix, :filter_parameters, [
   "password",
   "token",
   "refresh_token",
   "access_token",
   "otp",
-  "otp_code"
+  "otp_code",
+  "phone_numbers",
+  "phone_number",
+  "phone"
 ]
 
 config :api_gateway, ApiGatewayWeb.Endpoint,
