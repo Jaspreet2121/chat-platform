@@ -69,6 +69,78 @@ defmodule UserService.Nearby do
     Ecto.Query.CastError -> {:error, :nearby_invalid}
   end
 
+  # THE DISCOVER QUERY, as a module attribute so a test can EXPLAIN the real statement rather than a
+  # copy that drifts. Exposed by `discover_sql/0`. Params: $1 viewer, $2 app, $3 lat, $4 lng,
+  # $5 radius (m), $6 viewer audience, $7..$10 the bounding box (min_lat, max_lat, min_lng, max_lng).
+  @discover_sql """
+  WITH candidates AS (
+    SELECT p.user_id, p.pins ->> ($1 || ':' || p.fix_seq::text) AS pinned_bucket, p.fix_seq,
+      EXTRACT(EPOCH FROM (now() - p.updated_at))::float AS age_seconds,
+      6371000.0 * 2.0 * asin(LEAST(1.0, sqrt(
+        power(sin(radians((p.latitude - $3) / 2.0)), 2) +
+        cos(radians($3)) * cos(radians(p.latitude)) *
+        power(sin(radians((p.longitude - $4) / 2.0)), 2)
+      ))) AS distance_m
+    FROM nearby_presence p
+    JOIN users_auth a ON a.id = p.user_id AND a.status = 'active'
+    WHERE p.app_id = $2::text::uuid
+      -- BOUNDING-BOX PREFILTER (114). A haversine cannot use an index, so before the 8h TTL
+      -- this scanned every live row in the app and computed a great-circle distance for each.
+      -- The box is a strict SUPERSET of the circle and rides the (app_id, latitude) INCLUDE
+      -- (longitude) index; the haversine below still decides membership, so the box can only
+      -- ever remove rows that were going to fail it anyway.
+      AND p.latitude BETWEEN $7 AND $8
+      AND p.longitude BETWEEN $9 AND $10
+      AND p.user_id <> $1::text::uuid
+      AND p.expires_at > now()
+      -- STORE-LEVEL block exclusion (defense-in-depth): a blocked pair — either direction —
+      -- never surfaces from this query, even if the gateway's outer wall were bypassed.
+      AND NOT EXISTS (
+        SELECT 1 FROM user_blocks ub
+        WHERE (ub.blocker_user_id = $1::text::uuid AND ub.blocked_user_id = p.user_id)
+           OR (ub.blocker_user_id = p.user_id AND ub.blocked_user_id = $1::text::uuid)
+      )
+      -- AUDIENCE, BOTH DIRECTIONS (104): the target's settings must admit the viewer AND
+      -- the viewer's audience ($6) must admit the target. Absent row = enabled/everyone.
+      AND COALESCE((SELECT s.enabled FROM nearby_settings s WHERE s.user_id = p.user_id), true)
+      AND (COALESCE((SELECT s.audience FROM nearby_settings s WHERE s.user_id = p.user_id),
+                    'everyone') = 'everyone'
+           OR EXISTS (SELECT 1 FROM favourite_contacts tf
+                      WHERE tf.owner_user_id = p.user_id
+                        AND tf.favourite_user_id = $1::text::uuid))
+      AND ($6 = 'everyone'
+           OR EXISTS (SELECT 1 FROM favourite_contacts vf
+                      WHERE vf.owner_user_id = $1::text::uuid
+                        AND vf.favourite_user_id = p.user_id))
+  )
+  SELECT c.user_id::text, c.distance_m, c.pinned_bucket, c.fix_seq, c.age_seconds,
+    CASE
+      WHEN nc.user_low_id IS NOT NULL THEN 'connected'
+      WHEN sent.id IS NOT NULL THEN 'sent'
+      WHEN received.id IS NOT NULL THEN 'received'
+      ELSE 'none'
+    END AS relationship
+  FROM candidates c
+  LEFT JOIN nearby_connections nc
+    ON nc.app_id = $2::text::uuid
+   AND nc.user_low_id = LEAST($1::text::uuid, c.user_id)
+   AND nc.user_high_id = GREATEST($1::text::uuid, c.user_id)
+  LEFT JOIN nearby_connection_requests sent
+    ON sent.requester_user_id = $1::text::uuid AND sent.recipient_user_id = c.user_id
+   AND sent.status = 'pending'
+  LEFT JOIN nearby_connection_requests received
+    ON received.requester_user_id = c.user_id AND received.recipient_user_id = $1::text::uuid
+   AND received.status = 'pending'
+  WHERE c.distance_m <= $5::double precision
+  -- Freshest first, then nearest. (BLE-confirmed rows are hoisted above all of these by the
+  -- gateway's overlay, which is the only layer that knows about Bluetooth sightings.)
+  ORDER BY c.age_seconds, c.distance_m, c.user_id
+  LIMIT #{@max_results}
+  """
+
+  @doc false
+  def discover_sql, do: @discover_sql
+
   @doc """
   PATCH semantics: only provided keys change (booleans matched EXPLICITLY — the falsy-mget trap:
   `false` must never read as absent). Setting `enabled` false DELETES any live presence row in the
@@ -166,71 +238,7 @@ defmodule UserService.Nearby do
 
       %{rows: rows} =
         Repo.query!(
-          """
-          WITH candidates AS (
-            SELECT p.user_id, p.pins ->> ($1 || ':' || p.fix_seq::text) AS pinned_bucket, p.fix_seq,
-              EXTRACT(EPOCH FROM (now() - p.updated_at))::float AS age_seconds,
-              6371000.0 * 2.0 * asin(LEAST(1.0, sqrt(
-                power(sin(radians((p.latitude - $3) / 2.0)), 2) +
-                cos(radians($3)) * cos(radians(p.latitude)) *
-                power(sin(radians((p.longitude - $4) / 2.0)), 2)
-              ))) AS distance_m
-            FROM nearby_presence p
-            JOIN users_auth a ON a.id = p.user_id AND a.status = 'active'
-            WHERE p.app_id = $2::text::uuid
-              -- BOUNDING-BOX PREFILTER (114). A haversine cannot use an index, so before the 8h TTL
-              -- this scanned every live row in the app and computed a great-circle distance for each.
-              -- The box is a strict SUPERSET of the circle and rides the (app_id, latitude) INCLUDE
-              -- (longitude) index; the haversine below still decides membership, so the box can only
-              -- ever remove rows that were going to fail it anyway.
-              AND p.latitude BETWEEN $7 AND $8
-              AND p.longitude BETWEEN $9 AND $10
-              AND p.user_id <> $1::text::uuid
-              AND p.expires_at > now()
-              -- STORE-LEVEL block exclusion (defense-in-depth): a blocked pair — either direction —
-              -- never surfaces from this query, even if the gateway's outer wall were bypassed.
-              AND NOT EXISTS (
-                SELECT 1 FROM user_blocks ub
-                WHERE (ub.blocker_user_id = $1::text::uuid AND ub.blocked_user_id = p.user_id)
-                   OR (ub.blocker_user_id = p.user_id AND ub.blocked_user_id = $1::text::uuid)
-              )
-              -- AUDIENCE, BOTH DIRECTIONS (104): the target's settings must admit the viewer AND
-              -- the viewer's audience ($6) must admit the target. Absent row = enabled/everyone.
-              AND COALESCE((SELECT s.enabled FROM nearby_settings s WHERE s.user_id = p.user_id), true)
-              AND (COALESCE((SELECT s.audience FROM nearby_settings s WHERE s.user_id = p.user_id),
-                            'everyone') = 'everyone'
-                   OR EXISTS (SELECT 1 FROM favourite_contacts tf
-                              WHERE tf.owner_user_id = p.user_id
-                                AND tf.favourite_user_id = $1::text::uuid))
-              AND ($6 = 'everyone'
-                   OR EXISTS (SELECT 1 FROM favourite_contacts vf
-                              WHERE vf.owner_user_id = $1::text::uuid
-                                AND vf.favourite_user_id = p.user_id))
-          )
-          SELECT c.user_id::text, c.distance_m, c.pinned_bucket, c.fix_seq, c.age_seconds,
-            CASE
-              WHEN nc.user_low_id IS NOT NULL THEN 'connected'
-              WHEN sent.id IS NOT NULL THEN 'sent'
-              WHEN received.id IS NOT NULL THEN 'received'
-              ELSE 'none'
-            END AS relationship
-          FROM candidates c
-          LEFT JOIN nearby_connections nc
-            ON nc.app_id = $2::text::uuid
-           AND nc.user_low_id = LEAST($1::text::uuid, c.user_id)
-           AND nc.user_high_id = GREATEST($1::text::uuid, c.user_id)
-          LEFT JOIN nearby_connection_requests sent
-            ON sent.requester_user_id = $1::text::uuid AND sent.recipient_user_id = c.user_id
-           AND sent.status = 'pending'
-          LEFT JOIN nearby_connection_requests received
-            ON received.requester_user_id = c.user_id AND received.recipient_user_id = $1::text::uuid
-           AND received.status = 'pending'
-          WHERE c.distance_m <= $5::double precision
-          -- Freshest first, then nearest. (BLE-confirmed rows are hoisted above all of these by the
-          -- gateway's overlay, which is the only layer that knows about Bluetooth sightings.)
-          ORDER BY c.age_seconds, c.distance_m, c.user_id
-          LIMIT #{@max_results}
-          """,
+          @discover_sql,
           [
             user_id,
             app_id,
