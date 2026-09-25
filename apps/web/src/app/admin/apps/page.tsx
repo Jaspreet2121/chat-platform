@@ -3,6 +3,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { Boxes, Loader2, RefreshCw, Search } from "lucide-react";
 import { AdminApp, getAdminApps } from "@/lib/api";
+import { Pager } from "@/app/admin/_Pager";
+import {
+  initialPagerState,
+  pagerNext,
+  pagerPrev,
+  pagerReceived,
+  pagerRequest,
+  pagerReset
+} from "@/lib/cursorPager";
 import { Button, Card, Input } from "@/components";
 import { cn } from "@/lib/cn";
 
@@ -35,20 +44,28 @@ export default function AdminAppsPage() {
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [pager, setPager] = useState(initialPagerState);
+  const { cursor, direction } = pager;
 
-  const load = useCallback(async (query: string, refresh = false) => {
-    if (refresh) setIsRefreshing(true);
-    try {
-      const result = await getAdminApps(query);
-      setApps(result.apps);
-      setError("");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Failed to load apps.");
-    } finally {
-      setIsLoading(false);
-      setIsRefreshing(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (query: string, refresh = false) => {
+      if (refresh) setIsRefreshing(true);
+      try {
+        // This list used to be a bare LIMIT 200 with no way past it: app 201 was simply invisible,
+        // and nothing on the page said so.
+        const result = await getAdminApps(query, pagerRequest(cursor, direction));
+        setApps(result.apps);
+        setPager((p) => pagerReceived(p, result));
+        setError("");
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Failed to load apps.");
+      } finally {
+        setIsLoading(false);
+        setIsRefreshing(false);
+      }
+    },
+    [cursor, direction]
+  );
 
   useEffect(() => {
     void load("");
@@ -74,7 +91,10 @@ export default function AdminAppsPage() {
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
             <Input
               value={q}
-              onChange={(event) => setQ(event.target.value)}
+              onChange={(event) => {
+                setQ(event.target.value);
+                setPager(pagerReset());
+              }}
               placeholder="Search name or id…"
               className="w-64 pl-9"
             />
@@ -176,6 +196,14 @@ export default function AdminAppsPage() {
           </table>
         </Card>
       )}
+
+      <Pager
+        state={pager}
+        count={apps.length}
+        disabled={isLoading || isRefreshing}
+        onNext={() => setPager(pagerNext)}
+        onPrev={() => setPager(pagerPrev)}
+      />
     </div>
   );
 }

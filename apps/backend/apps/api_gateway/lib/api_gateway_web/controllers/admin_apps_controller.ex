@@ -46,7 +46,9 @@ defmodule ApiGatewayWeb.AdminAppsController do
 
   # GET /api/v1/admin/apps?q= — cross-tenant app list (live apps as rows; the test twin is a badge).
   def index(conn, params) do
-    case SharedInfra.AuthClient.admin_list_apps(%{"q" => Map.get(params, "q")}) do
+    case SharedInfra.AuthClient.admin_list_apps(
+           Map.take(params, ["q", "cursor", "direction", "limit"])
+         ) do
       {:ok, result} -> json(conn, result)
       {:error, :auth_unavailable} -> ErrorResponse.service_unavailable(conn, "admin.unavailable")
       _ -> ErrorResponse.invalid_request(conn, "admin.invalid_request")

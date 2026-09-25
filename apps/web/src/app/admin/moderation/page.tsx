@@ -2,6 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Ban, Loader2, RotateCcw, ScrollText, ShieldAlert, UserX } from "lucide-react";
+import { Pager } from "@/app/admin/_Pager";
+import {
+  initialPagerState,
+  pagerNext,
+  pagerPrev,
+  pagerReceived,
+  pagerRequest,
+  pagerReset
+} from "@/lib/cursorPager";
 import {
   AdminReport,
   AdminUser,
@@ -158,6 +167,8 @@ function UsersTab({ flash }: { flash: Flash }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [pager, setPager] = useState(initialPagerState);
+  const { cursor, direction } = pager;
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
   const [confirm, setConfirm] = useState<{ user: AdminUser } | null>(null);
@@ -174,14 +185,20 @@ function UsersTab({ flash }: { flash: Flash }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await getAdminUsers({ q: q.trim() || undefined, status: statusFilter || undefined });
+      const res = await getAdminUsers({
+        q: q.trim() || undefined,
+        status: statusFilter || undefined,
+        // The filters go back with EVERY page, so page 2 of "suspended" is still suspended users.
+        ...pagerRequest(cursor, direction)
+      });
       setUsers(res.users);
+      setPager((p) => pagerReceived(p, res));
     } catch (e) {
       flash("err", e instanceof Error ? e.message : "Failed to load users");
     } finally {
       setLoading(false);
     }
-  }, [q, statusFilter, flash]);
+  }, [q, statusFilter, cursor, direction, flash]);
 
   useEffect(() => {
     void load();
@@ -224,13 +241,21 @@ function UsersTab({ flash }: { flash: Flash }) {
           className="h-9 w-56 rounded-lg border border-border bg-elevated px-3 text-sm text-fg placeholder:text-faint outline-none focus:border-brand focus:ring-2 focus:ring-brand-ring"
           placeholder="Search by phone or email…"
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => {
+            setQ(e.target.value);
+            // A cursor names a row in the OLD result set — carrying it into a newly filtered list
+            // would drop the reader on an arbitrary, usually empty, page.
+            setPager(pagerReset());
+          }}
           onKeyDown={(e) => e.key === "Enter" && load()}
         />
         <select
           className="h-9 rounded-lg border border-border bg-elevated px-3 text-sm text-fg outline-none focus:border-brand"
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
+          onChange={(e) => {
+            setStatusFilter(e.target.value);
+            setPager(pagerReset());
+          }}
         >
           <option value="">All statuses</option>
           <option value="active">Active</option>
@@ -308,6 +333,14 @@ function UsersTab({ flash }: { flash: Flash }) {
         </Card>
       )}
 
+      <Pager
+        state={pager}
+        count={users.length}
+        disabled={loading}
+        onNext={() => setPager(pagerNext)}
+        onPrev={() => setPager(pagerPrev)}
+      />
+
       <ConfirmDialog
         open={Boolean(confirm)}
         title="Ban this user?"
@@ -332,21 +365,29 @@ function UsersTab({ flash }: { flash: Flash }) {
 
 function ReportsTab({ flash }: { flash: Flash }) {
   const [reports, setReports] = useState<AdminReport[]>([]);
-  const [statusFilter, setStatusFilter] = useState("");
+  // The queue opens on OPEN reports, not on everything. A moderator arriving at this tab is here to
+  // work the queue; showing resolved and dismissed rows first makes them filter before they can start.
+  const [statusFilter, setStatusFilter] = useState("open");
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
+  const [pager, setPager] = useState(initialPagerState);
+  const { cursor, direction } = pager;
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await getAdminReports({ status: statusFilter || undefined });
+      const res = await getAdminReports({
+        status: statusFilter || undefined,
+        ...pagerRequest(cursor, direction)
+      });
       setReports(res.reports);
+      setPager((p) => pagerReceived(p, res));
     } catch (e) {
       flash("err", e instanceof Error ? e.message : "Failed to load reports");
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, flash]);
+  }, [statusFilter, cursor, direction, flash]);
 
   useEffect(() => {
     void load();
@@ -371,7 +412,10 @@ function ReportsTab({ flash }: { flash: Flash }) {
         <select
           className="h-9 rounded-lg border border-border bg-elevated px-3 text-sm text-fg outline-none focus:border-brand"
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
+          onChange={(e) => {
+            setStatusFilter(e.target.value);
+            setPager(pagerReset());
+          }}
         >
           <option value="">All statuses</option>
           <option value="open">Open</option>
@@ -384,7 +428,13 @@ function ReportsTab({ flash }: { flash: Flash }) {
       {loading ? (
         <Loading />
       ) : reports.length === 0 ? (
-        <Empty text="No reports. The queue is clear." />
+        <Empty
+          text={
+            statusFilter === "open"
+              ? "No open reports. The queue is clear."
+              : "No reports match this filter."
+          }
+        />
       ) : (
         <Card className="divide-y divide-border">
           {reports.map((r) => (
@@ -423,6 +473,14 @@ function ReportsTab({ flash }: { flash: Flash }) {
           ))}
         </Card>
       )}
+
+      <Pager
+        state={pager}
+        count={reports.length}
+        disabled={loading}
+        onNext={() => setPager(pagerNext)}
+        onPrev={() => setPager(pagerPrev)}
+      />
     </div>
   );
 }
@@ -431,25 +489,35 @@ function AuditTab() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [pager, setPager] = useState(initialPagerState);
+  const { cursor, direction } = pager;
 
   useEffect(() => {
     let active = true;
-    getAdminAudit(1)
-      .then((res) => active && setEntries(res.entries))
+    // Deliberately no synchronous setLoading here: the rows for the page you are leaving stay on
+    // screen until the next page arrives, which is steadier than a full-height spinner between
+    // every click, and it keeps this effect free of a synchronous state write.
+    getAdminAudit(pagerRequest(cursor, direction))
+      .then((res) => {
+        if (!active) return;
+        setEntries(res.entries);
+        setPager((p) => pagerReceived(p, res));
+      })
       .catch((e) => active && setError(e instanceof Error ? e.message : "Failed to load audit log"))
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, []);
+  }, [cursor, direction]);
 
   if (loading) return <Loading />;
   if (error) return <Empty text={error} />;
   if (entries.length === 0) return <Empty text="No admin actions recorded yet." />;
 
   return (
-    <Card className="divide-y divide-border">
-      {entries.map((e, i) => (
+    <>
+      <Card className="divide-y divide-border">
+        {entries.map((e, i) => (
         <div key={i} className="flex items-center gap-3 p-3">
           <ScrollText className="h-4 w-4 shrink-0 text-faint" />
           <div className="min-w-0 flex-1">
@@ -461,12 +529,24 @@ function AuditTab() {
             </p>
             <p className="truncate text-xs text-faint" title={e.actor_user_id ?? undefined}>
               by {e.actor_name?.trim() || formatPhone(e.actor_phone) || shortId(e.actor_user_id)}
+              {/* Where the action came from. An audit row recording who and what but not from
+                  where cannot answer the question it exists for. */}
+              {e.ip_address ? <span> · {e.ip_address}</span> : null}
             </p>
           </div>
           <span className="shrink-0 text-xs text-faint">{e.created_at}</span>
         </div>
       ))}
-    </Card>
+      </Card>
+
+      <Pager
+        state={pager}
+        count={entries.length}
+        disabled={loading}
+        onNext={() => setPager(pagerNext)}
+        onPrev={() => setPager(pagerPrev)}
+      />
+    </>
   );
 }
 

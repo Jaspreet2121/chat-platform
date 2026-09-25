@@ -740,7 +740,28 @@ export type AdminUser = {
   created_at?: string | null;
 };
 
-export type AdminUsersPage = { page: number; page_size: number; users: AdminUser[] };
+// --- Admin list pagination (keyset) -------------------------------------------------------------
+// Every admin list pages by an opaque cursor rather than an offset: a row inserted between page 1
+// and page 2 used to push the boundary row down, so the reader silently skipped it. A null cursor
+// means "no page that way" — which is exactly what the Next/Prev buttons disable on.
+export type CursorPage = {
+  page_size: number;
+  next_cursor?: string | null;
+  prev_cursor?: string | null;
+};
+
+export type CursorParams = { cursor?: string | null; direction?: "next" | "prev"; limit?: number };
+
+// Append the cursor trio to a query string. Filters are set by the caller BEFORE this, and are
+// always re-sent, because a status filter that resets on page 2 is worse than no filter at all.
+function withCursor(params: URLSearchParams, opts: CursorParams): URLSearchParams {
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  if (opts.direction) params.set("direction", opts.direction);
+  if (opts.limit) params.set("limit", String(opts.limit));
+  return params;
+}
+
+export type AdminUsersPage = CursorPage & { users: AdminUser[] };
 
 export type AdminReport = {
   id: string;
@@ -759,7 +780,7 @@ export type AdminReport = {
   created_at?: string | null;
 };
 
-export type AdminReportsPage = { page: number; page_size: number; reports: AdminReport[] };
+export type AdminReportsPage = CursorPage & { reports: AdminReport[] };
 
 export type AuditEntry = {
   actor_user_id?: string | null;
@@ -770,17 +791,21 @@ export type AuditEntry = {
   target_type: string;
   target_id?: string | null;
   metadata?: Record<string, unknown> | null;
+  // Where the action came from (132). Null on rows written before the request context was recorded,
+  // and on anything not originating from an HTTP request.
+  ip_address?: string | null;
+  user_agent?: string | null;
   created_at?: string | null;
+  id?: string;
 };
 
-export type AuditPage = { page: number; page_size: number; entries: AuditEntry[] };
+export type AuditPage = CursorPage & { entries: AuditEntry[] };
 
-export function getAdminUsers(opts: { status?: string; q?: string; page?: number } = {}) {
+export function getAdminUsers(opts: { status?: string; q?: string } & CursorParams = {}) {
   const params = new URLSearchParams();
   if (opts.status) params.set("status", opts.status);
   if (opts.q) params.set("q", opts.q);
-  if (opts.page) params.set("page", String(opts.page));
-  const qs = params.toString();
+  const qs = withCursor(params, opts).toString();
   return request<AdminUsersPage>(`/api/v1/admin/users${qs ? `?${qs}` : ""}`);
 }
 
@@ -864,11 +889,10 @@ export function adminDeleteMessage(messageId: string) {
   });
 }
 
-export function getAdminReports(opts: { status?: string; page?: number } = {}) {
+export function getAdminReports(opts: { status?: string } & CursorParams = {}) {
   const params = new URLSearchParams();
   if (opts.status) params.set("status", opts.status);
-  if (opts.page) params.set("page", String(opts.page));
-  const qs = params.toString();
+  const qs = withCursor(params, opts).toString();
   return request<AdminReportsPage>(`/api/v1/admin/reports${qs ? `?${qs}` : ""}`);
 }
 
@@ -882,8 +906,9 @@ export function updateReportStatus(reportId: string, status: string, resolution?
   );
 }
 
-export function getAdminAudit(page = 1) {
-  return request<AuditPage>(`/api/v1/admin/audit?page=${page}`);
+export function getAdminAudit(opts: CursorParams = {}) {
+  const qs = withCursor(new URLSearchParams(), opts).toString();
+  return request<AuditPage>(`/api/v1/admin/audit${qs ? `?${qs}` : ""}`);
 }
 
 // --- Admin health (read-only; behind RequireAdmin) ---------------------------------------------
@@ -989,14 +1014,18 @@ export type AdminConversationMessages = {
   app_id?: string | null;
   masked: boolean;
   message_count: number;
+  next_cursor?: string | null;
   messages: AdminMessage[];
 };
 
 // Read a conversation's messages for admin oversight. The backend returns FULL content for content.read
 // (root) and MASKED metadata otherwise — masking is server-side, so the UI just renders `masked`.
-export function getAdminConversationMessages(conversationId: string) {
+// Messages page FORWARD only: they come from Scylla, whose paging state is a forward token. There
+// is no previous-page cursor to hand back, and re-reading from the top would be a different list.
+export function getAdminConversationMessages(conversationId: string, cursor?: string | null) {
+  const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
   return request<AdminConversationMessages>(
-    `/api/v1/admin/conversations/${encodeURIComponent(conversationId)}/messages`
+    `/api/v1/admin/conversations/${encodeURIComponent(conversationId)}/messages${qs}`
   );
 }
 
@@ -1013,17 +1042,14 @@ export type AdminConversationSummary = {
   message_count?: number;
 };
 
-export type AdminConversationsPage = {
-  page: number;
-  page_size: number;
+export type AdminConversationsPage = CursorPage & {
   conversations: AdminConversationSummary[];
 };
 
-export function getAdminConversations(opts: { q?: string; page?: number } = {}) {
-  const qs = new URLSearchParams();
-  if (opts.q) qs.set("q", opts.q);
-  if (opts.page) qs.set("page", String(opts.page));
-  const s = qs.toString();
+export function getAdminConversations(opts: { q?: string } & CursorParams = {}) {
+  const params = new URLSearchParams();
+  if (opts.q) params.set("q", opts.q);
+  const s = withCursor(params, opts).toString();
   return request<AdminConversationsPage>(`/api/v1/admin/conversations${s ? `?${s}` : ""}`);
 }
 
@@ -1870,9 +1896,13 @@ export type AdminApp = {
   webhooks: { total: number; enabled: number };
 };
 
-export function getAdminApps(q?: string) {
-  const query = q && q.trim() !== "" ? `?q=${encodeURIComponent(q.trim())}` : "";
-  return request<{ apps: AdminApp[] }>(`/api/v1/admin/apps${query}`);
+export function getAdminApps(q?: string, opts: CursorParams = {}) {
+  const params = new URLSearchParams();
+  if (q && q.trim() !== "") params.set("q", q.trim());
+  const query = withCursor(params, opts).toString();
+  return request<CursorPage & { apps: AdminApp[] }>(
+    `/api/v1/admin/apps${query ? `?${query}` : ""}`
+  );
 }
 
 export type FailedWebhook = {

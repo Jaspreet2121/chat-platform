@@ -12,6 +12,7 @@ defmodule AuthService.Apps do
   """
 
   alias AuthService.Repo
+  alias SharedInfra.AdminCursor
 
   # Per-owner allocation cap (B2C milestone). Config so operators can raise it for a specific
   # deployment without a release; the DEFAULT is the product decision.
@@ -367,6 +368,8 @@ defmodule AuthService.Apps do
   """
   def admin_list_apps(attrs) do
     q = Map.get(attrs, "q")
+    page_size = AdminCursor.clamp(Map.get(attrs, "limit"))
+    direction = AdminCursor.direction(Map.get(attrs, "direction"))
 
     {where, params} =
       case q do
@@ -377,13 +380,33 @@ defmodule AuthService.Apps do
           {"", []}
       end
 
-    %{rows: app_rows} =
+    # Was a bare LIMIT 200 with no way past it: app 201 was simply invisible, silently. Keyset now,
+    # same as every other admin list.
+    {where, params, had_cursor?} =
+      case AdminCursor.decode(Map.get(attrs, "cursor")) do
+        {:ok, {ts, id}} ->
+          predicate = AdminCursor.where(direction, "a.created_at", "a.id", length(params))
+          {where <> " AND " <> predicate, params ++ [ts, id], true}
+
+        :none ->
+          {where, params, false}
+      end
+
+    %{rows: fetched} =
       Repo.query!(
         "SELECT a.id::text, a.name, a.created_at::text, twin.id::text AS twin_id " <>
           "FROM apps a LEFT JOIN apps twin ON twin.parent_app_id = a.id AND twin.mode = 'test' " <>
-          "WHERE a.mode = 'live' #{where} ORDER BY a.created_at DESC LIMIT 200",
+          "WHERE a.mode = 'live' #{where} " <>
+          "#{AdminCursor.order(direction, "a.created_at", "a.id")} LIMIT #{page_size + 1}",
         params
       )
+
+    page =
+      AdminCursor.to_page(fetched, direction, had_cursor?, page_size, fn [id, _name, created, _t] ->
+        {created, id}
+      end)
+
+    app_rows = page.items
 
     owners =
       group_first(
@@ -432,7 +455,13 @@ defmodule AuthService.Apps do
         }
       end)
 
-    {:ok, %{apps: apps}}
+    {:ok,
+     %{
+       apps: apps,
+       page_size: page.page_size,
+       next_cursor: page.next_cursor,
+       prev_cursor: page.prev_cursor
+     }}
   rescue
     _ -> {:error, :app_invalid}
   end

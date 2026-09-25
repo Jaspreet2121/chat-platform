@@ -383,7 +383,11 @@ defmodule ApiGatewayWeb.AdminModerationController do
   defp cget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
   defp cget(_map, _key), do: nil
 
-  defp take_paging(params), do: Map.take(params, ["page", "status", "q"])
+  # The console sends an opaque cursor plus a direction; every FILTER rides along so it survives
+  # paging (a status filter that silently resets on page 2 is worse than no filter). "page" is gone:
+  # these lists are keyset-paginated and an offset has no meaning in them any more.
+  defp take_paging(params),
+    do: Map.take(params, ["cursor", "direction", "limit", "status", "q"])
 
   # The admin console is the FIRST-PARTY product only → every user/report query is confined to tenant-zero
   # (SharedInfra.Tenancy.default_app_id/0, the single source). A cross-tenant id then resolves to nothing →

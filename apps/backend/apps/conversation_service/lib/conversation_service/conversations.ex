@@ -8,6 +8,7 @@ defmodule ConversationService.Conversations do
   alias ConversationService.ConversationSettingsStore
   alias ConversationService.ConversationStore
   alias ConversationService.GroupProfileStore
+  alias SharedInfra.AdminCursor
   alias ConversationService.ParticipantEvents
   alias ConversationService.ParticipantStore
   alias ConversationService.Repo
@@ -42,10 +43,19 @@ defmodule ConversationService.Conversations do
   """
   def admin_list_conversations(attrs) do
     if conversation_persistence_enabled?() do
-      page = admin_page(attrs)
-      page_size = 25
-      offset = (page - 1) * page_size
+      page_size = AdminCursor.clamp(get_attr(attrs, "limit"))
+      direction = AdminCursor.direction(get_attr(attrs, "direction"))
       {where, params} = admin_conv_filter(attrs)
+
+      {where, params, had_cursor?} =
+        case AdminCursor.decode(get_attr(attrs, "cursor")) do
+          {:ok, {ts, id}} ->
+            predicate = AdminCursor.where(direction, "c.created_at", "c.id", length(params))
+            {where <> " AND " <> predicate, params ++ [ts, id], true}
+
+          :none ->
+            {where, params, false}
+        end
 
       # uuid columns ::text for Jason. Counts are subqueries (metadata only — no body/content selected).
       #
@@ -58,22 +68,45 @@ defmodule ConversationService.Conversations do
       # goes stale (existing rows persist — never zero, never an error) and search's own 503 is the
       # loud canary. The pins slice refused this coupling for a USER-facing feature; that refusal
       # does not extend to first-party admin metadata with no partition-scan-free alternative.
+      # SORTED BY created_at, NOT updated_at — deliberately, and it is a real trade. Keyset paging
+      # needs a sort key that does not move while you read: a conversation bumped by a new message
+      # between page 1 and page 2 would otherwise be served twice, or jump ahead of the cursor and
+      # never be served at all. `last_activity` is still a column on every row, so "who is busy"
+      # is answerable; "what did I already look at" is now reliable.
+      # FULL precision — this column is the keyset, not a display field (AdminCursor.key_column/1).
       sql =
         "SELECT c.id::text, c.type, c.title, c.app_id::text, c.status, " <>
           "to_char(c.updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS last_activity, " <>
           "(SELECT count(*) FROM conversation_participants p WHERE p.conversation_id = c.id) AS participant_count, " <>
-          "(SELECT count(*) FROM message_search s WHERE s.conversation_id = c.id) AS message_count " <>
+          "(SELECT count(*) FROM message_search s WHERE s.conversation_id = c.id) AS message_count, " <>
+          "#{AdminCursor.key_column("c.created_at")} AS cursor_key " <>
           "FROM conversations c #{where} " <>
-          "ORDER BY c.updated_at DESC LIMIT #{page_size} OFFSET #{offset}"
+          "#{AdminCursor.order(direction, "c.created_at", "c.id")} LIMIT #{page_size + 1}"
 
       %Postgrex.Result{rows: rows} = Repo.query!(sql, params)
 
+      page =
+        AdminCursor.to_page(rows, direction, had_cursor?, page_size, fn row ->
+          {Enum.at(row, 8), List.first(row)}
+        end)
+
       {:ok,
        %{
-         page: page,
-         page_size: page_size,
+         page_size: page.page_size,
+         next_cursor: page.next_cursor,
+         prev_cursor: page.prev_cursor,
          conversations:
-           Enum.map(rows, fn [id, type, title, app_id, status, last_activity, pcount, mcount] ->
+           Enum.map(page.items, fn [
+                                     id,
+                                     type,
+                                     title,
+                                     app_id,
+                                     status,
+                                     last_activity,
+                                     pcount,
+                                     mcount,
+                                     _cursor_key
+                                   ] ->
              %{
                conversation_id: id,
                type: type,
@@ -87,14 +120,13 @@ defmodule ConversationService.Conversations do
            end)
        }}
     else
-      {:ok, %{page: 1, page_size: 25, conversations: []}}
-    end
-  end
-
-  defp admin_page(attrs) do
-    case Integer.parse(to_string(attrs["page"] || attrs[:page] || "1")) do
-      {n, _} when n > 0 -> n
-      _ -> 1
+      {:ok,
+       %{
+         page_size: AdminCursor.page_size(),
+         next_cursor: nil,
+         prev_cursor: nil,
+         conversations: []
+       }}
     end
   end
 

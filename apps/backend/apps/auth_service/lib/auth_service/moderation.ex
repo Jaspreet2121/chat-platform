@@ -14,6 +14,7 @@ defmodule AuthService.Moderation do
 
   alias AuthService.Accounts
   alias AuthService.Repo
+  alias SharedInfra.AdminCursor
 
   # --- User moderation ----------------------------------------------------------------------------
 
@@ -99,36 +100,53 @@ defmodule AuthService.Moderation do
     where =
       "WHERE reported_user_id IN (SELECT id FROM users_auth WHERE app_id = $1)" <> status_clause
 
-    page = page(attrs)
-    page_size = 25
-    offset = (page - 1) * page_size
+    page_size = AdminCursor.clamp(Map.get(attrs, "limit"))
+    direction = AdminCursor.direction(Map.get(attrs, "direction"))
+
+    {where, params, had_cursor?} =
+      case AdminCursor.decode(Map.get(attrs, "cursor")) do
+        {:ok, {ts, id}} ->
+          predicate = AdminCursor.where(direction, "created_at", "id", length(params))
+          {where <> " AND " <> predicate, params ++ [ts, id], true}
+
+        :none ->
+          {where, params, false}
+      end
 
     %Postgrex.Result{rows: rows} =
       Repo.query!(
         "SELECT id::text, reporter_user_id::text, reported_user_id::text, conversation_id::text, " <>
           "reported_message_id, reason, details, status, " <>
-          "to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at " <>
-          "FROM user_reports #{where} ORDER BY created_at DESC " <>
-          "LIMIT #{page_size} OFFSET #{offset}",
+          "to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at, " <>
+          "#{AdminCursor.key_column("created_at")} AS cursor_key " <>
+          "FROM user_reports #{where} " <>
+          "#{AdminCursor.order(direction, "created_at", "id")} LIMIT #{page_size + 1}",
         params
       )
 
+    page =
+      AdminCursor.to_page(rows, direction, had_cursor?, page_size, fn row ->
+        {List.last(row), List.first(row)}
+      end)
+
     {:ok,
      %{
-       page: page,
-       page_size: page_size,
+       page_size: page.page_size,
+       next_cursor: page.next_cursor,
+       prev_cursor: page.prev_cursor,
        reports:
-         Enum.map(rows, fn [
-                             id,
-                             reporter,
-                             reported,
-                             conv,
-                             msg,
-                             reason,
-                             details,
-                             status,
-                             created_at
-                           ] ->
+         Enum.map(page.items, fn [
+                                   id,
+                                   reporter,
+                                   reported,
+                                   conv,
+                                   msg,
+                                   reason,
+                                   details,
+                                   status,
+                                   created_at,
+                                   _cursor_key
+                                 ] ->
            %{
              id: id,
              reporter_user_id: reporter,
@@ -404,30 +422,73 @@ defmodule AuthService.Moderation do
       else: :ok
   end
 
+  @doc """
+  Keyset-paginated audit log, newest first.
+
+  The audit trail is the one list where a skipped row is worst: it is read precisely when somebody is
+  reconstructing what happened, and audit rows arrive constantly (every admin read of a user writes
+  one), so OFFSET here was all but guaranteed to drop rows between pages. Cursor on
+  `(created_at, id)`.
+
+  Now also returns the ip_address and user_agent the action came from (132). An audit row that
+  records WHO and WHAT but not FROM WHERE cannot answer the question it exists for.
+  """
   def list_audit(attrs) do
-    page = page(attrs)
-    page_size = 50
-    offset = (page - 1) * page_size
+    page_size = AdminCursor.clamp(Map.get(attrs, "limit"))
+    direction = AdminCursor.direction(Map.get(attrs, "direction"))
+
+    {where, params, had_cursor?} =
+      case AdminCursor.decode(Map.get(attrs, "cursor")) do
+        {:ok, {ts, id}} ->
+          {"WHERE " <> AdminCursor.where(direction, "created_at", "id", 0), [ts, id], true}
+
+        :none ->
+          {"", [], false}
+      end
 
     %Postgrex.Result{rows: rows} =
       Repo.query!(
-        "SELECT actor_user_id::text, action, target_type, target_id, metadata, " <>
-          "to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at " <>
-          "FROM audit_logs ORDER BY created_at DESC LIMIT #{page_size} OFFSET #{offset}"
+        "SELECT id::text, actor_user_id::text, action, target_type, target_id, metadata, " <>
+          "ip_address, user_agent, " <>
+          "to_char(created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at, " <>
+          "#{AdminCursor.key_column("created_at")} AS cursor_key " <>
+          "FROM audit_logs #{where} " <>
+          "#{AdminCursor.order(direction, "created_at", "id")} LIMIT #{page_size + 1}",
+        params
       )
+
+    page =
+      AdminCursor.to_page(rows, direction, had_cursor?, page_size, fn row ->
+        {List.last(row), List.first(row)}
+      end)
 
     {:ok,
      %{
-       page: page,
-       page_size: page_size,
+       page_size: page.page_size,
+       next_cursor: page.next_cursor,
+       prev_cursor: page.prev_cursor,
        entries:
-         Enum.map(rows, fn [actor, action, target_type, target_id, metadata, created_at] ->
+         Enum.map(page.items, fn [
+                                   id,
+                                   actor,
+                                   action,
+                                   target_type,
+                                   target_id,
+                                   metadata,
+                                   ip,
+                                   user_agent,
+                                   created_at,
+                                   _cursor_key
+                                 ] ->
            %{
+             id: id,
              actor_user_id: actor,
              action: action,
              target_type: target_type,
              target_id: target_id,
              metadata: metadata,
+             ip_address: ip,
+             user_agent: user_agent,
              created_at: created_at
            }
          end)
@@ -674,22 +735,6 @@ defmodule AuthService.Moderation do
   # True iff a fetched user belongs to the console's tenant. A cross-tenant target is treated as absent.
   defp in_app?(%{app_id: app_id}, app), do: app_id == app
   defp in_app?(_user, _app), do: false
-
-  defp page(attrs) do
-    case Map.get(attrs, "page") do
-      n when is_integer(n) and n > 0 ->
-        n
-
-      n when is_binary(n) ->
-        case Integer.parse(n) do
-          {p, _} when p > 0 -> p
-          _ -> 1
-        end
-
-      _ ->
-        1
-    end
-  end
 
   defp present(value) when is_binary(value) and value != "", do: value
   defp present(_), do: nil

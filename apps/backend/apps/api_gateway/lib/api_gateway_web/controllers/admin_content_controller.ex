@@ -23,14 +23,18 @@ defmodule ApiGatewayWeb.AdminContentController do
 
   alias ApiGatewayWeb.ErrorResponse
 
-  @max_limit 200
+  # 50, matching every other admin list (SharedInfra.AdminCursor.page_size/0). Was 200: a single
+  # call returning 200 messages of real conversation content is closer to an export than to a page.
+  @max_limit 50
 
   # Browsable conversation list (metadata only — no message content), so admins don't type UUIDs. Entry
   # is console access (any admin role); content stays gated + masked when a conversation is opened.
   def conversations(conn, params) do
     case SharedInfra.ConversationClient.admin_list_conversations(%{
            "q" => params["q"],
-           "page" => params["page"],
+           "cursor" => params["cursor"],
+           "direction" => params["direction"],
+           "limit" => params["limit"],
            "app_id" => tenant()
          }) do
       {:ok, data} ->
@@ -75,11 +79,13 @@ defmodule ApiGatewayWeb.AdminContentController do
       true ->
         case SharedInfra.MessageClient.list_messages(%{
                "conversation_id" => conversation_id,
-               "limit" => limit(params)
+               "limit" => limit(params),
+               "cursor" => params["cursor"]
              }) do
           {:ok, timeline} ->
             messages = Map.get(timeline, :messages) || Map.get(timeline, "messages") || []
-            respond(conn, session, conversation_id, app_id, messages, unmasked?)
+            next = Map.get(timeline, :next_cursor) || Map.get(timeline, "next_cursor")
+            respond(conn, session, conversation_id, app_id, messages, next, unmasked?)
 
           {:error, :message_unavailable} ->
             ErrorResponse.service_unavailable(conn, "admin.unavailable")
@@ -93,7 +99,7 @@ defmodule ApiGatewayWeb.AdminContentController do
   # content.read → full content + MANDATORY audit of the access (records that it happened, never the text).
   # Media messages are enriched with a presigned download_url so the viewer can display/play them — the
   # media view is part of the same audited content.read (no separate unaudited path).
-  defp respond(conn, session, conversation_id, app_id, messages, true) do
+  defp respond(conn, session, conversation_id, app_id, messages, next_cursor, true) do
     audit(session, conversation_id, app_id, length(messages), "content.read", false)
 
     json(conn, %{
@@ -101,12 +107,17 @@ defmodule ApiGatewayWeb.AdminContentController do
       app_id: app_id,
       masked: false,
       message_count: length(messages),
+      # Messages page FORWARD only. They come from Scylla, whose paging state is a forward token —
+      # there is no "the page before this one" to hand back, and inventing one by re-reading from the
+      # top would be a different list, not the previous page. Said plainly rather than shipped as a
+      # Back button that sometimes lies.
+      next_cursor: next_cursor,
       messages: messages |> enrich_all(app_id) |> with_sender_identities()
     })
   end
 
   # No content.read → masked metadata only + a lighter oversight row. Text is dropped before serialize.
-  defp respond(conn, session, conversation_id, app_id, messages, false) do
+  defp respond(conn, session, conversation_id, app_id, messages, next_cursor, false) do
     masked = messages |> Enum.map(&mask/1) |> with_sender_identities()
     audit(session, conversation_id, app_id, length(masked), "content.view.masked", true)
 
@@ -115,6 +126,7 @@ defmodule ApiGatewayWeb.AdminContentController do
       app_id: app_id,
       masked: true,
       message_count: length(masked),
+      next_cursor: next_cursor,
       messages: masked
     })
   end
@@ -283,9 +295,11 @@ defmodule ApiGatewayWeb.AdminContentController do
 
   defp mget(m, key), do: Map.get(m, key, Map.get(m, Atom.to_string(key)))
 
+  # One page of messages, SERVER-SIZED. A caller may ask for fewer; @max_limit is the ceiling and
+  # also the default, so an unparameterised call cannot accidentally become a whole-conversation dump.
   defp limit(params) do
     case Integer.parse(to_string(params["limit"] || "")) do
-      {n, _} when n > 0 and n <= @max_limit -> n
+      {n, _} when n > 0 -> min(n, @max_limit)
       _ -> @max_limit
     end
   end

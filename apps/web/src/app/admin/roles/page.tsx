@@ -12,6 +12,15 @@ import {
   setUserRole
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
+import { Pager } from "@/app/admin/_Pager";
+import {
+  initialPagerState,
+  pagerNext,
+  pagerPrev,
+  pagerReceived,
+  pagerRequest,
+  pagerReset
+} from "@/lib/cursorPager";
 import { cn } from "@/lib/cn";
 
 // Pretty-print a phone: +91 83770 03300 for a 12-digit +91 number, else a sensible +digits form.
@@ -62,6 +71,8 @@ export default function AdminRolesPage() {
   const [canDelete, setCanDelete] = useState(false);
   const [confirmUser, setConfirmUser] = useState<AdminUser | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [pager, setPager] = useState(initialPagerState);
+  const { cursor, direction } = pager;
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
@@ -103,14 +114,18 @@ export default function AdminRolesPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await getAdminUsers({ q: q.trim() || undefined });
+      const res = await getAdminUsers({
+        q: q.trim() || undefined,
+        ...pagerRequest(cursor, direction)
+      });
       setUsers(res.users);
+      setPager((p) => pagerReceived(p, res));
     } catch (e) {
       flash("err", e instanceof Error ? e.message : "Failed to load users");
     } finally {
       setLoading(false);
     }
-  }, [q, flash]);
+  }, [q, cursor, direction, flash]);
 
   useEffect(() => {
     if (allowed) void load();
@@ -167,7 +182,10 @@ export default function AdminRolesPage() {
 
       <input
         value={q}
-        onChange={(e) => setQ(e.target.value)}
+        onChange={(e) => {
+          setQ(e.target.value);
+          setPager(pagerReset());
+        }}
         placeholder="Search users…"
         className="mb-4 h-10 w-full max-w-sm rounded-lg border border-border bg-elevated px-3 text-sm text-fg placeholder:text-faint outline-none focus:border-brand focus:ring-2 focus:ring-brand-ring"
       />
@@ -282,6 +300,14 @@ export default function AdminRolesPage() {
           </Card>
         </div>
       ) : null}
+
+      <Pager
+        state={pager}
+        count={users.length}
+        disabled={loading}
+        onNext={() => setPager(pagerNext)}
+        onPrev={() => setPager(pagerPrev)}
+      />
     </div>
   );
 }

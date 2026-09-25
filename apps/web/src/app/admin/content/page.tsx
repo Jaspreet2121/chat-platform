@@ -11,7 +11,16 @@ import {
   getAdminUserConversations,
   getAdminUsers
 } from "@/lib/api";
-import { Avatar, Card } from "@/components";
+import { Avatar, Button, Card } from "@/components";
+import { Pager } from "@/app/admin/_Pager";
+import {
+  initialPagerState,
+  pagerNext,
+  pagerPrev,
+  pagerReceived,
+  pagerRequest,
+  pagerReset
+} from "@/lib/cursorPager";
 import { cn } from "@/lib/cn";
 
 function shortId(id?: string | null) {
@@ -175,19 +184,25 @@ function UsersList({ onOpen }: { onOpen: (u: AdminUser) => void }) {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [pager, setPager] = useState(initialPagerState);
+  const { cursor, direction } = pager;
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const res = await getAdminUsers({ q: q.trim() || undefined });
+      const res = await getAdminUsers({
+        q: q.trim() || undefined,
+        ...pagerRequest(cursor, direction)
+      });
       setUsers(res.users);
+      setPager((p) => pagerReceived(p, res));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load users");
     } finally {
       setLoading(false);
     }
-  }, [q]);
+  }, [q, cursor, direction]);
 
   useEffect(() => {
     void load();
@@ -209,7 +224,11 @@ function UsersList({ onOpen }: { onOpen: (u: AdminUser) => void }) {
         />
         <input
           value={q}
-          onChange={(e) => setQ(e.target.value)}
+          onChange={(e) => {
+            setQ(e.target.value);
+            // A cursor names a row in the OLD result set — it has no meaning in a new search.
+            setPager(pagerReset());
+          }}
           placeholder="Search by phone or email…"
           className="h-10 w-full rounded-lg border border-border bg-elevated pl-9 pr-3 text-sm text-fg placeholder:text-faint outline-none focus:border-brand focus:ring-2 focus:ring-brand-ring"
         />
@@ -258,6 +277,14 @@ function UsersList({ onOpen }: { onOpen: (u: AdminUser) => void }) {
           )}
         </Card>
       )}
+
+      <Pager
+        state={pager}
+        count={users.length}
+        disabled={loading}
+        onNext={() => setPager(pagerNext)}
+        onPrev={() => setPager(pagerPrev)}
+      />
     </div>
   );
 }
@@ -366,18 +393,29 @@ function MessagesView({
   const userName = userLabel(user) || shortId(user.user_id);
   const title = convLabel(conv);
 
+  // Messages page FORWARD only — Scylla's paging state is a forward token, so "Load older" appends
+  // rather than replacing. There is no Back button here because there is no backward cursor to give
+  // one, and a button that silently re-read from the top would be a different list.
+  const [cursor, setCursor] = useState<string | null>(null);
+
   useEffect(() => {
     let active = true;
-    setLoading(true);
     setError("");
-    getAdminConversationMessages(conv.conversation_id)
-      .then((d) => active && setData(d))
+    getAdminConversationMessages(conv.conversation_id, cursor)
+      .then((d) => {
+        if (!active) return;
+        setData((previous) =>
+          previous && cursor
+            ? { ...d, messages: [...previous.messages, ...d.messages] }
+            : d
+        );
+      })
       .catch((e) => active && setError(e instanceof Error ? e.message : "Failed to load messages"))
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, [conv.conversation_id]);
+  }, [conv.conversation_id, cursor]);
 
   return (
     <div className="mx-auto max-w-3xl animate-fade-in">
@@ -473,6 +511,19 @@ function MessagesView({
               <div className="p-6 text-center text-sm text-muted">No messages.</div>
             )}
           </Card>
+
+          {data.next_cursor ? (
+            <div className="mt-3 flex justify-center">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="border border-border"
+                onClick={() => setCursor(data.next_cursor ?? null)}
+              >
+                Load older messages
+              </Button>
+            </div>
+          ) : null}
         </>
       ) : null}
     </div>
