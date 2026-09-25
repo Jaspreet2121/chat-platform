@@ -89,6 +89,14 @@ services:
       AUTH_OTP_VERIFY_DB_BACKED: "true"
       AUTH_REFRESH_TOKEN_DB_BACKED: "true"
       AUTH_LOGOUT_DB_BACKED: "true"
+      # SESSION LIFETIMES + REFRESH REUSE GRACE (Parts 3/4). tokens.ex reads these at CALL time, so a
+      # change takes effect on `up -d auth` with no rebuild — but only if they REACH the container.
+      # Until 2026-09-25 they were not listed here, so setting them in .env did nothing and login
+      # kept answering the 10800s default. Empty (unset in .env) means the code default, never 0;
+      # AuthService.ProdComposeAuthEnvTest fails if a var tokens.ex reads is missing from this list.
+      AUTH_SESSION_TTL_SECONDS: ${AUTH_SESSION_TTL_SECONDS:-}
+      AUTH_SESSION_REMEMBER_TTL_SECONDS: ${AUTH_SESSION_REMEMBER_TTL_SECONDS:-}
+      AUTH_REFRESH_GRACE_SECONDS: ${AUTH_REFRESH_GRACE_SECONDS:-}
       # OTP SMS delivery (SMSGatewayHub/DLT) runs HERE — auth_service owns the OTP request path; the
       # gateway proxies to auth over HTTP, so these belong on the auth container only. All from .env.
       # Provider toggle: console (default, no real SMS) | smsgatewayhub (real send). PROD must set
