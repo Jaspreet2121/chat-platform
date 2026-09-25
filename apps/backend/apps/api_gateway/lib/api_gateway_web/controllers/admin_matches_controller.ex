@@ -25,10 +25,6 @@ defmodule ApiGatewayWeb.AdminMatchesController do
 
   plug ApiGatewayWeb.Plugs.RequirePermission, "users.sensitive.view"
 
-  # Short enough to type, long enough to mean something. "x" is not a reason.
-  @min_reason_length 8
-  @max_reason_length 200
-
   def index(conn, params) do
     with {:ok, reason} <- reason(params) do
       audit(conn, "list", reason, %{"q" => present(params["q"])})
@@ -44,6 +40,7 @@ defmodule ApiGatewayWeb.AdminMatchesController do
       )
     else
       {:error, :reason_required} -> handle_reason_error(conn)
+      {:error, {:reason_invalid, why}} -> reason_invalid(conn, why)
     end
   end
 
@@ -62,23 +59,19 @@ defmodule ApiGatewayWeb.AdminMatchesController do
       )
     else
       {:error, :reason_required} -> handle_reason_error(conn)
+      {:error, {:reason_invalid, why}} -> reason_invalid(conn, why)
     end
   end
 
   # THE REASON GATE. Refused BEFORE the read runs, so an unexplained request never touches the data
   # — the audit row and the query are not allowed to disagree about whether an access happened.
+  # The rule itself lives in SharedInfra.ReasonPolicy and is mirrored by the console: 12+ characters,
+  # two words, a vowel, and not the same characters over and over.
   defp reason(params) do
-    value = params["reason"] |> to_string() |> String.trim()
-
-    cond do
-      String.length(value) < @min_reason_length ->
-        {:error, :reason_required}
-
-      String.length(value) > @max_reason_length ->
-        {:ok, String.slice(value, 0, @max_reason_length)}
-
-      true ->
-        {:ok, value}
+    case SharedInfra.ReasonPolicy.validate(params["reason"]) do
+      {:ok, reason} -> {:ok, reason}
+      {:error, :required} -> {:error, :reason_required}
+      {:error, {:invalid, why}} -> {:error, {:reason_invalid, why}}
     end
   end
 
@@ -176,4 +169,15 @@ defmodule ApiGatewayWeb.AdminMatchesController do
 
   # `with` fall-through for both actions.
   defp handle_reason_error(conn), do: reason_error(conn)
+
+  # A reason was given and it is not one. Still 400, still not 403 — but with the rule it broke,
+  # so the console can show it inline instead of "request invalid".
+  defp reason_invalid(conn, why),
+    do:
+      ErrorResponse.invalid_request_with(
+        conn,
+        "admin.reason_invalid",
+        "Reason not accepted: #{why}",
+        %{rule: why}
+      )
 end

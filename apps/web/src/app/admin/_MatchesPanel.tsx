@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
-import { AdminMatch, getAdminMatches, getAdminUserMatches } from "@/lib/api";
+import { AdminMatch, ApiRequestError, getAdminMatches, getAdminUserMatches } from "@/lib/api";
 import { Avatar, Button, Card, Input } from "@/components";
 import { Pager } from "@/app/admin/_Pager";
 import { identityTitle } from "@/lib/adminUser";
@@ -13,8 +13,8 @@ import {
   REASON_MIN_LENGTH,
   clearReason,
   loadReason,
-  reasonIsValid,
-  saveReason
+  saveReason,
+  validateReason
 } from "@/lib/matchesReason";
 
 // Match history, for the full list and for one user's tab in the drawer.
@@ -31,6 +31,8 @@ import {
 export function MatchesPanel({ userId }: { userId?: string }) {
   const [reason, setReason] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  // What the SERVER said when it refused a reason the page had accepted — shown in the prompt.
+  const [promptError, setPromptError] = useState("");
   const [matches, setMatches] = useState<AdminMatch[]>([]);
   const paging = usePaging(userId ? "matches.user" : "matches");
   const { params: pageParams, setEnvelope } = paging;
@@ -57,6 +59,19 @@ export function MatchesPanel({ userId }: { userId?: string }) {
         setMatches(res.matches);
         setEnvelope(res);
       } catch (e) {
+        // The server is the judge of a reason. If it refuses one this page had accepted — the
+        // rules drifted, or a stored reason predates a stricter rule — the answer is the prompt
+        // again, with the server's own words, not an error banner over an empty list.
+        if (
+          e instanceof ApiRequestError &&
+          (e.code === "admin.reason_invalid" || e.code === "admin.reason_required")
+        ) {
+          clearReason();
+          setDraft(activeReason);
+          setPromptError(e.message);
+          setReason(null);
+          return;
+        }
         setError(e instanceof Error ? e.message : "Could not load matches.");
       } finally {
         setLoading(false);
@@ -83,14 +98,16 @@ export function MatchesPanel({ userId }: { userId?: string }) {
   }
 
   function submitReason() {
-    const trimmed = draft.trim();
-    if (!reasonIsValid(trimmed)) return;
-    saveReason(trimmed);
-    setReason(trimmed);
+    const check = validateReason(draft);
+    if (!check.ok) return;
+    saveReason(check.reason);
+    setPromptError("");
+    setReason(check.reason);
     setDraft("");
   }
 
   if (!reason) {
+    const check = validateReason(draft);
     return (
       <Card className="p-5">
         <div className="mb-2 flex items-center gap-2">
@@ -106,16 +123,28 @@ export function MatchesPanel({ userId }: { userId?: string }) {
           autoComplete="off"
           maxLength={REASON_MAX_LENGTH}
           placeholder="e.g. abuse report #4410, legal request LR-22"
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setPromptError("");
+          }}
           onKeyDown={(e) => e.key === "Enter" && submitReason()}
         />
+        {/* THE RULE, inline and always visible — and, once something is typed, which part of it
+            the draft still fails. The server applies the same rule and answers 400 otherwise. */}
+        <p className="mt-2 text-xs text-faint">
+          At least {REASON_MIN_LENGTH} characters and two real words — a ticket, a case, a name.
+          Repeated characters are not a reason.
+        </p>
+        {promptError ? <p className="mt-1 text-xs text-danger">{promptError}</p> : null}
         <div className="mt-3 flex items-center justify-between gap-3">
           <p className="text-xs text-faint">
-            {draft.trim().length < REASON_MIN_LENGTH
-              ? `At least ${REASON_MIN_LENGTH} characters.`
-              : `${draft.trim().length}/${REASON_MAX_LENGTH}`}
+            {draft.trim() === ""
+              ? ""
+              : check.ok
+                ? `${check.reason.length}/${REASON_MAX_LENGTH}`
+                : `Not yet: ${check.why}.`}
           </p>
-          <Button size="sm" onClick={submitReason} disabled={!reasonIsValid(draft)}>
+          <Button size="sm" onClick={submitReason} disabled={!check.ok}>
             Continue
           </Button>
         </div>

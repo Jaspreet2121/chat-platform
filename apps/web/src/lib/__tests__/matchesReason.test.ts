@@ -3,7 +3,8 @@ import {
   REASON_TTL_MS,
   parseStoredReason,
   reasonIsFresh,
-  reasonIsValid
+  reasonIsValid,
+  validateReason
 } from "@/lib/matchesReason";
 
 describe("reasonIsValid", () => {
@@ -18,8 +19,32 @@ describe("reasonIsValid", () => {
   });
 
   it("rejects one longer than the server will store", () => {
-    expect(reasonIsValid("a".repeat(200))).toBe(true);
-    expect(reasonIsValid("a".repeat(201))).toBe(false);
+    expect(reasonIsValid("valid words ".repeat(20))).toBe(false);
+    expect(validateReason("valid words ".repeat(20))).toEqual({
+      ok: false,
+      why: "at most 200 characters"
+    });
+  });
+
+  it("mirrors the server rule for one word, no vowels and repeated junk — with the same wording", () => {
+    // These are the strings an operator could type to get past a length check while telling the
+    // audit reader nothing. Same examples, same messages as SharedInfra.ReasonPolicyTest.
+    const refused: Array<[string, string]> = [
+      ["abuse rep", "at least 12 characters"],
+      ["investigation", "at least two words"],
+      ["hjzgjcgz hjzgjcgz", "real words — nothing here has a vowel"],
+      ["asdfasdf asdfasdf", "repeated characters are not a reason"],
+      ["abuse abuse abuse", "repeated characters are not a reason"],
+      ["aaaaaaaaaaaa report", "repeated characters are not a reason"]
+    ];
+    for (const [value, why] of refused) {
+      expect(validateReason(value)).toEqual({ ok: false, why });
+    }
+    expect(validateReason("  abuse   report   #4410 ")).toEqual({
+      ok: true,
+      reason: "abuse report #4410"
+    });
+    expect(validateReason("legal request LR-22").ok).toBe(true);
   });
 });
 

@@ -9,7 +9,7 @@
 // It is held in sessionStorage, deliberately, not localStorage: the reason belongs to this sitting
 // at this desk. Closing the tab ends it.
 
-export const REASON_MIN_LENGTH = 8;
+export const REASON_MIN_LENGTH = 12;
 export const REASON_MAX_LENGTH = 200;
 // One hour, matching the "once per session-hour" rule.
 export const REASON_TTL_MS = 60 * 60 * 1000;
@@ -18,11 +18,48 @@ const STORAGE_KEY = "admin.matches.reason";
 
 export type StoredReason = { reason: string; at: number };
 
-// Same floor the server enforces: "x" is not a reason. Trimmed, because a box of spaces is empty.
+export type ReasonCheck = { ok: true; reason: string } | { ok: false; why: string };
+
+// A MIRROR of SharedInfra.ReasonPolicy — same rules, same order, same wording — so the page and the
+// API never disagree. The server is the judge; this only lets the operator fix the reason before
+// the request rather than after a 400. A reason must be long enough to say something, be more than
+// one word, contain a vowel (the cheapest test for "these are words"), and not be the same
+// characters over and over: "hjzgjcgz" and "asdfasdf" are typing, not intent.
+export function validateReason(value: string | null | undefined): ReasonCheck {
+  const reason = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
+  if (reason === "") return { ok: false, why: `at least ${REASON_MIN_LENGTH} characters` };
+  if (reason.length < REASON_MIN_LENGTH) {
+    return { ok: false, why: `at least ${REASON_MIN_LENGTH} characters` };
+  }
+  if (reason.length > REASON_MAX_LENGTH) {
+    return { ok: false, why: `at most ${REASON_MAX_LENGTH} characters` };
+  }
+  if (wordCount(reason) < 2) return { ok: false, why: "at least two words" };
+  if (!/[aeiou]/i.test(reason)) return { ok: false, why: "real words — nothing here has a vowel" };
+  if (isJunk(reason)) return { ok: false, why: "repeated characters are not a reason" };
+  return { ok: true, reason };
+}
+
+// A "word" is two or more letters/digits in a row: "#4410" counts, a stray "-" does not.
+function wordCount(reason: string): number {
+  return (reason.match(/[\p{L}\p{N}]{2,}/gu) ?? []).length;
+}
+
+// The same character four or more times in a row, or the whole thing being one short pattern
+// repeated. Letters only, lowercased, so spaces and punctuation cannot disguise it.
+function isJunk(reason: string): boolean {
+  const letters = reason.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  if (/(.)\1{3,}/u.test(letters)) return true;
+  const chars = [...letters];
+  for (let period = 1; period <= Math.floor(chars.length / 2); period += 1) {
+    if (chars.length % period !== 0) continue;
+    if (chars.slice(0, period).join("").repeat(chars.length / period) === letters) return true;
+  }
+  return false;
+}
+
 export function reasonIsValid(reason: string | null | undefined): boolean {
-  if (typeof reason !== "string") return false;
-  const trimmed = reason.trim();
-  return trimmed.length >= REASON_MIN_LENGTH && trimmed.length <= REASON_MAX_LENGTH;
+  return validateReason(reason).ok;
 }
 
 // Is a stored reason still usable? Anything malformed, expired, or stamped in the FUTURE is not —

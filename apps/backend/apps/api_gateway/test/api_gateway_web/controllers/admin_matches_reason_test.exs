@@ -83,10 +83,28 @@ defmodule ApiGatewayWeb.AdminMatchesReasonTest do
     refute_receive {:audited, _}, 200
   end
 
-  test "a THROWAWAY reason is refused too — 'x' is not a reason" do
-    for junk <- ["", "  ", "x", "abc", "       "] do
+  test "a THROWAWAY reason is refused too — 'x' is not a reason, and neither is 'asdfasdf'" do
+    # Nothing at all → reason_required. Something that is not a reason → reason_invalid, with the
+    # rule it broke. Both 400, both BEFORE any read.
+    for blank <- ["", "  ", "       "] do
+      conn = call(:index, %{"reason" => blank})
+      assert conn.status == 400, "expected #{inspect(blank)} to be refused"
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "admin.reason_required"
+    end
+
+    for junk <- [
+          "x",
+          "abc",
+          "abuse rep",
+          "investigation",
+          "hjzgjcgz hjzgjcgz",
+          "asdfasdf asdfasdf"
+        ] do
       conn = call(:index, %{"reason" => junk})
       assert conn.status == 400, "expected #{inspect(junk)} to be refused"
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["code"] == "admin.reason_invalid", inspect(junk)
+      assert is_binary(body["error"]["rule"]), inspect(junk)
     end
 
     refute_receive :read_happened, 200
@@ -120,11 +138,11 @@ defmodule ApiGatewayWeb.AdminMatchesReasonTest do
     assert audit["metadata"]["reason"] == "safety escalation"
   end
 
-  test "the reason is bounded — a 10 KB 'reason' is truncated, not stored whole" do
+  test "the reason is bounded — a 10 KB 'reason' is refused, not truncated into the audit row" do
     conn = call(:index, %{"reason" => String.duplicate("a", 10_000)})
 
-    assert conn.status == 200
-    assert_receive {:audited, audit}, 500
-    assert String.length(audit["metadata"]["reason"]) == 200
+    assert conn.status == 400
+    assert Jason.decode!(conn.resp_body)["error"]["code"] == "admin.reason_invalid"
+    refute_receive :read_happened, 200
   end
 end
