@@ -37,6 +37,7 @@ defmodule SharedInfra.IAM do
     audit.view
     roles.manage
     users.delete
+    users.sensitive.view
   )
 
   # Console roles (can reach /api/v1/admin at all), most→least privileged. `user` is excluded.
@@ -48,11 +49,17 @@ defmodule SharedInfra.IAM do
 
   @support_view ~w(platform.view users.view apps.view keys.view webhooks.view audit.view)
 
+  # SENSITIVE PERSONAL DATA (Matches). Root and admin only — NOT moderator, NOT support. Dating match
+  # history is not moderation material: a moderator handling a report does not need to know who
+  # somebody matched with, and support never does. It is separated from users.view for exactly that
+  # reason, and every access through it is reason-gated and audited.
   @role_permissions %{
     "root" => @permissions,
     # users.delete is ROOT-ONLY (permanent identity deletion) — excluded from admin alongside content.read
     # and roles.manage.
+    # admin keeps users.sensitive.view; it loses only the three root-only capabilities.
     "admin" => @permissions -- ["content.read", "roles.manage", "users.delete"],
+    # Neither of these carries a sensitive.* permission, and that is deliberate — see above.
     "moderator" => ~w(users.view users.moderate audit.view),
     "support" => @support_view,
     "user" => []

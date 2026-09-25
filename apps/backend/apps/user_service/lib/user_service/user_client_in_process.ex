@@ -128,4 +128,10 @@ defmodule UserService.UserClientInProcess do
 
   @impl true
   def claim_auto_reply(attrs), do: UserService.AutoReplies.claim(attrs)
+
+  @impl true
+  def admin_list_matches(attrs), do: UserService.DatingAdmin.list_matches(attrs)
+
+  @impl true
+  def admin_user_matches(attrs), do: UserService.DatingAdmin.user_matches(attrs)
 end

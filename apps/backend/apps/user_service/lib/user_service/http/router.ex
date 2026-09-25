@@ -158,6 +158,14 @@ defmodule UserService.HTTP.Router do
     send_result(conn, UserService.Dating.attach_match_conversation(body(conn)))
   end
 
+  post "/internal/dating/admin/matches" do
+    send_result(conn, UserService.DatingAdmin.list_matches(body(conn)))
+  end
+
+  post "/internal/dating/admin/user_matches" do
+    send_result(conn, UserService.DatingAdmin.user_matches(body(conn)))
+  end
+
   post "/internal/nearby/ble/admit" do
     send_result(conn, UserService.Nearby.admit_ble_targets(body(conn)))
   end

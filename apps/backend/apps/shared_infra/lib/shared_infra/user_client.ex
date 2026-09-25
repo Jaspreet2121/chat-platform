@@ -62,6 +62,8 @@ defmodule SharedInfra.UserClient do
   @callback get_auto_replies(attrs()) :: result()
   @callback update_auto_replies(attrs()) :: result()
   @callback claim_auto_reply(attrs()) :: result()
+  @callback admin_list_matches(attrs()) :: result()
+  @callback admin_user_matches(attrs()) :: result()
 
   # Optional so a partial test stub of this behaviour doesn't need to implement everything; the real adapters do.
   @optional_callbacks regenerate_upi_qr: 1,
@@ -129,6 +131,8 @@ defmodule SharedInfra.UserClient do
   def stop_nearby(attrs), do: adapter().stop_nearby(attrs)
   def send_nearby_request(attrs), do: adapter().send_nearby_request(attrs)
   def list_nearby_requests(attrs), do: adapter().list_nearby_requests(attrs)
+  def admin_list_matches(attrs), do: adapter().admin_list_matches(attrs)
+  def admin_user_matches(attrs), do: adapter().admin_user_matches(attrs)
   def respond_nearby_request(attrs), do: adapter().respond_nearby_request(attrs)
   def get_nearby_settings(attrs), do: adapter().get_nearby_settings(attrs)
   def update_nearby_settings(attrs), do: adapter().update_nearby_settings(attrs)

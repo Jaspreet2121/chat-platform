@@ -677,6 +677,12 @@ defmodule ApiGatewayWeb.Router do
 
     get "/audit", AdminModerationController, :list_audit
 
+    # MATCHES — dating match history. users.sensitive.view (root + admin ONLY), a typed reason on
+    # every call, audited, server-clamped pages, and no export. There is deliberately NO Nearby
+    # endpoint: presence rows carry a live location and the console never sees one.
+    get "/matches", AdminMatchesController, :index
+    get "/users/:id/matches", AdminMatchesController, :user_matches
+
     # Cross-tenant apps overview (Surface 3; apps.view — root/admin/support read-only).
     get "/apps", AdminAppsController, :index
 

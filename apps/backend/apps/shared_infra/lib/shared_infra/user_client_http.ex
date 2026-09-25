@@ -113,6 +113,12 @@ defmodule SharedInfra.UserClientHttp do
   @impl true
   def dating_attach_conversation(attrs), do: post("/internal/dating/attach_conversation", attrs)
 
+  @impl true
+  def admin_list_matches(attrs), do: post("/internal/dating/admin/matches", attrs)
+
+  @impl true
+  def admin_user_matches(attrs), do: post("/internal/dating/admin/user_matches", attrs)
+
   # ⚠️ THE `away` / `greeting` BLOCKS STAY STRING-KEYED, like a message's `metadata`.
   #
   # `InternalApi.decode_result/2` rehydrates map keys with `String.to_existing_atom/1`, which for
