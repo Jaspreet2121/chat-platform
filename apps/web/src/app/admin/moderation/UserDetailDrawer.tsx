@@ -25,6 +25,7 @@ import {
   suspendUser
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
+import { StepUpDialog } from "@/app/admin/_StepUpDialog";
 import { cn } from "@/lib/cn";
 
 type Flash = (tone: "ok" | "err", msg: string) => void;
@@ -138,7 +139,9 @@ export function UserDetailDrawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  async function act(action: "suspend" | "reactivate" | "ban" | "revoke") {
+  // `reauthToken` is present only for "ban" — the one action here the SERVER gates on a step-up
+  // proof. Suspend is reversible and revoke changes nothing about the account, so neither asks.
+  async function act(action: "suspend" | "reactivate" | "ban" | "revoke", reauthToken?: string) {
     setBusy(true);
     try {
       if (action === "suspend") await suspendUser(userId, "Suspended via admin console");
@@ -157,7 +160,7 @@ export function UserDetailDrawer({
         await load();
         onChanged();
         return;
-      } else await banUser(userId, "Banned via admin console");
+      } else await banUser(userId, "Banned via admin console", reauthToken);
       flash("ok", `User ${action === "reactivate" ? "reactivated" : action + "ned"}`);
       setConfirmBan(false);
       await load();
@@ -286,22 +289,22 @@ export function UserDetailDrawer({
           </div>
         )}
 
-        {confirmBan ? (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 p-4 animate-fade-in">
-            <Card className="w-full max-w-xs p-5 animate-scale-in">
-              <p className="mb-1 text-sm font-semibold text-fg">Ban this user?</p>
-              <p className="mb-4 text-sm text-muted">Permanently suspends + blocks auth. Reversible via Reactivate.</p>
-              <div className="flex justify-end gap-2">
-                <Button size="sm" variant="ghost" onClick={() => setConfirmBan(false)} disabled={busy}>
-                  Cancel
-                </Button>
-                <Button size="sm" variant="danger" isLoading={busy} onClick={() => act("ban")}>
-                  Ban user
-                </Button>
-              </div>
-            </Card>
-          </div>
-        ) : null}
+        <StepUpDialog
+          open={confirmBan}
+          title="Ban this user?"
+          body="Permanently suspends the account and blocks it from authenticating. Reversible via Reactivate."
+          confirmLabel="Ban user"
+          target={{
+            // No username on this payload — phone is what the drawer already shows, and the phrase
+            // must be something visible on the screen in front of the operator.
+            phone_number: auth?.phone_number,
+            email: auth?.email,
+            user_id: userId
+          }}
+          busy={busy}
+          onConfirm={(token) => void act("ban", token)}
+          onCancel={() => setConfirmBan(false)}
+        />
       </aside>
     </div>
   );

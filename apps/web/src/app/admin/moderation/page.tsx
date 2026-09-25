@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Ban, Loader2, RotateCcw, ScrollText, ShieldAlert, UserX } from "lucide-react";
 import Link from "next/link";
 import { Pager } from "@/app/admin/_Pager";
+import { StepUpDialog } from "@/app/admin/_StepUpDialog";
 import { isWaiting, reportAge } from "@/lib/adminDashboard";
 import {
   initialPagerState,
@@ -229,12 +230,15 @@ function UsersTab({ flash }: { flash: Flash }) {
     }
   }
 
-  async function confirmBan() {
+  // Receives the step-up proof from the dialog. The SERVER requires it — without a valid, unexpired
+  // token belonging to this admin, the ban endpoint answers 403 admin.reauth_required, so there is
+  // no path to a ban that skips this by talking to the API directly.
+  async function confirmBan(reauthToken: string) {
     if (!confirm) return;
     const user = confirm.user;
     setBusyId(user.user_id);
     try {
-      await banUser(user.user_id, "Banned via admin console");
+      await banUser(user.user_id, "Banned via admin console", reauthToken);
       flash("ok", "User banned");
       setConfirm(null);
       await load();
@@ -352,11 +356,12 @@ function UsersTab({ flash }: { flash: Flash }) {
         onPrev={() => setPager(pagerPrev)}
       />
 
-      <ConfirmDialog
+      <StepUpDialog
         open={Boolean(confirm)}
         title="Ban this user?"
-        body={`This permanently suspends ${confirm?.user.phone_number || confirm?.user.email || shortId(confirm?.user.user_id)} and blocks them from authenticating. It's reversible via Reactivate.`}
+        body="This permanently suspends the account and blocks it from authenticating. It's reversible via Reactivate."
         confirmLabel="Ban user"
+        target={confirm?.user ?? null}
         onConfirm={confirmBan}
         onCancel={() => setConfirm(null)}
         busy={Boolean(confirm) && busyId === confirm?.user.user_id}

@@ -13,6 +13,10 @@ import {
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
 import { Pager } from "@/app/admin/_Pager";
+import { StepUpDialog } from "@/app/admin/_StepUpDialog";
+
+// The two roles whose grant or removal is itself a privileged act.
+const PRIVILEGED_ROLES: readonly string[] = ["root", "admin"];
 import {
   initialPagerState,
   pagerNext,
@@ -72,6 +76,7 @@ export default function AdminRolesPage() {
   const [confirmUser, setConfirmUser] = useState<AdminUser | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [pager, setPager] = useState(initialPagerState);
+  const [roleChange, setRoleChange] = useState<{ user: AdminUser; role: string } | null>(null);
   const { cursor, direction } = pager;
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
@@ -94,12 +99,15 @@ export default function AdminRolesPage() {
       .catch(() => setAllowed(false));
   }, []);
 
-  async function confirmDelete() {
+  // The proof comes from the step-up dialog and the SERVER requires it — a delete without a valid,
+  // unexpired token belonging to this admin answers 403 admin.reauth_required. Delete also remains
+  // ROOT-ONLY (users.delete is not granted to admin); the step-up is on top of that, not instead.
+  async function confirmDelete(reauthToken: string) {
     if (!confirmUser) return;
     const user = confirmUser;
     setBusyId(user.user_id);
     try {
-      await deleteUser(user.user_id);
+      await deleteUser(user.user_id, reauthToken);
       flash("ok", `Deleted ${labelOf(user)}`);
       setUsers((us) => us.filter((u) => u.user_id !== user.user_id));
       setConfirmUser(null);
@@ -131,11 +139,25 @@ export default function AdminRolesPage() {
     if (allowed) void load();
   }, [allowed, load]);
 
-  async function apply(user: AdminUser, role: string) {
+  // A role change TO OR FROM root/admin needs a step-up proof; the others do not. The server is the
+  // judge of which — this asks for one whenever either side of the change is privileged, and passes
+  // whatever it got. Getting the client-side prediction wrong is harmless in one direction (an
+  // unnecessary code) and produces the server's own 403 in the other.
+  function privilegedChange(user: AdminUser, role: string): boolean {
+    return PRIVILEGED_ROLES.includes(role) || PRIVILEGED_ROLES.includes(user.role ?? "");
+  }
+
+  async function apply(user: AdminUser, role: string, reauthToken?: string) {
     if (!role) return;
+
+    if (privilegedChange(user, role) && !reauthToken) {
+      setRoleChange({ user, role });
+      return;
+    }
+
     setBusyId(user.user_id);
     try {
-      const res = await setUserRole(user.user_id, role as IamRole);
+      const res = await setUserRole(user.user_id, role as IamRole, reauthToken);
       flash("ok", `${shortId(user.user_id)} is now ${res.role}`);
       // Optimistically reflect the new role (the users list doesn't return role from the backend yet).
       setUsers((us) =>
@@ -150,6 +172,7 @@ export default function AdminRolesPage() {
       flash("err", e instanceof Error ? e.message : "Role change failed");
     } finally {
       setBusyId("");
+      setRoleChange(null);
     }
   }
 
@@ -268,38 +291,35 @@ export default function AdminRolesPage() {
         </Card>
       )}
 
-      {/* Permanent-delete confirmation (names the user; this cannot be undone). */}
-      {confirmUser ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <Card className="w-full max-w-sm p-6">
-            <h3 className="text-base font-semibold text-fg">Permanently delete user?</h3>
-            <p className="mt-2 text-sm text-muted">
-              Permanently delete <span className="font-medium text-fg">{labelOf(confirmUser)}</span>?
-              Their identity is removed and they can no longer sign in. Conversations they started are kept
-              (reassigned to you) and their past messages remain, shown as “Deleted user.”{" "}
-              <span className="font-medium text-danger">This cannot be undone.</span>
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setConfirmUser(null)}
-                disabled={busyId === confirmUser.user_id}
-              >
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                variant="danger"
-                onClick={confirmDelete}
-                isLoading={busyId === confirmUser.user_id}
-              >
-                Delete permanently
-              </Button>
-            </div>
-          </Card>
-        </div>
-      ) : null}
+      {/* Permanent delete: type the account's own identifier, then prove it is you. */}
+      <StepUpDialog
+        open={Boolean(confirmUser)}
+        title="Permanently delete user?"
+        body="Their identity is removed and they can no longer sign in. Conversations they started are kept (reassigned to you) and their past messages remain, shown as “Deleted user.” This cannot be undone."
+        confirmLabel="Delete permanently"
+        target={confirmUser}
+        busy={Boolean(confirmUser) && busyId === confirmUser?.user_id}
+        onConfirm={confirmDelete}
+        onCancel={() => setConfirmUser(null)}
+      />
+
+      {/* A role change touching root or admin hands somebody the console, or takes it away. */}
+      <StepUpDialog
+        open={Boolean(roleChange)}
+        title={`Change role to ${roleChange?.role ?? ""}?`}
+        body={
+          PRIVILEGED_ROLES.includes(roleChange?.role ?? "")
+            ? "This grants full console access, including actions that cannot be undone."
+            : "This removes console access from an account that currently has it."
+        }
+        confirmLabel="Change role"
+        target={roleChange?.user ?? null}
+        busy={Boolean(roleChange) && busyId === roleChange?.user.user_id}
+        onConfirm={(token) => {
+          if (roleChange) void apply(roleChange.user, roleChange.role, token);
+        }}
+        onCancel={() => setRoleChange(null)}
+      />
 
       <Pager
         state={pager}

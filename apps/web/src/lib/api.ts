@@ -864,9 +864,41 @@ export function reactivateUser(userId: string) {
   });
 }
 
-export function banUser(userId: string, reason: string) {
+// --- Admin step-up re-auth (132) ---------------------------------------------------------------
+// A console session may have been open and unattended for hours, and ban / permanent delete / a role
+// change touching root or admin are each one API call from destroying something. Those three require
+// a PROOF minted here: an OTP sent to the acting admin's OWN registered number (the destination
+// comes from the database, never from this request), exchanged for a token valid five minutes.
+//
+// The server enforces it. This is not a client-side confirmation that could be skipped by calling
+// the API directly — without the token those endpoints answer 403 admin.reauth_required.
+export type ReauthRequest = { otp_request_id: string; debug_code?: string };
+export type ReauthProof = {
+  reauth_token: string;
+  expires_in_seconds: number;
+  expires_at: string;
+};
+
+export function requestAdminReauth() {
+  return request<ReauthRequest>("/api/v1/admin/reauth/request", { method: "POST" });
+}
+
+export function verifyAdminReauth(otpRequestId: string, otpCode: string) {
+  return request<ReauthProof>("/api/v1/admin/reauth/verify", {
+    method: "POST",
+    body: JSON.stringify({ otp_request_id: otpRequestId, otp_code: otpCode })
+  });
+}
+
+// The proof travels as a header, never in a URL, so it cannot end up in a server log or a referrer.
+function reauthHeaders(proof?: string | null): Record<string, string> {
+  return proof ? { "x-admin-reauth": proof } : {};
+}
+
+export function banUser(userId: string, reason: string, reauthToken?: string | null) {
   return request<AdminUser>(`/api/v1/admin/users/${encodeURIComponent(userId)}/ban`, {
     method: "POST",
+    headers: reauthHeaders(reauthToken),
     body: JSON.stringify({ reason })
   });
 }
@@ -965,9 +997,12 @@ export type RoleAssignment = { user_id: string; role: string; previous_role?: st
 
 // Assign a role to a user. Only a root session (roles.manage) is authorized — the backend 403s others
 // and blocks demoting the last root (error code "iam.last_root", surfaced via the thrown message).
-export function setUserRole(userId: string, role: IamRole | string) {
+// A role change TO OR FROM root/admin needs a step-up proof; the rest do not. The server decides
+// which — this only carries the token when the caller has one.
+export function setUserRole(userId: string, role: IamRole | string, reauthToken?: string | null) {
   return request<RoleAssignment>(`/api/v1/admin/users/${encodeURIComponent(userId)}/role`, {
     method: "POST",
+    headers: reauthHeaders(reauthToken),
     body: JSON.stringify({ role })
   });
 }
@@ -975,10 +1010,10 @@ export function setUserRole(userId: string, role: IamRole | string) {
 // Permanently delete a user (root-only, users.delete). Anonymize-keep policy on the backend. The backend
 // rejects deleting a root/admin/self (iam.cannot_delete_privileged / iam.cannot_delete_self), surfaced via
 // the thrown message.
-export function deleteUser(userId: string) {
+export function deleteUser(userId: string, reauthToken?: string | null) {
   return request<{ user_id: string; deleted: boolean }>(
     `/api/v1/admin/users/${encodeURIComponent(userId)}`,
-    { method: "DELETE" }
+    { method: "DELETE", headers: reauthHeaders(reauthToken) }
   );
 }
 
