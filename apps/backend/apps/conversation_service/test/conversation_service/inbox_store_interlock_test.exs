@@ -118,14 +118,37 @@ defmodule ConversationService.InboxStoreInterlockTest do
     assert log =~ "SKIPPED"
   end
 
+  defmodule StoreDownStub do
+    @moduledoc false
+    def recount_unread(attrs) do
+      send(:inbox_interlock_test, {:store_recount, attrs})
+      {:error, :message_unavailable}
+    end
+  end
+
   @tag :postgres_integration
-  test "under scylla recount/2 writes nothing either — the reconciler is not its only caller" do
+  test "under scylla recount/2 never runs the lateral — it goes to the STORE, and a store that cannot answer leaves the row alone" do
     %{conversation: conversation, peer: peer} = seed_divergent_row!()
     Application.put_env(:shared_infra, :message_store_backend, "scylla")
 
-    capture_log(fn -> InboxCounters.recount(conversation, peer) end)
+    # Since the store-backed recount (MessageService.InboxRecount), this path is no longer a skip: it
+    # delegates to the message service. The interlock's property is unchanged and still asserted on
+    # the ROW — the Postgres lateral, which would write the frozen table's answer, must not run.
+    Process.register(self(), :inbox_interlock_test)
+    previous_adapter = Application.get_env(:shared_infra, :message_client_adapter)
+    Application.put_env(:shared_infra, :message_client_adapter, StoreDownStub)
 
+    on_exit(fn ->
+      if previous_adapter,
+        do: Application.put_env(:shared_infra, :message_client_adapter, previous_adapter),
+        else: Application.delete_env(:shared_infra, :message_client_adapter)
+    end)
+
+    log = capture_log(fn -> InboxCounters.recount(conversation, peer) end)
+
+    assert_receive {:store_recount, %{"conversation_id" => ^conversation, "user_id" => ^peer}}
     assert row(conversation) == {"live scylla body", 7}
+    assert log =~ "counter left as it was"
   end
 
   @tag :postgres_integration
