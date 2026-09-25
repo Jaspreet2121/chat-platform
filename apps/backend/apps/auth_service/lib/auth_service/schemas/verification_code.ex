@@ -7,6 +7,15 @@ defmodule AuthService.Schemas.VerificationCode do
 
   import Ecto.Changeset
 
+  # THE ONE LIST of purposes a code may carry. The database CHECK (010, widened in 132) and this
+  # changeset are two allow-lists for the same fact, and on 2026-09-25 they disagreed: 132 taught
+  # the CHECK about "admin_reauth" and nobody taught this line, so every step-up request died here
+  # — a changeset error, no row, no SMS, and a 403 at the gateway in three milliseconds. The
+  # accessor exists so a test can pin AdminReauth.purpose/0 against it.
+  @purposes ~w(login signup email_verify phone_verify admin_reauth)
+
+  def purposes, do: @purposes
+
   @primary_key {:id, :binary_id, autogenerate: false}
 
   schema "verification_codes" do
@@ -23,7 +32,7 @@ defmodule AuthService.Schemas.VerificationCode do
     verification_code
     |> cast(attrs, [:id, :purpose, :destination, :code_hash, :attempts, :expires_at, :consumed_at])
     |> validate_required([:purpose, :destination, :code_hash, :expires_at])
-    |> validate_inclusion(:purpose, ["login", "signup", "email_verify", "phone_verify"])
+    |> validate_inclusion(:purpose, @purposes)
     |> validate_number(:attempts, greater_than_or_equal_to: 0)
   end
 end

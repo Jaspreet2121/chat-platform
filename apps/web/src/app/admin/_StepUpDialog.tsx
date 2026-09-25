@@ -5,6 +5,7 @@ import { AlertTriangle, ShieldCheck } from "lucide-react";
 import { Button, Card, Input } from "@/components";
 import { requestAdminReauth, verifyAdminReauth } from "@/lib/api";
 import { confirmMatches, confirmPhrase, type ConfirmTarget } from "@/lib/adminConfirm";
+import { describeStepUpFailure } from "@/lib/stepUpError";
 
 // The gate in front of ban, permanent delete, and a role change touching root or admin.
 //
@@ -69,7 +70,9 @@ export function StepUpDialog({
       // returns nothing here, and the field stays empty.
       if (res.debug_code) setCode(res.debug_code);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not send the code.");
+      // The server's own code and message, always. A 403 here is NOT a wrong code — no code exists
+      // yet — and the first version of this dialog hid that behind generic text for a day.
+      setError(describeStepUpFailure(e).message);
     } finally {
       setSending(false);
     }
@@ -83,9 +86,13 @@ export function StepUpDialog({
       reset();
       onConfirm(proof.reauth_token);
     } catch (e) {
-      // Every verify failure is one message on the server too — wrong, expired and unknown are
-      // deliberately indistinguishable, so there is nothing more specific to say here.
-      setError(e instanceof Error ? e.message : "That code didn't work. Request a new one.");
+      // "That code didn't work" ONLY when the server refused the code (403 admin.reauth_failed —
+      // wrong, expired and unknown are deliberately one answer there). Every other failure — a
+      // 429, a 5xx, a permission 403, a dead network — shows its own code and message, because
+      // telling somebody to retype a digit during an outage is how outages go unreported.
+      const failure = describeStepUpFailure(e);
+      setError(failure.message);
+      if (failure.retryable) setCode("");
     } finally {
       setVerifying(false);
     }
