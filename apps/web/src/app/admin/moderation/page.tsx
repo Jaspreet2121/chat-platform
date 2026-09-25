@@ -6,14 +6,7 @@ import Link from "next/link";
 import { Pager } from "@/app/admin/_Pager";
 import { StepUpDialog } from "@/app/admin/_StepUpDialog";
 import { isWaiting, reportAge } from "@/lib/adminDashboard";
-import {
-  initialPagerState,
-  pagerNext,
-  pagerPrev,
-  pagerReceived,
-  pagerRequest,
-  pagerReset
-} from "@/lib/cursorPager";
+import { usePaging } from "@/app/admin/_usePaging";
 import {
   AdminReport,
   AdminUser,
@@ -179,8 +172,8 @@ function UsersTab({ flash }: { flash: Flash }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
-  const [pager, setPager] = useState(initialPagerState);
-  const { cursor, direction } = pager;
+  const paging = usePaging("moderation.users");
+  const { params: pageParams, setEnvelope } = paging;
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
   const [confirm, setConfirm] = useState<{ user: AdminUser } | null>(null);
@@ -201,16 +194,16 @@ function UsersTab({ flash }: { flash: Flash }) {
         q: q.trim() || undefined,
         status: statusFilter || undefined,
         // The filters go back with EVERY page, so page 2 of "suspended" is still suspended users.
-        ...pagerRequest(cursor, direction)
+        ...pageParams
       });
       setUsers(res.users);
-      setPager((p) => pagerReceived(p, res));
+      setEnvelope(res);
     } catch (e) {
       flash("err", e instanceof Error ? e.message : "Failed to load users");
     } finally {
       setLoading(false);
     }
-  }, [q, statusFilter, cursor, direction, flash]);
+  }, [q, statusFilter, pageParams, setEnvelope, flash]);
 
   useEffect(() => {
     void load();
@@ -260,7 +253,7 @@ function UsersTab({ flash }: { flash: Flash }) {
             setQ(e.target.value);
             // A cursor names a row in the OLD result set — carrying it into a newly filtered list
             // would drop the reader on an arbitrary, usually empty, page.
-            setPager(pagerReset());
+            paging.reset();
           }}
           onKeyDown={(e) => e.key === "Enter" && load()}
         />
@@ -269,7 +262,7 @@ function UsersTab({ flash }: { flash: Flash }) {
           value={statusFilter}
           onChange={(e) => {
             setStatusFilter(e.target.value);
-            setPager(pagerReset());
+            paging.reset();
           }}
         >
           <option value="">All statuses</option>
@@ -348,13 +341,7 @@ function UsersTab({ flash }: { flash: Flash }) {
         </Card>
       )}
 
-      <Pager
-        state={pager}
-        count={users.length}
-        disabled={loading}
-        onNext={() => setPager(pagerNext)}
-        onPrev={() => setPager(pagerPrev)}
-      />
+      <Pager paging={paging} disabled={loading} />
 
       <StepUpDialog
         open={Boolean(confirm)}
@@ -386,25 +373,25 @@ function ReportsTab({ flash }: { flash: Flash }) {
   const [statusFilter, setStatusFilter] = useState("open");
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
-  const [pager, setPager] = useState(initialPagerState);
+  const paging = usePaging("moderation.reports");
+  const { params: pageParams, setEnvelope } = paging;
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
-  const { cursor, direction } = pager;
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await getAdminReports({
         status: statusFilter || undefined,
-        ...pagerRequest(cursor, direction)
+        ...pageParams
       });
       setReports(res.reports);
-      setPager((p) => pagerReceived(p, res));
+      setEnvelope(res);
     } catch (e) {
       flash("err", e instanceof Error ? e.message : "Failed to load reports");
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, cursor, direction, flash]);
+  }, [statusFilter, pageParams, setEnvelope, flash]);
 
   useEffect(() => {
     void load();
@@ -434,7 +421,7 @@ function ReportsTab({ flash }: { flash: Flash }) {
             type="button"
             onClick={() => {
               setStatusFilter(value);
-              setPager(pagerReset());
+              paging.reset();
             }}
             className={cn(
               "h-8 rounded-full border px-3 text-xs font-medium transition-colors",
@@ -541,13 +528,7 @@ function ReportsTab({ flash }: { flash: Flash }) {
         </Card>
       )}
 
-      <Pager
-        state={pager}
-        count={reports.length}
-        disabled={loading}
-        onNext={() => setPager(pagerNext)}
-        onPrev={() => setPager(pagerPrev)}
-      />
+      <Pager paging={paging} disabled={loading} />
 
       {selectedUserId ? (
         <UserDetailDrawer
@@ -565,26 +546,26 @@ function AuditTab() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [pager, setPager] = useState(initialPagerState);
-  const { cursor, direction } = pager;
+  const paging = usePaging("moderation.audit");
+  const { params: pageParams, setEnvelope } = paging;
 
   useEffect(() => {
     let active = true;
     // Deliberately no synchronous setLoading here: the rows for the page you are leaving stay on
     // screen until the next page arrives, which is steadier than a full-height spinner between
     // every click, and it keeps this effect free of a synchronous state write.
-    getAdminAudit(pagerRequest(cursor, direction))
+    getAdminAudit(pageParams)
       .then((res) => {
         if (!active) return;
         setEntries(res.entries);
-        setPager((p) => pagerReceived(p, res));
+        setEnvelope(res);
       })
       .catch((e) => active && setError(e instanceof Error ? e.message : "Failed to load audit log"))
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
-  }, [cursor, direction]);
+  }, [pageParams, setEnvelope]);
 
   if (loading) return <Loading />;
   if (error) return <Empty text={error} />;
@@ -615,13 +596,7 @@ function AuditTab() {
       ))}
       </Card>
 
-      <Pager
-        state={pager}
-        count={entries.length}
-        disabled={loading}
-        onNext={() => setPager(pagerNext)}
-        onPrev={() => setPager(pagerPrev)}
-      />
+      <Pager paging={paging} disabled={loading} />
     </>
   );
 }

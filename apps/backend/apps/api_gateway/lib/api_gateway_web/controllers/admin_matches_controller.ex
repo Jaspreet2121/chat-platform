@@ -38,8 +38,8 @@ defmodule ApiGatewayWeb.AdminMatchesController do
         SharedInfra.UserClient.admin_list_matches(%{
           "app_id" => SharedInfra.Tenancy.default_app_id(),
           "q" => params["q"],
-          "cursor" => params["cursor"],
-          "limit" => params["limit"]
+          "page" => params["page"],
+          "page_size" => params["page_size"]
         })
       )
     else
@@ -56,8 +56,8 @@ defmodule ApiGatewayWeb.AdminMatchesController do
         SharedInfra.UserClient.admin_user_matches(%{
           "app_id" => SharedInfra.Tenancy.default_app_id(),
           "user_id" => user_id,
-          "cursor" => params["cursor"],
-          "limit" => params["limit"]
+          "page" => params["page"],
+          "page_size" => params["page_size"]
         })
       )
     else

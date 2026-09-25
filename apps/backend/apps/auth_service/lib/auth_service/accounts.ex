@@ -6,7 +6,7 @@ defmodule AuthService.Accounts do
   import Ecto.Query, only: [from: 2]
 
   alias AuthService.Repo
-  alias SharedInfra.AdminCursor
+  alias SharedInfra.AdminPage
   alias AuthService.Schemas.UserAuth
 
   def user_changeset(attrs \\ %{}) do
@@ -373,84 +373,63 @@ defmodule AuthService.Accounts do
   end
 
   @doc """
-  Keyset-paginated user list for the admin moderation table. Optional status filter + phone/email
-  search, both of which survive paging because the caller sends them back with the cursor.
-
-  Cursor on `(ua.created_at, ua.id)`, not OFFSET: a sign-up arriving between page 1 and page 2 used
-  to shift every later row down by one, so the reader silently skipped a user.
+  Numbered-page user list for the admin moderation table. Optional status filter + phone/email
+  search; the total is counted over the SAME filters so "Page 3 of 12" is about the list on screen.
+  Ordered `(created_at DESC, id DESC)` so two rows can never swap between reads.
   """
   def list_users(opts \\ %{}) do
-    page_size = AdminCursor.clamp(Map.get(opts, "limit"))
-    direction = AdminCursor.direction(Map.get(opts, "direction"))
+    page = AdminPage.parse(opts)
 
     # Admin console is first-party only → always scope to the tenant (default tenant-zero when unset).
     {where, params} = list_filters(opts)
 
-    {where, params, had_cursor?} =
-      case AdminCursor.decode(Map.get(opts, "cursor")) do
-        {:ok, {ts, id}} ->
-          predicate = AdminCursor.where(direction, "ua.created_at", "ua.id", length(params))
-          {where <> " AND " <> predicate, params ++ [ts, id], true}
+    # LEFT JOIN user_profiles for display_name + username (same shared DB; admin-gated list). role
+    # comes from users_auth (mig 058). ua.* is qualified because both tables have a created_at.
+    from_sql = "FROM users_auth ua LEFT JOIN user_profiles up ON up.user_id = ua.id #{where}"
+    total = count(from_sql, params)
 
-        :none ->
-          {where, params, false}
-      end
-
-    # uuid columns must be ::text — raw Repo.query! returns uuid as a 16-byte binary that Jason can't encode.
-    # LEFT JOIN user_profiles for display_name (same shared DB; admin-gated list). role comes from
-    # users_auth (mig 058). ua.* is qualified because both tables have a created_at column.
-    # limit + 1: the extra row answers "is there another page?" with no second COUNT query.
-    # The keyset's own timestamp, at FULL precision — see AdminCursor.key_column/1. The displayed
-    # created_at above is truncated to the second, which makes a BACKWARD page re-serve its own
-    # boundary row. That is the bug the forward-then-back test caught.
     sql =
-      "SELECT ua.id::text, ua.phone_number, ua.email, ua.status, ua.is_admin, ua.role, up.display_name, " <>
-        "to_char(ua.created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at, " <>
-        "#{AdminCursor.key_column("ua.created_at")} AS cursor_key " <>
-        "FROM users_auth ua LEFT JOIN user_profiles up ON up.user_id = ua.id " <>
-        "#{where} #{AdminCursor.order(direction, "ua.created_at", "ua.id")} " <>
-        "LIMIT #{page_size + 1}"
+      "SELECT ua.id::text, ua.phone_number, ua.email, ua.status, ua.is_admin, ua.role, " <>
+        "up.display_name, up.username, " <>
+        "to_char(ua.created_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS created_at " <>
+        from_sql <> " #{AdminPage.order("ua.created_at", "ua.id")} #{AdminPage.window(page)}"
 
     %Postgrex.Result{rows: rows} = Repo.query!(sql, params)
 
-    page =
-      AdminCursor.to_page(rows, direction, had_cursor?, page_size, fn row ->
-        {List.last(row), List.first(row)}
+    Map.put(
+      AdminPage.envelope(page, total),
+      :users,
+      Enum.map(rows, fn [
+                          id,
+                          phone,
+                          email,
+                          status,
+                          is_admin,
+                          role,
+                          display_name,
+                          username,
+                          created_at
+                        ] ->
+        %{
+          user_id: id,
+          phone_number: phone,
+          email: email,
+          status: status,
+          is_admin: is_admin,
+          role: role,
+          display_name: display_name,
+          username: username,
+          created_at: created_at
+        }
       end)
-
-    %{
-      page_size: page.page_size,
-      next_cursor: page.next_cursor,
-      prev_cursor: page.prev_cursor,
-      users:
-        Enum.map(page.items, fn [
-                                  id,
-                                  phone,
-                                  email,
-                                  status,
-                                  is_admin,
-                                  role,
-                                  display_name,
-                                  created_at,
-                                  _cursor_key
-                                ] ->
-          %{
-            user_id: id,
-            phone_number: phone,
-            email: email,
-            status: status,
-            is_admin: is_admin,
-            role: role,
-            display_name: display_name,
-            created_at: created_at
-          }
-        end)
-    }
+    )
   end
 
-  # Batched user summaries by id — {user_id, display_name, phone_number} for admin views that only have
-  # raw ids (message senders, report/audit actors). ONE query (no N+1); admin-gated at the gateway. Phone
-  # is included because the admin context is allowed to see it.
+  defp count(from_sql, params) do
+    %Postgrex.Result{rows: [[n]]} = Repo.query!("SELECT count(*) " <> from_sql, params)
+    n
+  end
+
   def list_user_summaries(attrs \\ %{}) do
     ids =
       (Map.get(attrs, "user_ids") || Map.get(attrs, :user_ids) || [])

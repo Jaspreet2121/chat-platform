@@ -10,6 +10,8 @@ import {
   reenqueueWebhooksBulk
 } from "@/lib/api";
 import { Button, Card, Input } from "@/components";
+import { Pager } from "@/app/admin/_Pager";
+import { usePaging } from "@/app/admin/_usePaging";
 
 // Webhook dead-letter ops (Surface 3): the failed-delivery queue with idempotent re-enqueue. The list is
 // webhooks.view (root/admin/support); the mutations are webhooks.manage (root/admin) — the backend enforces,
@@ -24,14 +26,14 @@ function formatTime(iso?: string | null): string {
 
 export default function AdminWebhooksPage() {
   const [rows, setRows] = useState<FailedWebhook[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
+  const paging = usePaging("webhooks");
+  const { params: pageParams, setEnvelope } = paging;
   const [appId, setAppId] = useState("");
   const [eventType, setEventType] = useState("");
   const [canManage, setCanManage] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [isBulkBusy, setIsBulkBusy] = useState(false);
 
@@ -42,27 +44,24 @@ export default function AdminWebhooksPage() {
   }, []);
 
   const load = useCallback(
-    async (opts: { append?: boolean; cursor?: string } = {}) => {
-      if (opts.append) setIsLoadingMore(true);
-      else setIsLoading(true);
+    async () => {
+      setIsLoading(true);
       try {
         const page = await getAdminFailedWebhooks({
           appId: appId.trim() || undefined,
           eventType: eventType.trim() || undefined,
-          cursor: opts.cursor,
-          limit: 50
+          ...pageParams
         });
-        setRows((prev) => (opts.append ? [...prev, ...page.data] : page.data));
-        setCursor(page.next_cursor ?? null);
+        setRows(page.data);
+        setEnvelope(page);
         setError("");
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Failed to load failed deliveries.");
       } finally {
         setIsLoading(false);
-        setIsLoadingMore(false);
       }
     },
-    [appId, eventType]
+    [appId, eventType, pageParams, setEnvelope]
   );
 
   useEffect(() => {
@@ -125,13 +124,19 @@ export default function AdminWebhooksPage() {
         <div className="flex flex-wrap items-center gap-2">
           <Input
             value={appId}
-            onChange={(event) => setAppId(event.target.value)}
+            onChange={(event) => {
+                setAppId(event.target.value);
+                paging.reset();
+              }}
             placeholder="Filter: app id"
             className="w-44 font-mono text-xs"
           />
           <Input
             value={eventType}
-            onChange={(event) => setEventType(event.target.value)}
+            onChange={(event) => {
+                setEventType(event.target.value);
+                paging.reset();
+              }}
             placeholder="Filter: event type"
             className="w-44 text-xs"
           />
@@ -220,18 +225,7 @@ export default function AdminWebhooksPage() {
             </table>
           </Card>
 
-          {cursor ? (
-            <div className="flex justify-center">
-              <Button
-                variant="ghost"
-                onClick={() => void load({ append: true, cursor })}
-                disabled={isLoadingMore}
-              >
-                {isLoadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                Load more
-              </Button>
-            </div>
-          ) : null}
+          <Pager paging={paging} disabled={isLoading} />
         </>
       )}
     </div>

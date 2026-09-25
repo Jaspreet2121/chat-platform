@@ -39,60 +39,55 @@ defmodule UserService.DatingAdminTest do
   end
 
   @tag :postgres_integration
-  test "the PAGE SIZE IS THE SERVER'S — a caller may narrow it, never widen it" do
+  test "the PAGE SIZE IS THE SERVER'S — a caller may pick a size, never one past the ceiling" do
     anchor = user!("Anchor")
-    for i <- 1..60, do: match!(anchor, user!("Peer #{i}"), i)
+    for i <- 1..110, do: match!(anchor, user!("Peer #{i}"), i)
 
     # Ask for far more than the cap.
-    assert {:ok, %{matches: matches, page_size: size}} =
-             DatingAdmin.list_matches(%{"app_id" => @app_id, "limit" => "10000"})
+    assert {:ok, %{matches: matches, page_size: 100, total: 110, total_pages: 2}} =
+             DatingAdmin.list_matches(%{"app_id" => @app_id, "page_size" => "10000"})
 
-    assert length(matches) == DatingAdmin.page_size()
-    assert size == DatingAdmin.page_size()
+    assert length(matches) == 100
 
-    # Junk, zero and negative all land on the server's size rather than disabling the bound.
+    # Junk, zero and negative all land on the server's default rather than disabling the bound.
     for bad <- ["0", "-1", "abc", nil] do
-      assert {:ok, %{matches: rows}} =
-               DatingAdmin.list_matches(%{"app_id" => @app_id, "limit" => bad})
+      assert {:ok, %{matches: rows, page_size: size}} =
+               DatingAdmin.list_matches(%{"app_id" => @app_id, "page_size" => bad})
 
-      assert length(rows) == DatingAdmin.page_size()
+      assert size == SharedInfra.AdminPage.default_size()
+      assert length(rows) == size
     end
 
     # Narrowing IS allowed.
     assert {:ok, %{matches: five}} =
-             DatingAdmin.list_matches(%{"app_id" => @app_id, "limit" => "5"})
+             DatingAdmin.list_matches(%{"app_id" => @app_id, "page_size" => "5"})
 
     assert length(five) == 5
   end
 
   @tag :postgres_integration
-  test "cursor paging walks the whole list once — no skips, no repeats" do
+  test "numbered pages walk the whole list once — no skips, no repeats, newest first" do
     anchor = user!("Anchor")
     for i <- 1..12, do: match!(anchor, user!("Peer #{i}"), i)
 
-    {:ok, page1} = DatingAdmin.list_matches(%{"app_id" => @app_id, "limit" => "5"})
-    assert length(page1.matches) == 5
-    assert is_binary(page1.next_cursor)
+    pages =
+      for page <- 1..3 do
+        {:ok, result} =
+          DatingAdmin.list_matches(%{"app_id" => @app_id, "page" => page, "page_size" => "5"})
 
-    {:ok, page2} =
-      DatingAdmin.list_matches(%{
-        "app_id" => @app_id,
-        "limit" => "5",
-        "cursor" => page1.next_cursor
-      })
+        assert result.total == 12
+        assert result.total_pages == 3
+        result.matches
+      end
 
-    {:ok, page3} =
-      DatingAdmin.list_matches(%{
-        "app_id" => @app_id,
-        "limit" => "5",
-        "cursor" => page2.next_cursor
-      })
-
-    ids = Enum.map(page1.matches ++ page2.matches ++ page3.matches, & &1.id)
+    ids = pages |> List.flatten() |> Enum.map(& &1.id)
     assert length(ids) == 12
     assert length(Enum.uniq(ids)) == 12
-    # The last page knows it is the last.
-    assert is_nil(page3.next_cursor)
+
+    # Newest first across the whole walk, not just within a page.
+    stamps = pages |> List.flatten() |> Enum.map(& &1.matched_at)
+    assert stamps == Enum.sort(stamps, :desc)
+    assert length(List.last(pages)) == 2
   end
 
   @tag :postgres_integration

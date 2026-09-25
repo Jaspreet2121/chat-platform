@@ -104,7 +104,9 @@ defmodule MessageService.EventOutboxOpsTest do
     id = stage!()
     set_status!(id, "aborted")
 
-    assert {:ok, %{items: [item], count: 1}} = EventOutboxOps.list(%{"status" => "aborted"})
+    assert {:ok, %{items: [item], total: 1, total_pages: 1}} =
+             EventOutboxOps.list(%{"status" => "aborted"})
+
     assert item.id == id
     refute Map.has_key?(item, :envelope)
 

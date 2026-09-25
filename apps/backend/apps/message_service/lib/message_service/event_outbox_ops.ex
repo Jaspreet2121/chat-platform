@@ -22,9 +22,6 @@ defmodule MessageService.EventOutboxOps do
 
   alias MessageService.Repo
 
-  @list_limit_default 30
-  @list_limit_max 100
-
   @doc "Per-state counts and max ages. Zeros mean health."
   def summary(_attrs \\ %{}) do
     %{rows: rows} =
@@ -52,40 +49,27 @@ defmodule MessageService.EventOutboxOps do
   end
 
   @doc """
-  Keyset-paginated rows for one state (the webhook failed-list shape). METADATA ONLY — the
-  envelope is behind the single-row `get/1` expand.
+  Numbered pages of rows for one state. METADATA ONLY — the envelope is behind the single-row
+  `get/1` expand. Ordered `(created_at DESC, id DESC)`; the total is counted over the same state.
   """
   def list(attrs) do
     with {:ok, status} <- valid_status(attrs) do
-      limit = attrs |> Map.get("limit") |> normalize_limit()
-      {cursor_ts, cursor_id} = {Map.get(attrs, "cursor_ts"), Map.get(attrs, "cursor_id")}
+      page = SharedInfra.AdminPage.parse(attrs)
 
-      {cursor_sql, params} =
-        if cursor_ts && cursor_id do
-          {"AND (created_at, id) < ($2, $3::text::uuid) ", [status, cursor_ts, cursor_id]}
-        else
-          {"", [status]}
-        end
+      %{rows: [[total]]} =
+        Repo.query!("SELECT count(*) FROM kafka_event_outbox WHERE status = $1", [status])
 
       %{rows: rows} =
         Repo.query!(
           "SELECT id::text, event_type, conversation_id::text, message_id::text, status, " <>
             "attempts, last_error, created_at " <>
             "FROM kafka_event_outbox WHERE status = $1 " <>
-            cursor_sql <>
-            "ORDER BY created_at DESC, id DESC LIMIT #{limit}",
-          params
+            "#{SharedInfra.AdminPage.order("created_at", "id")} #{SharedInfra.AdminPage.window(page)}",
+          [status]
         )
 
-      items = Enum.map(rows, &row_map/1)
-
-      next_cursor =
-        case List.last(items) do
-          %{created_at: ts, id: id} when length(items) == limit -> %{ts: ts, id: id}
-          _ -> nil
-        end
-
-      {:ok, %{items: items, count: length(items), next_cursor: next_cursor}}
+      {:ok,
+       Map.put(SharedInfra.AdminPage.envelope(page, total), :items, Enum.map(rows, &row_map/1))}
     end
   end
 
@@ -194,17 +178,6 @@ defmodule MessageService.EventOutboxOps do
       _ -> {:error, :event_invalid}
     end
   end
-
-  defp normalize_limit(limit) when is_integer(limit), do: limit |> max(1) |> min(@list_limit_max)
-
-  defp normalize_limit(limit) when is_binary(limit) do
-    case Integer.parse(limit) do
-      {n, _} -> normalize_limit(n)
-      _ -> @list_limit_default
-    end
-  end
-
-  defp normalize_limit(_), do: @list_limit_default
 
   defp required(attrs, key) do
     case Map.get(attrs, key) do

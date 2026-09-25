@@ -17,14 +17,7 @@ import { StepUpDialog } from "@/app/admin/_StepUpDialog";
 
 // The two roles whose grant or removal is itself a privileged act.
 const PRIVILEGED_ROLES: readonly string[] = ["root", "admin"];
-import {
-  initialPagerState,
-  pagerNext,
-  pagerPrev,
-  pagerReceived,
-  pagerRequest,
-  pagerReset
-} from "@/lib/cursorPager";
+import { usePaging } from "@/app/admin/_usePaging";
 import { cn } from "@/lib/cn";
 
 // Pretty-print a phone: +91 83770 03300 for a 12-digit +91 number, else a sensible +digits form.
@@ -75,9 +68,9 @@ export default function AdminRolesPage() {
   const [canDelete, setCanDelete] = useState(false);
   const [confirmUser, setConfirmUser] = useState<AdminUser | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
-  const [pager, setPager] = useState(initialPagerState);
+  const paging = usePaging("roles");
+  const { params: pageParams, setEnvelope } = paging;
   const [roleChange, setRoleChange] = useState<{ user: AdminUser; role: string } | null>(null);
-  const { cursor, direction } = pager;
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
@@ -124,16 +117,16 @@ export default function AdminRolesPage() {
     try {
       const res = await getAdminUsers({
         q: q.trim() || undefined,
-        ...pagerRequest(cursor, direction)
+        ...pageParams
       });
       setUsers(res.users);
-      setPager((p) => pagerReceived(p, res));
+      setEnvelope(res);
     } catch (e) {
       flash("err", e instanceof Error ? e.message : "Failed to load users");
     } finally {
       setLoading(false);
     }
-  }, [q, cursor, direction, flash]);
+  }, [q, pageParams, setEnvelope, flash]);
 
   useEffect(() => {
     if (allowed) void load();
@@ -207,7 +200,7 @@ export default function AdminRolesPage() {
         value={q}
         onChange={(e) => {
           setQ(e.target.value);
-          setPager(pagerReset());
+          paging.reset();
         }}
         placeholder="Search users…"
         className="mb-4 h-10 w-full max-w-sm rounded-lg border border-border bg-elevated px-3 text-sm text-fg placeholder:text-faint outline-none focus:border-brand focus:ring-2 focus:ring-brand-ring"
@@ -321,13 +314,7 @@ export default function AdminRolesPage() {
         onCancel={() => setRoleChange(null)}
       />
 
-      <Pager
-        state={pager}
-        count={users.length}
-        disabled={loading}
-        onNext={() => setPager(pagerNext)}
-        onPrev={() => setPager(pagerPrev)}
-      />
+      <Pager paging={paging} disabled={loading} />
     </div>
   );
 }

@@ -106,18 +106,12 @@ defmodule AuthService.Webhooks do
   # --- Phase 4: failed-delivery ops (delegate to SharedInfra.WebhookOutbox w/ this Repo) --------
 
   def list_failed_deliveries(attrs) do
-    cursor =
-      case {Map.get(attrs, "cursor_ts"), Map.get(attrs, "cursor_id")} do
-        {ts, id} when is_binary(ts) and ts != "" and is_binary(id) and id != "" -> {ts, id}
-        _ -> nil
-      end
-
     result =
       SharedInfra.WebhookOutbox.list_failed(Repo,
         app_id: presence(Map.get(attrs, "app_id")),
         event_type: presence(Map.get(attrs, "event_type")),
-        limit: to_int(Map.get(attrs, "limit"), 50),
-        cursor: cursor
+        page: Map.get(attrs, "page"),
+        page_size: Map.get(attrs, "page_size")
       )
 
     {:ok, result}

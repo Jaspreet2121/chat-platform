@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, HeartHandshake, Loader2 } from "lucide-react";
 import { AdminMatch, getAdminMatches, getAdminUserMatches } from "@/lib/api";
 import { Button, Card, Input } from "@/components";
+import { Pager } from "@/app/admin/_Pager";
+import { usePaging } from "@/app/admin/_usePaging";
 import {
   REASON_MAX_LENGTH,
   REASON_MIN_LENGTH,
@@ -27,8 +29,8 @@ export function MatchesPanel({ userId }: { userId?: string }) {
   const [reason, setReason] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [matches, setMatches] = useState<AdminMatch[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const paging = usePaging(userId ? "matches.user" : "matches");
+  const { params: pageParams, setEnvelope } = paging;
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -42,31 +44,31 @@ export function MatchesPanel({ userId }: { userId?: string }) {
   }, []);
 
   const load = useCallback(
-    async (activeReason: string, at: string | null, append: boolean) => {
+    async (activeReason: string) => {
       setLoading(true);
       setError("");
       try {
         const res = userId
-          ? await getAdminUserMatches(userId, activeReason, { cursor: at })
-          : await getAdminMatches(activeReason, { q: q.trim() || undefined, cursor: at });
-        setMatches((previous) => (append ? [...previous, ...res.matches] : res.matches));
-        setNextCursor(res.next_cursor ?? null);
+          ? await getAdminUserMatches(userId, activeReason, pageParams)
+          : await getAdminMatches(activeReason, { q: q.trim() || undefined, ...pageParams });
+        setMatches(res.matches);
+        setEnvelope(res);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not load matches.");
       } finally {
         setLoading(false);
       }
     },
-    [userId, q]
+    [userId, q, pageParams, setEnvelope]
   );
 
-  // `cursor` drives paging; `load` changes when the search or the target does. The loading flag is
+  // `load` changes when the page, the search or the target does. The loading flag is
   // set inside `load`, which the rule reads as a synchronous write in an effect — it is the fetch's
   // own state and there is nowhere else for it to live.
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    if (reason) void load(reason, cursor, Boolean(cursor));
-  }, [reason, cursor, load]);
+    if (reason) void load(reason);
+  }, [reason, load]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   function submitReason() {
@@ -121,9 +123,9 @@ export function MatchesPanel({ userId }: { userId?: string }) {
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
               if (e.key !== "Enter") return;
-              // A new search is a new list: the old cursor names a row that may not be in it.
-              setCursor(null);
-              void load(reason, null, false);
+              // A new search is a new list: page 7 of the old one is nowhere in it.
+              paging.reset();
+              void load(reason);
             }}
           />
         ) : null}
@@ -164,18 +166,9 @@ export function MatchesPanel({ userId }: { userId?: string }) {
         <div className="mt-3 flex justify-center text-muted">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
         </div>
-      ) : nextCursor ? (
-        <div className="mt-3 flex justify-center">
-          <Button
-            size="sm"
-            variant="ghost"
-            className="border border-border"
-            onClick={() => setCursor(nextCursor)}
-          >
-            Load more
-          </Button>
-        </div>
-      ) : null}
+      ) : (
+        <Pager paging={paging} disabled={loading} />
+      )}
     </div>
   );
 }

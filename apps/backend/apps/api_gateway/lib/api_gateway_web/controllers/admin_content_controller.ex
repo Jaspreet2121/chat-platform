@@ -32,9 +32,8 @@ defmodule ApiGatewayWeb.AdminContentController do
   def conversations(conn, params) do
     case SharedInfra.ConversationClient.admin_list_conversations(%{
            "q" => params["q"],
-           "cursor" => params["cursor"],
-           "direction" => params["direction"],
-           "limit" => params["limit"],
+           "page" => params["page"],
+           "page_size" => params["page_size"],
            "app_id" => tenant()
          }) do
       {:ok, data} ->

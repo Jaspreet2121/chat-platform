@@ -8,7 +8,7 @@ defmodule ConversationService.Conversations do
   alias ConversationService.ConversationSettingsStore
   alias ConversationService.ConversationStore
   alias ConversationService.GroupProfileStore
-  alias SharedInfra.AdminCursor
+  alias SharedInfra.AdminPage
   alias ConversationService.ParticipantEvents
   alias ConversationService.ParticipantStore
   alias ConversationService.Repo
@@ -36,101 +36,55 @@ defmodule ConversationService.Conversations do
     end
   end
 
-  @doc """
-  Admin oversight: a paginated, cross-tenant list of conversations with METADATA ONLY (id, type, title,
-  app_id, status, last activity, participant + message COUNTS) — never any message content. Admin-gated
-  at the gateway; deliberately not tenant-scoped (the /v1 path is). Optional `q` searches title / id.
-  """
   def admin_list_conversations(attrs) do
     if conversation_persistence_enabled?() do
-      page_size = AdminCursor.clamp(get_attr(attrs, "limit"))
-      direction = AdminCursor.direction(get_attr(attrs, "direction"))
+      page = AdminPage.parse(attrs)
       {where, params} = admin_conv_filter(attrs)
 
-      {where, params, had_cursor?} =
-        case AdminCursor.decode(get_attr(attrs, "cursor")) do
-          {:ok, {ts, id}} ->
-            predicate = AdminCursor.where(direction, "c.created_at", "c.id", length(params))
-            {where <> " AND " <> predicate, params ++ [ts, id], true}
-
-          :none ->
-            {where, params, false}
-        end
+      %Postgrex.Result{rows: [[total]]} =
+        Repo.query!("SELECT count(*) FROM conversations c #{where}", params)
 
       # uuid columns ::text for Jason. Counts are subqueries (metadata only — no body/content selected).
       #
       # message_count comes from message_search — the search-only copy of the LIVE store — not the
-      # frozen Postgres `messages` table (drop-blocker #2, DECISION_LOG 2026-08-09: that table froze
-      # at the cutover, so this count was stuck at its pre-cutover value and a truncate would 42P01
-      # inside this endpoint). Semantics: live non-deleted messages the index holds — soft-deleted
-      # and never-indexed pre-cutover rows are excluded, so the number DROPPED at the re-point for
-      # old test-era conversations. ADMIN-ONLY surface; if the search consumer is ever off the count
-      # goes stale (existing rows persist — never zero, never an error) and search's own 503 is the
-      # loud canary. The pins slice refused this coupling for a USER-facing feature; that refusal
-      # does not extend to first-party admin metadata with no partition-scan-free alternative.
-      # SORTED BY created_at, NOT updated_at — deliberately, and it is a real trade. Keyset paging
-      # needs a sort key that does not move while you read: a conversation bumped by a new message
-      # between page 1 and page 2 would otherwise be served twice, or jump ahead of the cursor and
-      # never be served at all. `last_activity` is still a column on every row, so "who is busy"
-      # is answerable; "what did I already look at" is now reliable.
-      # FULL precision — this column is the keyset, not a display field (AdminCursor.key_column/1).
+      # frozen Postgres `messages` table (drop-blocker #2, DECISION_LOG 2026-08-09). ADMIN-ONLY
+      # surface; if the search consumer is ever off the count goes stale, never zero.
+      #
+      # SORTED BY created_at, NOT updated_at — a stable sort key. A conversation bumped by a new
+      # message between two reads would otherwise be served twice or skipped; last_activity is still
+      # a column on every row, so "who is busy" stays answerable.
       sql =
         "SELECT c.id::text, c.type, c.title, c.app_id::text, c.status, " <>
           "to_char(c.updated_at, 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS last_activity, " <>
           "(SELECT count(*) FROM conversation_participants p WHERE p.conversation_id = c.id) AS participant_count, " <>
-          "(SELECT count(*) FROM message_search s WHERE s.conversation_id = c.id) AS message_count, " <>
-          "#{AdminCursor.key_column("c.created_at")} AS cursor_key " <>
+          "(SELECT count(*) FROM message_search s WHERE s.conversation_id = c.id) AS message_count " <>
           "FROM conversations c #{where} " <>
-          "#{AdminCursor.order(direction, "c.created_at", "c.id")} LIMIT #{page_size + 1}"
+          "#{AdminPage.order("c.created_at", "c.id")} #{AdminPage.window(page)}"
 
       %Postgrex.Result{rows: rows} = Repo.query!(sql, params)
 
-      page =
-        AdminCursor.to_page(rows, direction, had_cursor?, page_size, fn row ->
-          {Enum.at(row, 8), List.first(row)}
-        end)
-
       {:ok,
-       %{
-         page_size: page.page_size,
-         next_cursor: page.next_cursor,
-         prev_cursor: page.prev_cursor,
-         conversations:
-           Enum.map(page.items, fn [
-                                     id,
-                                     type,
-                                     title,
-                                     app_id,
-                                     status,
-                                     last_activity,
-                                     pcount,
-                                     mcount,
-                                     _cursor_key
-                                   ] ->
-             %{
-               conversation_id: id,
-               type: type,
-               title: title,
-               app_id: app_id,
-               status: status,
-               last_activity: last_activity,
-               participant_count: pcount,
-               message_count: mcount
-             }
-           end)
-       }}
+       Map.put(
+         AdminPage.envelope(page, total),
+         :conversations,
+         Enum.map(rows, fn [id, type, title, app_id, status, last_activity, pcount, mcount] ->
+           %{
+             conversation_id: id,
+             type: type,
+             title: title,
+             app_id: app_id,
+             status: status,
+             last_activity: last_activity,
+             participant_count: pcount,
+             message_count: mcount
+           }
+         end)
+       )}
     else
-      {:ok,
-       %{
-         page_size: AdminCursor.page_size(),
-         next_cursor: nil,
-         prev_cursor: nil,
-         conversations: []
-       }}
+      {:ok, Map.put(AdminPage.envelope(AdminPage.parse(attrs), 0), :conversations, [])}
     end
   end
 
-  # Admin console is first-party only → ALWAYS scope to the tenant ($1); the optional search is $2.
   defp admin_conv_filter(attrs) do
     app = SharedInfra.Tenancy.app_id_or_default(get_attr(attrs, "app_id"))
 

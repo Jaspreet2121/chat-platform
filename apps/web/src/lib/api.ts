@@ -740,28 +740,28 @@ export type AdminUser = {
   created_at?: string | null;
 };
 
-// --- Admin list pagination (keyset) -------------------------------------------------------------
-// Every admin list pages by an opaque cursor rather than an offset: a row inserted between page 1
-// and page 2 used to push the boundary row down, so the reader silently skipped it. A null cursor
-// means "no page that way" — which is exactly what the Next/Prev buttons disable on.
-export type CursorPage = {
+// --- Admin list pagination (numbered pages) --------------------------------------------------
+// Every admin list answers with this envelope. The client renders "Page N of M · total" straight
+// from it and never guesses whether another page exists. The size is clamped SERVER-side (max 100);
+// the selector offers 10/20/50/100 and remembers the choice per list.
+export type PageEnvelope = {
+  page: number;
   page_size: number;
-  next_cursor?: string | null;
-  prev_cursor?: string | null;
+  total: number;
+  total_pages: number;
 };
 
-export type CursorParams = { cursor?: string | null; direction?: "next" | "prev"; limit?: number };
+export type PageParams = { page?: number; page_size?: number };
 
-// Append the cursor trio to a query string. Filters are set by the caller BEFORE this, and are
-// always re-sent, because a status filter that resets on page 2 is worse than no filter at all.
-function withCursor(params: URLSearchParams, opts: CursorParams): URLSearchParams {
-  if (opts.cursor) params.set("cursor", opts.cursor);
-  if (opts.direction) params.set("direction", opts.direction);
-  if (opts.limit) params.set("limit", String(opts.limit));
+// Append the page pair to a query string. Filters are set by the caller BEFORE this and are always
+// re-sent, because a status filter that resets on page 2 is worse than no filter at all.
+function withPage(params: URLSearchParams, opts: PageParams): URLSearchParams {
+  if (opts.page) params.set("page", String(opts.page));
+  if (opts.page_size) params.set("page_size", String(opts.page_size));
   return params;
 }
 
-export type AdminUsersPage = CursorPage & { users: AdminUser[] };
+export type AdminUsersPage = PageEnvelope & { users: AdminUser[] };
 
 export type AdminReport = {
   id: string;
@@ -780,7 +780,7 @@ export type AdminReport = {
   created_at?: string | null;
 };
 
-export type AdminReportsPage = CursorPage & { reports: AdminReport[] };
+export type AdminReportsPage = PageEnvelope & { reports: AdminReport[] };
 
 export type AuditEntry = {
   actor_user_id?: string | null;
@@ -799,13 +799,13 @@ export type AuditEntry = {
   id?: string;
 };
 
-export type AuditPage = CursorPage & { entries: AuditEntry[] };
+export type AuditPage = PageEnvelope & { entries: AuditEntry[] };
 
-export function getAdminUsers(opts: { status?: string; q?: string } & CursorParams = {}) {
+export function getAdminUsers(opts: { status?: string; q?: string } & PageParams = {}) {
   const params = new URLSearchParams();
   if (opts.status) params.set("status", opts.status);
   if (opts.q) params.set("q", opts.q);
-  const qs = withCursor(params, opts).toString();
+  const qs = withPage(params, opts).toString();
   return request<AdminUsersPage>(`/api/v1/admin/users${qs ? `?${qs}` : ""}`);
 }
 
@@ -921,10 +921,10 @@ export function adminDeleteMessage(messageId: string) {
   });
 }
 
-export function getAdminReports(opts: { status?: string } & CursorParams = {}) {
+export function getAdminReports(opts: { status?: string } & PageParams = {}) {
   const params = new URLSearchParams();
   if (opts.status) params.set("status", opts.status);
-  const qs = withCursor(params, opts).toString();
+  const qs = withPage(params, opts).toString();
   return request<AdminReportsPage>(`/api/v1/admin/reports${qs ? `?${qs}` : ""}`);
 }
 
@@ -938,8 +938,8 @@ export function updateReportStatus(reportId: string, status: string, resolution?
   );
 }
 
-export function getAdminAudit(opts: CursorParams = {}) {
-  const qs = withCursor(new URLSearchParams(), opts).toString();
+export function getAdminAudit(opts: PageParams = {}) {
+  const qs = withPage(new URLSearchParams(), opts).toString();
   return request<AuditPage>(`/api/v1/admin/audit${qs ? `?${qs}` : ""}`);
 }
 
@@ -964,25 +964,18 @@ export type AdminMatch = {
   active: boolean;
 };
 
-export type AdminMatchesPage = { matches: AdminMatch[]; next_cursor?: string | null; page_size: number };
+export type AdminMatchesPage = PageEnvelope & { matches: AdminMatch[] };
 
-export function getAdminMatches(
-  reason: string,
-  opts: { q?: string; cursor?: string | null } = {}
-) {
+export function getAdminMatches(reason: string, opts: { q?: string } & PageParams = {}) {
   const params = new URLSearchParams({ reason });
   if (opts.q) params.set("q", opts.q);
-  if (opts.cursor) params.set("cursor", opts.cursor);
+  withPage(params, opts);
   return request<AdminMatchesPage>(`/api/v1/admin/matches?${params.toString()}`);
 }
 
-export function getAdminUserMatches(
-  userId: string,
-  reason: string,
-  opts: { cursor?: string | null } = {}
-) {
+export function getAdminUserMatches(userId: string, reason: string, opts: PageParams = {}) {
   const params = new URLSearchParams({ reason });
-  if (opts.cursor) params.set("cursor", opts.cursor);
+  withPage(params, opts);
   return request<AdminMatchesPage>(
     `/api/v1/admin/users/${encodeURIComponent(userId)}/matches?${params.toString()}`
   );
@@ -1124,14 +1117,14 @@ export type AdminConversationSummary = {
   message_count?: number;
 };
 
-export type AdminConversationsPage = CursorPage & {
+export type AdminConversationsPage = PageEnvelope & {
   conversations: AdminConversationSummary[];
 };
 
-export function getAdminConversations(opts: { q?: string } & CursorParams = {}) {
+export function getAdminConversations(opts: { q?: string } & PageParams = {}) {
   const params = new URLSearchParams();
   if (opts.q) params.set("q", opts.q);
-  const s = withCursor(params, opts).toString();
+  const s = withPage(params, opts).toString();
   return request<AdminConversationsPage>(`/api/v1/admin/conversations${s ? `?${s}` : ""}`);
 }
 
@@ -1978,11 +1971,11 @@ export type AdminApp = {
   webhooks: { total: number; enabled: number };
 };
 
-export function getAdminApps(q?: string, opts: CursorParams = {}) {
+export function getAdminApps(q?: string, opts: PageParams = {}) {
   const params = new URLSearchParams();
   if (q && q.trim() !== "") params.set("q", q.trim());
-  const query = withCursor(params, opts).toString();
-  return request<CursorPage & { apps: AdminApp[] }>(
+  const query = withPage(params, opts).toString();
+  return request<PageEnvelope & { apps: AdminApp[] }>(
     `/api/v1/admin/apps${query ? `?${query}` : ""}`
   );
 }
@@ -1999,23 +1992,15 @@ export type FailedWebhook = {
   created_at: string;
 };
 
-export type FailedWebhooksPage = {
-  data: FailedWebhook[];
-  count: number;
-  next_cursor?: string | null;
-};
+export type FailedWebhooksPage = PageEnvelope & { data: FailedWebhook[] };
 
-export function getAdminFailedWebhooks(params: {
-  appId?: string;
-  eventType?: string;
-  cursor?: string;
-  limit?: number;
-} = {}) {
+export function getAdminFailedWebhooks(
+  params: { appId?: string; eventType?: string } & PageParams = {}
+) {
   const query = new URLSearchParams();
   if (params.appId) query.set("app_id", params.appId);
   if (params.eventType) query.set("event_type", params.eventType);
-  if (params.cursor) query.set("cursor", params.cursor);
-  if (params.limit) query.set("limit", String(params.limit));
+  withPage(query, params);
   const qs = query.toString();
   return request<FailedWebhooksPage>(`/api/v1/admin/webhooks/outbox/failed${qs ? `?${qs}` : ""}`);
 }
@@ -2049,11 +2034,7 @@ export type EventOutboxRow = {
   created_at: string;
 };
 
-export type EventOutboxRowsPage = {
-  data: EventOutboxRow[];
-  count: number;
-  next_cursor?: string | null;
-};
+export type EventOutboxRowsPage = PageEnvelope & { data: EventOutboxRow[] };
 
 export type EventOutboxRowDetail = EventOutboxRow & {
   envelope: Record<string, unknown>;
@@ -2065,15 +2046,10 @@ export function getAdminEventOutboxSummary() {
   return request<EventOutboxStateSummary>(`/api/v1/admin/events/outbox`);
 }
 
-export function getAdminEventOutboxRows(params: {
-  status: string;
-  cursor?: string;
-  limit?: number;
-}) {
+export function getAdminEventOutboxRows(params: { status: string } & PageParams) {
   const query = new URLSearchParams();
   query.set("status", params.status);
-  if (params.cursor) query.set("cursor", params.cursor);
-  if (params.limit) query.set("limit", String(params.limit));
+  withPage(query, params);
   return request<EventOutboxRowsPage>(`/api/v1/admin/events/outbox/rows?${query.toString()}`);
 }
 

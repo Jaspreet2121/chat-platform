@@ -26,7 +26,15 @@ defmodule ApiGatewayWeb.AdminEventOutboxTest do
          }}
 
     def event_outbox_list(attrs),
-      do: {:ok, %{items: [%{id: "row-1", status: attrs["status"]}], count: 1, next_cursor: nil}}
+      do:
+        {:ok,
+         %{
+           items: [%{id: "row-1", status: attrs["status"]}],
+           page: 1,
+           page_size: 50,
+           total: 1,
+           total_pages: 1
+         }}
 
     def event_outbox_get(%{"id" => "missing"}), do: {:error, :event_not_found}
 
@@ -88,14 +96,16 @@ defmodule ApiGatewayWeb.AdminEventOutboxTest do
     assert %{status: 403, halted: true} = call(:acknowledge, "support", %{"id" => "row-1"})
   end
 
-  test "shapes: summary passes through; list wraps {data,count,next_cursor}; noop is 409" do
+  test "shapes: summary passes through; list wraps {data,page,page_size,total,total_pages}; noop is 409" do
     summary = call(:summary, "admin")
     assert summary.status == 200
     assert Jason.decode!(summary.resp_body)["aborted"]["count"] == 2
 
     listing = call(:index, "admin", %{"status" => "pending"})
     body = Jason.decode!(listing.resp_body)
-    assert body["count"] == 1
+    assert body["total"] == 1
+    assert body["total_pages"] == 1
+    assert body["page"] == 1
     assert [%{"id" => "row-1"}] = body["data"]
 
     missing = call(:show, "admin", %{"id" => "missing"})

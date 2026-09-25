@@ -21,12 +21,12 @@ defmodule ApiGatewayWeb.AdminMatchesReasonTest do
     @moduledoc false
     def admin_list_matches(_attrs) do
       send(:matches_reason_test, :read_happened)
-      {:ok, %{matches: [%{id: "m1"}], next_cursor: nil, page_size: 50}}
+      {:ok, %{matches: [%{id: "m1"}], page: 1, page_size: 50, total: 1, total_pages: 1}}
     end
 
     def admin_user_matches(_attrs) do
       send(:matches_reason_test, :read_happened)
-      {:ok, %{matches: [%{id: "m2"}], next_cursor: nil, page_size: 50}}
+      {:ok, %{matches: [%{id: "m2"}], page: 1, page_size: 50, total: 1, total_pages: 1}}
     end
   end
 

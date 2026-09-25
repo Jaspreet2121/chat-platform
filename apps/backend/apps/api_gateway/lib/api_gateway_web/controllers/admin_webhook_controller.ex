@@ -19,15 +19,12 @@ defmodule ApiGatewayWeb.AdminWebhookController do
 
   # GET /api/v1/admin/webhooks/outbox/failed?app_id=&event_type=&limit=&cursor=
   def failed(conn, params) do
-    {cursor_ts, cursor_id} = decode_cursor(Map.get(params, "cursor"))
-
     attrs =
       drop_nils(%{
         "app_id" => Map.get(params, "app_id"),
         "event_type" => Map.get(params, "event_type"),
-        "limit" => Map.get(params, "limit"),
-        "cursor_ts" => cursor_ts,
-        "cursor_id" => cursor_id,
+        "page" => Map.get(params, "page"),
+        "page_size" => Map.get(params, "page_size"),
         "actor" => actor(conn)
       })
 
@@ -35,8 +32,10 @@ defmodule ApiGatewayWeb.AdminWebhookController do
       {:ok, result} ->
         json(conn, %{
           data: get(result, :items) || [],
-          count: get(result, :count) || 0,
-          next_cursor: encode_cursor(get(result, :next_cursor))
+          page: get(result, :page),
+          page_size: get(result, :page_size),
+          total: get(result, :total),
+          total_pages: get(result, :total_pages)
         })
 
       {:error, :auth_unavailable} ->
@@ -93,29 +92,4 @@ defmodule ApiGatewayWeb.AdminWebhookController do
   defp get(_map, _key), do: nil
 
   defp drop_nils(map), do: :maps.filter(fn _k, v -> not is_nil(v) end, map)
-
-  # Opaque base64 keyset cursor over "created_at|id".
-  defp encode_cursor(nil), do: nil
-
-  defp encode_cursor(next) when is_map(next) do
-    ts = get(next, :created_at)
-    id = get(next, :id)
-
-    if is_binary(ts) and is_binary(id),
-      do: Base.url_encode64("#{ts}|#{id}", padding: false),
-      else: nil
-  end
-
-  defp encode_cursor(_), do: nil
-
-  defp decode_cursor(cursor) when is_binary(cursor) do
-    with {:ok, raw} <- Base.url_decode64(cursor, padding: false),
-         [ts, id] <- String.split(raw, "|", parts: 2) do
-      {ts, id}
-    else
-      _ -> {nil, nil}
-    end
-  end
-
-  defp decode_cursor(_), do: {nil, nil}
 end

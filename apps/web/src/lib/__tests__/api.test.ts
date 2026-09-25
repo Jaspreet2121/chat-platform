@@ -197,12 +197,12 @@ describe("event-outbox ops client — the wire the admin page rides", () => {
     const calls = installFetch(() => json({}));
 
     await getAdminEventOutboxSummary();
-    await getAdminEventOutboxRows({ status: "aborted", limit: 50 });
+    await getAdminEventOutboxRows({ status: "aborted", page_size: 50 });
     await getAdminEventOutboxRow("row 1");
     await acknowledgeEventOutboxRow("row 1");
 
     expect(calls[0].url).toContain("/api/v1/admin/events/outbox");
-    expect(calls[1].url).toContain("/api/v1/admin/events/outbox/rows?status=aborted&limit=50");
+    expect(calls[1].url).toContain("/api/v1/admin/events/outbox/rows?status=aborted&page_size=50");
     // Encoded id — an id with a space must not split the path.
     expect(calls[2].url).toContain("/api/v1/admin/events/outbox/row%201");
     expect(calls[3].url).toContain("/api/v1/admin/events/outbox/row%201/acknowledge");

@@ -13,6 +13,8 @@ import {
   getCurrentSession
 } from "@/lib/api";
 import { Button, Card } from "@/components";
+import { Pager } from "@/app/admin/_Pager";
+import { usePaging } from "@/app/admin/_usePaging";
 
 // Event-outbox ops (096) — the webhook dead-letter page's sibling, adapted where the semantics
 // differ: nothing here retries or republishes (the relay is the only publisher). Reads are
@@ -43,12 +45,12 @@ export default function AdminEventsPage() {
   const [summary, setSummary] = useState<EventOutboxStateSummary | null>(null);
   const [state, setState] = useState<OutboxState>("aborted");
   const [rows, setRows] = useState<EventOutboxRow[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
+  const paging = usePaging("events");
+  const { params: pageParams, setEnvelope } = paging;
   const [expanded, setExpanded] = useState<EventOutboxRowDetail | null>(null);
   const [canManage, setCanManage] = useState(false);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -58,26 +60,24 @@ export default function AdminEventsPage() {
   }, []);
 
   const load = useCallback(
-    async (opts: { append?: boolean; cursor?: string } = {}) => {
-      if (opts.append) setIsLoadingMore(true);
-      else setIsLoading(true);
+    async () => {
+      setIsLoading(true);
       try {
         const [nextSummary, page] = await Promise.all([
           getAdminEventOutboxSummary(),
-          getAdminEventOutboxRows({ status: state, cursor: opts.cursor, limit: 50 })
+          getAdminEventOutboxRows({ status: state, ...pageParams })
         ]);
         setSummary(nextSummary);
-        setRows((prev) => (opts.append ? [...prev, ...page.data] : page.data));
-        setCursor(page.next_cursor ?? null);
+        setRows(page.data);
+        setEnvelope(page);
         setError("");
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Failed to load the event outbox.");
       } finally {
         setIsLoading(false);
-        setIsLoadingMore(false);
       }
     },
-    [state]
+    [state, pageParams, setEnvelope]
   );
 
   useEffect(() => {
@@ -159,7 +159,11 @@ export default function AdminEventsPage() {
           <Button
             key={candidate}
             variant={candidate === state ? "primary" : "ghost"}
-            onClick={() => setState(candidate)}
+            onClick={() => {
+              setState(candidate);
+              // Page 7 of "aborted" is nowhere in "pending".
+              paging.reset();
+            }}
           >
             {candidate}
           </Button>
@@ -203,16 +207,7 @@ export default function AdminEventsPage() {
         ))}
       </Card>
 
-      {cursor ? (
-        <Button
-          variant="ghost"
-          onClick={() => void load({ append: true, cursor })}
-          disabled={isLoadingMore}
-        >
-          {isLoadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          Load more
-        </Button>
-      ) : null}
+      <Pager paging={paging} disabled={isLoading} />
 
       {expanded ? (
         <Card className="space-y-2 p-4 text-sm">

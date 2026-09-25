@@ -41,14 +41,11 @@ defmodule ApiGatewayWeb.AdminEventOutboxController do
 
   # GET /api/v1/admin/events/outbox/rows?status=&limit=&cursor= — metadata only, keyset-paginated.
   def index(conn, params) do
-    {cursor_ts, cursor_id} = decode_cursor(Map.get(params, "cursor"))
-
     attrs =
       %{
         "status" => Map.get(params, "status"),
-        "limit" => Map.get(params, "limit"),
-        "cursor_ts" => cursor_ts,
-        "cursor_id" => cursor_id
+        "page" => Map.get(params, "page"),
+        "page_size" => Map.get(params, "page_size")
       }
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
       |> Map.new()
@@ -57,8 +54,10 @@ defmodule ApiGatewayWeb.AdminEventOutboxController do
       {:ok, result} ->
         json(conn, %{
           data: get(result, :items) || [],
-          count: get(result, :count) || 0,
-          next_cursor: encode_cursor(get(result, :next_cursor))
+          page: get(result, :page),
+          page_size: get(result, :page_size),
+          total: get(result, :total),
+          total_pages: get(result, :total_pages)
         })
 
       {:error, :message_unavailable} ->
@@ -69,7 +68,6 @@ defmodule ApiGatewayWeb.AdminEventOutboxController do
     end
   end
 
-  # GET /api/v1/admin/events/outbox/:id — the explicit expand, envelope included.
   def show(conn, %{"id" => id}) do
     case SharedInfra.MessageClient.event_outbox_get(%{"id" => id}) do
       {:ok, result} ->
@@ -106,26 +104,4 @@ defmodule ApiGatewayWeb.AdminEventOutboxController do
   end
 
   defp get(map, key), do: Map.get(map, key) || Map.get(map, to_string(key))
-
-  defp decode_cursor(nil), do: {nil, nil}
-
-  defp decode_cursor(cursor) when is_binary(cursor) do
-    with {:ok, decoded} <- Base.url_decode64(cursor, padding: false),
-         [ts, id] <- String.split(decoded, "|", parts: 2) do
-      {ts, id}
-    else
-      _ -> {nil, nil}
-    end
-  end
-
-  defp encode_cursor(nil), do: nil
-
-  defp encode_cursor(%{ts: ts, id: id}), do: encode_cursor_parts(ts, id)
-
-  defp encode_cursor(%{"ts" => ts, "id" => id}), do: encode_cursor_parts(ts, id)
-
-  defp encode_cursor(_), do: nil
-
-  defp encode_cursor_parts(ts, id),
-    do: Base.url_encode64("#{ts}|#{id}", padding: false)
 end

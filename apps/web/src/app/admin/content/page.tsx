@@ -13,14 +13,7 @@ import {
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
 import { Pager } from "@/app/admin/_Pager";
-import {
-  initialPagerState,
-  pagerNext,
-  pagerPrev,
-  pagerReceived,
-  pagerRequest,
-  pagerReset
-} from "@/lib/cursorPager";
+import { usePaging } from "@/app/admin/_usePaging";
 import { cn } from "@/lib/cn";
 
 function shortId(id?: string | null) {
@@ -184,8 +177,8 @@ function UsersList({ onOpen }: { onOpen: (u: AdminUser) => void }) {
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [pager, setPager] = useState(initialPagerState);
-  const { cursor, direction } = pager;
+  const paging = usePaging("content.users");
+  const { params: pageParams, setEnvelope } = paging;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -193,16 +186,16 @@ function UsersList({ onOpen }: { onOpen: (u: AdminUser) => void }) {
     try {
       const res = await getAdminUsers({
         q: q.trim() || undefined,
-        ...pagerRequest(cursor, direction)
+        ...pageParams
       });
       setUsers(res.users);
-      setPager((p) => pagerReceived(p, res));
+      setEnvelope(res);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load users");
     } finally {
       setLoading(false);
     }
-  }, [q, cursor, direction]);
+  }, [q, pageParams, setEnvelope]);
 
   useEffect(() => {
     void load();
@@ -227,7 +220,7 @@ function UsersList({ onOpen }: { onOpen: (u: AdminUser) => void }) {
           onChange={(e) => {
             setQ(e.target.value);
             // A cursor names a row in the OLD result set — it has no meaning in a new search.
-            setPager(pagerReset());
+            paging.reset();
           }}
           placeholder="Search by phone or email…"
           className="h-10 w-full rounded-lg border border-border bg-elevated pl-9 pr-3 text-sm text-fg placeholder:text-faint outline-none focus:border-brand focus:ring-2 focus:ring-brand-ring"
@@ -278,13 +271,7 @@ function UsersList({ onOpen }: { onOpen: (u: AdminUser) => void }) {
         </Card>
       )}
 
-      <Pager
-        state={pager}
-        count={users.length}
-        disabled={loading}
-        onNext={() => setPager(pagerNext)}
-        onPrev={() => setPager(pagerPrev)}
-      />
+      <Pager paging={paging} disabled={loading} />
     </div>
   );
 }

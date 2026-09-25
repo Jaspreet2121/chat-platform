@@ -229,12 +229,18 @@ defmodule SharedInfra.WebhookOutbox do
   # --- Phase 4: failed-delivery ops ------------------------------------------------------------
 
   @doc """
-  Keyset-paginated list of FAILED (dead-lettered) deliveries. opts: :app_id, :event_type,
-  :limit (<=200), :cursor {created_at_iso, id}. Returns %{items, next_cursor: %{...}|nil, count}.
-  Keyset (created_at,id) — no OFFSET, so it stays fast as the dead-letter set grows.
+  Numbered pages of FAILED (dead-lettered) deliveries. opts: :app_id, :event_type, :page,
+  :page_size (server-clamped). Returns `%{items, page, page_size, total, total_pages}`; the total is
+  counted over the same filters. Ordered `(created_at DESC, id DESC)` so rows cannot swap between
+  reads.
   """
   def list_failed(repo, opts \\ []) do
-    limit = opts |> Keyword.get(:limit, 50) |> min(200) |> max(1)
+    page =
+      SharedInfra.AdminPage.parse(%{
+        "page" => Keyword.get(opts, :page),
+        "page_size" => Keyword.get(opts, :page_size)
+      })
+
     {where, params, n} = {["o.status = 'failed'"], [], 0}
 
     {where, params, n} =
@@ -246,7 +252,7 @@ defmodule SharedInfra.WebhookOutbox do
           {where, params, n}
       end
 
-    {where, params, n} =
+    {where, params, _n} =
       case Keyword.get(opts, :event_type) do
         v when is_binary(v) and v != "" ->
           {where ++ ["o.event_type = $#{n + 1}"], params ++ [v], n + 1}
@@ -255,35 +261,22 @@ defmodule SharedInfra.WebhookOutbox do
           {where, params, n}
       end
 
-    {where, params, n} =
-      case Keyword.get(opts, :cursor) do
-        {ts, id} when is_binary(ts) and is_binary(id) ->
-          {where ++
-             ["(o.created_at, o.id) < ($#{n + 1}::text::timestamptz, $#{n + 2}::text::uuid)"],
-           params ++ [ts, id], n + 2}
+    where_sql = Enum.join(where, " AND ")
 
-        _ ->
-          {where, params, n}
-      end
+    %{rows: [[total]]} =
+      repo.query!("SELECT count(*) FROM webhook_outbox o WHERE #{where_sql}", params)
 
     sql =
       "SELECT o.id::text, o.event_id::text, o.event_type, o.app_id::text, e.url AS endpoint_url, " <>
         "o.attempts, o.last_error, o.next_attempt_at::text, o.created_at::text " <>
         "FROM webhook_outbox o LEFT JOIN webhook_endpoints e ON e.id = o.endpoint_id " <>
-        "WHERE #{Enum.join(where, " AND ")} ORDER BY o.created_at DESC, o.id DESC LIMIT $#{n + 1}"
+        "WHERE #{where_sql} #{SharedInfra.AdminPage.order("o.created_at", "o.id")} " <>
+        SharedInfra.AdminPage.window(page)
 
-    %{rows: rows, columns: cols} = repo.query!(sql, params ++ [limit])
+    %{rows: rows, columns: cols} = repo.query!(sql, params)
     items = Enum.map(rows, fn r -> cols |> Enum.zip(r) |> Map.new() end)
 
-    next_cursor =
-      if length(items) == limit and items != [] do
-        last = List.last(items)
-        %{"created_at" => last["created_at"], "id" => last["id"]}
-      else
-        nil
-      end
-
-    %{items: items, next_cursor: next_cursor, count: length(items)}
+    Map.put(SharedInfra.AdminPage.envelope(page, total), :items, items)
   end
 
   @doc """
