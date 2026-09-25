@@ -694,6 +694,17 @@ export type AnalyticsOverview = {
     login_success_7d: number;
     login_failure_7d: number;
   };
+  // Dashboard v1 additions. `users` splits real sign-ups from partner-app (v1) users resolved by
+  // external_id — one combined total silently changes meaning the first time a partner backfills.
+  users: { real: number; v1: number };
+  // Live sessions keyed by platform plus a "total" key. Every platform is present, zero included.
+  sessions: Record<string, number>;
+  moderation: { reports_open: number };
+  dating: { matches_today: number; matches_7d: number; likes_today: number };
+  // ONE NUMBER, deliberately: how many people are opted in right now. Never who, never where.
+  nearby: { opted_in_now: number };
+  // Counted from the search index (message_search), not Scylla — label it as such wherever shown.
+  messages_today: number;
 };
 
 export type DailyPoint = { date: string; count: number };
@@ -877,12 +888,35 @@ export function getAdminAudit(page = 1) {
 
 // --- Admin health (read-only; behind RequireAdmin) ---------------------------------------------
 export type DepHealth = { status: string; latency_ms?: number | null; error?: string | null };
-export type ServiceHealth = { name: string; status: string };
+export type ServiceHealth = { name: string; status: string; git_sha?: string };
+export type ConsumerLagGroup = {
+  group_id: string;
+  topic?: string;
+  service?: string;
+  // "ok" | "behind" | "stalled" | "off" | "unknown". "off" is a group nobody has joined — a
+  // deliberate configuration, not an incident.
+  status: string;
+  lag?: number | null;
+  members?: number;
+};
+
+export type ConsumerLag = {
+  status: string;
+  stale?: boolean;
+  age_seconds?: number | null;
+  checked_at?: string | null;
+  threshold?: number;
+  groups: ConsumerLagGroup[];
+};
+
 export type SystemHealth = {
   status: "healthy" | "degraded" | "down" | string;
   checked_at: string;
+  // This gateway's own build; each entry in `services` carries that service's own.
+  git_sha?: string;
   dependencies: { postgres: DepHealth; kafka: DepHealth; minio: DepHealth };
   services: ServiceHealth[];
+  consumer_lag?: ConsumerLag;
 };
 
 export function getAdminHealth() {
