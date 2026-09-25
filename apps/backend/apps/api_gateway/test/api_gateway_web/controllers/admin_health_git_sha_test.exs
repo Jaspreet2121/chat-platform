@@ -57,6 +57,22 @@ defmodule ApiGatewayWeb.AdminHealthGitShaTest do
   end
 
   setup do
+    # ISOLATE FROM ANY REACHABLE REDIS. The notification row is expected "stale" because nothing is
+    # beating — but the test env's Redis URL is localhost:6379, and a local prod-shaped stack running
+    # on this machine has a REAL notification container beating there. Point the read at a closed
+    # port for the duration and drop pooled sockets, so the answer is decided by this test alone.
+    previous_redis = Application.get_env(:shared_infra, :redis)
+    Application.put_env(:shared_infra, :redis, url: "redis://127.0.0.1:1/0", timeout: 100)
+    if SharedInfra.Redis.Pool.started?(), do: SharedInfra.Redis.Pool.disconnect_all()
+
+    on_exit(fn ->
+      if previous_redis,
+        do: Application.put_env(:shared_infra, :redis, previous_redis),
+        else: Application.delete_env(:shared_infra, :redis)
+
+      if SharedInfra.Redis.Pool.started?(), do: SharedInfra.Redis.Pool.disconnect_all()
+    end)
+
     keys = [
       {:shared_infra, :auth_client_adapter},
       {:shared_infra, :auth_service_url},
