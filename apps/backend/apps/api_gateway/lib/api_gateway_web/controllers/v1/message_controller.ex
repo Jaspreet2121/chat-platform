@@ -471,6 +471,12 @@ defmodule ApiGatewayWeb.V1.MessageController do
 
   defp notify_inbox_read(_type, _conversation_id, _user_id, _unread_before), do: :ok
 
+  # A REPLAYED message — the ledger answered a resent client_msg_id with the first write — fans out
+  # to nobody and bumps no inbox: the first write already did both, and a duplicate +1 is a
+  # phantom unread. (The message broadcast is gated inside RealtimeFanOut too; this covers the row.)
+  defp fan_out(_conversation_id, _sender_user_id, %{replayed: true}), do: :ok
+  defp fan_out(_conversation_id, _sender_user_id, %{"replayed" => true}), do: :ok
+
   defp fan_out(conversation_id, sender_user_id, message) do
     # The two-topic rule now lives in ONE place (ApiGatewayWeb.RealtimeFanOut) so the first-party
     # paths cannot drift from it again — this path's behaviour is unchanged.

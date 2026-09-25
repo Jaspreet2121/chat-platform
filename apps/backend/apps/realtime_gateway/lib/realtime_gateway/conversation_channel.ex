@@ -402,6 +402,11 @@ defmodule RealtimeGateway.ConversationChannel do
     })
   end
 
+  defp replayed?(response) when is_map(response),
+    do: Map.get(response, :replayed) == true or Map.get(response, "replayed") == true
+
+  defp replayed?(_response), do: false
+
   defp create_message(payload, socket) do
     with :ok <- validate_message_payload(payload),
          {:ok, sender_user_id} <- current_user_id(socket),
@@ -432,7 +437,12 @@ defmodule RealtimeGateway.ConversationChannel do
       # A DROPPED (blocked) message returns a canonical single-tick ack to the SENDER but fans out to NOBODY —
       # the blocker never receives it (nothing persisted, nothing broadcast). Everything below is the delivery
       # the blocker must not get, so it is skipped entirely.
-      unless dropped? do
+      #
+      # A REPLAYED message — the store already had this client_msg_id and returned the first write —
+      # fans out to nobody either: the first write's fan-out already happened, and the resend is the
+      # SENDER's retry of a lost ack. Re-broadcasting it put the message on every other client's
+      # screen twice, which is exactly the duplicate-row race the ledger exists to close.
+      unless dropped? or replayed?(response) do
         broadcast_from(socket, "message_created", response)
         notify_user_topics(socket, sender_user_id, response)
 

@@ -208,6 +208,99 @@ defmodule MessageService.ClientMsgDedupTest do
     assert resent.message_id == healed.message_id
   end
 
+  @tag :scylla_integration
+  test "CONCURRENT sends with ONE client_msg_id: every caller acks the SAME message, one row lands" do
+    # THE RACE IS ACROSS CONNECTIONS. Under the shared sandbox connection every caller is serialized
+    # by the connection itself, which proves nothing about the advisory lock. :auto mode hands each
+    # task its own pooled connection with real commits — the shape production has — so the six
+    # claims below genuinely contend for the (conversation, sender, client_msg_id) lock.
+    Ecto.Adapters.SQL.Sandbox.mode(Repo, :auto)
+
+    {sender, conversation} = Task.async(&committed_fixtures!/0) |> Task.await(15_000)
+    client_msg_id = Ecto.UUID.generate()
+
+    try do
+      results =
+        1..6
+        |> Enum.map(fn i ->
+          Task.async(fn ->
+            send!(conversation, sender, %{"client_msg_id" => client_msg_id, "body" => "race #{i}"})
+          end)
+        end)
+        |> Task.await_many(30_000)
+
+      # Every caller succeeded, and every caller was told the same message id.
+      ids =
+        Enum.map(results, fn result ->
+          assert {:ok, %{message_id: id}} = result
+          to_string(id)
+        end)
+
+      assert length(Enum.uniq(ids)) == 1, "callers were acked different messages: #{inspect(ids)}"
+
+      # ONE ledger row, ONE stored message, ONE outbox stage — the duplicates touched nothing.
+      ledger =
+        Task.async(fn ->
+          count!(
+            "SELECT count(*)::int FROM message_client_ids WHERE client_msg_id = $1::text::uuid",
+            [client_msg_id]
+          )
+        end)
+        |> Task.await(15_000)
+
+      assert ledger == 1
+
+      {:ok, %{messages: stored}} =
+        MessageService.MessageStore.list_messages(%{
+          "conversation_id" => conversation,
+          "limit" => 50
+        })
+
+      assert length(stored) == 1
+      assert Task.async(fn -> event_outbox_count(conversation) end) |> Task.await(15_000) == 1
+    after
+      Task.async(fn -> cleanup_committed!(conversation, sender, client_msg_id) end)
+      |> Task.await(15_000)
+
+      Ecto.Adapters.SQL.Sandbox.mode(Repo, :manual)
+    end
+  end
+
+  # Fixture rows COMMITTED for real (this runs inside a task under :auto mode), so the racing
+  # tasks' own connections can see them. Mirrors setup/0.
+  defp committed_fixtures! do
+    sender = Ecto.UUID.generate()
+
+    Repo.query!(
+      "INSERT INTO users_auth (id, app_id, external_id, email, password_hash, created_at, updated_at) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, $3, $4, 'x', now(), now())",
+      [sender, @tenant_zero, "ext-#{sender}", "#{sender}@test.local"]
+    )
+
+    conversation = Ecto.UUID.generate()
+
+    Repo.query!(
+      "INSERT INTO conversations (id, app_id, type, created_by, status, created_at, updated_at) " <>
+        "VALUES ($1::text::uuid, $2::text::uuid, 'group', $3::text::uuid, 'active', now(), now())",
+      [conversation, @tenant_zero, sender]
+    )
+
+    {sender, conversation}
+  end
+
+  defp cleanup_committed!(conversation, sender, client_msg_id) do
+    Repo.query!("DELETE FROM message_client_ids WHERE client_msg_id = $1::text::uuid", [
+      client_msg_id
+    ])
+
+    Repo.query!("DELETE FROM kafka_event_outbox WHERE conversation_id = $1::text::uuid", [
+      conversation
+    ])
+
+    Repo.query!("DELETE FROM conversations WHERE id = $1::text::uuid", [conversation])
+    Repo.query!("DELETE FROM users_auth WHERE id = $1::text::uuid", [sender])
+  end
+
   defp ensure_no_cluster do
     case Process.whereis(@cluster) do
       nil -> :ok

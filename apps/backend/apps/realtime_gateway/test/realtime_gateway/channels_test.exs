@@ -630,6 +630,51 @@ defmodule RealtimeGateway.ChannelsTest do
     assert reply.status == "accepted"
   end
 
+  @tag :postgres_integration
+  test "a RESENT message:create with the same client_msg_id acks the SAME message and fans out ONCE" do
+    # The idempotency ledger lives in Postgres (message_client_ids), so this needs the message repo;
+    # the channel process runs the claim, so the sandbox connection is SHARED with it.
+    Application.put_env(:message_service, :message_persistence, true)
+    Application.put_env(:message_service, :message_store_adapter, MessageStore.InMemoryAdapter)
+    start_in_memory_store!()
+    MessageStore.InMemoryAdapter.reset()
+    {:ok, _pid} = start_message_repo!()
+    :ok = Ecto.Adapters.SQL.Sandbox.checkout(MessageService.Repo)
+    Ecto.Adapters.SQL.Sandbox.mode(MessageService.Repo, {:shared, self()})
+
+    # A REAL uuid: the ledger keys on conversation_id::uuid, and "conv_123" would be a cast error.
+    conversation = Ecto.UUID.generate()
+    # ...and the sender too: the ledger casts sender_user_id::uuid, and a cast error inside the
+    # channel process takes the shared sandbox connection down with it.
+    sender = Ecto.UUID.generate()
+
+    {:ok, _join_reply, socket} =
+      RealtimeGateway.UserSocket
+      |> socket("user_socket:#{sender}", %{current_user_id: sender, device_id: "dev_123"})
+      |> subscribe_and_join(
+        RealtimeGateway.ConversationChannel,
+        "conversation:#{conversation}",
+        %{}
+      )
+
+    client_msg_id = Ecto.UUID.generate()
+    payload = %{"message_type" => "text", "body" => "sent once", "client_msg_id" => client_msg_id}
+
+    # The client's retry: same payload, same client_msg_id — what every client now sends.
+    first_ref = push(socket, "message:create", payload)
+    assert_reply first_ref, :ok, first
+    second_ref = push(socket, "message:create", payload)
+    assert_reply second_ref, :ok, second
+
+    assert to_string(second.message_id) == to_string(first.message_id)
+    assert second.body == "sent once"
+
+    # ONE fan-out. The duplicate is a success to its sender and invisible to everyone else.
+    assert_broadcast "message_created", %{message_id: broadcast_id}
+    assert to_string(broadcast_id) == to_string(first.message_id)
+    refute_broadcast "message_created", _, 200
+  end
+
   defp start_in_memory_store! do
     case MessageStore.InMemoryAdapter.start_link() do
       {:ok, pid} ->
@@ -638,6 +683,13 @@ defmodule RealtimeGateway.ChannelsTest do
 
       {:error, {:already_started, _pid}} ->
         :ok
+    end
+  end
+
+  defp start_message_repo! do
+    case MessageService.Repo.start_link() do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:ok, pid}
     end
   end
 

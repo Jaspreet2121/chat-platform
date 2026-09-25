@@ -72,7 +72,11 @@ defmodule ApiGatewayWeb.MessageController do
       # A DROPPED (blocked) message returns a canonical single-tick ack to the SENDER but reaches the blocker
       # through NO path: nothing persisted, and the inbox fan-out below (which would wake the blocker's list)
       # is skipped. The sender learns nothing.
-      unless dropped? do
+      #
+      # A REPLAYED message (the ledger answered with the first write) is skipped the same way: the
+      # first write already woke every list, and a duplicate +1 is a phantom unread. The message
+      # fan-out is also gated inside RealtimeFanOut itself; this covers the inbox row.
+      unless dropped? or Map.get(response, :replayed) == true do
         # THE MESSAGE ITSELF, which this path never broadcast at all — only the inbox row below. A
         # recipient therefore saw an unread bump and had to pull-to-refresh to read it, and a
         # recipient with the chat OPEN saw nothing until they left and came back. The socket path and

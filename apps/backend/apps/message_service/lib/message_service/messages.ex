@@ -267,45 +267,48 @@ defmodule MessageService.Messages do
       with {:ok, metadata} <- decorate_metadata(metadata, attrs, created_at) do
         # IDEMPOTENT SEND (107): with a client_msg_id, claim-before-create in the Postgres ledger —
         # a duplicate returns the FIRST write's message as a SUCCESS and touches nothing downstream
-        # (no store write, no outbox staging, no publish — those all live below this branch).
-        # Without one, byte-identical to the pre-107 path.
-        case claim_client_msg(conversation_id, sender_user_id, client_msg_id) do
-          {:existing, message} ->
-            {:ok, message |> message_response() |> MediaLinks.attach()}
+        # (no store write, no outbox staging, no publish). Without one, byte-identical to the
+        # pre-107 path.
+        #
+        # THE CREATE RUNS UNDER THE CLAIM'S LOCK. Until 2026-09-25 the claim committed first and the
+        # store write ran after it, so a concurrent duplicate — queued on the lock — found a claim
+        # whose message had not landed yet, took it for a crashed create, re-pointed the claim and
+        # created its own: two messages, two ids, from one client_msg_id. Proven by six racing
+        # sends across separate connections. Holding the lock through the store write means the
+        # duplicate proceeds only once the message exists, and finds it.
+        with_claim(conversation_id, sender_user_id, client_msg_id, fn message_id ->
+          message_attrs = %{
+            "conversation_id" => conversation_id,
+            "bucket_date" => bucket_date(created_at),
+            "message_id" => message_id,
+            "sender_user_id" => sender_user_id,
+            "message_type" => message_type,
+            "body" => body,
+            "media_id" => media_id,
+            "reply_to_message_id" => get_attr(attrs, "reply_to_message_id"),
+            "status" => "active",
+            "view_once" => view_once,
+            "metadata" => apply_forward_depth(metadata, attrs),
+            "created_at" => created_at,
+            "edited_at" => nil,
+            "deleted_at" => nil
+          }
 
-          {:new, message_id} ->
-            message_attrs = %{
-              "conversation_id" => conversation_id,
-              "bucket_date" => bucket_date(created_at),
-              "message_id" => message_id,
-              "sender_user_id" => sender_user_id,
-              "message_type" => message_type,
-              "body" => body,
-              "media_id" => media_id,
-              "reply_to_message_id" => get_attr(attrs, "reply_to_message_id"),
-              "status" => "active",
-              "view_once" => view_once,
-              "metadata" => apply_forward_depth(metadata, attrs),
-              "created_at" => created_at,
-              "edited_at" => nil,
-              "deleted_at" => nil
-            }
+          case MessageStore.put_message(message_attrs) do
+            {:ok, message} ->
+              response = message_response(message) |> with_fresh_poll(message_type, metadata)
+              # BEST FRIENDS (125): the day's both-sides bookkeeping, AFTER the store write.
+              # Direct conversations only, fail-soft — a streak must never fail a send.
+              DmStreaks.record_message(Map.put(attrs, "sender_user_id", sender_user_id))
+              publish_message_created(response)
+              # The inline download link is minted AFTER the publish: the ack (REST response,
+              # socket frame, inbox row) carries it, the Kafka event never does.
+              {:ok, MediaLinks.attach(response)}
 
-            case MessageStore.put_message(message_attrs) do
-              {:ok, message} ->
-                response = message_response(message) |> with_fresh_poll(message_type, metadata)
-                # BEST FRIENDS (125): the day's both-sides bookkeeping, AFTER the store write.
-                # Direct conversations only, fail-soft — a streak must never fail a send.
-                DmStreaks.record_message(Map.put(attrs, "sender_user_id", sender_user_id))
-                publish_message_created(response)
-                # The inline download link is minted AFTER the publish: the ack (REST response,
-                # socket frame, inbox row) carries it, the Kafka event never does.
-                {:ok, MediaLinks.attach(response)}
-
-              {:error, reason} ->
-                {:error, reason}
-            end
-        end
+            {:error, reason} ->
+              {:error, reason}
+          end
+        end)
       end
     end
   end
@@ -598,72 +601,92 @@ defmodule MessageService.Messages do
   end
 
   # nil client id → a fresh server timeuuid, exactly the pre-107 behaviour.
-  defp claim_client_msg(_conversation_id, _sender_user_id, nil), do: {:new, generate_timeuuid()}
+  defp with_claim(_conversation_id, _sender_user_id, nil, create),
+    do: create.(generate_timeuuid())
 
-  defp claim_client_msg(conversation_id, sender_user_id, client_msg_id) do
+  # Claim-then-create, ALL under one advisory lock on (conversation, sender, client id). The
+  # transaction holds the lock for the whole create, so every concurrent duplicate waits, and by the
+  # time it reads the ledger the winner's message is in the store. A create that fails rolls the
+  # claim back with it, so a failed send never leaves a claim pointing at nothing.
+  defp with_claim(conversation_id, sender_user_id, client_msg_id, create) do
     app_id =
       MessageService.WebhookEvents.conversation_app_id(conversation_id) ||
         SharedInfra.Tenancy.default_app_id()
 
     fresh_id = generate_timeuuid()
 
-    {:ok, outcome} =
-      MessageService.Repo.transaction(fn ->
-        # Serializes only this (conversation, sender, client id) tuple — the claim precedent.
+    MessageService.Repo.transaction(fn ->
+      # Serializes only this (conversation, sender, client id) tuple — the claim precedent.
+      MessageService.Repo.query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2 || ':' || $3, 0))",
+        [conversation_id, sender_user_id, client_msg_id]
+      )
+
+      # Opportunistic 30d sweep (indexed range; the ledger is dedup state, not history).
+      MessageService.Repo.query!(
+        "DELETE FROM message_client_ids WHERE created_at < now() - interval '30 days'",
+        []
+      )
+
+      %{rows: rows} =
         MessageService.Repo.query!(
-          "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2 || ':' || $3, 0))",
-          [conversation_id, sender_user_id, client_msg_id]
+          "SELECT message_id::text FROM message_client_ids " <>
+            "WHERE app_id = $1::text::uuid AND conversation_id = $2::text::uuid " <>
+            "AND sender_user_id = $3::text::uuid AND client_msg_id = $4::text::uuid",
+          [app_id, conversation_id, sender_user_id, client_msg_id]
         )
 
-        # Opportunistic 30d sweep (indexed range; the ledger is dedup state, not history).
-        MessageService.Repo.query!(
-          "DELETE FROM message_client_ids WHERE created_at < now() - interval '30 days'",
-          []
-        )
+      case rows do
+        [[existing_id]] ->
+          # bucket_date as every other point read here derives it: the Scylla adapter ignores it and
+          # reads the bucket out of the timeuuid; the in-memory adapter requires it.
+          case MessageStore.get_message(%{
+                 "conversation_id" => conversation_id,
+                 "message_id" => existing_id,
+                 "bucket_date" => bucket_date(now())
+               }) do
+            {:ok, message} ->
+              # The FIRST write's message, as a success — and flagged as a REPLAY, because the
+              # store is only half of idempotency: the transports fan out on every {:ok, _}, and a
+              # duplicate that is re-broadcast lands twice on every other client's screen.
+              {:ok,
+               message |> message_response() |> MediaLinks.attach() |> Map.put(:replayed, true)}
 
-        %{rows: rows} =
+            _ ->
+              # A claim whose message never landed — a create that died between the ledger and the
+              # store on a build older than this one — self-heals: re-point the claim and create.
+              MessageService.Repo.query!(
+                "UPDATE message_client_ids SET message_id = $5::text::uuid, created_at = now() " <>
+                  "WHERE app_id = $1::text::uuid AND conversation_id = $2::text::uuid " <>
+                  "AND sender_user_id = $3::text::uuid AND client_msg_id = $4::text::uuid",
+                [app_id, conversation_id, sender_user_id, client_msg_id, fresh_id]
+              )
+
+              create_or_rollback(create, fresh_id)
+          end
+
+        [] ->
           MessageService.Repo.query!(
-            "SELECT message_id::text FROM message_client_ids " <>
-              "WHERE app_id = $1::text::uuid AND conversation_id = $2::text::uuid " <>
-              "AND sender_user_id = $3::text::uuid AND client_msg_id = $4::text::uuid",
-            [app_id, conversation_id, sender_user_id, client_msg_id]
+            "INSERT INTO message_client_ids " <>
+              "(app_id, conversation_id, sender_user_id, client_msg_id, message_id) " <>
+              "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5::text::uuid)",
+            [app_id, conversation_id, sender_user_id, client_msg_id, fresh_id]
           )
 
-        case rows do
-          [[existing_id]] ->
-            # A claim whose message never landed (a crashed create) self-heals: re-point the claim
-            # at a fresh id and create anew — still under the lock, so concurrent retries serialize.
-            case MessageStore.get_message(%{
-                   "conversation_id" => conversation_id,
-                   "message_id" => existing_id
-                 }) do
-              {:ok, message} ->
-                {:existing, message}
+          create_or_rollback(create, fresh_id)
+      end
+    end)
+    |> case do
+      {:ok, outcome} -> outcome
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-              _ ->
-                MessageService.Repo.query!(
-                  "UPDATE message_client_ids SET message_id = $5::text::uuid, created_at = now() " <>
-                    "WHERE app_id = $1::text::uuid AND conversation_id = $2::text::uuid " <>
-                    "AND sender_user_id = $3::text::uuid AND client_msg_id = $4::text::uuid",
-                  [app_id, conversation_id, sender_user_id, client_msg_id, fresh_id]
-                )
-
-                {:new, fresh_id}
-            end
-
-          [] ->
-            MessageService.Repo.query!(
-              "INSERT INTO message_client_ids " <>
-                "(app_id, conversation_id, sender_user_id, client_msg_id, message_id) " <>
-                "VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid, $4::text::uuid, $5::text::uuid)",
-              [app_id, conversation_id, sender_user_id, client_msg_id, fresh_id]
-            )
-
-            {:new, fresh_id}
-        end
-      end)
-
-    outcome
+  defp create_or_rollback(create, message_id) do
+    case create.(message_id) do
+      {:ok, _} = ok -> ok
+      {:error, reason} -> MessageService.Repo.rollback(reason)
+    end
   end
 
   # The block-drop ack: a CANONICAL message (byte-identical shape to a real create's message_response, per

@@ -26,6 +26,21 @@ defmodule ApiGatewayWeb.RealtimeFanOut do
   Fire-and-forget in a Task: a fan-out must never fail or slow the request that caused it.
   """
   def to_participants(conversation_id, actor_id, event, payload) do
+    if replayed?(event, payload),
+      do: :ok,
+      else: do_to_participants(conversation_id, actor_id, event, payload)
+  end
+
+  # A REPLAYED message_created — the store already had this client_msg_id and answered with the
+  # first write — reaches nobody. The first write's fan-out already happened; the resend is the
+  # sender's retry of a lost ack, and re-broadcasting it puts the message on every other client's
+  # screen twice. Gated HERE, once, because this is the one definition every REST path uses.
+  defp replayed?("message_created", payload) when is_map(payload),
+    do: Map.get(payload, :replayed) == true or Map.get(payload, "replayed") == true
+
+  defp replayed?(_event, _payload), do: false
+
+  defp do_to_participants(conversation_id, actor_id, event, payload) do
     Task.start(fn ->
       try do
         ApiGatewayWeb.Endpoint.broadcast("conversation:" <> conversation_id, event, payload)
@@ -53,6 +68,12 @@ defmodule ApiGatewayWeb.RealtimeFanOut do
   Fire-and-forget in a Task: a fan-out must never fail or slow the request that caused it.
   """
   def to_conversation(conversation_id, event, payload) do
+    if replayed?(event, payload),
+      do: :ok,
+      else: do_to_conversation(conversation_id, event, payload)
+  end
+
+  defp do_to_conversation(conversation_id, event, payload) do
     Task.start(fn ->
       try do
         ApiGatewayWeb.Endpoint.broadcast("conversation:" <> conversation_id, event, payload)
