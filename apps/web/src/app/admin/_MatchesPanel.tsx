@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, HeartHandshake, Loader2 } from "lucide-react";
+import { AlertTriangle, Loader2 } from "lucide-react";
 import { AdminMatch, getAdminMatches, getAdminUserMatches } from "@/lib/api";
-import { Button, Card, Input } from "@/components";
+import { Avatar, Button, Card, Input } from "@/components";
 import { Pager } from "@/app/admin/_Pager";
 import { identityTitle } from "@/lib/adminUser";
+import { cn } from "@/lib/cn";
 import { usePaging } from "@/app/admin/_usePaging";
 import {
   REASON_MAX_LENGTH,
@@ -149,7 +150,16 @@ export function MatchesPanel({ userId }: { userId?: string }) {
         <Card className="divide-y divide-border p-0">
           {matches.map((m) => (
             <div key={m.id} className="flex items-center gap-3 p-3">
-              <HeartHandshake className="h-4 w-4 shrink-0 text-faint" aria-hidden />
+              <MatchPhoto
+                id={m.user_low_id}
+                url={m.user_low_avatar_url}
+                name={identityTitle({ display_name: m.user_low_name, username: m.user_low_username })}
+              />
+              <MatchPhoto
+                id={m.user_high_id}
+                url={m.user_high_avatar_url}
+                name={identityTitle({ display_name: m.user_high_name, username: m.user_high_username })}
+              />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm text-fg">
                   <span title={m.user_low_id}>
@@ -160,8 +170,19 @@ export function MatchesPanel({ userId }: { userId?: string }) {
                     {identityTitle({ display_name: m.user_high_name, username: m.user_high_username })}
                   </span>
                 </p>
+                <p className="truncate text-xs text-faint tabular-nums">
+                  matched {m.matched_at}
+                  {m.unmatched_at ? ` · unmatched ${m.unmatched_at}` : ""}
+                </p>
               </div>
-              <span className="shrink-0 text-xs text-faint tabular-nums">{m.matched_at}</span>
+              <span
+                className={cn(
+                  "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
+                  m.active ? "bg-success/10 text-success" : "bg-elevated text-muted"
+                )}
+              >
+                {m.active ? "active" : "unmatched"}
+              </span>
             </div>
           ))}
         </Card>
@@ -176,4 +197,10 @@ export function MatchesPanel({ userId }: { userId?: string }) {
       )}
     </div>
   );
+}
+
+// A presigned avatar when there is one, the initials tile otherwise. A failed presign arrives as
+// null and simply shows the tile — never a broken image.
+function MatchPhoto({ id, url, name }: { id: string; url?: string | null; name: string }) {
+  return <Avatar id={id} name={name} size="sm" imageUrl={url ?? undefined} />;
 }

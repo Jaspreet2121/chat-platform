@@ -134,5 +134,11 @@ Stated so a reviewer can check the wording against the software rather than agai
 - **Not verified here**: the mobile client's behaviour (it is not in this repo). The paragraph
   states what the client does per product instruction; the server side is what was checked.
 
-One thing the drafts do **not** say, because it is not true: that staff can see whether you
-*unmatched* someone. An unmatch deletes the row, so there is nothing to see.
+**Changed 2026-09-25 (migration 134):** an unmatch now FLAGS the match record (`unmatched_at`)
+instead of deleting it, so authorised staff CAN see that a pair matched and later unmatched, and
+when. For the two people involved nothing changes — every user-facing read filters unmatched rows
+out — but the published wording "who you matched with, and when" now also covers matches that
+ended, and the record is retained until account deletion (`dating_matches` cascades with the
+account). This is a retention change to personal data and belongs in the next review of §6
+("Keeping and deleting data"): the honest sentence to add is that *match history, including matches
+you have ended, is kept while your account exists.*

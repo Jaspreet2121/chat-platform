@@ -209,7 +209,6 @@ export default function AdminRolesPage() {
             const selected = choice[u.user_id] ?? u.role ?? "";
             const name = identityTitle(u);
             const phone = identitySubtitle(u);
-            const email = u.email?.trim() || "";
             // name → @handle → "(no name)"; the phone is masked and secondary, never the label.
             const label = name;
             const roleChip = u.role || (u.is_admin ? "admin" : "user");

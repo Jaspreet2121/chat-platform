@@ -439,9 +439,14 @@ defmodule UserService.DatingTest do
     assert {:ok, %{unmatched: true, peer_user_id: ^b}} =
              Dating.unmatch(%{"user_id" => a, "app_id" => @app_id, "match_id" => match_id})
 
-    %{rows: [[matches]]} = Repo.query!("SELECT count(*)::int FROM dating_matches", [])
+    # A FLAG, not a delete (134): the row stays, marked unmatched, and no LIVE match remains.
+    %{rows: [[live]]} =
+      Repo.query!("SELECT count(*)::int FROM dating_matches WHERE unmatched_at IS NULL", [])
+
+    %{rows: [[kept]]} = Repo.query!("SELECT count(*)::int FROM dating_matches", [])
     %{rows: [[swipes]]} = Repo.query!("SELECT count(*)::int FROM dating_swipes", [])
-    assert matches == 0
+    assert live == 0
+    assert kept == 1
     # BOTH swipe rows reset to none — neither reappears in the other's likes.
     assert swipes == 0
     assert likes_ids(a) == []
@@ -452,8 +457,12 @@ defmodule UserService.DatingTest do
     assert deck_ids(a) == [b]
 
     # BLOCK HOOK variant: re-match, then unmatch_pair (what the gateway calls after a block).
+    # The re-match is a NEW row beside the flagged one — the pair key is partial over live rows.
     assert {:ok, %{matched: false}} = swipe(a, b, "like")
     assert {:ok, %{matched: true, match_id: match2}} = swipe(b, a, "like")
+    refute match2 == match_id
+    %{rows: [[rows]]} = Repo.query!("SELECT count(*)::int FROM dating_matches", [])
+    assert rows == 2
 
     assert {:ok, %{unmatched: true, match_id: ^match2}} =
              Dating.unmatch_pair(%{"user_id" => a, "app_id" => @app_id, "peer_user_id" => b})

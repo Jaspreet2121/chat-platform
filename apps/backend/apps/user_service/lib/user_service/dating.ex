@@ -146,6 +146,7 @@ defmodule UserService.Dating do
               WHERE m.app_id = $2::text::uuid
                 AND m.user_low_id = LEAST($1::text::uuid, p.user_id)
                 AND m.user_high_id = GREATEST($1::text::uuid, p.user_id)
+                AND m.unmatched_at IS NULL
             )
             -- INTENTION FILTER, VIEWER-SIDE ONLY (asymmetric BY DESIGN): my pref narrows MY deck;
             -- a candidate's pref narrows only THEIR deck. Applying the candidate's pref here would
@@ -241,7 +242,7 @@ defmodule UserService.Dating do
            "INSERT INTO dating_matches (app_id, user_low_id, user_high_id) " <>
              "VALUES ($1::text::uuid, LEAST($2::text::uuid, $3::text::uuid), " <>
              "GREATEST($2::text::uuid, $3::text::uuid)) " <>
-             "ON CONFLICT (app_id, user_low_id, user_high_id) DO NOTHING " <>
+             "ON CONFLICT (app_id, user_low_id, user_high_id) WHERE unmatched_at IS NULL DO NOTHING " <>
              "RETURNING id::text, conversation_id::text",
            [app_id, user_a, user_b]
          ) do
@@ -362,6 +363,7 @@ defmodule UserService.Dating do
           LEFT JOIN user_profiles up ON up.user_id = peer.user_id
           WHERE m.app_id = $2::text::uuid
             AND (m.user_low_id = $1::text::uuid OR m.user_high_id = $1::text::uuid)
+            AND m.unmatched_at IS NULL
             AND NOT EXISTS (
               SELECT 1 FROM user_blocks ub
               WHERE (ub.blocker_user_id = $1::text::uuid AND ub.blocked_user_id = peer.user_id)
@@ -408,7 +410,11 @@ defmodule UserService.Dating do
       Repo.transaction(fn ->
         %{rows: rows} =
           Repo.query!(
-            "DELETE FROM dating_matches WHERE id = $1::text::uuid AND app_id = $2::text::uuid " <>
+            # A FLAG, not a DELETE (134): the row stays with unmatched_at set, so the admin Matches
+            # surface can show "unmatched" for safety and legal review. Every user-facing read filters
+            # unmatched_at IS NULL, so for the pair this is exactly what a delete was.
+            "UPDATE dating_matches SET unmatched_at = now() " <>
+              "WHERE id = $1::text::uuid AND app_id = $2::text::uuid AND unmatched_at IS NULL " <>
               "AND (user_low_id = $3::text::uuid OR user_high_id = $3::text::uuid) " <>
               "RETURNING user_low_id::text, user_high_id::text",
             [match_id, app_id, user_id]
@@ -443,9 +449,10 @@ defmodule UserService.Dating do
       Repo.transaction(fn ->
         %{rows: rows} =
           Repo.query!(
-            "DELETE FROM dating_matches WHERE app_id = $1::text::uuid " <>
+            "UPDATE dating_matches SET unmatched_at = now() WHERE app_id = $1::text::uuid " <>
               "AND user_low_id = LEAST($2::text::uuid, $3::text::uuid) " <>
-              "AND user_high_id = GREATEST($2::text::uuid, $3::text::uuid) RETURNING id::text",
+              "AND user_high_id = GREATEST($2::text::uuid, $3::text::uuid) " <>
+              "AND unmatched_at IS NULL RETURNING id::text",
             [app_id, user_id, peer_id]
           )
 
@@ -822,7 +829,7 @@ defmodule UserService.Dating do
     %{rows: rows} =
       Repo.query!(
         "SELECT id::text, conversation_id::text FROM dating_matches " <>
-          "WHERE app_id = $1::text::uuid " <>
+          "WHERE app_id = $1::text::uuid AND unmatched_at IS NULL " <>
           "AND user_low_id = LEAST($2::text::uuid, $3::text::uuid) " <>
           "AND user_high_id = GREATEST($2::text::uuid, $3::text::uuid)",
         [app_id, user_a, user_b]

@@ -127,4 +127,31 @@ defmodule UserService.DatingAdminTest do
     assert length(rows) == 1
     assert alice in [hd(rows).user_low_id, hd(rows).user_high_id]
   end
+
+  @tag :postgres_integration
+  test "an unmatched pair stays in the history, marked inactive, with when it ended" do
+    a = user!("Ana")
+    b = user!("Ben")
+    match!(a, b, 5)
+
+    %{rows: [[match_id]]} = Repo.query!("SELECT id::text FROM dating_matches", [])
+
+    assert {:ok, %{unmatched: true}} =
+             UserService.Dating.unmatch(%{
+               "user_id" => a,
+               "app_id" => @app_id,
+               "match_id" => match_id
+             })
+
+    {:ok, %{matches: [row], total: 1}} = DatingAdmin.list_matches(%{"app_id" => @app_id})
+
+    # Still listed — the whole point of flagging instead of deleting — and honest about its state.
+    assert row.id == match_id
+    assert row.active == false
+    assert is_binary(row.unmatched_at)
+
+    # And the user-facing read no longer shows it: for the pair, this was a delete.
+    {:ok, %{matches: mine}} = UserService.Dating.matches(%{"user_id" => a, "app_id" => @app_id})
+    assert mine == []
+  end
 end

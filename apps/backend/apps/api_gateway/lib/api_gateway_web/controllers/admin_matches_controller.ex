@@ -16,8 +16,8 @@ defmodule ApiGatewayWeb.AdminMatchesController do
     * NO LOCATION, anywhere. Nearby presence rows carry a live latitude and longitude; they are not
       read here and there is no Nearby endpoint in the admin API at all.
 
-  What it cannot show: an unmatch DELETES the row, so only live matches exist to list. See
-  `UserService.DatingAdmin`.
+  Since 134 an unmatch FLAGS the row (`unmatched_at`) rather than deleting it, so the list shows
+  active AND unmatched pairs, each with when it ended. See `UserService.DatingAdmin`.
   """
   use ApiGatewayWeb, :controller
 
@@ -96,10 +96,71 @@ defmodule ApiGatewayWeb.AdminMatchesController do
     )
   end
 
-  defp forward(conn, {:ok, data}), do: json(conn, data)
+  defp forward(conn, {:ok, data}), do: json(conn, with_avatar_urls(data))
 
   defp forward(conn, _error),
     do: ErrorResponse.service_unavailable(conn, "admin.unavailable")
+
+  # Both users' avatars, presigned the same way every profile card presigns one — purpose-asserted
+  # so a poisoned avatar id cannot presign a message attachment — and CONCURRENTLY, because a page
+  # of 100 rows is 200 media round-trips and doing them in series blocked the whole response. A
+  # failed presign degrades that one photo to nothing; it never fails the page.
+  @presign_concurrency 16
+  @presign_timeout_ms 5_000
+  defp with_avatar_urls(%{} = data) do
+    matches = mget(data, :matches) || []
+    app_id = SharedInfra.Tenancy.default_app_id()
+
+    ids =
+      matches
+      |> Enum.flat_map(
+        &[mget(&1, :user_low_avatar_media_id), mget(&1, :user_high_avatar_media_id)]
+      )
+      |> Enum.filter(&is_binary/1)
+      |> Enum.uniq()
+
+    urls = presigned_map(ids, app_id)
+
+    enriched =
+      Enum.map(matches, fn m ->
+        m
+        |> Map.put(:user_low_avatar_url, Map.get(urls, mget(m, :user_low_avatar_media_id)))
+        |> Map.put(:user_high_avatar_url, Map.get(urls, mget(m, :user_high_avatar_media_id)))
+      end)
+
+    Map.put(data, :matches, enriched)
+  rescue
+    _ -> data
+  end
+
+  defp with_avatar_urls(data), do: data
+
+  defp presigned_map(ids, app_id) do
+    ids
+    |> Task.async_stream(fn id -> {id, presign(id, app_id)} end,
+      max_concurrency: @presign_concurrency,
+      timeout: @presign_timeout_ms,
+      on_timeout: :kill_task
+    )
+    |> Enum.reduce(%{}, fn
+      {:ok, {id, url}} when is_binary(url) -> &Map.put(&1, id, url)
+      _ -> & &1
+    end)
+  end
+
+  defp presign(media_id, app_id) do
+    case SharedInfra.MediaClient.get_download_url(%{
+           "media_id" => media_id,
+           "app_id" => app_id,
+           "purpose" => "user_avatar"
+         }) do
+      {:ok, %{} = download} -> mget(download, :download_url)
+      _ -> nil
+    end
+  end
+
+  defp mget(map, key) when is_map(map), do: Map.get(map, key) || Map.get(map, to_string(key))
+  defp mget(_map, _key), do: nil
 
   defp present(value) when is_binary(value) and value != "", do: value
   defp present(_value), do: nil

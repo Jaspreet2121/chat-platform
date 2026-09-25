@@ -3,17 +3,18 @@ defmodule UserService.DatingAdmin do
   ADMIN reads of dating match history (Matches console surface, `users.sensitive.view`).
 
   READ-ONLY, and deliberately narrow. This module can answer "who matched with whom, and when" and
-  nothing else: no swipes, no preferences, no photos, and — categorically — **no location**. Nearby
+  nothing else: no swipes, no preferences, only each user's profile avatar id (the same photo every
+  profile card shows) — and, categorically, **no location**. Nearby
   presence rows carry a live latitude/longitude and are not exposed here or anywhere in the admin
   API, by decision.
 
-  ## `unmatched` is not a state this can show
+  ## `unmatched` is a state this CAN show (134)
 
-  `Dating.unmatch/1` DELETES the `dating_matches` row (and the pair's swipes) rather than flagging
-  it, so the table holds live matches only. Everything returned here is therefore active by
-  construction; a match that was undone leaves no trace to list. Recording unmatches would be a
-  schema change and a product decision about retaining something a user chose to end, which this
-  does not make on its own.
+  `Dating.unmatch/1` FLAGS the `dating_matches` row (`unmatched_at`) rather than deleting it, so a
+  pair that matched and later unmatched is listed with `active: false` and when it ended. Every
+  user-facing read filters those rows out — for the two people involved an unmatch is still exactly
+  what a delete was; only the history survives, for safety and legal review. Before 134 the row was
+  deleted and this module could only ever answer "active".
 
   ## Paging is bounded by the SERVER
 
@@ -26,8 +27,6 @@ defmodule UserService.DatingAdmin do
 
   alias SharedInfra.AdminPage
   alias UserService.Repo
-
-  # Server-owned. A caller may ask for less; asking for more (or for a nonsense value) gets this.
 
   @doc """
   Numbered pages of matches, newest first. attrs: "app_id", optional "q" (a user id or a name
@@ -91,7 +90,10 @@ defmodule UserService.DatingAdmin do
           user_high_name: hi.display_name,
           user_low_username: lo.username,
           user_high_username: hi.username,
-          matched_at: m.matched_at
+          user_low_avatar_media_id: type(lo.avatar_media_id, :string),
+          user_high_avatar_media_id: type(hi.avatar_media_id, :string),
+          matched_at: m.matched_at,
+          unmatched_at: m.unmatched_at
         }
       )
       |> Repo.all()
@@ -126,10 +128,12 @@ defmodule UserService.DatingAdmin do
       user_high_name: row.user_high_name,
       user_low_username: row.user_low_username,
       user_high_username: row.user_high_username,
+      user_low_avatar_media_id: row.user_low_avatar_media_id,
+      user_high_avatar_media_id: row.user_high_avatar_media_id,
       matched_at: DateTime.to_iso8601(row.matched_at),
-      # Always true: an unmatched row is deleted, not flagged. Stated explicitly so a reader of the
-      # payload is not left wondering whether the field is missing or the data is.
-      active: true
+      # Since 134 an unmatch FLAGS the row instead of deleting it, so this is finally a real answer.
+      active: is_nil(row.unmatched_at),
+      unmatched_at: row.unmatched_at && DateTime.to_iso8601(row.unmatched_at)
     }
   end
 end

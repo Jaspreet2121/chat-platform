@@ -73,6 +73,7 @@ defmodule ConversationService.MessageRequests do
             OR EXISTS (
               SELECT 1 FROM dating_matches
               WHERE user_low_id = LEAST($1, $2) AND user_high_id = GREATEST($1, $2)
+                AND unmatched_at IS NULL
             )
           )
           """,

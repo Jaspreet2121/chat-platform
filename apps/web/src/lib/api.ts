@@ -970,10 +970,15 @@ export type AdminMatch = {
   user_high_name?: string | null;
   user_low_username?: string | null;
   user_high_username?: string | null;
+  // Presigned by the gateway (purpose-asserted, best-effort): null when the user has no avatar or
+  // the presign failed — never a broken image, just no photo.
+  user_low_avatar_url?: string | null;
+  user_high_avatar_url?: string | null;
   matched_at: string;
-  // Always true today: an unmatch DELETES the row rather than flagging it, so only live matches
-  // exist to list. The field is sent explicitly so a reader is not left guessing.
+  // Since 134 an unmatch FLAGS the row instead of deleting it, so this is a real answer: false means
+  // the pair unmatched, and unmatched_at says when.
   active: boolean;
+  unmatched_at?: string | null;
 };
 
 export type AdminMatchesPage = PageEnvelope & { matches: AdminMatch[] };
