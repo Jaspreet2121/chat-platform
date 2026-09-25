@@ -54,6 +54,8 @@ defmodule SharedInfra.MessageClient do
   @callback get_by_media_id(attrs()) :: result()
   # Message info (per-user delivery/read state; sender-only). Optional so existing stubs don't all need it.
   @callback message_info(attrs()) :: result()
+  # Store-backed unread recount (the InboxCounters interlock's missing half).
+  @callback recount_unread(attrs()) :: result()
   # Single message by id, straight off `MessageService.MessageStore` — the ONLY read on this boundary
   # that reaches the store rather than a `Messages`/`Timeline` function, because that is where the
   # store adapter (postgres / scylla / dual-write) is selected. Added for `notification_service`, whose
@@ -107,6 +109,7 @@ defmodule SharedInfra.MessageClient do
   # 118: drop a conversation's search-only copy when it turns secret (best-effort at the caller).
   @callback purge_search_index(attrs()) :: result()
   @optional_callbacks message_info: 1,
+                      recount_unread: 1,
                       purge_search_index: 1,
                       get_message: 1,
                       event_outbox_summary: 1,
@@ -146,6 +149,9 @@ defmodule SharedInfra.MessageClient do
   def delete_message(attrs), do: normalize(adapter().delete_message(attrs))
   def mark_read(attrs), do: normalize(adapter().mark_read(attrs))
   def message_info(attrs), do: normalize(adapter().message_info(attrs))
+
+  @doc "Recount one participant's unread counter from the message STORE — never from Postgres `messages`."
+  def recount_unread(attrs), do: normalize(adapter().recount_unread(attrs))
   def purge_search_index(attrs), do: normalize(adapter().purge_search_index(attrs))
   def get_message(attrs), do: normalize(adapter().get_message(attrs))
   def event_outbox_summary(attrs), do: normalize(adapter().event_outbox_summary(attrs))

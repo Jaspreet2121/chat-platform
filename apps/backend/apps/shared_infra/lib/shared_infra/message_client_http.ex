@@ -46,6 +46,9 @@ defmodule SharedInfra.MessageClientHttp do
   def message_info(attrs), do: post("/internal/receipts/info", attrs)
 
   @impl true
+  def recount_unread(attrs), do: post("/internal/inbox/recount", attrs)
+
+  @impl true
   def get_message(attrs), do: post("/internal/messages/get", attrs)
 
   @impl true

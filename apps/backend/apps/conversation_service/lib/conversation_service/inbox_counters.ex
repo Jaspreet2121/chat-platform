@@ -9,9 +9,10 @@ defmodule ConversationService.InboxCounters do
     * the read-time freshness test fails (auto-delete window moved past `oldest_unread_at`) —
       @inbox_sql recounts inline and calls `repair/3` to write the corrected row back.
 
-  The recount SQL is the OLD unread lateral, run once for one (conversation, user) — this module is
-  the ONE remaining place inbox code reads `messages`, and its relocation behind the message-store
-  boundary is C7's job (when receipts/messages move to Scylla, this becomes a store recount call).
+  Under the Postgres store the recount SQL is the OLD unread lateral, run once for one
+  (conversation, user). Under any other store — Scylla, in production — `recount/2` is a STORE
+  RECOUNT CALL (`MessageService.InboxRecount`, via the message client): it never reads the frozen
+  `messages` table, and it never writes a number it could not compute in full.
 
   `ConversationService.InboxReconciler` runs `reconcile_conversation/1` periodically as the mandatory
   drift backstop (cross-store partial failures, double-delivery decrements — see InboxProjection).
@@ -70,7 +71,29 @@ defmodule ConversationService.InboxCounters do
     if postgres_authoritative?() do
       do_recount(conversation_id, user_id)
     else
-      skip("recount", "conversation=#{conversation_id} user=#{user_id}")
+      store_recount(conversation_id, user_id)
+    end
+  end
+
+  # UNDER THE LIVE STORE the recount is the message service's: it walks the conversation in Scylla
+  # inside the reader's window and subtracts the projection's own read marks, and it writes the row
+  # itself — on a COMPLETE answer only. A store that cannot be reached leaves the counter exactly as
+  # it was, which is the whole difference from the lateral this replaces: an unknown count is not 0.
+  defp store_recount(conversation_id, user_id) do
+    case SharedInfra.MessageClient.recount_unread(%{
+           "conversation_id" => conversation_id,
+           "user_id" => user_id
+         }) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "inbox recount: store recount unavailable (#{inspect(reason)}) — counter left as it " <>
+            "was for conversation=#{conversation_id} user=#{user_id}"
+        )
+
+        :ok
     end
   end
 

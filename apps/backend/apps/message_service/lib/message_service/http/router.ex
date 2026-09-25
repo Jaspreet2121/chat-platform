@@ -120,6 +120,12 @@ defmodule MessageService.HTTP.Router do
     send_result(conn, MessageService.Messages.message_info(body(conn)))
   end
 
+  # Store-backed unread recount: ConversationService.InboxCounters calls this under any
+  # non-Postgres message store instead of recounting from the frozen `messages` table.
+  post "/internal/inbox/recount" do
+    send_result(conn, MessageService.InboxRecount.recount_attrs(body(conn)))
+  end
+
   # Polls — vote (replace-the-set) + the uncapped voter lists (membership gated in the gateway).
   post "/internal/checklists/tick" do
     send_result(conn, MessageService.Checklists.tick(body(conn)))
