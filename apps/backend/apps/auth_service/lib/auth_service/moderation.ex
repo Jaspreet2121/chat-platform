@@ -25,7 +25,7 @@ defmodule AuthService.Moderation do
          :ok <- guard_hierarchy(attrs, user_id),
          {:ok, user} <- Accounts.set_status(user_id, "active") do
       record_enforcement(user_id, "warn", actor(attrs), reason(attrs, "Reactivated"), nil)
-      audit(actor(attrs), "user.reactivate", "user", user_id, %{})
+      audit(actor(attrs), "user.reactivate", "user", user_id, %{}, attrs)
       {:ok, %{user_id: user.id, status: user.status}}
     end
   end
@@ -69,7 +69,7 @@ defmodule AuthService.Moderation do
          {:ok, user} <- Accounts.set_status(user_id, status) do
       reason = reason(attrs, "#{action_type} by admin")
       record_enforcement(user_id, action_type, actor(attrs), reason, ends_at)
-      audit(actor(attrs), "user.#{action_type}", "user", user_id, %{"reason" => reason})
+      audit(actor(attrs), "user.#{action_type}", "user", user_id, %{"reason" => reason}, attrs)
       {:ok, %{user_id: user.id, status: user.status}}
     end
   end
@@ -199,9 +199,14 @@ defmodule AuthService.Moderation do
       if n == 0 do
         {:error, :report_not_found}
       else
-        audit(actor(attrs), "report.#{status}", "report", report_id, %{
-          "resolution" => present(attrs["resolution"])
-        })
+        audit(
+          actor(attrs),
+          "report.#{status}",
+          "report",
+          report_id,
+          %{"resolution" => present(attrs["resolution"])},
+          attrs
+        )
 
         {:ok, %{id: report_id, status: status}}
       end
@@ -225,7 +230,8 @@ defmodule AuthService.Moderation do
       attrs["action"] || "unknown",
       attrs["target_type"] || "unknown",
       attrs["target_id"],
-      attrs["metadata"] || %{}
+      attrs["metadata"] || %{},
+      attrs
     )
 
     {:ok, %{written: true}}
@@ -275,10 +281,14 @@ defmodule AuthService.Moderation do
                 [new_role, SharedInfra.IAM.admin?(new_role), uuid_param(user_id)]
               )
 
-              audit(actor(attrs), "user.role_change", "user", user_id, %{
-                "old_role" => old_role,
-                "new_role" => new_role
-              })
+              audit(
+                actor(attrs),
+                "user.role_change",
+                "user",
+                user_id,
+                %{"old_role" => old_role, "new_role" => new_role},
+                attrs
+              )
 
               %{user_id: user_id, role: new_role, previous_role: old_role}
             end
@@ -354,10 +364,14 @@ defmodule AuthService.Moderation do
         # notifications are intentionally NOT touched (anonymized via the profile deletion above).
         Repo.query!("DELETE FROM users_auth WHERE id = $1", [target_bin])
 
-        audit(actor_id, "user.delete", "user", target_id, %{
-          "role" => target.role,
-          "policy" => "anonymize-keep"
-        })
+        audit(
+          actor_id,
+          "user.delete",
+          "user",
+          target_id,
+          %{"role" => target.role, "policy" => "anonymize-keep"},
+          attrs
+        )
 
         %{user_id: target_id, deleted: true}
       end)
@@ -587,14 +601,46 @@ defmodule AuthService.Moderation do
 
   # --- internals ----------------------------------------------------------------------------------
 
-  defp audit(actor_user_id, action, target_type, target_id, metadata) do
+  # `ctx` is the gateway's attrs, carrying the request facts (ip_address / user_agent). The columns
+  # have existed since 010 and were never populated: an audit row that cannot say WHERE an action came
+  # from answers half the question it exists for. Absent (an internal caller with no request) → NULL,
+  # which is honest, rather than a proxy address that would read as evidence.
+  defp audit(actor_user_id, action, target_type, target_id, metadata, ctx) do
     Repo.query!(
-      "INSERT INTO audit_logs (actor_user_id, action, target_type, target_id, metadata) " <>
-        "VALUES ($1, $2, $3, $4, $5::jsonb)",
-      [uuid_param(actor_user_id), action, target_type, target_id, Jason.encode!(metadata || %{})]
+      "INSERT INTO audit_logs " <>
+        "(actor_user_id, action, target_type, target_id, metadata, ip_address, user_agent) " <>
+        "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)",
+      [
+        uuid_param(actor_user_id),
+        action,
+        target_type,
+        target_id,
+        Jason.encode!(metadata || %{}),
+        present(get_in_attrs(ctx, "ip_address")),
+        present(get_in_attrs(ctx, "user_agent"))
+      ]
     )
 
     :ok
+  end
+
+  # The gateway sends string keys; an in-process caller may send atoms. Read either, NEVER crash:
+  # `String.to_existing_atom/1` raises when the atom has never been created, which is exactly the
+  # case for an internal caller that passes no request context at all — and raising there would turn
+  # "no IP to record" into a failed moderation action.
+  defp get_in_attrs(ctx, key) when is_map(ctx) do
+    case Map.get(ctx, key) do
+      nil -> Map.get(ctx, existing_atom(key))
+      value -> value
+    end
+  end
+
+  defp get_in_attrs(_ctx, _key), do: nil
+
+  defp existing_atom(key) do
+    String.to_existing_atom(key)
+  rescue
+    ArgumentError -> :__absent__
   end
 
   # uuid columns are typed `uuid`; Postgrex needs the 16-byte binary, not the string form.

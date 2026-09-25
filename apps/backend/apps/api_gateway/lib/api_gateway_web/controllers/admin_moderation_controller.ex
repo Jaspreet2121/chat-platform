@@ -36,15 +36,32 @@ defmodule ApiGatewayWeb.AdminModerationController do
     forward(conn, SharedInfra.AuthClient.list_users(scoped(take_paging(params))))
   end
 
+  # THE ONE AUDITED READ. Opening a person's record — phone, email, enforcement history, reports — is
+  # the read worth recording; list/search pages are not (they are how you navigate, and auditing every
+  # keystroke would bury the reads that matter). Best-effort: the audit never blocks the view.
   def get_user(conn, %{"id" => user_id}) do
-    forward(conn, SharedInfra.AuthClient.get_user_detail(scoped(%{"user_id" => user_id})))
+    result = SharedInfra.AuthClient.get_user_detail(scoped(%{"user_id" => user_id}))
+
+    if match?({:ok, _}, result) do
+      SharedInfra.AuthClient.write_audit(
+        Map.merge(ApiGatewayWeb.RequestContext.audit_attrs(conn), %{
+          "actor_user_id" => actor(conn),
+          "action" => "user.view",
+          "target_type" => "user",
+          "target_id" => user_id,
+          "metadata" => %{}
+        })
+      )
+    end
+
+    forward(conn, result)
   end
 
   def suspend_user(conn, %{"id" => user_id} = params) do
     forward(
       conn,
       SharedInfra.AuthClient.suspend_user(
-        scoped(%{
+        scoped(conn, %{
           "user_id" => user_id,
           "reason" => params["reason"],
           "ends_at" => params["ends_at"],
@@ -58,7 +75,7 @@ defmodule ApiGatewayWeb.AdminModerationController do
     forward(
       conn,
       SharedInfra.AuthClient.reactivate_user(
-        scoped(%{"user_id" => user_id, "actor_user_id" => actor(conn)})
+        scoped(conn, %{"user_id" => user_id, "actor_user_id" => actor(conn)})
       )
     )
   end
@@ -67,7 +84,7 @@ defmodule ApiGatewayWeb.AdminModerationController do
     forward(
       conn,
       SharedInfra.AuthClient.ban_user(
-        scoped(%{
+        scoped(conn, %{
           "user_id" => user_id,
           "reason" => params["reason"],
           "actor_user_id" => actor(conn)
@@ -87,13 +104,15 @@ defmodule ApiGatewayWeb.AdminModerationController do
              "conversation_id" => params["conversation_id"]
            }) do
       # Best-effort audit (the delete already happened); record who removed what.
-      SharedInfra.AuthClient.write_audit(%{
-        "actor_user_id" => actor(conn),
-        "action" => "message.delete",
-        "target_type" => "message",
-        "target_id" => message_id,
-        "metadata" => %{"conversation_id" => params["conversation_id"]}
-      })
+      SharedInfra.AuthClient.write_audit(
+        Map.merge(ApiGatewayWeb.RequestContext.audit_attrs(conn), %{
+          "actor_user_id" => actor(conn),
+          "action" => "message.delete",
+          "target_type" => "message",
+          "target_id" => message_id,
+          "metadata" => %{"conversation_id" => params["conversation_id"]}
+        })
+      )
 
       json(conn, data)
     else
@@ -117,7 +136,7 @@ defmodule ApiGatewayWeb.AdminModerationController do
     forward(
       conn,
       SharedInfra.AuthClient.update_report(
-        scoped(%{
+        scoped(conn, %{
           "report_id" => report_id,
           "status" => params["status"],
           "resolution" => params["resolution"],
@@ -132,7 +151,7 @@ defmodule ApiGatewayWeb.AdminModerationController do
     forward(
       conn,
       SharedInfra.AuthClient.set_user_role(
-        scoped(%{
+        scoped(conn, %{
           "user_id" => user_id,
           "role" => params["role"],
           "actor_user_id" => actor(conn)
@@ -146,7 +165,7 @@ defmodule ApiGatewayWeb.AdminModerationController do
     forward(
       conn,
       SharedInfra.AuthClient.delete_user(
-        scoped(%{"user_id" => user_id, "actor_user_id" => actor(conn)})
+        scoped(conn, %{"user_id" => user_id, "actor_user_id" => actor(conn)})
       )
     )
   end
@@ -260,6 +279,11 @@ defmodule ApiGatewayWeb.AdminModerationController do
   # (SharedInfra.Tenancy.default_app_id/0, the single source). A cross-tenant id then resolves to nothing →
   # 404, no side effect. A cross-tenant *operations* view is a separate future route with its own controller.
   defp scoped(attrs), do: Map.put(attrs, "app_id", SharedInfra.Tenancy.default_app_id())
+
+  # Tenant AND the request facts, in one call, so a mutation physically cannot be written without the
+  # context its audit row needs (audit_logs.ip_address / user_agent were NULL on every row until now).
+  defp scoped(conn, attrs),
+    do: attrs |> scoped() |> Map.merge(ApiGatewayWeb.RequestContext.audit_attrs(conn))
 
   # The message's conversation must belong to the console's tenant. Missing / cross-tenant / unresolvable
   # → :not_found (404). messages.app_id is unreliable, so the tenant comes from the parent conversation.

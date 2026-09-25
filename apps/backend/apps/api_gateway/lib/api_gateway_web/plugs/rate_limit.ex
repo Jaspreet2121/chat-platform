@@ -157,44 +157,10 @@ defmodule ApiGatewayWeb.Plugs.RateLimit do
 
   defp normalize_target(_value), do: "unknown"
 
-  # THE REAL CLIENT IP, not the proxy's. Every request reaches this app through Caddy, so
-  # `conn.remote_ip` is the Caddy container's bridge address — IDENTICAL for every caller. That
-  # silently collapsed this key's IP component to a constant and made per-IP limiting decorative.
-  # Caddy's reverse_proxy sets X-Forwarded-For by default.
-  #
-  # We take the LAST entry, not the first. A client can send its own X-Forwarded-For; Caddy APPENDS
-  # the address it actually observed, so the rightmost entry is the one value the client cannot
-  # forge. Taking the leftmost (what Plug.RewriteOn does) would let an attacker spoof a fresh IP per
-  # request and walk straight around this limit. Correct because there is exactly ONE trusted proxy
-  # in front of this app and the gateway port is NOT published — revisit if either changes.
-  defp client_ip(conn) do
-    case get_req_header(conn, "x-forwarded-for") do
-      [] ->
-        peer_ip(conn)
-
-      headers ->
-        headers
-        |> Enum.join(",")
-        |> String.split(",")
-        |> List.last()
-        |> String.trim()
-        |> case do
-          "" -> peer_ip(conn)
-          address -> address
-        end
-    end
-  end
-
-  # :inet.ntoa renders IPv4 and IPv6 correctly. The old Enum.join(".") produced a bogus
-  # dotted string for IPv6 8-tuples — stable, so it "worked", but it was not an address.
-  defp peer_ip(%{remote_ip: remote_ip}) when is_tuple(remote_ip) do
-    case :inet.ntoa(remote_ip) do
-      address when is_list(address) -> List.to_string(address)
-      _ -> "unknown"
-    end
-  end
-
-  defp peer_ip(_conn), do: "unknown"
+  # ONE definition of "the real client IP", shared with the admin audit writer — see
+  # ApiGatewayWeb.RequestContext for why the rightmost x-forwarded-for entry is the only
+  # unforgeable one. A second copy here would drift from the one the audit log records.
+  defp client_ip(conn), do: ApiGatewayWeb.RequestContext.client_ip(conn)
 
   defp enabled? do
     Application.get_env(:api_gateway, :rate_limiting_enabled, false) ||
