@@ -43,7 +43,44 @@ defmodule NotificationService.Application do
     # THE APNs CONNECTION POOL (129), or nothing at all when no Apple key is configured. APNs speaks
     # HTTP/2 only and Finch's default pool does not ask for it, so this leg needs a named pool that
     # does — and a deployment with no Apple key must not hold idle TLS connections to Apple.
-    repo ++ kafka ++ NotificationService.ApnsHttp.child_spec()
+    repo ++ kafka ++ NotificationService.ApnsHttp.child_spec() ++ heartbeat()
+  end
+
+  # THE BUILD BEACON. notification-service has no inbound port, so the admin health aggregator cannot
+  # ping it and reported its build as "unknown" — on the one service where a stale image is hardest
+  # to notice (pushes just stop) and nothing in the console says why. It pushes instead: a Redis key
+  # with a TTL, refreshed every interval, absent the moment the process stops.
+  #
+  # It rides the SAME condition as the consumers. A container that is not consuming has nothing to
+  # vouch for, and a beacon from an idle process would be a lie by omission; more practically, `mix
+  # test` and any local shell must not open a Redis connection at boot.
+  defp heartbeat do
+    if consuming?() do
+      [
+        {SharedInfra.ServiceHeartbeat,
+         service: "notification", interval_ms: heartbeat_interval_ms()}
+      ]
+    else
+      []
+    end
+  end
+
+  defp consuming? do
+    message_consumer_enabled?() or participants_consumer_enabled?() or call_consumer_enabled?()
+  end
+
+  defp heartbeat_interval_ms do
+    case System.get_env("NOTIFICATION_HEARTBEAT_INTERVAL_MS") do
+      nil ->
+        30_000
+
+      value ->
+        case Integer.parse(value) do
+          {ms, _} when ms >= 1_000 -> ms
+          # A misconfigured interval must not become a tight write loop against Redis.
+          _ -> 30_000
+        end
+    end
   end
 
   defp maybe(true, build_spec), do: [build_spec.()]

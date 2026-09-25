@@ -123,7 +123,10 @@ defmodule ApiGatewayWeb.AdminHealthGitShaTest do
              "user"
            ]
 
-    for {_name, entry} <- by_name,
+    # Every pinged service reports exactly name/status/git_sha. notification is the exception and
+    # carries the age of its heartbeat too — it is the one service nothing here can ping.
+    for {name, entry} <- by_name,
+        name != "notification",
         do: assert(Map.keys(entry) |> Enum.sort() == ["git_sha", "name", "status"])
 
     # Reachable WITH the field → its own sha.
@@ -146,10 +149,13 @@ defmodule ApiGatewayWeb.AdminHealthGitShaTest do
              "git_sha" => SharedInfra.BuildInfo.git_sha()
            }
 
+    # No heartbeat in Redis (none is running in this test) → stale, which is what "nobody can vouch
+    # for that process right now" looks like. Never "up", and deliberately never "down" either.
     assert by_name["notification"] == %{
              "name" => "notification",
-             "status" => "unknown",
-             "git_sha" => "unknown"
+             "status" => "stale",
+             "git_sha" => "unknown",
+             "heartbeat_age_seconds" => nil
            }
   end
 end

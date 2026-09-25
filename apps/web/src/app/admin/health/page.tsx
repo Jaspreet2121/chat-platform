@@ -175,28 +175,94 @@ export default function AdminHealthPage() {
         <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
           {health.services.map((svc) => {
             const Icon = serviceIcons[svc.name] ?? Server;
+            const sha = svc.git_sha && svc.git_sha !== "unknown" ? svc.git_sha.slice(0, 7) : null;
             return (
-              <Card key={svc.name} className="flex items-center gap-3 p-3">
-                <Icon className="h-4 w-4 text-muted" />
-                <span className="flex-1 text-sm font-medium capitalize text-fg">{svc.name}</span>
-                <StatusDot status={svc.status} />
-                <span
-                  className={cn(
-                    "text-xs font-medium capitalize",
-                    svc.status === "up"
-                      ? "text-success"
-                      : svc.status === "down"
-                        ? "text-danger"
-                        : "text-faint"
-                  )}
-                >
-                  {svc.status}
-                </span>
+              <Card key={svc.name} className="p-3">
+                <div className="flex items-center gap-3">
+                  <Icon className="h-4 w-4 text-muted" />
+                  <span className="flex-1 text-sm font-medium capitalize text-fg">{svc.name}</span>
+                  <StatusDot status={svc.status} />
+                  <span
+                    className={cn(
+                      "text-xs font-medium capitalize",
+                      svc.status === "up"
+                        ? "text-success"
+                        : svc.status === "down"
+                          ? "text-danger"
+                          : svc.status === "stale"
+                            ? "text-amber-400"
+                            : "text-faint"
+                    )}
+                  >
+                    {svc.status}
+                  </span>
+                </div>
+                <p className="mt-1.5 pl-7 text-xs text-faint">
+                  {/* The build, per service. A fleet a commit apart shows up here as differing
+                      SHAs, which is the whole reason each service reports its own. */}
+                  {sha ? <span className="font-mono">{sha}</span> : "build unknown"}
+                  {typeof svc.heartbeat_age_seconds === "number" ? (
+                    <span> · heartbeat {svc.heartbeat_age_seconds}s ago</span>
+                  ) : svc.status === "stale" ? (
+                    <span> · no heartbeat</span>
+                  ) : null}
+                </p>
               </Card>
             );
           })}
         </div>
       </section>
+
+      {/* Consumer lag — one place that answers "is anything behind?" for the whole platform. */}
+      {health.consumer_lag ? (
+        <section>
+          <h3 className="mb-2 text-xs font-medium uppercase tracking-wide text-faint">
+            Consumer lag
+            {health.consumer_lag.stale ? (
+              <span className="ml-2 normal-case text-amber-400">
+                snapshot is stale{" "}
+                {typeof health.consumer_lag.age_seconds === "number"
+                  ? `(${health.consumer_lag.age_seconds}s old)`
+                  : ""}
+              </span>
+            ) : null}
+          </h3>
+          {health.consumer_lag.groups.length === 0 ? (
+            <Card className="p-3 text-sm text-muted">No consumer groups reported.</Card>
+          ) : (
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {health.consumer_lag.groups.map((group) => (
+                <Card key={group.group_id} className="p-3">
+                  <div className="flex items-center gap-2">
+                    <Radio className="h-4 w-4 text-muted" />
+                    <span className="flex-1 truncate text-sm font-medium text-fg" title={group.group_id}>
+                      {group.service ?? group.group_id}
+                    </span>
+                    <span
+                      className={cn(
+                        "text-xs font-medium",
+                        group.status === "ok"
+                          ? "text-success"
+                          : group.status === "off"
+                            ? // A group nobody has joined is a DECISION, not an incident — four of
+                              // them are switched off on purpose. Never coloured as a problem.
+                              "text-faint"
+                            : "text-amber-400"
+                      )}
+                    >
+                      {group.status}
+                    </span>
+                  </div>
+                  <p className="mt-1 pl-6 text-xs text-faint">
+                    {typeof group.lag === "number" ? `lag ${group.lag.toLocaleString()}` : "lag n/a"}
+                    {typeof group.members === "number" ? ` · ${group.members} members` : null}
+                  </p>
+                </Card>
+              ))}
+            </div>
+          )}
+        </section>
+      ) : null}
     </div>
   );
 }

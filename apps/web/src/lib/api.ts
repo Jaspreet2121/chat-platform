@@ -888,7 +888,16 @@ export function getAdminAudit(page = 1) {
 
 // --- Admin health (read-only; behind RequireAdmin) ---------------------------------------------
 export type DepHealth = { status: string; latency_ms?: number | null; error?: string | null };
-export type ServiceHealth = { name: string; status: string; git_sha?: string };
+// `status` is "up" | "down" | "stale" | "unknown". "stale" belongs to notification-service alone:
+// it has no inbound port, so it pushes a heartbeat to Redis instead of being pinged, and "stale"
+// means nobody can vouch for it right now — deliberately not "down", which would claim we saw it
+// stop. `heartbeat_age_seconds` is present only on that entry, and only when a beat was read.
+export type ServiceHealth = {
+  name: string;
+  status: string;
+  git_sha?: string;
+  heartbeat_age_seconds?: number | null;
+};
 export type ConsumerLagGroup = {
   group_id: string;
   topic?: string;

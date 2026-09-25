@@ -47,8 +47,11 @@ defmodule ApiGatewayWeb.AdminHealthController do
         [
           # realtime runs inside THIS gateway process — if we're answering, it's up, at our build.
           %{name: "realtime", status: "up", git_sha: SharedInfra.BuildInfo.git_sha()},
-          # notification is a consumer with no gateway-reachable health endpoint yet.
-          %{name: "notification", status: "unknown", git_sha: "unknown"}
+          # notification is a consumer with NO inbound port — nothing here can ping it. It pushes a
+          # heartbeat to Redis instead (SharedInfra.ServiceHeartbeat), carrying its own build under a
+          # key with a TTL. A dead consumer cannot refresh its own key, so "missing" and "stale" are
+          # the same state and this can never report it live on no evidence.
+          notification_health()
         ]
 
     # CONSUMER LAG, straight from message-service's own health body. It monitors every registered
@@ -66,6 +69,21 @@ defmodule ApiGatewayWeb.AdminHealthController do
       dependencies: dependencies,
       services: services
     })
+  end
+
+  # "up" only on a fresh beat. Anything else — expired key, never written, Redis unreachable,
+  # unreadable payload — is "stale", which is honest about what we actually know: nobody can vouch
+  # for that process right now. It is deliberately NOT "down": we have no evidence it stopped, only
+  # no evidence that it is running, and conflating the two would send somebody debugging the wrong
+  # container during a Redis outage.
+  defp notification_health do
+    case SharedInfra.ServiceHeartbeat.read("notification") do
+      {:ok, %{git_sha: sha, age_seconds: age}} ->
+        %{name: "notification", status: "up", git_sha: sha, heartbeat_age_seconds: age}
+
+      :stale ->
+        %{name: "notification", status: "stale", git_sha: "unknown", heartbeat_age_seconds: nil}
+    end
   end
 
   defp ping(nil), do: {:unreachable, %{}}
@@ -125,7 +143,10 @@ defmodule ApiGatewayWeb.AdminHealthController do
 
     cond do
       Enum.all?(statuses, &(&1 in ["down", "unknown"])) -> "down"
-      Enum.any?(statuses, &(&1 == "down")) -> "degraded"
+      # "stale" degrades. A push consumer nobody has heard from is a platform where notifications
+      # may silently not be arriving, which is precisely the failure this whole heartbeat exists to
+      # make visible — reporting it as "healthy" would put the number back where it started.
+      Enum.any?(statuses, &(&1 in ["down", "stale"])) -> "degraded"
       true -> "healthy"
     end
   end
