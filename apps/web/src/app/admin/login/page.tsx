@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, Loader2, RotateCcw, ShieldCheck } from "lucide-react";
 import { getCurrentSession, requestOtp, verifyOtp } from "@/lib/api";
 import { clearSessionTokens, hasAccessToken, setSessionTokens } from "@/lib/session";
+import { hasConsoleAccess } from "@/lib/adminAccess";
 import { getOrCreateDeviceId } from "@/lib/device";
 import { AuthLayout, Button, Card, Input, LoginIdentityFields } from "@/components";
 
@@ -172,7 +173,8 @@ function AdminLoginForm() {
       // Admin-only gate: only admins enter the console. A non-admin who authenticates correctly is
       // shown access-denied HERE (tokens cleared) — never bounced into the chat app.
       const session = await getCurrentSession();
-      if (session.is_admin === true) {
+      // Same rule as the layout gate and the API: any console role, not just is_admin.
+      if (hasConsoleAccess(session)) {
         enterConsole();
       } else {
         clearSessionTokens();

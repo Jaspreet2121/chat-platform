@@ -16,6 +16,7 @@ import {
   Webhook
 } from "lucide-react";
 import { getCurrentSession } from "@/lib/api";
+import { hasConsoleAccess } from "@/lib/adminAccess";
 import { clearSessionTokens, hasAccessToken } from "@/lib/session";
 import { cn } from "@/lib/cn";
 
@@ -75,7 +76,9 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
         const session = await getCurrentSession();
         if (!active) return;
         setPermissions(session.permissions ?? []);
-        setStatus(session.is_admin === true ? "authorized" : "forbidden");
+        // CONSOLE ACCESS, not is_admin: moderator and support have is_admin false and were locked
+        // out of a console they are modelled for. Same rule the API gate uses.
+        setStatus(hasConsoleAccess(session) ? "authorized" : "forbidden");
       } catch {
         if (active) setStatus("unauthenticated");
       }
