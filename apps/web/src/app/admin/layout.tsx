@@ -7,6 +7,7 @@ import {
   Boxes,
   Activity,
   BarChart3,
+  HeartHandshake,
   LayoutDashboard,
   Loader2,
   LogOut,
@@ -32,6 +33,10 @@ const nav: { href: string; label: string; icon: typeof Activity; exact: boolean;
   { href: "/admin/content", label: "Content", icon: MessagesSquare, exact: false },
   // Surface-3 platform ops. apps.view / webhooks.view = root+admin+support (read-only support by IAM
   // design); moderator sees neither. Mutations (re-enqueue) are separately webhooks.manage server-side.
+  // MATCHES — users.sensitive.view, root and admin only. Not folded into users.view: a moderator
+  // handling a report does not need to know who somebody matched with, and support never does. The
+  // nav hides it for them AND the API refuses them; this is the cosmetic half.
+  { href: "/admin/matches", label: "Matches", icon: HeartHandshake, exact: false, perm: "users.sensitive.view" },
   { href: "/admin/apps", label: "Apps", icon: Boxes, exact: false, perm: "apps.view" },
   { href: "/admin/webhooks", label: "Webhooks", icon: Webhook, exact: false, perm: "webhooks.view" },
   // Event-outbox ops (096) — same permission pair as webhooks by recorded decision (pipeline ops).

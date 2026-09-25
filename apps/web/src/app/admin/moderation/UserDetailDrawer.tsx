@@ -6,6 +6,7 @@ import {
   Clock,
   Database,
   HardDrive,
+  HeartHandshake,
   Loader2,
   LogOut,
   MessageSquare,
@@ -21,11 +22,13 @@ import {
   adminRevokeUserSessions,
   banUser,
   getAdminUser,
+  getCurrentSession,
   reactivateUser,
   suspendUser
 } from "@/lib/api";
 import { Avatar, Button, Card } from "@/components";
 import { StepUpDialog } from "@/app/admin/_StepUpDialog";
+import { MatchesPanel } from "@/app/admin/_MatchesPanel";
 import { cn } from "@/lib/cn";
 
 type Flash = (tone: "ok" | "err", msg: string) => void;
@@ -114,6 +117,24 @@ export function UserDetailDrawer({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmBan, setConfirmBan] = useState(false);
+  const [showMatches, setShowMatches] = useState(false);
+  // The nav hides Matches for a moderator and the API refuses them; this hides the drawer section
+  // too, so nobody is offered a control that can only answer 403.
+  const [canSeeSensitive, setCanSeeSensitive] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    getCurrentSession()
+      .then((session) => {
+        if (active) setCanSeeSensitive((session.permissions ?? []).includes("users.sensitive.view"));
+      })
+      .catch(() => {
+        // Fail CLOSED: if we cannot establish the permission, do not offer the section.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -286,6 +307,27 @@ export function UserDetailDrawer({
               <ReportList title="Reports against this user" reports={detail.reports.against} />
               <ReportList title="Reports by this user" reports={detail.reports.by} />
             </div>
+
+            {/* MATCHES — users.sensitive.view only, and COLLAPSED BY DEFAULT. Opening it is the act
+                that gets recorded, so it must be something the operator chose to do rather than
+                something that happened because they opened a drawer to check a phone number. The
+                API refuses anyone without the permission regardless of what this renders. */}
+            {canSeeSensitive ? (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setShowMatches((open) => !open)}
+                  className="mb-2 flex w-full items-center gap-2 text-left text-xs font-medium uppercase tracking-wide text-faint transition-colors hover:text-fg"
+                >
+                  <HeartHandshake className="h-3.5 w-3.5" aria-hidden />
+                  Match history
+                  <span className="ml-auto normal-case text-faint">
+                    {showMatches ? "Hide" : "Show — this is recorded"}
+                  </span>
+                </button>
+                {showMatches ? <MatchesPanel userId={userId} /> : null}
+              </div>
+            ) : null}
           </div>
         )}
 

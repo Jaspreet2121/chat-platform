@@ -943,6 +943,51 @@ export function getAdminAudit(opts: CursorParams = {}) {
   return request<AuditPage>(`/api/v1/admin/audit${qs ? `?${qs}` : ""}`);
 }
 
+// --- Admin matches (users.sensitive.view — root and admin ONLY) --------------------------------
+// The most sensitive read in the console. Three things about this API are load-bearing and all three
+// are enforced by the SERVER, not here:
+//   * users.sensitive.view is held by root and admin only — not by moderator or support.
+//   * EVERY call carries a typed reason and is audited before the read runs. Omit it and the answer
+//     is 400 admin.reason_required; no data is read and no access is recorded as having happened.
+//   * Pages are clamped server-side and there is NO export endpoint. A surface over personal data
+//     must not have a "give me everything" shape.
+// There is deliberately no Nearby endpoint and no per-user location anywhere in the admin API.
+export type AdminMatch = {
+  id: string;
+  user_low_id: string;
+  user_high_id: string;
+  user_low_name?: string | null;
+  user_high_name?: string | null;
+  matched_at: string;
+  // Always true today: an unmatch DELETES the row rather than flagging it, so only live matches
+  // exist to list. The field is sent explicitly so a reader is not left guessing.
+  active: boolean;
+};
+
+export type AdminMatchesPage = { matches: AdminMatch[]; next_cursor?: string | null; page_size: number };
+
+export function getAdminMatches(
+  reason: string,
+  opts: { q?: string; cursor?: string | null } = {}
+) {
+  const params = new URLSearchParams({ reason });
+  if (opts.q) params.set("q", opts.q);
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  return request<AdminMatchesPage>(`/api/v1/admin/matches?${params.toString()}`);
+}
+
+export function getAdminUserMatches(
+  userId: string,
+  reason: string,
+  opts: { cursor?: string | null } = {}
+) {
+  const params = new URLSearchParams({ reason });
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  return request<AdminMatchesPage>(
+    `/api/v1/admin/users/${encodeURIComponent(userId)}/matches?${params.toString()}`
+  );
+}
+
 // --- Admin health (read-only; behind RequireAdmin) ---------------------------------------------
 export type DepHealth = { status: string; latency_ms?: number | null; error?: string | null };
 // `status` is "up" | "down" | "stale" | "unknown". "stale" belongs to notification-service alone:
