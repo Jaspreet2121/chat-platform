@@ -1,0 +1,13 @@
+# LOCAL-ONLY override for the prod-shaped stack. docker-compose.prod.yml publishes NO service port —
+# Caddy is the only thing that faces the host — so a local stack without Caddy is unreachable from
+# the machine running it. This publishes the gateway on LOOPBACK ONLY, which is what the smoke
+# harnesses (scripts/smoke/admin_health.mjs) require by construction.
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.local.yml up -d
+#
+# Never use on a server: 127.0.0.1 keeps it off the network, but the point of the prod file is that
+# nothing but Caddy listens, and this changes that.
+services:
+  gateway:
+    ports:
+      - "127.0.0.1:4000:4000"

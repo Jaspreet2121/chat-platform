@@ -31,6 +31,13 @@ both to `false`. Leaves the conversations in place.
 B's socket, does a REAL avatar upload as A (describe → PUT bytes → complete), PATCHes
 `avatar_media_id`, and prints what B received. Observes the live socket — no server change needed.
 
+`admin_health.mjs` — `GET /api/v1/admin/health` end to end, **local stack only** (the base URL must
+be loopback; there is no override). Logs in as A, promotes A to root in the LOCAL postgres container
+named by `LOCAL_DB_CONTAINER` (or expects you to have done it), and asserts `services[]` has the seven
+entries with `notification.status == "up"` — true only when notification-service's Redis heartbeat is
+live. Never point it at prod: making a reviewer account root anywhere but a throwaway stack is not
+a thing a script should be able to do.
+
 `socket_latency.mjs` — send→receive latency over the socket: A pushes 20 `message:create`s on the
 A–B conversation channel while B's socket timestamps `message_created` on the same topic; then
 turns encryption ON, sends 20 sealed envelopes (real libsodium boxes to both devices), and hands
