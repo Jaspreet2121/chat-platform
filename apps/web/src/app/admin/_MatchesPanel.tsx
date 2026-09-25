@@ -11,6 +11,7 @@ import { usePaging } from "@/app/admin/_usePaging";
 import {
   REASON_MAX_LENGTH,
   REASON_MIN_LENGTH,
+  clearReason,
   loadReason,
   reasonIsValid,
   saveReason
@@ -73,6 +74,14 @@ export function MatchesPanel({ userId }: { userId?: string }) {
   }, [reason, load]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  // Reopen the prompt with the current reason as the draft. The stored one is cleared first, so a
+  // closed tab in the meantime cannot silently keep the old reason for the rest of its hour.
+  function changeReason() {
+    clearReason();
+    setDraft(reason ?? "");
+    setReason(null);
+  }
+
   function submitReason() {
     const trimmed = draft.trim();
     if (!reasonIsValid(trimmed)) return;
@@ -131,8 +140,20 @@ export function MatchesPanel({ userId }: { userId?: string }) {
             }}
           />
         ) : null}
-        <p className="ml-auto text-xs text-faint" title={reason}>
-          Logged as: “{reason}”
+        {/* What the audit row already holds, and a way to say something different. "Change"
+            reopens the prompt with the current text; the hour starts again from the new reason. */}
+        <p className="ml-auto flex items-center gap-1.5 text-xs text-faint" title={reason}>
+          <span>
+            Reason on record: <span className="text-muted">“{reason}”</span>
+          </span>
+          <span aria-hidden>·</span>
+          <button
+            type="button"
+            onClick={changeReason}
+            className="text-brand-hover underline-offset-2 hover:underline"
+          >
+            Change
+          </button>
         </p>
       </div>
 
