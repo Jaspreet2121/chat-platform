@@ -134,3 +134,32 @@ export function sessionsByPlatform(overview: AnalyticsOverview | null | undefine
   const total = Number(sessions.total ?? platforms.reduce((sum, p) => sum + p.count, 0)) || 0;
   return { total, platforms };
 }
+
+// --- Report queue shaping -----------------------------------------------------------------------
+
+// How old a report is, in the words a moderator uses. Deliberately coarse: the queue is worked by
+// "this one has been sitting here" rather than by exact minutes, and a precise clock on a row that
+// re-renders invites people to read it as an SLA it is not.
+export function reportAge(createdAt: string | null | undefined, now: Date = new Date()): string {
+  if (!createdAt) return "unknown age";
+  const then = Date.parse(createdAt);
+  if (Number.isNaN(then)) return "unknown age";
+
+  const seconds = Math.max(0, Math.floor((now.getTime() - then) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  return `${weeks}w ago`;
+}
+
+// A report is WAITING if nobody has finished with it. Both open and reviewing count: "reviewing"
+// means somebody picked it up, not that it is done, and treating it as done is how a queue quietly
+// stops being a queue.
+export function isWaiting(status: string | null | undefined): boolean {
+  return status === "open" || status === "reviewing";
+}

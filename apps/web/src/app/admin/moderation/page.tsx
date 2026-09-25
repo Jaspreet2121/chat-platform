@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, Ban, Loader2, RotateCcw, ScrollText, ShieldAlert, UserX } from "lucide-react";
+import Link from "next/link";
 import { Pager } from "@/app/admin/_Pager";
+import { isWaiting, reportAge } from "@/lib/adminDashboard";
 import {
   initialPagerState,
   pagerNext,
@@ -162,6 +164,15 @@ export default function AdminModerationPage() {
 }
 
 type Flash = (tone: "ok" | "err", msg: string) => void;
+
+// "" is every status. Open first, because that is what somebody opening this tab came to do.
+const REPORT_FILTERS = [
+  { value: "open", label: "Open" },
+  { value: "reviewing", label: "Reviewing" },
+  { value: "resolved", label: "Resolved" },
+  { value: "dismissed", label: "Dismissed" },
+  { value: "", label: "All" }
+] as const;
 
 function UsersTab({ flash }: { flash: Flash }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -371,6 +382,7 @@ function ReportsTab({ flash }: { flash: Flash }) {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
   const [pager, setPager] = useState(initialPagerState);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const { cursor, direction } = pager;
 
   const load = useCallback(async () => {
@@ -408,21 +420,34 @@ function ReportsTab({ flash }: { flash: Flash }) {
 
   return (
     <div>
-      <div className="mb-3 flex gap-2">
-        <select
-          className="h-9 rounded-lg border border-border bg-elevated px-3 text-sm text-fg outline-none focus:border-brand"
-          value={statusFilter}
-          onChange={(e) => {
-            setStatusFilter(e.target.value);
-            setPager(pagerReset());
-          }}
+      {/* Status as CHIPS, not a dropdown. The queue's whole job is to be worked through, and a chip
+          row shows what the current view is without opening anything. */}
+      <div className="mb-3 flex flex-wrap items-center gap-1.5">
+        {REPORT_FILTERS.map(({ value, label }) => (
+          <button
+            key={value || "all"}
+            type="button"
+            onClick={() => {
+              setStatusFilter(value);
+              setPager(pagerReset());
+            }}
+            className={cn(
+              "h-8 rounded-full border px-3 text-xs font-medium transition-colors",
+              statusFilter === value
+                ? "border-brand bg-brand/10 text-fg"
+                : "border-border text-muted hover:text-fg"
+            )}
+          >
+            {label}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => void load()}
+          className="ml-auto text-xs text-muted transition-colors hover:text-fg"
         >
-          <option value="">All statuses</option>
-          <option value="open">Open</option>
-          <option value="reviewing">Reviewing</option>
-          <option value="resolved">Resolved</option>
-          <option value="dismissed">Dismissed</option>
-        </select>
+          Refresh
+        </button>
       </div>
 
       {loading ? (
@@ -438,10 +463,21 @@ function ReportsTab({ flash }: { flash: Flash }) {
       ) : (
         <Card className="divide-y divide-border">
           {reports.map((r) => (
-            <div key={r.id} className="p-3">
+            <div
+              key={r.id}
+              className={cn(
+                "p-3",
+                // A row still waiting gets a left edge. Scanning a mixed list for what is unfinished
+                // is the thing a queue should not make anybody do.
+                isWaiting(r.status) && "border-l-2 border-l-brand"
+              )}
+            >
               <div className="flex items-center justify-between gap-2">
                 <p className="text-sm font-medium text-fg">{r.reason}</p>
-                <StatusBadge status={r.status} />
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="text-xs text-faint">{reportAge(r.created_at)}</span>
+                  <StatusBadge status={r.status} />
+                </div>
               </div>
               <p className="mt-1 text-xs text-muted">
                 reporter{" "}
@@ -451,15 +487,32 @@ function ReportsTab({ flash }: { flash: Flash }) {
                     shortId(r.reporter_user_id)}
                 </span>{" "}
                 → target{" "}
-                <span title={r.reported_user_id ?? undefined}>
-                  {r.reported_name?.trim() ||
-                    formatPhone(r.reported_phone) ||
-                    shortId(r.reported_user_id)}
-                </span>
+                {r.reported_user_id ? (
+                  // Act on the PERSON from the row. Copying a UUID into the users tab to suspend
+                  // somebody is the step that makes a queue feel like paperwork.
+                  <button
+                    type="button"
+                    onClick={() => setSelectedUserId(r.reported_user_id ?? null)}
+                    className="text-brand-hover underline-offset-2 hover:underline"
+                    title={r.reported_user_id}
+                  >
+                    {r.reported_name?.trim() ||
+                      formatPhone(r.reported_phone) ||
+                      shortId(r.reported_user_id)}
+                  </button>
+                ) : (
+                  <span className="italic text-faint">deleted user</span>
+                )}
               </p>
               {r.details ? <p className="mt-1 text-sm text-muted">{r.details}</p> : null}
-              <div className="mt-2 flex gap-1">
-                <Button size="sm" variant="ghost" onClick={() => setStatus(r, "reviewing")} isLoading={busyId === r.id}>
+              <div className="mt-2 flex flex-wrap items-center gap-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={r.status === "reviewing"}
+                  onClick={() => setStatus(r, "reviewing")}
+                  isLoading={busyId === r.id}
+                >
                   Reviewing
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => setStatus(r, "resolved")} isLoading={busyId === r.id}>
@@ -468,6 +521,15 @@ function ReportsTab({ flash }: { flash: Flash }) {
                 <Button size="sm" variant="ghost" onClick={() => setStatus(r, "dismissed")} isLoading={busyId === r.id}>
                   Dismiss
                 </Button>
+                {r.conversation_id ? (
+                  <Link
+                    href="/admin/content"
+                    className="ml-1 text-xs text-muted transition-colors hover:text-fg"
+                    title={r.conversation_id}
+                  >
+                    Open in content viewer
+                  </Link>
+                ) : null}
               </div>
             </div>
           ))}
@@ -481,6 +543,15 @@ function ReportsTab({ flash }: { flash: Flash }) {
         onNext={() => setPager(pagerNext)}
         onPrev={() => setPager(pagerPrev)}
       />
+
+      {selectedUserId ? (
+        <UserDetailDrawer
+          userId={selectedUserId}
+          onClose={() => setSelectedUserId(null)}
+          onChanged={() => void load()}
+          flash={flash}
+        />
+      ) : null}
     </div>
   );
 }

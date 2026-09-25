@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildHealthStrip,
+  isWaiting,
+  reportAge,
   healthStripIsClean,
   sessionsByPlatform,
   sparkline,
@@ -167,5 +169,39 @@ describe("sessionsByPlatform", () => {
       sessions: { android: 2, ios: 3 }
     } as unknown as AnalyticsOverview);
     expect(total).toBe(5);
+  });
+});
+
+describe("reportAge", () => {
+  const now = new Date("2026-09-25T12:00:00Z");
+
+  it("speaks in the units a moderator uses", () => {
+    expect(reportAge("2026-09-25T11:59:30Z", now)).toBe("just now");
+    expect(reportAge("2026-09-25T11:30:00Z", now)).toBe("30m ago");
+    expect(reportAge("2026-09-25T09:00:00Z", now)).toBe("3h ago");
+    expect(reportAge("2026-09-23T12:00:00Z", now)).toBe("2d ago");
+    expect(reportAge("2026-09-04T12:00:00Z", now)).toBe("3w ago");
+  });
+
+  it("never renders a negative age from a clock skew", () => {
+    // A report timestamped slightly in the future must not read "-2m ago" and make the row look broken.
+    expect(reportAge("2026-09-25T12:05:00Z", now)).toBe("just now");
+  });
+
+  it("says so plainly when there is no usable timestamp", () => {
+    expect(reportAge(null, now)).toBe("unknown age");
+    expect(reportAge("not a date", now)).toBe("unknown age");
+  });
+});
+
+describe("isWaiting", () => {
+  it("counts reviewing as still waiting", () => {
+    // "Reviewing" means somebody picked it up, not that it is done. Treating it as done is how a
+    // queue quietly stops being a queue.
+    expect(isWaiting("open")).toBe(true);
+    expect(isWaiting("reviewing")).toBe(true);
+    expect(isWaiting("resolved")).toBe(false);
+    expect(isWaiting("dismissed")).toBe(false);
+    expect(isWaiting(null)).toBe(false);
   });
 });
